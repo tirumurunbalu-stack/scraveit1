@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs22",
+    "predeploy": [
+      "npm --prefix \"$RESOURCE_DIR\" run typecheck",
+      "npm --prefix \"$RESOURCE_DIR\" test",
+      "npm --prefix \"$RESOURCE_DIR\" run build"
+    ]
+  },
+  "database": {
+    "rules": "firebase/feastly-realtime-database-rules.json"
+  },
+  "storage": {
+    "rules": "firebase/storage.rules"
+  }
+}

@@ -1,0 +1,434 @@
+{
+  "stg-20260827-weekly-incentive": {
+    "active": false,
+    "archived": true,
+    "description": "Server-authoritative continuous weekly completion incentives for staging validation.",
+    "displayType": "trip_milestone",
+    "eligibleDays": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "endAt": 1788201000000,
+    "internalName": "stg-weekly-incentive",
+    "kind": "milestone_bonus",
+    "lastOperationId": "archive-stg-20260827-weekly-incentive-2026-08-28",
+    "milestones": [
+      {
+        "label": "Complete 8 orders",
+        "rewardAmountPaise": 5000,
+        "target": 8
+      },
+      {
+        "label": "Complete 13 orders",
+        "rewardAmountPaise": 8000,
+        "target": 13
+      },
+      {
+        "label": "Complete 18 orders",
+        "rewardAmountPaise": 12500,
+        "target": 18
+      },
+      {
+        "label": "Complete 23 orders",
+        "rewardAmountPaise": 17500,
+        "target": 23
+      },
+      {
+        "label": "Complete 28 orders",
+        "rewardAmountPaise": 22500,
+        "target": 28
+      },
+      {
+        "label": "Complete 32 orders",
+        "rewardAmountPaise": 30000,
+        "target": 32
+      }
+    ],
+    "priority": 400,
+    "rainOnly": false,
+    "requireDailyLoginSession": true,
+    "schemaVersion": 1,
+    "section": "special",
+    "stacking": "highest_only",
+    "startAt": 1787509800000,
+    "subtitle": "Complete 8, 13, 18, 23, 28 and 32 orders this week to unlock bigger bonuses",
+    "timeSlots": [
+      {
+        "endMinute": 480,
+        "label": "Breakfast",
+        "startMinute": 360
+      },
+      {
+        "endMinute": 660,
+        "label": "Morning",
+        "startMinute": 480
+      },
+      {
+        "endMinute": 960,
+        "label": "Lunch",
+        "startMinute": 660
+      },
+      {
+        "endMinute": 1140,
+        "label": "Evening",
+        "startMinute": 960
+      },
+      {
+        "endMinute": 1380,
+        "label": "Night",
+        "startMinute": 1140
+      }
+    ],
+    "title": "Incentive Targets",
+    "updatedAt": 1787887429981,
+    "updatedBy": "codex-live-update",
+    "updatedByRole": "owner",
+    "visible": false,
+    "window": "weekly"
+  },
+  "stg-20260827-late-night-surge": {
+    "active": false,
+    "archived": true,
+    "description": "Valid for late-night deliveries.",
+    "displayType": "surge",
+    "eligibleDays": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "endAt": 1788201000000,
+    "internalName": "stg-late-night-surge",
+    "kind": "per_order_bonus",
+    "lastOperationId": "archive-stg-20260827-late-night-surge-2026-08-28",
+    "priority": 240,
+    "rainOnly": false,
+    "rewardAmountPaise": 1000,
+    "schemaVersion": 1,
+    "section": "late_night",
+    "stacking": "stack",
+    "startAt": 1787509800000,
+    "subtitle": "₹10 extra per order",
+    "timeSlots": [
+      {
+        "endMinute": 180,
+        "label": "Late night",
+        "startMinute": 1380
+      }
+    ],
+    "title": "Surge",
+    "updatedAt": 1787887429981,
+    "updatedBy": "codex-live-update",
+    "updatedByRole": "owner",
+    "visible": false,
+    "window": "daily"
+  },
+  "live-20260828-weekly-incentive-v2": {
+    "schemaVersion": 1,
+    "internalName": "live-weekly-incentive-v2",
+    "title": "Incentive Targets",
+    "subtitle": "Complete 8, 13, 18, 23, 28 and 32 orders this week to unlock bigger bonuses",
+    "description": "Backend-authoritative weekly incentive flow with independent login groups, 2 valid sessions required per active day, trip milestones, and failure conditions.",
+    "kind": "milestone_bonus",
+    "displayType": "trip_milestone",
+    "section": "special",
+    "milestones": [
+      {
+        "label": "Complete 8 orders",
+        "rewardAmountPaise": 5000,
+        "target": 8
+      },
+      {
+        "label": "Complete 13 orders",
+        "rewardAmountPaise": 8000,
+        "target": 13
+      },
+      {
+        "label": "Complete 18 orders",
+        "rewardAmountPaise": 12500,
+        "target": 18
+      },
+      {
+        "label": "Complete 23 orders",
+        "rewardAmountPaise": 17500,
+        "target": 23
+      },
+      {
+        "label": "Complete 28 orders",
+        "rewardAmountPaise": 22500,
+        "target": 28
+      },
+      {
+        "label": "Complete 32 orders",
+        "rewardAmountPaise": 30000,
+        "target": 32
+      }
+    ],
+    "window": "weekly",
+    "startAt": 1787855400000,
+    "endAt": 1788201000000,
+    "eligibleDays": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "timeSlots": [
+      {
+        "label": "Breakfast",
+        "startMinute": 360,
+        "endMinute": 480
+      },
+      {
+        "label": "Morning",
+        "startMinute": 480,
+        "endMinute": 660
+      },
+      {
+        "label": "Lunch",
+        "startMinute": 660,
+        "endMinute": 960
+      },
+      {
+        "label": "Evening",
+        "startMinute": 960,
+        "endMinute": 1140
+      },
+      {
+        "label": "Night",
+        "startMinute": 1140,
+        "endMinute": 1380
+      },
+      {
+        "label": "Late night",
+        "startMinute": 1380,
+        "endMinute": 120
+      },
+      {
+        "label": "Early morning",
+        "startMinute": 120,
+        "endMinute": 360
+      }
+    ],
+    "conditionGroups": [
+      {
+        "groupId": "group_1",
+        "title": "Login Group 1",
+        "minimumSlotsRequired": 1,
+        "slots": [
+          {
+            "slotId": "breakfast",
+            "label": "Breakfast",
+            "startMinute": 360,
+            "endMinute": 480,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          },
+          {
+            "slotId": "morning",
+            "label": "Morning",
+            "startMinute": 480,
+            "endMinute": 660,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          },
+          {
+            "slotId": "evening",
+            "label": "Evening",
+            "startMinute": 960,
+            "endMinute": 1140,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          }
+        ]
+      },
+      {
+        "groupId": "group_2",
+        "title": "Login Group 2",
+        "minimumSlotsRequired": 1,
+        "slots": [
+          {
+            "slotId": "lunch",
+            "label": "Lunch",
+            "startMinute": 660,
+            "endMinute": 960,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          },
+          {
+            "slotId": "night",
+            "label": "Night",
+            "startMinute": 1140,
+            "endMinute": 1380,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          },
+          {
+            "slotId": "late_night",
+            "label": "Late night",
+            "startMinute": 1380,
+            "endMinute": 120,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          },
+          {
+            "slotId": "early_morning",
+            "label": "Early morning",
+            "startMinute": 120,
+            "endMinute": 360,
+            "offlineToleranceMinutes": 10,
+            "overlapMode": "no_double_count"
+          }
+        ]
+      }
+    ],
+    "otherConditions": [
+      {
+        "conditionId": "max_rejected_orders",
+        "type": "max_rejected_orders",
+        "title": "Order rejections",
+        "maximumCount": 1,
+        "enabled": true
+      },
+      {
+        "conditionId": "max_cancelled_booked_shifts",
+        "type": "max_cancelled_booked_shifts",
+        "title": "Booked shift cancellations",
+        "maximumCount": 1,
+        "enabled": true
+      },
+      {
+        "conditionId": "max_incomplete_shifts",
+        "type": "max_incomplete_shifts",
+        "title": "Incomplete shifts",
+        "maximumCount": 1,
+        "enabled": true
+      }
+    ],
+    "minimumCompletedSessionsPerDay": 2,
+    "requireDailyLoginSession": true,
+    "milestonePayoutMode": "highest_unlocked",
+    "timezone": "Asia/Kolkata",
+    "tripAttribution": "delivered_at",
+    "allowOverlappingSlotCredit": false,
+    "stacking": "highest_only",
+    "priority": 500,
+    "cityNames": [],
+    "zoneNames": [],
+    "restaurantIds": [],
+    "riderIds": [],
+    "eligibleRiderTypes": [],
+    "vehicleTypes": [],
+    "rainOnly": false,
+    "visible": true,
+    "active": true,
+    "archived": false,
+    "updatedAt": 1787887429981,
+    "updatedBy": "codex-live-update",
+    "updatedByRole": "owner",
+    "lastOperationId": "live-20260828-weekly-incentive-v2"
+  },
+  "live-20260828-late-night-fee": {
+    "schemaVersion": 1,
+    "internalName": "live-late-night-fee",
+    "title": "Late night fee",
+    "subtitle": "₹10 extra per eligible order",
+    "description": "Valid for eligible deliveries completed between 11 PM and 2 AM.",
+    "kind": "per_order_bonus",
+    "displayType": "surge",
+    "section": "late_night",
+    "rewardAmountPaise": 1000,
+    "window": "daily",
+    "startAt": 1787855400000,
+    "endAt": 1788201000000,
+    "eligibleDays": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "timeSlots": [
+      {
+        "label": "Late night",
+        "startMinute": 1380,
+        "endMinute": 120
+      }
+    ],
+    "stacking": "stack",
+    "priority": 260,
+    "cityNames": [],
+    "zoneNames": [],
+    "restaurantIds": [],
+    "riderIds": [],
+    "eligibleRiderTypes": [],
+    "vehicleTypes": [],
+    "rainOnly": false,
+    "visible": true,
+    "active": true,
+    "archived": false,
+    "updatedAt": 1787887429981,
+    "updatedBy": "codex-live-update",
+    "updatedByRole": "owner",
+    "lastOperationId": "live-20260828-late-night-fee"
+  },
+  "live-20260828-early-morning-fee": {
+    "schemaVersion": 1,
+    "internalName": "live-early-morning-fee",
+    "title": "Early morning fee",
+    "subtitle": "₹10 extra per eligible order",
+    "description": "Valid for eligible deliveries completed between 2 AM and 6 AM.",
+    "kind": "per_order_bonus",
+    "displayType": "surge",
+    "section": "late_night",
+    "rewardAmountPaise": 1000,
+    "window": "daily",
+    "startAt": 1787855400000,
+    "endAt": 1788201000000,
+    "eligibleDays": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "timeSlots": [
+      {
+        "label": "Early morning",
+        "startMinute": 120,
+        "endMinute": 360
+      }
+    ],
+    "stacking": "stack",
+    "priority": 255,
+    "cityNames": [],
+    "zoneNames": [],
+    "restaurantIds": [],
+    "riderIds": [],
+    "eligibleRiderTypes": [],
+    "vehicleTypes": [],
+    "rainOnly": false,
+    "visible": true,
+    "active": true,
+    "archived": false,
+    "updatedAt": 1787887429981,
+    "updatedBy": "codex-live-update",
+    "updatedByRole": "owner",
+    "lastOperationId": "live-20260828-early-morning-fee"
+  }
+}

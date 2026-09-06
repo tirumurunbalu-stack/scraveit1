@@ -1,0 +1,7 @@
+timestamp_ist=2026-08-28T22:38:51.335635+05:30
+device_id=368a3272
+package=com.feastly.rider
+phase=email_password_repro_attempt_2
+launch_ready_ist=2026-08-28T22:39:09.417491+05:30
+login_screen_ready_ist=2026-08-28T22:40:01.089011+05:30
+email_entered_ist=2026-08-28T22:40:42.392388+05:30

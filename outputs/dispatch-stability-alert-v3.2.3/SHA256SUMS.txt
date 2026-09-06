@@ -1,0 +1,3 @@
+2a32c211070be20e3f7360ad95fc3a91395a7e6d8c6355fe5d55712ca6298cd1  /Users/balu/Documents/Codex/2026-08-14/i-n/outputs/dispatch-stability-alert-v3.2.3/Savrivo-Admin-v3.2.1.apk
+7e415159b9af3093d49224a972a46a815cb43b016b02b60cdb0adb40cbb153af  /Users/balu/Documents/Codex/2026-08-14/i-n/outputs/dispatch-stability-alert-v3.2.3/Savrivo-Partner-v3.2.3.apk
+05d61207e0d071058add9f2e12f24e3d6eae464e0a971d76495d673824da0bda  /Users/balu/Documents/Codex/2026-08-14/i-n/outputs/dispatch-stability-alert-v3.2.3/Savrivo-Restaurant-v3.2.3.apk

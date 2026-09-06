@@ -1,0 +1,2091 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "feastly": {
+      ".read": false,
+      ".write": false,
+      "catalog": {
+        ".read": "auth != null",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "meta": {
+          ".validate": "!newData.exists() || newData.hasChildren(['initialized','updatedAt'])",
+          "initialized": {
+            ".validate": "newData.isBoolean()"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
+        "restaurants": {
+          ".indexOn": [
+            "city"
+          ],
+          "$restaurantId": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['id','name','address','etaMin','etaMax','deliveryFee','platformFee','open','archived']) && newData.child('id').val() === $restaurantId)",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $restaurantId && newData.val().length <= 100"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 160"
+            },
+            "phone": {
+              ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 24 && newData.val().matches(/^\\+?[0-9 ()-]+$/)"
+            },
+            "cuisines": {
+              "$index": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60"
+              },
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "description": {
+              ".validate": "newData.isString() && newData.val().length <= 1000",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "address": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 500",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "lat": {
+              ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "lng": {
+              ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "etaMin": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 240",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "etaMax": {
+              ".validate": "newData.isNumber() && newData.val() >= newData.parent().child('etaMin').val() && newData.val() <= 360",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "deliveryFee": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+            },
+            "platformFee": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+            },
+            "opensUntil": {
+              ".validate": "newData.isString() && newData.val().length <= 40",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "open": {
+              ".validate": "newData.isBoolean()",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/availability').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/availability').val() === true))))"
+            },
+            "archived": {
+              ".validate": "newData.isBoolean()"
+            },
+            "active": {
+              ".validate": "newData.isBoolean()"
+            },
+            "rating": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5"
+            },
+            "ratingCount": {
+              ".validate": "newData.isNumber() && newData.val() >= 0"
+            },
+            "type": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "image": {
+              ".validate": "newData.isString() && newData.val().length <= 850000 && (newData.val().matches(/^data:image\\/(jpeg|png|webp);base64,[A-Za-z0-9+\\/=]+$/) || newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
+            },
+            "menu": {
+              "$index": {
+                ".validate": "newData.hasChildren(['id','name','category','description','price','diet','available','popular','archived','updatedAt'])",
+                "id": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+                },
+                "name": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+                },
+                "category": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+                },
+                "description": {
+                  ".validate": "newData.isString() && newData.val().length <= 700"
+                },
+                "price": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                },
+                "diet": {
+                  ".validate": "newData.val() === 'veg' || newData.val() === 'nonveg' || newData.val() === 'egg' || newData.val() === 'vegan'"
+                },
+                "available": {
+                  ".validate": "newData.isBoolean()"
+                },
+                "popular": {
+                  ".validate": "newData.isBoolean()"
+                },
+                "archived": {
+                  ".validate": "newData.isBoolean()"
+                },
+                "updatedAt": {
+                  ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+                },
+                "image": {
+                  ".validate": "newData.isString() && newData.val().length <= 850000 && (newData.val().matches(/^data:image\\/(jpeg|png|webp);base64,[A-Za-z0-9+\\/=]+$/) || newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
+                },
+                "variants": {
+                  "$variantIndex": {
+                    ".validate": "newData.hasChildren(['name','price'])",
+                    "name": {
+                      ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+                    },
+                    "price": {
+                      ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                    },
+                    "$other": {
+                      ".validate": false
+                    }
+                  }
+                },
+                "addOns": {
+                  "$addOnIndex": {
+                    ".validate": "newData.hasChildren(['name','price'])",
+                    "name": {
+                      ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+                    },
+                    "price": {
+                      ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                    },
+                    "$other": {
+                      ".validate": false
+                    }
+                  }
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "items": {},
+            "updatedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/availability').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/availability').val() === true))))"
+            },
+            "updatedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254",
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "offlineUntil": {
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/availability').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/availability').val() === true))))",
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= now + 604800000)"
+            },
+            "offlineReason": {
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/availability').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/availability').val() === true))))",
+              ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 200)"
+            },
+            "imageUrl": {
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))",
+              ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
+            },
+            "city": {
+              ".validate": "newData.isString() && newData.val().length <= 120",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "category": {
+              ".validate": "newData.isString() && newData.val().length <= 120",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "pureVeg": {
+              ".validate": "newData.isBoolean()",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "deliveryRadiusKm": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 500"
+            },
+            "maxConcurrentOrders": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 500",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "autoPauseWhenBusy": {
+              ".validate": "newData.isBoolean()",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "autoAcceptOrders": {
+              ".validate": "newData.isBoolean()",
+              ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            }
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      },
+      "users": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".validate": "!newData.exists() || newData.hasChildren(['name','email','phone','selectedAddressId','updatedAt'])",
+          "name": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "email": {
+            ".validate": "newData.isString() && newData.val().length <= 254 && (data.exists() ? newData.val() === data.val() : (auth.uid === $uid ? newData.val() === auth.token.email : true))"
+          },
+          "emailVerified": {
+            ".validate": "newData.isBoolean() && ((auth.token.email_verified === true && newData.val() === true) || (auth.token.email_verified !== true && newData.val() === false))"
+          },
+          "phone": {
+            ".validate": "newData.isString() && newData.val().length <= 24"
+          },
+          "selectedAddressId": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "addresses": {
+            "$index": {
+              ".validate": "newData.hasChildren(['id','label','area','address','phone','source','updatedAt'])",
+              "id": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              },
+              "label": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+              },
+              "area": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+              },
+              "address": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 600"
+              },
+              "phone": {
+                ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 24"
+              },
+              "source": {
+                ".validate": "newData.val() === 'gps' || newData.val() === 'manual'"
+              },
+              "updatedAt": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+              },
+              "lat": {
+                ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+              },
+              "lng": {
+                ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+              },
+              "$other": {
+                ".validate": false
+              },
+              "city": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              }
+            }
+          },
+          "favourites": {
+            "$index": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            }
+          },
+          "preferences": {
+            "theme": {
+              ".validate": "newData.val() === 'light' || newData.val() === 'dark' || newData.val() === 'system'"
+            },
+            "vegetarian": {
+              ".validate": "newData.isBoolean()"
+            },
+            "notifications": {
+              ".validate": "newData.isBoolean()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "orders": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$orderId": {
+            ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && data.child('riderId').val() === auth.uid && (data.child('status').val() === 'Handed to rider' || data.child('status').val() === 'Out for delivery' || data.child('status').val() === 'Near you' || data.child('status').val() === 'Arrived' || data.child('status').val() === 'Delivered')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/tracking').val() === true)) || (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.child('restaurantId').val()).child(auth.uid).child('permissions/tracking').val() === true))))",
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && newData.child('customerId').val() === auth.uid && newData.child('id').val() === $orderId && newData.child('status').val() === 'Order placed'))",
+            ".validate": "!newData.exists() || (!data.exists() ? (newData.hasChildren(['id','schemaVersion','idempotencyKey','customerId','customerName','customerPhone','restaurantId','restaurant','restaurantLocation','items','pricing','total','paymentMethod','paymentState','deliveryMode','address','status','deliveryOtpHash','deliveryOtpSalt','statusHistory','createdAt','updatedAt','etaMin','etaMax']) && newData.child('id').val() === $orderId && newData.child('idempotencyKey').val() === $orderId && newData.child('customerId').val() === $uid && newData.child('status').val() === 'Order placed' && newData.child('paymentMethod').val() === 'cod' && newData.child('paymentState').val() === 'cash_due' && root.child('feastly/catalog/restaurants').child(newData.child('restaurantId').val()).child('open').val() === true && root.child('feastly/catalog/restaurants').child(newData.child('restaurantId').val()).child('archived').val() !== true && newData.child('restaurant').val() === root.child('feastly/catalog/restaurants').child(newData.child('restaurantId').val()).child('name').val() && newData.child('items').hasChildren() && newData.child('statusHistory').hasChildren() && newData.child('createdAt').val() === newData.child('updatedAt').val()) : (newData.child('id').val() === data.child('id').val() && newData.child('schemaVersion').val() === data.child('schemaVersion').val() && newData.child('idempotencyKey').val() === data.child('idempotencyKey').val() && newData.child('customerId').val() === data.child('customerId').val() && newData.child('restaurantId').val() === data.child('restaurantId').val() && newData.child('restaurant').val() === data.child('restaurant').val() && newData.child('total').val() === data.child('total').val() && newData.child('createdAt').val() === data.child('createdAt').val() && newData.child('deliveryOtpHash').val() === data.child('deliveryOtpHash').val() && newData.child('deliveryOtpSalt').val() === data.child('deliveryOtpSalt').val()))",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $orderId && newData.val().length <= 80"
+            },
+            "schemaVersion": {
+              ".validate": "newData.isNumber() && newData.val() >= 3 && newData.val() <= 20"
+            },
+            "idempotencyKey": {
+              ".validate": "newData.isString() && newData.val() === $orderId"
+            },
+            "customerId": {
+              ".validate": "newData.val() === $uid"
+            },
+            "customerName": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            },
+            "customerPhone": {
+              ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 24"
+            },
+            "restaurantId": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            },
+            "restaurant": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 160"
+            },
+            "restaurantLocation": {
+              "address": {
+                ".validate": "newData.isString() && newData.val().length <= 500"
+              },
+              "lat": {
+                ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+              },
+              "lng": {
+                ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+              },
+              "$other": {
+                ".validate": false
+              }
+            },
+            "items": {
+              "$index": {
+                ".validate": "newData.hasChildren(['itemId','name','quantity','price','variant','variantPrice','addOnTotal','note','diet'])",
+                "itemId": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+                },
+                "name": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+                },
+                "quantity": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 20"
+                },
+                "price": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                },
+                "variant": {
+                  ".validate": "newData.isString() && newData.val().length <= 100"
+                },
+                "variantPrice": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                },
+                "addOns": {
+                  "$addOnIndex": {
+                    ".validate": "newData.hasChildren(['name','price'])",
+                    "name": {
+                      ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+                    },
+                    "price": {
+                      ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+                    },
+                    "$other": {
+                      ".validate": false
+                    }
+                  }
+                },
+                "addOnTotal": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 200000"
+                },
+                "note": {
+                  ".validate": "newData.isString() && newData.val().length <= 200"
+                },
+                "diet": {
+                  ".validate": "newData.isString() && newData.val().length <= 30"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "pricing": {
+              ".validate": "newData.hasChildren(['subtotal','discount','deliveryFee','smallOrderFee','lateNightFee','rainFee','surgeFee','platformFee','tax','tip','currency','source']) && newData.child('subtotal').val() >= newData.child('discount').val() && (newData.child('discount').val() === 0 || (newData.parent().child('coupon').isString() && newData.parent().child('coupon').val().length > 0))",
+              "subtotal": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 1000000"
+              },
+              "discount": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
+              },
+              "deliveryFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "platformFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "tax": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000 && ((!root.child('feastly/settings/customer/taxRate').exists() && newData.val() === 0) || (root.child('feastly/settings/customer/taxRate').isNumber() && newData.val() >= (newData.parent().child('subtotal').val() - newData.parent().child('discount').val()) * root.child('feastly/settings/customer/taxRate').val() / 100 - 0.01 && newData.val() <= (newData.parent().child('subtotal').val() - newData.parent().child('discount').val()) * root.child('feastly/settings/customer/taxRate').val() / 100 + 0.01))"
+              },
+              "tip": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+              },
+              "currency": {
+                ".validate": "newData.val() === 'INR'"
+              },
+              "source": {
+                ".validate": "newData.val() === 'catalog_snapshot_v3'"
+              },
+              "$other": {
+                ".validate": false
+              },
+              "smallOrderFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "lateNightFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "rainFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "surgeFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              }
+            },
+            "total": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1200000 && newData.val() >= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() - 0.01 && newData.val() <= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() + 0.01"
+            },
+            "coupon": {
+              ".validate": "newData.isString() && newData.val().length <= 60"
+            },
+            "paymentMethod": {
+              ".validate": "newData.val() === 'cod' || newData.val() === 'upi' || newData.val() === 'card'"
+            },
+            "paymentState": {
+              ".validate": "newData.val() === 'cash_due' || newData.val() === 'pending' || newData.val() === 'authorized' || newData.val() === 'paid' || newData.val() === 'refunded' || newData.val() === 'failed'"
+            },
+            "deliveryMode": {
+              ".validate": "newData.val() === 'asap' || newData.val() === 'scheduled'"
+            },
+            "address": {
+              ".validate": "newData.hasChildren(['id','label','area','address','phone','source','updatedAt','lat','lng'])",
+              "id": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              },
+              "label": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+              },
+              "area": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+              },
+              "address": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 600"
+              },
+              "phone": {
+                ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 24"
+              },
+              "source": {
+                ".validate": "newData.val() === 'gps' || newData.val() === 'manual'"
+              },
+              "updatedAt": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+              },
+              "lat": {
+                ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+              },
+              "lng": {
+                ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+              },
+              "details": {
+                ".validate": "newData.isString() && newData.val().length <= 600"
+              },
+              "$other": {
+                ".validate": false
+              },
+              "city": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              }
+            },
+            "instructions": {
+              ".validate": "newData.isString() && newData.val().length <= 500"
+            },
+            "contactless": {
+              ".validate": "newData.isBoolean()"
+            },
+            "status": {
+              ".write": "auth != null && (((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true))) && ((data.val() === 'Order placed' && (newData.val() === 'Accepted' || newData.val() === 'Cancelled')) || (data.val() === 'Accepted' && newData.val() === 'Preparing') || (data.val() === 'Preparing' && newData.val() === 'Ready for pickup'))) || (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true))) && (data.val() === 'Ready for pickup' || data.val() === 'Assigned') && newData.val() === 'Handed to rider' && newData.parent().child('riderId').exists())) || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && ((data.val() === 'Ready for pickup' && newData.val() === 'Assigned' && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid) || (data.val() === 'Handed to rider' && newData.val() === 'Out for delivery') || (data.val() === 'Out for delivery' && (newData.val() === 'Near you' || newData.val() === 'Arrived')) || (data.val() === 'Near you' && newData.val() === 'Arrived') || (data.val() === 'Arrived' && newData.val() === 'Delivered') || data.val() === newData.val())))",
+              ".validate": "newData.val() === 'Order placed' || newData.val() === 'Accepted' || newData.val() === 'Preparing' || newData.val() === 'Ready for pickup' || newData.val() === 'Assigned' || newData.val() === 'Handed to rider' || newData.val() === 'Out for delivery' || newData.val() === 'Near you' || newData.val() === 'Arrived' || newData.val() === 'Delivered' || newData.val() === 'Cancelled'"
+            },
+            "riderId": {
+              ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && !data.exists() && newData.val() === auth.uid && newData.parent().child('status').val() === 'Assigned' && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid && root.child('feastly/dispatchQueue').child($orderId).child('customerId').val() === $uid",
+              ".validate": "newData.isString() && newData.val().length <= 128"
+            },
+            "riderName": {
+              ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid",
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            },
+            "updatedAt": {
+              ".write": "auth != null && ((root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === data.parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(data.parent().child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true))))",
+              ".validate": "newData.isNumber() && (!data.exists() || newData.val() >= data.val()) && newData.val() <= now + 300000"
+            },
+            "statusHistory": {
+              "$eventId": {
+                ".write": "auth != null && !data.exists() && ((root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.child('actorId').val() === auth.uid && newData.child('actorRole').val() === 'rider' && newData.parent().parent().child('riderId').val() === auth.uid) || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === newData.parent().parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === newData.parent().parent().child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(newData.parent().parent().child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)))) && newData.child('actorId').val() === auth.uid && newData.child('actorRole').val() === 'staff'))",
+                ".validate": "newData.hasChildren(['status','at','actorId','actorRole']) && newData.child('status').val() === newData.parent().parent().child('status').val() && newData.child('at').isNumber() && newData.child('at').val() > 0 && newData.child('at').val() <= now + 300000 && newData.child('actorId').isString() && newData.child('actorId').val().length <= 128 && (newData.child('actorRole').val() === 'customer' || newData.child('actorRole').val() === 'owner' || newData.child('actorRole').val() === 'staff' || newData.child('actorRole').val() === 'rider') && ((newData.child('actorRole').val() === 'customer' && newData.child('actorId').val() === $uid) || (newData.child('actorRole').val() !== 'customer' && newData.child('actorId').val() === auth.uid))",
+                "status": {},
+                "at": {},
+                "actorId": {},
+                "actorRole": {},
+                "detail": {
+                  ".validate": "newData.isString() && newData.val().length <= 500"
+                },
+                "reason": {
+                  ".validate": "newData.isString() && newData.val().length <= 500"
+                },
+                "proof": {
+                  ".validate": "newData.isString() && newData.val().length <= 50"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "deliveryOtpHash": {
+              ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
+            },
+            "deliveryOtpSalt": {
+              ".validate": "newData.isString() && newData.val().length >= 8 && newData.val().length <= 80"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "etaMin": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 240"
+            },
+            "etaMax": {
+              ".validate": "newData.isNumber() && newData.val() >= newData.parent().child('etaMin').val() && newData.val() <= 360"
+            },
+            "cancelReason": {
+              ".write": "auth != null && (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true) || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) && newData.isString()",
+              ".validate": "newData.isString() && newData.val().length <= 500"
+            },
+            "deliveredAt": {
+              ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && newData.parent().child('status').val() === 'Delivered' && !data.exists()",
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "riderPayout": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "refundState": {
+              ".validate": "newData.isString() && newData.val().length <= 50"
+            },
+            "paymentReference": {
+              ".validate": "newData.isString() && newData.val().length <= 200"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "pricingContext": {
+              ".validate": "newData.hasChildren(['distanceKm','platformFeeRule','weatherSeverity','surgeActiveOrders','pricedAt'])",
+              "distanceKm": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "platformFeeRule": {
+                ".validate": "newData.isString() && newData.val().length <= 80"
+              },
+              "weatherSeverity": {
+                ".validate": "newData.isString() && newData.val().length <= 30"
+              },
+              "surgeActiveOrders": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+              },
+              "pricedAt": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+              },
+              "$other": {
+                ".validate": false
+              }
+            },
+            "contactProxy": {
+              "customerToRider": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "riderToCustomer": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "customerToRestaurant": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "restaurantToCustomer": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "restaurantToRider": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "riderToRestaurant": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "$other": {
+                ".validate": false
+              }
+            }
+          }
+        }
+      },
+      "restaurantOrders": {
+        "$restaurantId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/handover').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/tracking').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/tracking').val() === true))))",
+          "$uid": {
+            "$orderId": {
+              ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && newData.child('customerId').val() === auth.uid && newData.child('restaurantId').val() === $restaurantId && newData.child('id').val() === $orderId && newData.child('status').val() === 'Order placed'))",
+              ".validate": "!newData.exists() || (!data.exists() ? (newData.hasChildren(['id','customerId','restaurantId','items','pricing','total','address','status','createdAt','updatedAt']) && newData.child('id').val() === $orderId && newData.child('customerId').val() === $uid && newData.child('restaurantId').val() === $restaurantId && newData.child('status').val() === 'Order placed') : (newData.child('id').val() === data.child('id').val() && newData.child('customerId').val() === data.child('customerId').val() && newData.child('restaurantId').val() === data.child('restaurantId').val() && newData.child('total').val() === data.child('total').val() && newData.child('createdAt').val() === data.child('createdAt').val()))",
+              "status": {
+                ".write": "auth != null && (((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/orders').val() === true))) && ((data.val() === 'Order placed' && (newData.val() === 'Accepted' || newData.val() === 'Cancelled')) || (data.val() === 'Accepted' && newData.val() === 'Preparing') || (data.val() === 'Preparing' && newData.val() === 'Ready for pickup'))) || (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/handover').val() === true))) && (data.val() === 'Ready for pickup' || data.val() === 'Assigned') && newData.val() === 'Handed to rider' && newData.parent().child('riderId').exists())) || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && ((data.val() === 'Ready for pickup' && newData.val() === 'Assigned' && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid) || (data.val() === 'Handed to rider' && newData.val() === 'Out for delivery') || (data.val() === 'Out for delivery' && (newData.val() === 'Near you' || newData.val() === 'Arrived')) || (data.val() === 'Near you' && newData.val() === 'Arrived') || (data.val() === 'Arrived' && newData.val() === 'Delivered') || data.val() === newData.val())))",
+                ".validate": "newData.val() === 'Order placed' || newData.val() === 'Accepted' || newData.val() === 'Preparing' || newData.val() === 'Ready for pickup' || newData.val() === 'Assigned' || newData.val() === 'Handed to rider' || newData.val() === 'Out for delivery' || newData.val() === 'Near you' || newData.val() === 'Arrived' || newData.val() === 'Delivered' || newData.val() === 'Cancelled'"
+              },
+              "riderId": {
+                ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && !data.exists() && newData.val() === auth.uid && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid && root.child('feastly/dispatchQueue').child($orderId).child('customerId').val() === $uid",
+                ".validate": "newData.isString() && newData.val().length <= 128"
+              },
+              "riderName": {
+                ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid",
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              },
+              "updatedAt": {
+                ".write": "auth != null && ((root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/handover').val() === true))))",
+                ".validate": "newData.isNumber() && (!data.exists() || newData.val() >= data.val()) && newData.val() <= now + 300000"
+              },
+              "statusHistory": {
+                "$eventId": {
+                  ".write": "auth != null && !data.exists() && ((root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.child('actorId').val() === auth.uid && newData.child('actorRole').val() === 'rider' && newData.parent().parent().child('riderId').val() === auth.uid) || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/handover').val() === true)))) && newData.child('actorId').val() === auth.uid && newData.child('actorRole').val() === 'staff'))",
+                  ".validate": "newData.hasChildren(['status','at','actorId','actorRole']) && newData.child('status').val() === newData.parent().parent().child('status').val() && newData.child('at').isNumber() && newData.child('at').val() > 0 && newData.child('at').val() <= now + 300000 && ((newData.child('actorRole').val() === 'customer' && newData.child('actorId').val() === $uid) || (newData.child('actorRole').val() !== 'customer' && newData.child('actorId').val() === auth.uid))",
+                  "status": {},
+                  "at": {},
+                  "actorId": {},
+                  "actorRole": {},
+                  "detail": {},
+                  "reason": {},
+                  "proof": {},
+                  "$other": {
+                    ".validate": false
+                  }
+                }
+              },
+              "deliveredAt": {
+                ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && newData.parent().child('riderId').val() === auth.uid && newData.parent().child('status').val() === 'Delivered' && !data.exists()",
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+              },
+              "cancelReason": {
+                ".write": "auth != null && (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true) || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) && newData.isString()",
+                ".validate": "newData.isString() && newData.val().length <= 500"
+              }
+            }
+          }
+        }
+      },
+      "dispatchQueue": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".indexOn": "status",
+        "$orderId": {
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (!newData.exists() && data.child('claim/riderId').val() === auth.uid && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child(data.child('customerId').val()).child($orderId).child('riderId').val() === auth.uid) || (newData.exists() && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === newData.child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(newData.child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(newData.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(newData.child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(newData.child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true))) && root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('restaurantId').val() === newData.child('restaurantId').val() && (root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Preparing' || root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Ready for pickup') && ((!data.exists() && !newData.child('claim').exists()) || (data.exists() && newData.child('claim/riderId').val() === data.child('claim/riderId').val() && newData.child('claim/riderName').val() === data.child('claim/riderName').val() && newData.child('claim/claimedAt').val() === data.child('claim/claimedAt').val()))))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['id','orderId','customerId','restaurantId','restaurantName','restaurantAddress','restaurantArea','approximateDropZone','itemCount','payout','estimatedMinutes','active','createdAt','updatedAt']) && newData.child('id').val() === $orderId && newData.child('orderId').val() === $orderId && newData.child('active').val() === true && newData.child('customerId').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('customerId').val() && newData.child('restaurantId').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('restaurantId').val() && newData.child('restaurantName').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('restaurant').val() && (newData.child('approximateDropZone').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('address/area').val() || newData.child('approximateDropZone').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('address/label').val() || newData.child('approximateDropZone').val() === 'Service area') && (newData.child('payout').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('riderPayout').val() || newData.child('payout').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('deliveryFee').val() || newData.child('payout').val() === root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('pricing/deliveryFee').val()))",
+          "id": {
+            ".validate": "newData.isString() && newData.val() === $orderId"
+          },
+          "orderId": {
+            ".validate": "newData.isString() && newData.val() === $orderId"
+          },
+          "customerId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "restaurantId": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "restaurantName": {
+            ".validate": "newData.isString() && newData.val().length <= 160"
+          },
+          "restaurantAddress": {
+            ".validate": "newData.isString() && newData.val().length <= 500 && (newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('restaurantLocation/address').val() || newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('restaurantAddress').val() || newData.val() === root.child('feastly/catalog/restaurants').child(newData.parent().child('restaurantId').val()).child('address').val())"
+          },
+          "restaurantArea": {
+            ".validate": "newData.isString() && newData.val().length <= 180"
+          },
+          "restaurantLat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90 && (newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('restaurantLocation/lat').val() || newData.val() === root.child('feastly/catalog/restaurants').child(newData.parent().child('restaurantId').val()).child('lat').val())"
+          },
+          "restaurantLng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180 && (newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('restaurantLocation/lng').val() || newData.val() === root.child('feastly/catalog/restaurants').child(newData.parent().child('restaurantId').val()).child('lng').val())"
+          },
+          "approximateDropZone": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+          },
+          "itemCount": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 100"
+          },
+          "payout": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+          },
+          "estimatedMinutes": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 360 && (newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('etaMax').val() || newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('etaMin').val() || (!root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('etaMax').exists() && !root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('etaMin').exists() && newData.val() === 30))"
+          },
+          "active": {
+            ".validate": "newData.val() === true"
+          },
+          "createdAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('createdAt').val()"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "claim": {
+            ".write": "auth != null && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && ((!data.exists() && root.child('feastly/riderPresence').child(auth.uid).child('online').val() === true && newData.child('riderId').val() === auth.uid && newData.parent().child('active').val() === true && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('status').val() === 'Ready for pickup' && !root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderId').exists()) || (data.exists() && newData.exists() && data.child('claimedAt').val() < now - 120000 && root.child('feastly/riderPresence').child(auth.uid).child('online').val() === true && newData.child('riderId').val() === auth.uid && newData.parent().child('active').val() === true && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('status').val() === 'Ready for pickup' && !root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderId').exists()) || (!newData.exists() && data.child('riderId').val() === auth.uid))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['riderId','riderName','claimedAt']) && newData.child('riderId').val() === auth.uid)",
+            "riderId": {
+              ".validate": "newData.isString() && newData.val().length <= 128"
+            },
+            "riderName": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            },
+            "claimedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "riderOffers": {
+        "$riderId": {
+          ".read": "auth != null && auth.uid === $riderId && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved'",
+          ".write": false
+        }
+      },
+      "riderJobs": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$riderId": {
+          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$orderId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $riderId && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && !data.exists() && root.child('feastly/dispatchQueue').child($orderId).child('claim/riderId').val() === auth.uid && newData.child('customerId').val() === root.child('feastly/dispatchQueue').child($orderId).child('customerId').val() && newData.child('restaurantId').val() === root.child('feastly/dispatchQueue').child($orderId).child('restaurantId').val()))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['orderId','customerId','restaurantId','assignedAt','status','phase']) && newData.child('orderId').val() === $orderId)",
+            "orderId": {
+              ".validate": "newData.isString() && newData.val() === $orderId"
+            },
+            "customerId": {
+              ".validate": "newData.isString() && newData.val().length <= 128 && (!data.exists() || newData.val() === data.val())"
+            },
+            "restaurantId": {
+              ".validate": "newData.isString() && newData.val().length <= 120 && (!data.exists() || newData.val() === data.val())"
+            },
+            "assignedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && (!data.exists() || newData.val() === data.val())"
+            },
+            "phase": {
+              ".write": "auth != null && auth.uid === $riderId && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === auth.uid && (data.val() === newData.val() || (data.val() === 'pickup' && newData.val() === 'at_restaurant') || ((data.val() === 'pickup' || data.val() === 'at_restaurant') && newData.val() === 'delivery') || (data.val() === 'delivery' && newData.val() === 'arrived') || ((data.val() === 'delivery' || data.val() === 'arrived') && newData.val() === 'complete' && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('status').val() === 'Arrived'))",
+              ".validate": "newData.val() === 'pickup' || newData.val() === 'at_restaurant' || newData.val() === 'delivery' || newData.val() === 'arrived' || newData.val() === 'complete'"
+            },
+            "status": {
+              ".write": "auth != null && auth.uid === $riderId && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === auth.uid && (newData.val() === 'active' || (data.val() === 'active' && newData.val() === 'completed' && newData.parent().child('phase').val() === 'complete' && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('status').val() === 'Arrived'))",
+              ".validate": "newData.val() === 'active' || newData.val() === 'completed' || newData.val() === 'cancelled'"
+            },
+            "arrivedRestaurantAt": {
+              ".write": "auth != null && auth.uid === $riderId && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === auth.uid && !data.exists()",
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "updatedAt": {
+              ".write": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)))) && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === $riderId))",
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "completedAt": {
+              ".write": "auth != null && auth.uid === $riderId && newData.parent().child('phase').val() === 'complete' && newData.parent().child('status').val() === 'completed' && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('status').val() === 'Arrived' && !data.exists()",
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "earning": {
+              ".write": "auth != null && auth.uid === $riderId && newData.parent().child('phase').val() === 'complete' && newData.parent().child('status').val() === 'completed' && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('status').val() === 'Arrived' && !data.exists()",
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 101000 && ((root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').isNumber() && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').isNumber() && newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').val() + root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').val()) || (root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').isNumber() && !root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').isNumber() && newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/deliveryFee').val() + root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').val()) || (!root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').exists() && root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').isNumber() && newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').val()) || (!root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/tip').exists() && !root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('riderPayout').isNumber() && newData.val() === root.child('feastly/orders').child(newData.parent().child('customerId').val()).child($orderId).child('pricing/deliveryFee').val()))"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "restaurantName": {
+              ".validate": "newData.isString() && newData.val().length <= 160"
+            },
+            "restaurantAddress": {
+              ".validate": "newData.isString() && newData.val().length <= 500"
+            },
+            "approximateDropZone": {
+              ".validate": "newData.isString() && newData.val().length <= 180"
+            },
+            "orderStatus": {
+              ".validate": "newData.val() === 'Assigned' || newData.val() === 'Handed to rider' || newData.val() === 'Out for delivery' || newData.val() === 'Near you' || newData.val() === 'Arrived' || newData.val() === 'Delivered'",
+              ".write": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)))) && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === $riderId))"
+            },
+            "itemCount": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+            },
+            "payout": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "estimatedMinutes": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+            },
+            "restaurantLat": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -90 && newData.val() <= 90)"
+            },
+            "restaurantLng": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= -180 && newData.val() <= 180)"
+            },
+            "handoverAt": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000)",
+              ".write": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)))) && root.child('feastly/orders').child(data.parent().child('customerId').val()).child($orderId).child('riderId').val() === $riderId))"
+            }
+          }
+        }
+      },
+      "riderPresence": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$riderId": {
+          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && auth.uid === $riderId && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved'",
+          ".validate": "!newData.exists() || (newData.hasChildren(['online','riderId','riderName','updatedAt','city']) && newData.child('riderId').val() === $riderId)",
+          "online": {
+            ".validate": "newData.isBoolean()"
+          },
+          "riderId": {
+            ".validate": "newData.val() === $riderId"
+          },
+          "riderName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "city": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "activeOrderId": {
+            ".validate": "newData.isString() && newData.val().length <= 80"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "tracking": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$orderId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || data.child('customerId').val() === auth.uid || (data.child('riderId').val() === auth.uid && root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved') || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('permissions/tracking').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child(data.child('customerId').val()).child($orderId).child('restaurantId').val()))",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && ((!newData.exists() && data.child('riderId').val() === auth.uid && root.child('feastly/orders').child(data.child('customerId').val()).child($orderId).child('riderId').val() === auth.uid) || (newData.exists() && newData.child('riderId').val() === auth.uid && root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('riderId').val() === auth.uid && (root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Assigned' || root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Handed to rider' || root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Out for delivery' || root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Near you' || root.child('feastly/orders').child(newData.child('customerId').val()).child($orderId).child('status').val() === 'Arrived')))))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['customerId','orderId','riderId','riderName','lat','lng','updatedAt','status','phase']) && newData.child('orderId').val() === $orderId && (!data.exists() || (newData.child('customerId').val() === data.child('customerId').val() && newData.child('riderId').val() === data.child('riderId').val())))",
+          "customerId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "orderId": {
+            ".validate": "newData.isString() && newData.val() === $orderId"
+          },
+          "riderId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "riderName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "bearing": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "status": {
+            ".validate": "newData.val() === 'live' || newData.val() === 'location_off' || newData.val() === 'stopped'"
+          },
+          "phase": {
+            ".validate": "newData.val() === 'pickup' || newData.val() === 'delivery'"
+          },
+          "proximityEvidence": {
+            ".validate": "newData.hasChildren(['candidate','distanceMeters','accuracy','consecutiveFixes','detectedAt','riderId','orderId','phase','source']) && (newData.child('candidate').val() === 'Near you' || newData.child('candidate').val() === 'Arrived') && newData.child('distanceMeters').isNumber() && newData.child('distanceMeters').val() >= 0 && newData.child('distanceMeters').val() <= 2000 && newData.child('accuracy').isNumber() && newData.child('accuracy').val() >= 0 && newData.child('accuracy').val() <= 80 && newData.child('consecutiveFixes').isNumber() && newData.child('consecutiveFixes').val() >= (newData.child('candidate').val() === 'Arrived' ? 3 : 2) && newData.child('consecutiveFixes').val() <= 20 && newData.child('detectedAt').isNumber() && newData.child('detectedAt').val() >= now - 60000 && newData.child('detectedAt').val() <= now + 10000 && newData.child('riderId').val() === newData.parent().child('riderId').val() && newData.child('orderId').val() === $orderId && newData.child('phase').val() === 'delivery' && newData.child('source').val() === 'gps'",
+            "candidate": {
+              ".validate": "newData.val() === 'Near you' || newData.val() === 'Arrived'"
+            },
+            "distanceMeters": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000"
+            },
+            "accuracy": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 80"
+            },
+            "consecutiveFixes": {
+              ".validate": "newData.isNumber() && newData.val() >= (newData.parent().child('candidate').val() === 'Arrived' ? 3 : 2) && newData.val() <= 20"
+            },
+            "detectedAt": {
+              ".validate": "newData.isNumber() && newData.val() >= now - 60000 && newData.val() <= now + 10000"
+            },
+            "riderId": {
+              ".validate": "newData.isString() && newData.val() === newData.parent().parent().child('riderId').val()"
+            },
+            "orderId": {
+              ".validate": "newData.isString() && newData.val() === $orderId"
+            },
+            "phase": {
+              ".validate": "newData.val() === 'delivery'"
+            },
+            "source": {
+              ".validate": "newData.val() === 'gps'"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "riders": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && ((!data.exists() && newData.child('status').val() === 'submitted') || (data.child('status').val() === 'rejected' && newData.child('status').val() === 'submitted')) && newData.child('email').val() === auth.token.email && !newData.child('approvedAt').exists() && !newData.child('reviewedBy').exists() && !newData.child('documentsVerified').exists()))",
+          ".validate": "!newData.exists() || newData.hasChildren(['fullName','email','phone','city','address','vehicleType','vehicleNumber','aadhaarLast4','panNumber','status','consentVersion','consentAt','submittedAt','updatedAt'])",
+          "fullName": {
+            ".validate": "newData.isString() && newData.val().length > 1 && newData.val().length <= 120"
+          },
+          "email": {
+            ".validate": "newData.isString() && newData.val().length <= 254 && (!data.exists() || newData.val() === data.val())"
+          },
+          "phone": {
+            ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 24"
+          },
+          "city": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "address": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 600"
+          },
+          "vehicleType": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+          },
+          "vehicleNumber": {
+            ".validate": "newData.isString() && newData.val().length > 2 && newData.val().length <= 30"
+          },
+          "aadhaarLast4": {
+            ".validate": "newData.isString() && newData.val().matches(/^\\d{4}$/) && (!data.exists() || newData.val() === data.val() || data.child('status').val() === 'rejected')"
+          },
+          "panNumber": {
+            ".validate": "newData.isString() && newData.val().matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/) && (!data.exists() || newData.val() === data.val() || data.child('status').val() === 'rejected')"
+          },
+          "status": {
+            ".validate": "(newData.val() === 'submitted' || newData.val() === 'under_review' || newData.val() === 'rejected' || newData.val() === 'approved' || newData.val() === 'suspended') && (newData.val() !== 'approved' || (root.child('feastly/riderDocuments').child($uid).hasChildren(['aadhaarFront','aadhaarBack','panCopy']) && newData.parent().child('documentsVerified').val() === true))"
+          },
+          "consentVersion": {
+            ".validate": "newData.val() === 'partner-verification-v2'"
+          },
+          "consentAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "submittedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "approvedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "reviewedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "reviewedBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "documentsVerified": {
+            ".validate": "newData.isBoolean()"
+          },
+          "reviewNote": {
+            ".validate": "newData.isString() && newData.val().length <= 500"
+          },
+          "suspendedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "rating": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5"
+          },
+          "ratingCount": {
+            ".validate": "newData.isNumber() && newData.val() >= 0"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "riderDocuments": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && (!root.child('feastly/riders').child($uid).exists() || root.child('feastly/riders').child($uid).child('status').val() === 'rejected')))",
+          ".validate": "!newData.exists() || newData.hasChildren(['aadhaarFront','aadhaarBack','panCopy'])",
+          "aadhaarFront": {
+            ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
+          },
+          "aadhaarBack": {
+            ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
+          },
+          "panCopy": {
+            ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
+          },
+          "$other": {
+            ".validate": false
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          }
+        }
+      },
+      "staff": {
+        ".indexOn": "restaurantId",
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".validate": "!newData.exists() || (newData.hasChildren(['name','email','restaurantId','restaurantName','active','role','permissions','mustSetPassword','createdAt','createdBy']) && (newData.child('role').val() === 'restaurant_owner' || newData.child('role').val() === 'restaurant_manager' || newData.child('role').val() === 'restaurant_staff') && newData.child('restaurantName').val() === root.child('feastly/catalog/restaurants').child(newData.child('restaurantId').val()).child('name').val())",
+          "name": {
+            ".validate": "newData.isString() && newData.val().length > 1 && newData.val().length <= 120"
+          },
+          "email": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "restaurantId": {
+            ".validate": "newData.isString() && root.child('feastly/catalog/restaurants').child(newData.val()).exists()"
+          },
+          "restaurantName": {
+            ".validate": "newData.isString() && newData.val().length <= 160"
+          },
+          "active": {
+            ".validate": "newData.isBoolean()"
+          },
+          "role": {
+            ".validate": "newData.val() === 'restaurant_owner' || newData.val() === 'restaurant_manager' || newData.val() === 'restaurant_staff'"
+          },
+          "permissions": {
+            ".validate": "newData.hasChildren(['orders','handover','tracking','dispatch','menu','availability','profile','analytics'])",
+            "orders": {
+              ".validate": "newData.isBoolean()"
+            },
+            "handover": {
+              ".validate": "newData.isBoolean()"
+            },
+            "tracking": {
+              ".validate": "newData.isBoolean()"
+            },
+            "dispatch": {
+              ".validate": "newData.isBoolean()"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "menu": {
+              ".validate": "newData.isBoolean()"
+            },
+            "availability": {
+              ".validate": "newData.isBoolean()"
+            },
+            "profile": {
+              ".validate": "newData.isBoolean()"
+            },
+            "analytics": {
+              ".validate": "newData.isBoolean()"
+            }
+          },
+          "mustSetPassword": {
+            ".validate": "newData.isBoolean()"
+          },
+          "createdAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "createdBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "promotions": {
+        ".read": "auth != null",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$promotionId": {
+          ".validate": "!newData.exists() || (newData.hasChildren(['id','code','title','description','percent','maxDiscount','minimumOrder','active','updatedAt','updatedBy']) && newData.child('id').val() === $promotionId)",
+          "id": {
+            ".validate": "newData.isString() && newData.val() === $promotionId"
+          },
+          "code": {
+            ".validate": "newData.isString() && newData.val().matches(/^[A-Z0-9_-]{2,30}$/)"
+          },
+          "title": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 160"
+          },
+          "description": {
+            ".validate": "newData.isString() && newData.val().length <= 500"
+          },
+          "percent": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 100"
+          },
+          "maxDiscount": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+          },
+          "minimumOrder": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
+          },
+          "expiresAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "active": {
+            ".validate": "newData.isBoolean()"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "updatedBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "settings": {
+        "customer": {
+          ".read": "auth != null",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".validate": "!newData.exists() || newData.hasChildren(['platformFee','freeDeliveryAbove','taxRate','deliverySlabs','maxDeliveryKm','updatedAt','updatedBy'])",
+          "platformFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "freeDeliveryAbove": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
+          },
+          "taxRate": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "updatedBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "$other": {
+            ".validate": false
+          },
+          "baseDeliveryFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "includedDeliveryKm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "perKmFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+          },
+          "minDeliveryFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "maxDeliveryFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "maxDeliveryKm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainFeeEnabled": {
+            ".validate": "newData.isBoolean()"
+          },
+          "rainFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainThresholdMm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "surgeEnabled": {
+            ".validate": "newData.isBoolean()"
+          },
+          "surgeLowOrders": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "surgeMediumOrders": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "surgeHighOrders": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "surgeLowFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "surgeMediumFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "surgeHighFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "maxSurgeFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "rainLightFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainModerateFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainHeavyFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainSevereFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+          },
+          "rainMinProbability": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "rainLightMm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "rainModerateMm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "rainHeavyMm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "rainSevereMm": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "smallOrderFeeEnabled": {
+            ".validate": "newData.isBoolean()"
+          },
+          "smallOrderThreshold": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+          },
+          "smallOrderFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "lateNightFeeEnabled": {
+            ".validate": "newData.isBoolean()"
+          },
+          "lateNightStartHour": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 23"
+          },
+          "lateNightEndHour": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 23"
+          },
+          "lateNightFee": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+          },
+          "deliverySlabs": {
+            "$index": {
+              ".validate": "newData.hasChildren(['maxKm','fee'])",
+              "maxKm": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "fee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "$other": {
+                ".validate": false
+              }
+            }
+          },
+          "platformFeeOverrides": {
+            "cities": {
+              "$key": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              }
+            },
+            "categories": {
+              "$key": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              }
+            },
+            "restaurants": {
+              "$key": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              }
+            },
+            "orderValueRules": {
+              "$index": {
+                ".validate": "newData.hasChildren(['min','fee'])",
+                "min": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
+                },
+                "max": {
+                  ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000)"
+                },
+                "fee": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            },
+            "$other": {
+              ".validate": false
+            },
+            "areas": {
+              "$key": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              }
+            }
+          },
+          "rainCityOverrides": {
+            "$city": {
+              ".validate": "newData.hasChildren(['light','moderate','heavy','severe'])",
+              "light": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "moderate": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "heavy": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "severe": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+              },
+              "$other": {
+                ".validate": false
+              }
+            }
+          },
+          "surgeCityOverrides": {
+            "$city": {
+              ".validate": "newData.hasChildren(['low','medium','high'])",
+              "low": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "medium": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "high": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "$other": {
+                ".validate": false
+              }
+            }
+          },
+          "deliveryFeeOverrides": {
+            "cities": {
+              "$key": {
+                "$index": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+                }
+              }
+            },
+            "areas": {
+              "$key": {
+                "$index": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+                }
+              }
+            },
+            "restaurants": {
+              "$key": {
+                "$index": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+                }
+              }
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "private": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')"
+        },
+        "$other": {
+          ".validate": false
+        }
+      },
+      "support": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$ticketId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && newData.child('id').val() === $ticketId && (newData.child('uid').val() === auth.uid || newData.child('customerId').val() === auth.uid)))",
+            ".validate": "!newData.exists() || (newData.child('id').val() === $ticketId && ((newData.child('type').val() === 'cancellation' && newData.hasChildren(['type','orderId','reason','status','createdAt','customerId']) && newData.child('customerId').val() === $uid) || (newData.hasChildren(['uid','customerName','email','orderId','topic','message','status','createdAt','updatedAt']) && newData.child('uid').val() === $uid)))",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $ticketId"
+            },
+            "type": {
+              ".validate": "newData.val() === 'cancellation'"
+            },
+            "uid": {
+              ".validate": "newData.val() === $uid"
+            },
+            "customerId": {
+              ".validate": "newData.val() === $uid"
+            },
+            "customerName": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "email": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "orderId": {
+              ".validate": "newData.isString() && newData.val().length <= 80 && (newData.val().length === 0 || root.child('feastly/orders').child($uid).child(newData.val()).exists())"
+            },
+            "topic": {
+              ".validate": "newData.isString() && newData.val().length <= 100"
+            },
+            "message": {
+              ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 4000"
+            },
+            "reason": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 500"
+            },
+            "status": {
+              ".validate": "newData.val() === 'open' || newData.val() === 'requested' || newData.val() === 'in_progress' || newData.val() === 'closed' || newData.val() === 'rejected'"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "updatedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "aiSummary": {
+              ".validate": "newData.isString() && newData.val().length <= 1000"
+            },
+            "assistantTranscript": {
+              ".validate": "newData.isString() && newData.val().length <= 4000"
+            },
+            "priority": {
+              ".validate": "newData.val() === 'normal' || newData.val() === 'high' || newData.val() === 'urgent'"
+            },
+            "seenAt": {
+              ".validate": "newData.isNumber() && newData.val() >= 0"
+            }
+          }
+        }
+      },
+      "partnerSupport": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$ticketId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && newData.child('id').val() === $ticketId && newData.child('riderId').val() === auth.uid))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id','riderId','riderName','email','topic','message','status','activeOrderId','createdAt']) && newData.child('id').val() === $ticketId && newData.child('riderId').val() === $uid)",
+            "id": {
+              ".validate": "newData.val() === $ticketId"
+            },
+            "riderId": {
+              ".validate": "newData.val() === $uid"
+            },
+            "riderName": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "email": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "topic": {
+              ".validate": "newData.isString() && newData.val().length <= 100"
+            },
+            "message": {
+              ".validate": "newData.isString() && newData.val().length >= 10 && newData.val().length <= 4000"
+            },
+            "status": {
+              ".validate": "newData.val() === 'open' || newData.val() === 'in_progress' || newData.val() === 'closed'"
+            },
+            "activeOrderId": {
+              ".validate": "newData.isString() && newData.val().length <= 80"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      },
+      "reviews": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$orderId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && root.child('feastly/orders').child($uid).child($orderId).child('status').val() === 'Delivered' && newData.child('orderId').val() === $orderId && newData.child('restaurantId').val() === root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()))",
+            ".validate": "!newData.exists() || newData.hasChildren(['orderId','restaurantId','rating','comment','createdAt','status'])",
+            "orderId": {
+              ".validate": "newData.val() === $orderId"
+            },
+            "restaurantId": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "rating": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5"
+            },
+            "comment": {
+              ".validate": "newData.isString() && newData.val().length <= 1500"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "status": {
+              ".validate": "newData.val() === 'published' || newData.val() === 'hidden'"
+            },
+            "$other": {
+              ".validate": false
+            },
+            "riderId": {
+              ".validate": "newData.isString() && newData.val().length <= 128"
+            },
+            "riderRating": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5"
+            },
+            "postDeliveryTip": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+            },
+            "growthContribution": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+            }
+          }
+        }
+      },
+      "privacyRequests": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$requestId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (auth.uid === $uid && !data.exists() && newData.child('id').val() === $requestId && newData.child('uid').val() === auth.uid && newData.child('type').val() === 'account_deletion' && newData.child('status').val() === 'requested'))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id','type','uid','email','status','createdAt']) && newData.child('id').val() === $requestId && newData.child('uid').val() === $uid)",
+            "id": {
+              ".validate": "newData.val() === $requestId"
+            },
+            "type": {
+              ".validate": "newData.val() === 'account_deletion' || newData.val() === 'data_export' || newData.val() === 'correction'"
+            },
+            "uid": {
+              ".validate": "newData.val() === $uid"
+            },
+            "email": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "status": {
+              ".validate": "newData.val() === 'requested' || newData.val() === 'verified' || newData.val() === 'processing' || newData.val() === 'completed' || newData.val() === 'rejected'"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "resolvedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "note": {
+              ".validate": "newData.isString() && newData.val().length <= 1000"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      },
+      "notifications": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')"
+        }
+      },
+      "audit": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$eventId": {
+          ".validate": "!newData.exists() || (newData.hasChildren(['id','action','target','detail','actorId','actorEmail','actorRole','at']) && newData.child('id').val() === $eventId)",
+          "id": {
+            ".validate": "newData.val() === $eventId"
+          },
+          "action": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+          },
+          "target": {
+            ".validate": "newData.isString() && newData.val().length <= 200"
+          },
+          "detail": {
+            ".validate": "newData.isString() && newData.val().length <= 1000"
+          },
+          "actorId": {
+            ".validate": "newData.val() === auth.uid"
+          },
+          "actorEmail": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "actorRole": {
+            ".validate": "newData.val() === 'owner' || newData.val() === 'ops_admin'"
+          },
+          "at": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "admin": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')"
+      },
+      "$other": {
+        ".validate": false
+      },
+      "menus": {
+        ".read": "auth != null",
+        "$restaurantId": {
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/menu').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/menu').val() === true))))",
+          "$itemId": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['id','name','category','description','price','diet','available','popular','archived','updatedAt']) && newData.child('id').val() === $itemId)",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $itemId && newData.val().length <= 160"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 180"
+            },
+            "description": {
+              ".validate": "newData.isString() && newData.val().length <= 1000"
+            },
+            "category": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+            },
+            "price": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "diet": {
+              ".validate": "newData.val() === 'veg' || newData.val() === 'nonveg' || newData.val() === 'egg' || newData.val() === 'vegan'"
+            },
+            "preparationTime": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 240"
+            },
+            "available": {
+              ".validate": "newData.isBoolean()"
+            },
+            "popular": {
+              ".validate": "newData.isBoolean()"
+            },
+            "archived": {
+              ".validate": "newData.isBoolean()"
+            },
+            "imageUrl": {
+              ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
+            },
+            "updatedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+            },
+            "updatedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      },
+      "restaurantStaffInvites": {
+        "$restaurantId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/ownership').val() === true)) || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner'))",
+          "$inviteId": {
+            ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || ((root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId)) && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner') && !data.exists() && newData.child('requestedBy').val() === auth.uid && newData.child('status').val() === 'requested'))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id','restaurantId','restaurantName','requestedBy','requestedByEmail','name','email','role','permissions','status','createdAt']) && newData.child('id').val() === $inviteId && newData.child('restaurantId').val() === $restaurantId)",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $inviteId"
+            },
+            "restaurantId": {
+              ".validate": "newData.isString() && newData.val() === $restaurantId"
+            },
+            "restaurantName": {
+              ".validate": "newData.isString() && newData.val().length <= 160"
+            },
+            "requestedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 128"
+            },
+            "requestedByEmail": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 1 && newData.val().length <= 120"
+            },
+            "email": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "role": {
+              ".validate": "newData.val() === 'restaurant_manager' || newData.val() === 'restaurant_staff'"
+            },
+            "permissions": {
+              "$permission": {
+                ".validate": "newData.isBoolean()"
+              }
+            },
+            "status": {
+              ".validate": "newData.val() === 'requested' || newData.val() === 'approved' || newData.val() === 'rejected'"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "reviewedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "reviewedBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      },
+      "restaurantMembers": {
+        "$restaurantId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId))",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$uid": {
+            "role": {
+              ".validate": "newData.val() === 'restaurant_owner' || newData.val() === 'restaurant_manager' || newData.val() === 'restaurant_staff'"
+            },
+            "$other": {
+              ".validate": false
+            },
+            ".read": "auth != null && (auth.uid === $uid || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true)",
+            ".validate": "!newData.exists() || (newData.hasChildren(['name','email','restaurantId','restaurantName','active','role','permissions','createdAt','createdBy']) && newData.child('restaurantId').val() === $restaurantId && (newData.child('role').val() === 'restaurant_owner' || newData.child('role').val() === 'restaurant_manager' || newData.child('role').val() === 'restaurant_staff'))",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "email": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "restaurantId": {
+              ".validate": "newData.val() === $restaurantId"
+            },
+            "restaurantName": {
+              ".validate": "newData.isString() && newData.val().length <= 160"
+            },
+            "active": {
+              ".validate": "newData.isBoolean()"
+            },
+            "mustSetPassword": {
+              ".validate": "newData.isBoolean()"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "createdBy": {
+              ".validate": "newData.isString() && newData.val().length <= 254"
+            },
+            "permissions": {
+              "$permission": {
+                ".validate": "newData.isBoolean()"
+              }
+            }
+          }
+        }
+      },
+      "restaurantApplications": {
+        ".read": "auth != null",
+        "$uid": {
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || auth.uid === $uid)",
+          ".validate": "!newData.exists() || newData.hasChildren(['id','email','restaurantName','phone','status'])",
+          "id": {
+            ".validate": "newData.isString() && newData.val() === $uid"
+          },
+          "uid": {
+            ".validate": "newData.isString() && newData.val() === $uid"
+          },
+          "email": {
+            ".validate": "newData.isString() && newData.val().length > 3"
+          },
+          "ownerName": {
+            ".validate": "newData.isString()"
+          },
+          "restaurantName": {
+            ".validate": "newData.isString()"
+          },
+          "phone": {
+            ".validate": "newData.isString()"
+          },
+          "city": {
+            ".validate": "newData.isString()"
+          },
+          "address": {
+            ".validate": "newData.isString()"
+          },
+          "cuisines": {
+            ".validate": "true"
+          },
+          "status": {
+            ".validate": "newData.isString() && (newData.val() === 'submitted' || newData.val() === 'under_review' || newData.val() === 'approved' || newData.val() === 'rejected')"
+          },
+          "submittedAt": {
+            ".validate": "newData.isNumber()"
+          },
+          "reviewedAt": {
+            ".validate": "newData.isNumber()"
+          },
+          "reviewedBy": {
+            ".validate": "newData.isString()"
+          },
+          "reviewNote": {
+            ".validate": "newData.isString()"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "userRestaurants": {
+        "$uid": {
+          ".read": "auth != null && (auth.uid === $uid || ((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')))",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          "$restaurantId": {
+            ".validate": "!newData.exists() || newData.val() === true"
+          }
+        }
+      },
+      "restaurantLoad": {
+        ".read": "auth != null",
+        "$restaurantId": {
+          ".write": false,
+          ".validate": "!newData.exists() || (newData.hasChildren(['restaurantId','activeOrders','preparing','ready','updatedAt']) && newData.child('restaurantId').val() === $restaurantId)",
+          "restaurantId": {
+            ".validate": "newData.isString() && newData.val() === $restaurantId"
+          },
+          "activeOrders": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "preparing": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "ready": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "orderChats": {
+        "$uid": {
+          "$orderId": {
+            "$channel": {
+              ".read": "auth != null && ((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin') || (($channel === 'customerRestaurant') && (auth.uid === $uid || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true)))) || (($channel === 'customerRider') && (auth.uid === $uid || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child($uid).child($orderId).child('riderId').val() === auth.uid))) || (($channel === 'restaurantRider') && (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true)) || (root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child($uid).child($orderId).child('riderId').val() === auth.uid))))",
+              "$messageId": {
+                ".write": "auth != null && !data.exists() && root.child('feastly/orders').child($uid).child($orderId).exists() && ((auth.uid === $uid && ( $channel === 'customerRider' || $channel === 'customerRestaurant') && newData.child('senderRole').val() === 'customer') || ((((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true)) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('permissions/orders').val() === true))) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val() && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/handover').val() === true)) || (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child(root.child('feastly/orders').child($uid).child($orderId).child('restaurantId').val()).child(auth.uid).child('permissions/handover').val() === true)))) && ($channel === 'customerRestaurant' || $channel === 'restaurantRider') && newData.child('senderRole').val() === 'restaurant') || ((root.child('feastly/riders').child(auth.uid).child('status').val() === 'approved' && root.child('feastly/orders').child($uid).child($orderId).child('riderId').val() === auth.uid) && ($channel === 'customerRider' || $channel === 'restaurantRider') && newData.child('senderRole').val() === 'rider')) && newData.child('senderId').val() === auth.uid",
+                ".validate": "newData.hasChildren(['id','senderId','senderRole','body','masked','at']) && newData.child('id').val() === $messageId",
+                "id": {
+                  ".validate": "newData.isString() && newData.val() === $messageId"
+                },
+                "senderId": {
+                  ".validate": "newData.isString() && newData.val() === auth.uid"
+                },
+                "senderRole": {
+                  ".validate": "newData.val() === 'customer' || newData.val() === 'restaurant' || newData.val() === 'rider'"
+                },
+                "body": {
+                  ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 800 && !newData.val().matches(/.*[6-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].*/)"
+                },
+                "masked": {
+                  ".validate": "newData.isBoolean()"
+                },
+                "at": {
+                  ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "localAds": {
+        ".read": "auth != null",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$adId": {
+          ".validate": "!newData.exists() || (newData.hasChildren(['id','title','message','cta','city','area','restaurantId','imageUrl','startAt','endAt','priority','active','createdAt','createdBy']) && newData.child('id').val() === $adId)",
+          "id": {
+            ".validate": "newData.isString() && newData.val() === $adId"
+          },
+          "title": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100"
+          },
+          "message": {
+            ".validate": "newData.isString() && newData.val().length <= 300"
+          },
+          "cta": {
+            ".validate": "newData.isString() && newData.val().length <= 40"
+          },
+          "city": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "area": {
+            ".validate": "newData.isString() && newData.val().length <= 180"
+          },
+          "restaurantId": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "imageUrl": {
+            ".validate": "newData.isString() && newData.val().length <= 2048"
+          },
+          "startAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "endAt": {
+            ".validate": "newData.isNumber() && newData.val() > newData.parent().child('startAt').val()"
+          },
+          "priority": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+          },
+          "active": {
+            ".validate": "newData.isBoolean()"
+          },
+          "createdAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "createdBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "$other": {
+            ".validate": false
+          },
+          "image": {
+            ".validate": "newData.isString() && newData.val().length <= 470000 && newData.val().matches(/^data:image\\/(jpeg|png|webp);base64,[A-Za-z0-9+\\/=]+$/)"
+          }
+        }
+      },
+      "customerBroadcasts": {
+        ".read": "auth != null",
+        ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$id": {
+          ".validate": "!newData.exists() || (newData.hasChildren(['id','title','message','audience','city','area','restaurantId','deepLink','scheduledAt','expiresAt','active','createdAt','createdBy']) && newData.child('id').val() === $id)",
+          "id": {
+            ".validate": "newData.isString() && newData.val() === $id"
+          },
+          "title": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+          },
+          "message": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 300"
+          },
+          "audience": {
+            ".validate": "newData.val() === 'all' || newData.val() === 'city' || newData.val() === 'area' || newData.val() === 'restaurant'"
+          },
+          "city": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "area": {
+            ".validate": "newData.isString() && newData.val().length <= 180"
+          },
+          "restaurantId": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "deepLink": {
+            ".validate": "newData.val() === 'home' || newData.val() === 'offers' || newData.val() === 'restaurant'"
+          },
+          "scheduledAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "expiresAt": {
+            ".validate": "newData.isNumber() && newData.val() >= 0"
+          },
+          "active": {
+            ".validate": "newData.isBoolean()"
+          },
+          "createdAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "createdBy": {
+            ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "orderIdempotency": {
+        ".read": false,
+        ".write": false
+      },
+      "private": {
+        ".read": false,
+        ".write": false,
+        "notificationOutbox": {
+          ".indexOn": [
+            "nextAttemptAt"
+          ]
+        }
+      },
+      "backendEvents": {
+        ".read": false,
+        ".write": false
+      },
+      "paymentAttempts": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false
+      },
+      "paymentAttemptsByMerchantOrder": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false
+      },
+      "paymentEvents": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false
+      },
+      "riderAvailabilityByCity": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false
+      },
+      "deviceTokens": {
+        ".read": false,
+        ".write": false
+      },
+      "riderWallets": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false,
+        "$riderId": {
+          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": false
+        }
+      },
+      "pricingSignals": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false
+      }
+    }
+  }
+}

@@ -1,0 +1,218 @@
+plugins {
+    id "com.android.application" version "9.0.1" apply false
+    id "com.google.gms.google-services" version "4.5.0" apply false
+    id "com.google.firebase.crashlytics" version "3.0.7" apply false
+}
+
+def stagingProjectId = providers.gradleProperty("scraveitStagingProjectId")
+        .orElse(providers.environmentVariable("SCRAVEIT_STAGING_PROJECT_ID"))
+        .orElse("savrivo-app")
+def nonProdConfigDir = providers.gradleProperty("scraveitNonProdConfigDir")
+        .orElse(providers.environmentVariable("SCRAVEIT_NONPROD_FIREBASE_DIR"))
+def nonProdAssetsDir = layout.buildDirectory.dir("generated/scraveitNonProdFirebase/assets")
+def nodeExecutable = providers.environmentVariable("NODE_BIN").orElse("node")
+
+tasks.register("verifyStagingSandboxConfiguration", Exec) {
+    group = "verification"
+    description = "Validates that the current committed Android/WebView Firebase config targets one intended staging project."
+    outputs.upToDateWhen { false }
+    doFirst {
+        commandLine(
+                nodeExecutable.get(),
+                rootProject.file("tools/verify_staging_firebase.mjs"),
+                stagingProjectId.get())
+    }
+}
+
+tasks.register("verifyNonProdConfiguration", Exec) {
+    group = "verification"
+    description = "Validates four externally supplied, non-production Firebase Android clients."
+    outputs.upToDateWhen { false }
+    doFirst {
+        if (!nonProdConfigDir.isPresent() || nonProdConfigDir.get().trim().isEmpty()) {
+            throw new GradleException(
+                    "Set -PscraveitNonProdConfigDir=/absolute/path (or " +
+                            "SCRAVEIT_NONPROD_FIREBASE_DIR) to a directory containing " +
+                            "customer, restaurant, rider and admin/google-services.json files.")
+        }
+        commandLine(
+                nodeExecutable.get(),
+                rootProject.file("tools/prepare_nonprod_firebase.mjs"),
+                nonProdConfigDir.get(),
+                "--verify-only")
+    }
+}
+
+tasks.register("prepareNonProdFirebase", Exec) {
+    group = "build setup"
+    description = "Validates isolated Firebase clients and generates matching WebView config/CSP assets."
+    dependsOn("verifyNonProdConfiguration")
+    outputs.dir(nonProdAssetsDir)
+    outputs.upToDateWhen { false }
+    doFirst {
+        commandLine(
+                nodeExecutable.get(),
+                rootProject.file("tools/prepare_nonprod_firebase.mjs"),
+                nonProdConfigDir.get(),
+                nonProdAssetsDir.get().asFile)
+    }
+}
+
+def nonProdModules = [
+        customer  : [source: "app", apk: "customer-isolated.apk"],
+        restaurant: [source: "restaurant", apk: "restaurant-isolated.apk"],
+        rider     : [source: "rider", apk: "rider-isolated.apk"],
+        admin     : [source: "admin", apk: "admin-isolated.apk"]
+]
+
+tasks.register("verifyNonProdGeneratedConfiguration") {
+    group = "verification"
+    description = "Proves generated native resources and merged WebView assets use the selected isolated project."
+    dependsOn("prepareNonProdFirebase")
+    dependsOn(nonProdModules.collect { role, module -> ":${role}:processIsolatedGoogleServices" })
+    dependsOn(nonProdModules.collect { role, module -> ":${role}:mergeIsolatedAssets" })
+    outputs.upToDateWhen { false }
+    doLast {
+        def customerConfig = new groovy.json.JsonSlurper().parse(
+                file("${nonProdConfigDir.get()}/customer/google-services.json"))
+        def expectedProjectId = customerConfig.project_info.project_id.toString()
+        def expectedDatabaseUrl = customerConfig.project_info.firebase_url.toString().replaceAll('/+$', '')
+        if (expectedProjectId == "savrivo-app") {
+            throw new GradleException("Generated isolated configuration unexpectedly targets production.")
+        }
+
+        nonProdModules.each { role, module ->
+            def source = module.source
+            def nativeValues = file(
+                    "${source}/build/generated/res/processIsolatedGoogleServices/values/values.xml")
+            def mergedAssets = file(
+                    "${source}/build/intermediates/assets/isolated/mergeIsolatedAssets")
+            def webConfig = new File(mergedAssets, "firebase-config.js")
+            def premiumHtml = new File(mergedAssets, "premium.html")
+            [nativeValues, webConfig, premiumHtml].each { generatedFile ->
+                if (!generatedFile.isFile()) {
+                    throw new GradleException("Missing isolated output: ${generatedFile}")
+                }
+                if (generatedFile.text.contains("savrivo-app")) {
+                    throw new GradleException(
+                            "Isolated ${role} output retains a production Firebase reference: ${generatedFile}")
+                }
+            }
+            if (!nativeValues.text.contains(">${expectedProjectId}<") ||
+                    !nativeValues.text.contains(">${expectedDatabaseUrl}<")) {
+                throw new GradleException(
+                        "Isolated ${role} native resources do not match ${expectedProjectId}.")
+            }
+            if (!webConfig.text.contains("\"${expectedProjectId}\"") ||
+                    !premiumHtml.text.contains(expectedDatabaseUrl)) {
+                throw new GradleException(
+                        "Isolated ${role} WebView assets do not match ${expectedProjectId}.")
+            }
+        }
+    }
+}
+
+tasks.register("verifyNonProdApks") {
+    group = "verification"
+    description = "Fails unless packaged isolated APK native resources and WebView assets target one non-production project."
+    dependsOn("verifyNonProdGeneratedConfiguration")
+    dependsOn(nonProdModules.collect { role, module -> ":${role}:assembleIsolated" })
+    outputs.upToDateWhen { false }
+    doLast {
+        def customerConfig = new groovy.json.JsonSlurper().parse(
+                file("${nonProdConfigDir.get()}/customer/google-services.json"))
+        def expectedProjectId = customerConfig.project_info.project_id.toString()
+        def expectedDatabaseUrl = customerConfig.project_info.firebase_url.toString().replaceAll('/+$', '')
+
+        nonProdModules.each { role, module ->
+            def apk = file("${module.source}/build/outputs/apk/isolated/${module.apk}")
+            if (!apk.isFile()) {
+                throw new GradleException("Missing isolated APK: ${apk}")
+            }
+            new java.util.zip.ZipFile(apk).withCloseable { zip ->
+                def resourcesEntry = zip.getEntry("resources.arsc")
+                def configEntry = zip.getEntry("assets/firebase-config.js")
+                def htmlEntry = zip.getEntry("assets/premium.html")
+                if (resourcesEntry == null || configEntry == null || htmlEntry == null) {
+                    throw new GradleException("Isolated ${role} APK is missing Firebase build artifacts.")
+                }
+                def nativeResources = new String(
+                        zip.getInputStream(resourcesEntry).bytes,
+                        java.nio.charset.StandardCharsets.ISO_8859_1)
+                def webConfig = zip.getInputStream(configEntry).getText("UTF-8")
+                def premiumHtml = zip.getInputStream(htmlEntry).getText("UTF-8")
+                if (!nativeResources.contains(expectedProjectId) ||
+                        !nativeResources.contains(expectedDatabaseUrl) ||
+                        !webConfig.contains("\"${expectedProjectId}\"") ||
+                        !premiumHtml.contains(expectedDatabaseUrl)) {
+                    throw new GradleException(
+                            "Packaged isolated ${role} native/WebView Firebase targets do not match ${expectedProjectId}.")
+                }
+                if (nativeResources.contains("savrivo-app") ||
+                        webConfig.contains("savrivo-app") ||
+                        premiumHtml.contains("savrivo-app")) {
+                    throw new GradleException(
+                            "Packaged isolated ${role} APK retains a production Firebase reference.")
+                }
+            }
+        }
+    }
+}
+
+tasks.register("assembleNonProd") {
+    group = "build"
+    description = "Builds all four debug-signed APKs against an explicitly supplied isolated Firebase project."
+    dependsOn(
+            "verifyNonProdApks",
+            ":customer:assembleIsolated",
+            ":rider:assembleIsolated",
+            ":restaurant:assembleIsolated",
+            ":admin:assembleIsolated"
+    )
+}
+
+tasks.register("assembleStagingSandbox") {
+    group = "build"
+    description = "Builds all four current debug APKs against the committed staging Firebase configuration."
+    dependsOn(
+            "verifyStagingSandboxConfiguration",
+            ":customer:assembleDebug",
+            ":rider:assembleDebug",
+            ":restaurant:assembleDebug",
+            ":admin:assembleDebug"
+    )
+}
+
+tasks.register("verifyNonProd") {
+    group = "verification"
+    description = "Validates, lints and assembles all four isolated non-production applications."
+    dependsOn(
+            "verifyNonProdApks",
+            ":customer:lintIsolated", ":customer:assembleIsolated",
+            ":rider:lintIsolated", ":rider:assembleIsolated",
+            ":restaurant:lintIsolated", ":restaurant:assembleIsolated",
+            ":admin:lintIsolated", ":admin:assembleIsolated"
+    )
+}
+
+tasks.register("bundleProduction") {
+    group = "build"
+    description = "Builds unsigned release App Bundles for all four Savrivo applications."
+    dependsOn(
+            ":customer:bundleRelease",
+            ":rider:bundleRelease",
+            ":restaurant:bundleRelease",
+            ":admin:bundleRelease"
+    )
+}
+
+tasks.register("verifyProduction") {
+    group = "verification"
+    description = "Runs release lint and optimized bundle builds for all applications."
+    dependsOn(
+            ":customer:lintRelease", ":customer:bundleRelease",
+            ":rider:lintRelease", ":rider:bundleRelease",
+            ":restaurant:lintRelease", ":restaurant:bundleRelease",
+            ":admin:lintRelease", ":admin:bundleRelease"
+    )
+}

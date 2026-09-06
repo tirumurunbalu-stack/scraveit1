@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "208105430110",
+    "firebase_url": "https://kamju-a4750-default-rtdb.firebaseio.com",
+    "project_id": "kamju-a4750",
+    "storage_bucket": "kamju-a4750.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:208105430110:android:9cc01ab6750115cd87e8cf",
+        "android_client_info": {
+          "package_name": "com.feastly.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBn5H6-CHHDktKjFO6-nWgtvTq8CNuLt6Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

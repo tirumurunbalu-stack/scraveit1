@@ -1,0 +1,49 @@
+def supportedModules = [
+        customer: [role: "customer", packageName: "com.feastly.app"],
+        restaurant: [role: "restaurant", packageName: "com.feastly.restaurant"],
+        rider: [role: "rider", packageName: "com.feastly.rider"],
+        admin: [role: "admin", packageName: "com.feastly.admin"]
+]
+def moduleConfig = supportedModules[project.name]
+if (moduleConfig == null) {
+    throw new GradleException("Unsupported Scraveit Android module: ${project.name}")
+}
+
+def generatedAssets = rootProject.file(
+        "build/generated/scraveitNonProdFirebase/assets/${moduleConfig.role}")
+def externalConfig = rootProject.providers.gradleProperty("scraveitNonProdConfigDir")
+        .orElse(rootProject.providers.environmentVariable("SCRAVEIT_NONPROD_FIREBASE_DIR"))
+        .map { rootProject.file("${it}/${moduleConfig.role}/google-services.json") }
+
+android {
+    buildTypes {
+        isolated {
+            initWith(buildTypes.debug)
+            debuggable true
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ["debug"]
+        }
+    }
+    sourceSets {
+        isolated {
+            assets.srcDir(generatedAssets)
+        }
+    }
+}
+
+dependencies.add("isolatedImplementation", "com.google.firebase:firebase-appcheck-debug")
+
+// The Google Services plugin assigns its conventional source locations while it creates the
+// variant task. Configure the isolated input after project evaluation so that this explicit,
+// external file wins over the committed production default. (configureEach alone runs inside the
+// plugin's task-registration action and its value is subsequently replaced.)
+afterEvaluate {
+    tasks.named("processIsolatedGoogleServices").configure { task ->
+        task.dependsOn(rootProject.tasks.named("prepareNonProdFirebase"))
+        task.googleServicesJsonFiles.set(externalConfig.map { file -> [file] })
+    }
+}
+
+tasks.matching { it.name == "mergeIsolatedAssets" }.configureEach { task ->
+    task.dependsOn(rootProject.tasks.named("prepareNonProdFirebase"))
+}

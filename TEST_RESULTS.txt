@@ -1,0 +1,45 @@
+✓ customer: unauthenticated boot and 21 registered routes render
+✓ control: unauthenticated boot and 15 registered routes render
+✓ restaurant: unauthenticated boot and 10 registered routes render
+✓ partner: unauthenticated boot and 13 registered routes render
+✓ shared order lifecycle is valid JSON and internally consistent
+✓ Firebase Realtime Database rules parse as JSON
+✓ Firebase Storage rules protect media and KYC paths
+✓ production-oriented sync and media guardrails are present
+✓ Savrivo operational upgrade contracts are present
+✓ customer: premium asset set is complete
+✓ customer: premium.js parses without syntax errors
+✓ customer: modal UX does not use alert() or confirm()
+✓ customer: rendered controls and forms have handlers
+✓ customer: visible branding is Savrivo
+✓ customer: Content Security Policy is present and restrictive
+✓ customer: lifecycle contract is represented
+✓ customer: manifest and native shell use premium release settings
+✓ control: premium asset set is complete
+✓ control: premium.js parses without syntax errors
+✓ control: modal UX does not use alert() or confirm()
+✓ control: rendered controls and forms have handlers
+✓ control: visible branding is Savrivo
+✓ control: Content Security Policy is present and restrictive
+✓ control: lifecycle contract is represented
+✓ control: manifest and native shell use premium release settings
+✓ restaurant: premium asset set is complete
+✓ restaurant: premium.js parses without syntax errors
+✓ restaurant: modal UX does not use alert() or confirm()
+✓ restaurant: rendered controls and forms have handlers
+✓ restaurant: visible branding is Savrivo
+✓ restaurant: Content Security Policy is present and restrictive
+✓ restaurant: lifecycle contract is represented
+✓ restaurant: manifest and native shell use premium release settings
+✓ partner: premium asset set is complete
+✓ partner: premium.js parses without syntax errors
+✓ partner: modal UX does not use alert() or confirm()
+✓ partner: rendered controls and forms have handlers
+✓ partner: visible branding is Savrivo
+✓ partner: Content Security Policy is present and restrictive
+✓ partner: lifecycle contract is represented
+✓ partner: manifest and native shell use premium release settings
+
+Premium validation passed: 300 assertions across 4 apps.
+✓ Realtime Database rules JSON valid
+APK build in this runtime: NOT RUNNABLE — Android SDK not installed.

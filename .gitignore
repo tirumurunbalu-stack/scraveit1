@@ -1,0 +1,65 @@
+.DS_Store
+**/.DS_Store
+
+# Generated Android outputs and machine-local configuration
+native_android/.gradle/
+native_android/**/build/
+native_android/local.properties
+native_android/secrets.properties
+native_android/**/secrets.properties
+# Local Firebase App Check identity for sideloaded Restaurant developer APKs.
+# It is deliberately excluded from source control and release builds.
+native_android/restaurant/src/debug/java/com/feastly/restaurant/AppCheckProviderInstaller.java
+native_android/admin/src/debug/java/com/feastly/admin/AppCheckProviderInstaller.java
+native_android/rider/src/debug/java/com/feastly/rider/AppCheckProviderInstaller.java
+native_android/app/src/debug/java/com/feastly/app/AppCheckProviderInstaller.java
+functions/.operational-projections-backfill.checkpoint.json
+functions/.operational-projections-backfill.checkpoint.json.tmp
+*.apk
+*.aab
+*.idsig
+
+# Signing material must never be committed
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+
+# Firebase Functions generated/install outputs
+functions/lib/
+functions/node_modules/
+functions/coverage/
+
+# Local secrets and tool logs
+.env
+.env.*
+!.env.example
+firebase-debug.log
+*.log
+
+.local-jdks/
+**/build/
+local.properties
+*.keystore
+
+.local-jdks/
+**/build/
+local.properties
+*.keystore
+
+.local-jdks/
+**/build/
+local.properties
+*.keystore
+
+.local-jdks/
+**/build/
+local.properties
+*.keystore
+
+.local-jdks/
+**/build/
+local.properties
+*.keystore
+native_android.zip

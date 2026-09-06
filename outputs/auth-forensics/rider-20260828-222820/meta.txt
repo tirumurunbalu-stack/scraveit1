@@ -1,0 +1,8 @@
+timestamp_ist=2026-08-28T22:28:20.856311+05:30
+device_id=368a3272
+package=com.feastly.riderlogin_tap_ist=2026-08-28T22:29:56.945985+05:30
+spinner_snapshot_ist=2026-08-28T22:29:58.548533+05:30
+final_snapshot_ist=2026-08-28T22:30:09.651017+05:30
+
+confirm_signout_tap_ist=2026-08-28T22:35:20.197756+05:30
+confirm_signout_snapshot_ist=2026-08-28T22:35:42.297607+05:30

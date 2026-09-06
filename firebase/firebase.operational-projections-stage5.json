@@ -1,0 +1,5 @@
+{
+  "database": {
+    "rules": "feastly-realtime-database-rules.operational-projections-stage5.json"
+  }
+}

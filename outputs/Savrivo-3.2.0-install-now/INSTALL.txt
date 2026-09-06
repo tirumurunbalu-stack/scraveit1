@@ -1,0 +1,18 @@
+SAVRIVO 3.2.0 — DEVELOPER TEST BUILDS
+
+Install these APK files directly on Android 6.0 or newer.
+
+If Android says "package appears invalid" or "app not installed", uninstall the
+older build of that same Savrivo app first, then install this APK. This is needed
+when the older developer APK was signed with a different test certificate.
+
+Cloud accounts, restaurants, menus and orders remain in Firebase. Uninstalling
+can remove only local device state such as an unfinished local cart.
+
+APK files in this folder:
+- Savrivo-Customer-3.2.0-developer.apk
+- Savrivo-Admin-3.2.0-developer.apk
+- Savrivo-Restaurant-3.2.0-developer.apk
+
+All three APKs were built by Gradle, verified with Android APK Signature Scheme
+v1 and v2, target Android API 36, and support Android API 23 and newer.

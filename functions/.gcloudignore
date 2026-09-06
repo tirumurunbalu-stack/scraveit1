@@ -1,0 +1,7 @@
+node_modules/
+lib/
+coverage/
+.env*
+firebase-debug.log
+pnpm-lock.yaml
+pnpm-workspace.yaml

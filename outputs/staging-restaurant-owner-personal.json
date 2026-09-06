@@ -1,0 +1,20 @@
+{
+  "active": true,
+  "createdAt": 1787745200000,
+  "createdBy": "personal08030803@gmail.com",
+  "email": "personal08030803@gmail.com",
+  "name": "personal08030803@gmail.com",
+  "permissions": {
+    "analytics": true,
+    "availability": true,
+    "dispatch": true,
+    "handover": true,
+    "menu": true,
+    "orders": true,
+    "profile": true,
+    "tracking": true
+  },
+  "restaurantId": "the-waffle-spot-naidupeta",
+  "restaurantName": "The Waffle Spot",
+  "role": "restaurant_owner"
+}

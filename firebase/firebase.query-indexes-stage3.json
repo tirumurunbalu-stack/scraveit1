@@ -1,0 +1,5 @@
+{
+  "database": {
+    "rules": "feastly-realtime-database-rules.query-indexes-stage3.json"
+  }
+}

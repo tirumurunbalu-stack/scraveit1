@@ -1,0 +1,30 @@
+{
+  "address" : {
+    "address" : "1-1-277, L.A.Sagaram, Mangapathi Naidu Nagar, L A Sagaram, Naidupet, Thummur R, Andhra Pradesh 524126, India",
+    "area" : "L A Sagaram",
+    "label" : "1-1-277",
+    "lat" : 13.917378,
+    "lng" : 79.8957911
+  },
+  "approximateDropZone" : "L A Sagaram",
+  "assignedAt" : 1787753633547,
+  "createdAt" : 1787753633547,
+  "customerId" : "r36PY4C5k0RIKrjXYjA3gWRMh9D3",
+  "customerName" : "TIRUMURU BALAJI",
+  "estimatedMinutes" : 40,
+  "itemCount" : 1,
+  "kitchenStatus" : "Accepted",
+  "orderId" : "SV-6E48F5C6CD310009D7",
+  "orderStatus" : "Assigned",
+  "payout" : 29,
+  "phase" : "pickup",
+  "restaurantAddress" : "Pichi Reddy Thopu, Near Current Office, Naidupeta, Andhra Pradesh 524126",
+  "restaurantId" : "the-waffle-spot-naidupeta",
+  "restaurantLat" : 13.9018832,
+  "restaurantLng" : 79.8877264,
+  "restaurantName" : "The Waffle Spot",
+  "restaurantPhone" : "+91 9885696944",
+  "status" : "active",
+  "updatedAt" : 1787753633547
+}
+

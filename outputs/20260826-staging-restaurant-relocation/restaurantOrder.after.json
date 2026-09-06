@@ -1,0 +1,83 @@
+{
+  "address": {
+    "area": "L A Sagaram",
+    "label": "1-1-277"
+  },
+  "contactless": false,
+  "coupon": "",
+  "createdAt": 1787753185077,
+  "customerId": "r36PY4C5k0RIKrjXYjA3gWRMh9D3",
+  "customerName": "TIRUMURU BALAJI",
+  "deliveryMode": "asap",
+  "etaMax": 40,
+  "etaMin": 25,
+  "id": "SV-6E48F5C6CD310009D7",
+  "idempotencyKey": "cust_mta5ndj8_1a9d601e-3156-4fa8-8644-74c94380c2d4",
+  "instructions": "",
+  "items": [
+    {
+      "addOnTotal": 0,
+      "diet": "veg",
+      "itemId": "bean-vanilla",
+      "name": "Bean Vanilla",
+      "note": "",
+      "price": 77,
+      "quantity": 1,
+      "variant": "",
+      "variantPrice": 0
+    }
+  ],
+  "paymentMethod": "cod",
+  "paymentState": "cash_due",
+  "pricing": {
+    "currency": "INR",
+    "deliveryFee": 29,
+    "discount": 0,
+    "lateNightFee": 0,
+    "platformFee": 9,
+    "rainFee": 0,
+    "smallOrderFee": 0,
+    "source": "catalog_snapshot_v3",
+    "subtotal": 77,
+    "surgeFee": 0,
+    "tax": 0,
+    "tip": 0
+  },
+  "pricingContext": {
+    "distanceKm": 1.93,
+    "platformFeeRule": "server_authoritative",
+    "pricedAt": 1787753185077,
+    "surgeActiveOrders": 0,
+    "weatherSeverity": ""
+  },
+  "restaurant": "The Waffle Spot",
+  "restaurantId": "the-waffle-spot-naidupeta",
+  "restaurantLocation": {
+    "address": "L.A.Sagaram, Thummur R, Andhra Pradesh 524126",
+    "lat": 13.9175,
+    "lng": 79.895905
+  },
+  "restaurantPhone": "+91 9885696944",
+  "riderAssignedAt": 1787753633547,
+  "riderId": "hffg4msxCme6VfKgMeuXSEDssIi1",
+  "riderName": "TIRUMURU BALAJI",
+  "riderPhone": "9652509409",
+  "schemaVersion": 3,
+  "status": "Accepted",
+  "statusHistory": {
+    "e_1787753185077_r36PY4C5k0RIKrjXYjA3gWRMh9D3": {
+      "actorId": "r36PY4C5k0RIKrjXYjA3gWRMh9D3",
+      "actorRole": "customer",
+      "at": 1787753185077,
+      "status": "Order placed"
+    },
+    "e_1787753477522_cLuQ6fQTSBUUu3Wzy9gow1vm4Ap2": {
+      "actorId": "cLuQ6fQTSBUUu3Wzy9gow1vm4Ap2",
+      "actorRole": "staff",
+      "at": 1787753477522,
+      "status": "Accepted"
+    }
+  },
+  "total": 115,
+  "updatedAt": 1787753633547
+}

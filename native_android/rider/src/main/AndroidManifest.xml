@@ -1,0 +1,49 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <application
+        android:name="com.savrivo.firebase.SavrivoApplication"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/SavrivoPartnerTheme"
+        android:usesCleartextTraffic="false">
+        <meta-data android:name="com.savrivo.firebase.APP_ID" android:value="@string/google_app_id" />
+        <meta-data android:name="com.savrivo.firebase.API_KEY" android:value="@string/google_api_key" />
+        <meta-data android:name="com.savrivo.firebase.PROJECT_ID" android:value="@string/project_id" />
+        <meta-data android:name="com.savrivo.firebase.APP_ROLE" android:value="rider" />
+        <meta-data android:name="com.savrivo.firebase.FUNCTIONS_REGION" android:value="asia-south1" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="rider_offers_v4" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/savrivo_partner_notification" />
+        <meta-data android:name="firebase_messaging_notification_delegation_enabled" android:value="false" />
+        <service android:name="com.savrivo.firebase.SavrivoMessagingService" android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service android:name="com.savrivo.firebase.OrderAlarmService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="mediaPlayback" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <service android:name=".TrackingService" android:exported="false" android:foregroundServiceType="location" />
+    </application>
+</manifest>

@@ -1,0 +1,34 @@
+{
+  "states": [
+    "Order placed",
+    "Accepted",
+    "Preparing",
+    "Ready for pickup",
+    "Assigned",
+    "Handed to rider",
+    "Out for delivery",
+    "Near you",
+    "Arrived",
+    "Delivered",
+    "Cancelled"
+  ],
+  "transitions": {
+    "Order placed": ["Accepted", "Cancelled"],
+    "Accepted": ["Preparing", "Cancelled"],
+    "Preparing": ["Ready for pickup", "Cancelled"],
+    "Ready for pickup": ["Assigned", "Cancelled"],
+    "Assigned": ["Handed to rider", "Cancelled"],
+    "Handed to rider": ["Out for delivery"],
+    "Out for delivery": ["Near you", "Arrived"],
+    "Near you": ["Arrived"],
+    "Arrived": ["Delivered"],
+    "Delivered": [],
+    "Cancelled": []
+  },
+  "owners": {
+    "customer": ["Order placed"],
+    "owner": ["Accepted", "Preparing", "Ready for pickup", "Assigned", "Handed to rider", "Cancelled"],
+    "staff": ["Accepted", "Preparing", "Ready for pickup", "Handed to rider"],
+    "rider": ["Assigned", "Out for delivery", "Near you", "Arrived", "Delivered"]
+  }
+}

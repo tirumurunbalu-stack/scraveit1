@@ -1,0 +1,37 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <application android:name="com.savrivo.firebase.SavrivoApplication" android:theme="@android:style/Theme.Material.NoActionBar" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:supportsRtl="true">
+        <meta-data android:name="com.savrivo.firebase.APP_ID" android:value="@string/google_app_id" />
+        <meta-data android:name="com.savrivo.firebase.API_KEY" android:value="@string/google_api_key" />
+        <meta-data android:name="com.savrivo.firebase.PROJECT_ID" android:value="@string/project_id" />
+        <meta-data android:name="com.savrivo.firebase.APP_ROLE" android:value="admin" />
+        <meta-data android:name="com.savrivo.firebase.FUNCTIONS_REGION" android:value="asia-south1" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="savrivo_order_status" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/savrivo_notification" />
+        <meta-data android:name="firebase_messaging_notification_delegation_enabled" android:value="false" />
+        <service android:name="com.savrivo.firebase.SavrivoMessagingService" android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

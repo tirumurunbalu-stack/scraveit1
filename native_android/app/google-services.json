@@ -1,0 +1,56 @@
+{
+  "project_info": {
+    "project_number": "458592242638",
+    "firebase_url": "https://savrivo-app-default-rtdb.firebaseio.com",
+    "project_id": "savrivo-app",
+    "storage_bucket": "savrivo-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:a908ab5d83d01b2044b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-1sqq3vaf5otfsu2gm3mpukesi28jstl0.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.app",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-4ibnst70u59dcbab1tn1ovvf6vv95gbc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.app",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,13 @@
+58068cb9b0f279416079e60129f4198bc5ca117099b3ffe1a161611d21799f75  README.md
+1d6562f15086ccec10e04ee2fbd49453cbe4157b43bdaed36fb2e5ef75864235  aab/Scraveit-Admin-v3.3.0-vc50-UNSIGNED-NOT-UPLOAD-READY.aab
+f89f3e79e86db36ee7339ee26f2559b611dc4ab288804e70ff9e6de8ca7d3502  aab/Scraveit-Customer-v3.4.1-vc51-UNSIGNED-NOT-UPLOAD-READY.aab
+9e5c304873ae921fbbb8d740c9019355c1dd8e533fec5f2802d2d0850f2b52b4  aab/Scraveit-Restaurant-v3.3.1-vc45-UNSIGNED-NOT-UPLOAD-READY.aab
+805320b6d48b435634f48b488e4ad83c52e1687c92c9c833ea10a15df80ff560  aab/Scraveit-Rider-v3.5.0-vc64-UNSIGNED-NOT-UPLOAD-READY.aab
+768db72db03c651a5ca8416b82749eb2a1cd214e69bc6dd789b2622253014de7  lint/admin-lint-release.html
+2273a335c00f523df26934132a2b9af02c042a78803f43f6531fd6ed482b190b  lint/customer-lint-release.html
+40316375c949235921ab5935e2d32a52ce0830925ce75476c5ab2cf16ee7e62c  lint/restaurant-lint-release.html
+afa96f3f38c19cdf8889e0d653bb48ef2665622a880b4d595be1f623c304d3e1  lint/rider-lint-release.html
+996be49f1a6056b5c95b5162287de11c37b8ad390e9dd9cd234b5ef82834c02b  mapping/admin-mapping-v3.3.0-vc50.txt
+567a71191ea27e2d90d1e404edf8b135a81e00fd8e6d351d8ea970b74efff56e  mapping/customer-mapping-v3.4.1-vc51.txt
+18f36292a24803d27b23e7a4d4ee01945a8e378f1fa53ad821f31a587b8c9121  mapping/restaurant-mapping-v3.3.1-vc45.txt
+4ba99bc0fdcb540e53056bcebb6af816498fb2aff83f8a3aba4b3021cfd4ebcf  mapping/rider-mapping-v3.5.0-vc64.txt

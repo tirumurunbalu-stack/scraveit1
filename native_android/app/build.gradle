@@ -1,0 +1,77 @@
+plugins {
+    id "com.android.application"
+    id "com.google.gms.google-services"
+    id "com.google.firebase.crashlytics"
+}
+
+def savrivoSecrets = new Properties()
+def savrivoSecretsFile = rootProject.file("secrets.properties")
+if (savrivoSecretsFile.exists()) {
+    savrivoSecretsFile.withInputStream { stream -> savrivoSecrets.load(stream) }
+}
+def savrivoMapsApiKey = System.getenv("SAVRIVO_MAPS_ANDROID_API_KEY")
+if (savrivoMapsApiKey == null || savrivoMapsApiKey.trim().isEmpty()) {
+    savrivoMapsApiKey = savrivoSecrets.getProperty("SAVRIVO_MAPS_ANDROID_API_KEY", "")
+}
+savrivoMapsApiKey = savrivoMapsApiKey == null ? "" : savrivoMapsApiKey.trim()
+
+android {
+    namespace "com.feastly.app"
+    compileSdk 36
+    buildToolsVersion "36.0.0"
+
+    defaultConfig {
+        applicationId "com.feastly.app"
+        minSdk 23
+        targetSdk 36
+        versionCode 52
+        versionName "3.4.2"
+        manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
+        buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), rootProject.file("proguard-rules.pro")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+    }
+
+    packaging {
+        resources.excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*"]
+    }
+}
+
+apply from: rootProject.file("gradle/nonprod-firebase.gradle")
+
+dependencies {
+    implementation "androidx.activity:activity:1.13.0"
+    implementation "androidx.credentials:credentials:1.6.0"
+    implementation "androidx.credentials:credentials-play-services-auth:1.6.0"
+    implementation "com.google.android.libraries.identity.googleid:googleid:1.2.0"
+    implementation "com.google.android.gms:play-services-maps:20.0.0"
+
+    implementation platform("com.google.firebase:firebase-bom:34.18.0")
+    implementation "com.google.firebase:firebase-messaging"
+    releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"
+    debugImplementation "com.google.firebase:firebase-appcheck-debug"
+    implementation "com.google.firebase:firebase-crashlytics"
+}

@@ -1,0 +1,5 @@
+{
+  "database": {
+    "rules": "feastly-realtime-database-rules.production-functions-stage1.json"
+  }
+}

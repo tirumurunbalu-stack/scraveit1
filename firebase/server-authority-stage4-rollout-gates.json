@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "rulesArtifact": "feastly-realtime-database-rules.server-authority-stage4.json",
+  "derivedFrom": "feastly-realtime-database-rules.query-indexes-stage3.json",
+  "deploymentConfig": "firebase.server-authority-stage4.json",
+  "sourceCompatibilityFloor": {
+    "customer": {
+      "applicationId": "com.feastly.app",
+      "minimumVersionCode": 52,
+      "minimumVersionName": "3.4.2",
+      "note": "Order creation uses createCodOrder, the legacy direct-order fallback is disabled, and unpaid post-delivery money inputs have been removed."
+    },
+    "restaurant": {
+      "applicationId": "com.feastly.restaurant",
+      "minimumVersionCode": 45,
+      "minimumVersionName": "3.3.1",
+      "note": "Order transitions already use updateOrderStatus."
+    },
+    "rider": {
+      "applicationId": "com.feastly.rider",
+      "minimumVersionCode": 64,
+      "minimumVersionName": "3.5.0",
+      "note": "Rider claim and order transitions already use server callables; the narrow arrival marker remains rules-compatible."
+    },
+    "admin": {
+      "applicationId": "com.feastly.admin",
+      "minimumVersionCode": 50,
+      "minimumVersionName": "3.3.0",
+      "note": "Order transitions already use updateOrderStatus."
+    }
+  },
+  "fullCompatibilityFloor": {
+    "customer": {
+      "minimumVersionCode": 52,
+      "blockingReason": "Deploy Customer version 52 or later before the write lock; older version 51 clients still expose unverified post-delivery money inputs."
+    },
+    "restaurant": {
+      "minimumVersionCode": 45
+    },
+    "rider": {
+      "minimumVersionCode": 64
+    },
+    "admin": {
+      "minimumVersionCode": 50
+    }
+  },
+  "requiredPredeployGates": [
+    {
+      "id": "production_backup_and_rollback",
+      "status": "external_required",
+      "requirement": "Take a timestamped RTDB export and record the currently deployed rules/version before canary rollout."
+    },
+    {
+      "id": "callable_backend_verified",
+      "status": "external_required",
+      "requirement": "Verify createCodOrder, updateOrderStatus, claimRiderOrder, and delivery verification callables are deployed in the same Firebase project/region used by all installed apps."
+    },
+    {
+      "id": "app_check_production_ready",
+      "status": "external_required",
+      "requirement": "Register all four production app identities/signing certificates and confirm valid App Check tokens before enforcing callable traffic."
+    },
+    {
+      "id": "admin_claims_provisioned",
+      "status": "external_required",
+      "requirement": "Provision savrivoRole=owner or ops_admin custom claims for approved admins and force an ID-token refresh before removing legacy identity shortcuts."
+    },
+    {
+      "id": "minimum_clients_adopted",
+      "status": "external_required",
+      "requirement": "Confirm active clients meet fullCompatibilityFloor; block or force-upgrade older builds before the stage-4 write lock."
+    },
+    {
+      "id": "review_money_rail_resolved",
+      "status": "source_resolved",
+      "requirement": "Customer version 52 removes unpaid post-delivery tip/growth inputs and the backend forces legacy or malicious review-money values to zero. Minimum-client adoption remains an external release gate."
+    },
+    {
+      "id": "emulator_and_canary_passed",
+      "status": "external_required",
+      "requirement": "Run the isolated validators and end-to-end canary tests for COD placement, restaurant transitions, rider claim race, OTP delivery, cancellation, reviews, and admin operations before production rollout."
+    }
+  ]
+}

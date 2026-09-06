@@ -1,0 +1,7 @@
+<resources>
+    <style name="SavrivoPartnerTheme" parent="SavrivoPartnerBaseTheme">
+        <item name="android:windowSplashScreenBackground">#071426</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/savrivo_partner_icon</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#071426</item>
+    </style>
+</resources>

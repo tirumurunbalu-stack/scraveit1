@@ -1,0 +1,19 @@
+{
+  "name": "scraveit-rtdb-rules-emulator-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-only integration tests for staged Scraveit Realtime Database rules",
+  "scripts": {
+    "test": "node --test tests/rtdb-stage5.test.mjs",
+    "test:stage5": "firebase emulators:exec --only database --project demo-scraveit-rules-stage5 --config ../firebase.rules-emulator-stage5.json \"npm test\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.2",
+    "firebase": "12.18.0",
+    "firebase-tools": "14.26.0"
+  },
+  "overrides": {
+    "tar": "7.5.22"
+  }
+}

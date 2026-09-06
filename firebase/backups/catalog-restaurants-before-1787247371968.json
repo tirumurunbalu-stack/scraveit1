@@ -1,0 +1,14 @@
+{
+  "savrivo-main": {
+    "address": "Nellore, Andhra Pradesh",
+    "archived": false,
+    "deliveryFee": 39,
+    "etaMax": 35,
+    "etaMin": 25,
+    "id": "savrivo-main",
+    "name": "Savrivo Main Restaurant",
+    "open": true,
+    "platformFee": 12,
+    "updatedAt": 1787154884000
+  }
+}

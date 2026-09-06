@@ -1,0 +1,5 @@
+{
+  "database": {
+    "rules": "feastly-realtime-database-rules.server-authority-stage4.json"
+  }
+}

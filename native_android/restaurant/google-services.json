@@ -1,0 +1,223 @@
+{
+  "project_info": {
+    "project_number": "458592242638",
+    "firebase_url": "https://savrivo-app-default-rtdb.firebaseio.com",
+    "project_id": "savrivo-app",
+    "storage_bucket": "savrivo-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:864d1667f812909944b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.admin"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-12kgs42jdp6k16v9a50t8t7bi4khfcfv.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.admin",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-329vmubb285foe6vd8tn61p6q7aljrkp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.admin",
+            "certificate_hash": "b7dacbb0313db1979dc208d034b1e512448aff06"
+          }
+        },
+        {
+          "client_id": "458592242638-9rk56fd07j64dncmgr6ht8f88dsm19hc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.admin",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:a908ab5d83d01b2044b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-1sqq3vaf5otfsu2gm3mpukesi28jstl0.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.app",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-4ibnst70u59dcbab1tn1ovvf6vv95gbc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.app",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-bqk574ef5uhnd7g8mqm17imqi6bmubtf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.app",
+            "certificate_hash": "b7dacbb0313db1979dc208d034b1e512448aff06"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:d69ea767761f871044b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.restaurant"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-p89k12chdihs64rucsro64tulfo8b6na.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.restaurant",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-653pbodsr9aapu3ua9ps6s7r26uugcgu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.restaurant",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-7fr41d3sks4vismk2436fbilnqf259br.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.restaurant",
+            "certificate_hash": "b7dacbb0313db1979dc208d034b1e512448aff06"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:3cbc71f4fe5c308744b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.rider"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-ugdb80kkoq1fenkflso8pvqamm4t0s64.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.rider",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-p465l4959913ud3dqq8uq9m1ufghmuq9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.rider",
+            "certificate_hash": "b7dacbb0313db1979dc208d034b1e512448aff06"
+          }
+        },
+        {
+          "client_id": "458592242638-u6eq827d7bhuqtased5p1halt4c3olme.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.rider",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

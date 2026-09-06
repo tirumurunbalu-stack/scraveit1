@@ -1,0 +1,6 @@
+timestamp_ist=2026-08-28T22:36:21.709097+05:30
+device_id=368a3272
+package=com.feastly.rider
+phase=cold_start_from_logged_out_state
+cold_start_snapshot_ist=2026-08-28T22:36:40.870383+05:30
+email_attempt_start_ist=2026-08-28T22:37:29.503158+05:30

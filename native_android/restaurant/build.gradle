@@ -1,0 +1,61 @@
+plugins {
+    id "com.android.application"
+    id "com.google.gms.google-services"
+    id "com.google.firebase.crashlytics"
+}
+
+android {
+    namespace "com.feastly.restaurant"
+    compileSdk 36
+    buildToolsVersion "36.0.0"
+
+    defaultConfig {
+        applicationId "com.feastly.restaurant"
+        minSdk 23
+        targetSdk 36
+        versionCode 45
+        versionName "3.3.1"
+    }
+
+    buildTypes {
+        debug { minifyEnabled false }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), rootProject.file("proguard-rules.pro")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+    }
+
+    sourceSets {
+        main.java.srcDir rootProject.file("shared/firebase/java")
+    }
+
+    packaging {
+        resources.excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*"]
+    }
+}
+
+apply from: rootProject.file("gradle/nonprod-firebase.gradle")
+
+dependencies {
+    implementation "androidx.credentials:credentials:1.6.0"
+    implementation "androidx.credentials:credentials-play-services-auth:1.6.0"
+    implementation "com.google.android.libraries.identity.googleid:googleid:1.2.0"
+    implementation "com.google.android.gms:play-services-auth:21.1.1"
+    implementation "androidx.activity:activity:1.13.0"
+    implementation platform("com.google.firebase:firebase-bom:34.18.0")
+    implementation "com.google.firebase:firebase-messaging"
+    releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"
+    implementation "com.google.firebase:firebase-crashlytics"
+    debugImplementation "com.google.firebase:firebase-appcheck-debug"
+}

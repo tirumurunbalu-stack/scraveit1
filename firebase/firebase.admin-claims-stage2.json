@@ -1,0 +1,5 @@
+{
+  "database": {
+    "rules": "feastly-realtime-database-rules.admin-claims-stage2.json"
+  }
+}
