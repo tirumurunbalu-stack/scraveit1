@@ -37,6 +37,7 @@ function createContext() {
     refreshToken: "b".repeat(64),
     expiresAt: Date.now() + 60 * 60 * 1000,
     name: "Dashboard Owner",
+    role: "owner",
   }));
 
   const document = {

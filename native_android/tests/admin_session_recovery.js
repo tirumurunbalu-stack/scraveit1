@@ -35,6 +35,7 @@ function contextWithPersistedOwner() {
     refreshToken: "still-valid-refresh-token",
     expiresAt: Date.now() + 60 * 60 * 1000,
     name: "Recovery Owner",
+    role: "owner",
   };
   storage.set("savrivo.control.session", JSON.stringify(session));
   const document = {

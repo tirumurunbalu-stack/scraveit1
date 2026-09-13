@@ -10,7 +10,7 @@ const { webcrypto } = require("crypto");
 const sourcePath = path.join(__dirname, "..", "admin", "src", "main", "assets", "premium.js");
 const retryKey = "savrivo.control.codRemittancePending";
 const sessionKey = "savrivo.control.session";
-const marker = "\n  bootstrap();\n})();";
+const marker = "\n  if(!window.__SAVRIVO_ADMIN_TEST__)bootstrap();\n})();";
 const source = fs.readFileSync(sourcePath, "utf8");
 assert(source.includes(marker), "Admin test seam could not locate bootstrap marker");
 const instrumented = source.replace(marker, `
