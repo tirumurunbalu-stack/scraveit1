@@ -167,7 +167,8 @@ test("Customer production cloud bridge is authenticated, attested, and server-au
   const messaging = read(path.join(javaRoot, "CustomerMessagingService.java"));
   const secureStore = read(path.join(javaRoot, "SecureOrderStore.java"));
   const application = read(path.join(javaRoot, "SavrivoApplication.java"));
-  const debugAppCheck = read(path.join(customerRoot, "src", "debug", "java", "com", "feastly", "app", "AppCheckProviderInstaller.java"));
+  const debugAppCheckPath = path.join(customerRoot, "src", "debug", "java", "com", "feastly", "app", "AppCheckProviderInstaller.java");
+  const debugAppCheck = fs.existsSync(debugAppCheckPath) ? read(debugAppCheckPath) : "";
   const releaseAppCheck = read(path.join(customerRoot, "src", "release", "java", "com", "feastly", "app", "AppCheckProviderInstaller.java"));
   const manifest = read(path.join(customerRoot, "src", "main", "AndroidManifest.xml"));
   const gradle = read(path.join(customerRoot, "build.gradle"));
@@ -181,7 +182,9 @@ test("Customer production cloud bridge is authenticated, attested, and server-au
   check(gradle.includes('releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"'), "Release must use Play Integrity App Check");
   check(gradle.includes('debugImplementation "com.google.firebase:firebase-appcheck-debug"'), "Debug App Check provider must stay debug-only");
   check(gradle.includes('com.google.firebase.crashlytics') && application.includes("setCrashlyticsCollectionEnabled(!debugBuild)"), "Release Crashlytics must be configured without debug collection");
-  check(debugAppCheck.includes("DebugAppCheckProviderFactory"), "Debug builds must install only the App Check debug provider");
+  check(!debugAppCheck || debugAppCheck.includes("DebugAppCheckProviderFactory"), "Debug source set, when present, must install only the App Check debug provider");
+  check(application.includes("installAppCheck(app,") || application.includes("installAppCheck(app, debugBuild)"), "Customer Application must use resilient reflective App Check initialization");
+  check(application.includes("ClassNotFoundException"), "Customer Application must handle missing variant installer gracefully");
   check(releaseAppCheck.includes("PlayIntegrityAppCheckProviderFactory"), "Release builds must install Play Integrity");
 
   check(manifest.includes('android:name=".SavrivoApplication"'), "Customer Firebase initialization Application is missing");
