@@ -484,6 +484,7 @@ test("Savrivo current issue batch contracts are present", () => {
   check(adminJava.includes("runOnUiThread(() -> beginPreparedImageUpload") && adminJava.includes("private void beginPreparedImageUpload"), "Admin image upload bridge must validate WebView state on the Android UI thread");
   check(adminJava.includes("settings.setAllowContentAccess(true)") && adminJava.includes("settings.setAllowFileAccess(false)"), "Admin must allow protected picker content without enabling arbitrary file access");
   check(!admin.includes('db("PUT",ROOT+"/catalog/restaurants",record)'), "Admin starter publishing must not replace the complete restaurant collection");
+  check(admin.includes("supportActivityKey") && admin.includes("seenActivityKey") && admin.includes("supportAlarmSignature"), "Admin support alarm must acknowledge customer activity and suppress duplicate starts");
   check(admin.includes("stopSupportAlarmNow") && admin.includes("syncSupportAlarm();render"), "Admin support alarm must stop/reconcile after opening or resolving a request");
   check(adminJava.includes("startSupportAlarm"), "Admin native shell must support persistent support alert");
   check(!adminJava.includes("getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE"), "Admin screenshots must stay enabled in development build");

@@ -1481,6 +1481,15 @@
             },
             "seenAt": {
               ".validate": "newData.isNumber() && newData.val() >= 0"
+            },
+            "seenActivityAt": {
+              ".validate": "newData.isNumber() && newData.val() >= 0"
+            },
+            "seenActivityKey": {
+              ".validate": "newData.isString() && newData.val().length <= 160"
+            },
+            "adminUpdatedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
             }
           }
         }
