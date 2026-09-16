@@ -16,6 +16,34 @@ type RiderOfferOrder = Pick<
 const RESTAURANT_ALARM_TTL_MS = 15 * 60 * 1000;
 const CONTROL_MESSAGE_TTL_MS = 5 * 60 * 1000;
 
+export interface CustomerBroadcastPayload {
+  id: string;
+  title: string;
+  message: string;
+  deepLink?: string;
+  restaurantId?: string;
+  scheduledAt: number;
+}
+
+/**
+ * Rendered (not data-only) so Android's FCM SDK can auto-display it via the
+ * customer_promotions channel while the app is backgrounded; the app's own
+ * onMessageReceived only has to build one manually when it is foregrounded.
+ */
+export function buildCustomerBroadcastMessage(broadcast: CustomerBroadcastPayload): TokenlessMulticastMessage {
+  return {
+    notification: {title: broadcast.title, body: broadcast.message},
+    data: {
+      type: "CUSTOMER_BROADCAST",
+      broadcastId: broadcast.id,
+      deepLink: broadcast.deepLink || "home",
+      ...(broadcast.restaurantId ? {restaurantId: broadcast.restaurantId} : {}),
+    },
+    android: {priority: "high", notification: {channelId: "customer_promotions"}},
+    apns: {headers: {"apns-priority": "10"}, payload: {aps: {}}},
+  };
+}
+
 export function restaurantAlarmId(orderId: string): string {
   return `order:${orderId}`;
 }

@@ -30,6 +30,19 @@ export function requirePlatformConfigAdminClaim(token: DecodedIdToken): Platform
   );
 }
 
+/**
+ * Stricter than {@link requirePlatformConfigAdminClaim}: reserved for actions whose blast
+ * radius is every user's personal data at once (e.g. a bulk export), where the routine
+ * ops-admin bar is not high enough.
+ */
+export function requireOwnerClaim(token: DecodedIdToken): "owner" {
+  if (privilegedRole(token) === "owner") return "owner";
+  throw new DomainError(
+    "permission-denied",
+    "A verified platform owner claim is required.",
+  );
+}
+
 function permissionFor(target: OrderStatus): string | undefined {
   if (["Accepted", "Preparing", "Ready for pickup", "Cancelled"].includes(target)) return "orders";
   if (target === "Handed to rider") return "handover";
