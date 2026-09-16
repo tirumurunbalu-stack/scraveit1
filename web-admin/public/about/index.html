@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scraveit &middot; Company &amp; FSSAI Details</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --panel: #ffffff; --border: #e3e7f0; --text: #16202e;
+    --text-soft: #5b6472; --brand: #155eef; --brand-strong: #0b49c8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px; line-height: 1.55; padding: 40px 20px 60px;
+  }
+  .page { max-width: 640px; margin: 0 auto; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+  .brand .mark {
+    width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--brand), #5fa3ff);
+    display: grid; place-items: center; font-weight: 800; color: white; font-size: 17px; flex: none;
+  }
+  .brand strong { font-size: 19px; letter-spacing: -.01em; }
+  .brand span { display: block; font-size: 12.5px; color: var(--text-soft); }
+  h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -.01em; }
+  .lede { color: var(--text-soft); margin-bottom: 28px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 22px; margin-bottom: 18px;
+  }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-soft); margin: 0 0 14px; }
+  dl { margin: 0; display: grid; grid-template-columns: minmax(0,160px) minmax(0,1fr); gap: 10px 16px; }
+  dt { color: var(--text-soft); font-size: 13px; }
+  dd { margin: 0; font-weight: 550; }
+  .pending { color: #b06a00; font-weight: 600; }
+  a { color: var(--brand); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  footer { margin-top: 32px; font-size: 12.5px; color: var(--text-soft); }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="brand">
+      <div class="mark">S</div>
+      <div><strong>Scraveit</strong><span>Food delivery marketplace</span></div>
+    </div>
+
+    <h1>Company &amp; regulatory details</h1>
+    <p class="lede">Scraveit is a food delivery marketplace connecting customers, restaurants, and delivery riders. This page lists the operating company's registration and contact details for regulatory and consumer-disclosure purposes.</p>
+
+    <div class="card">
+      <h2>Food Business Operator</h2>
+      <dl>
+        <dt>Legal entity</dt><dd>SCRAVEIT PRIVATE LIMITED</dd>
+        <dt>Operating brand</dt><dd>Scraveit</dd>
+        <dt>FSSAI license</dt><dd class="pending">Application in progress</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Registered address</h2>
+      <dl>
+        <dt>Address</dt>
+        <dd>20-4-656, Macleans Road,<br>
+          Revenue Ward No 20 - I,<br>
+          Nellore, SPSR Nellore,<br>
+          Andhra Pradesh, India, 524004</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Contact &amp; grievance</h2>
+      <dl>
+        <dt>Phone</dt><dd><a href="tel:+916281036211">+91 62810 36211</a></dd>
+        <dt>Email</dt><dd><a href="mailto:tirumurunbalu@gmail.com">tirumurunbalu@gmail.com</a></dd>
+      </dl>
+    </div>
+
+    <footer>&copy; <span id="year"></span> Scraveit Private Limited. All rights reserved.</footer>
+  </div>
+  <script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>
