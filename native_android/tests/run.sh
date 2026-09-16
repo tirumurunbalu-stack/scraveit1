@@ -20,6 +20,7 @@ fi
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_session_recovery.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_dashboard_projection.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_cod_remittance.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/admin_support_alarm_ack.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_review_state.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_contained_reliability.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_search_reliability.js"

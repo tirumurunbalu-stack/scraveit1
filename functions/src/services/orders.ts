@@ -1,5 +1,6 @@
 import {randomBytes, randomInt, timingSafeEqual} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
+import {logger} from "firebase-functions";
 import {db} from "../admin";
 import {pathFor, ROOT, SCHEMA_VERSION} from "../config";
 import {
@@ -382,7 +383,14 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     lateNightFee: fees.lateNightFee,
     rainFee: fees.rainFee,
     surgeFee: fees.surgeFee,
+    riderIncentiveFee: fees.riderIncentiveFee,
   });
+  if (fees.riderIncentiveFee > 0) {
+    logger.info("RIDER_INCENTIVE_FEE_APPLIED", {
+      orderId, restaurantId: restaurant.id,
+      amount: fees.riderIncentiveFee, campaignIds: fees.riderIncentiveCampaignIds,
+    });
+  }
 
   const now = Date.now();
   const financePolicy = await loadFinancePolicy(now);
@@ -572,12 +580,26 @@ export async function transitionOrderFromTracking(
   });
 }
 
+/**
+ * A restaurant's own commission rate (set by an admin/owner on its catalog
+ * record) overrides the platform-wide default for that restaurant only.
+ * Restaurants without an explicit rate keep using the global policy exactly
+ * as before this override existed.
+ */
+async function resolveRestaurantCommissionBps(order: SavrivoOrder, financePolicy: FinancePolicy): Promise<number> {
+  const override = (await db.ref(`${pathFor.restaurant(order.restaurantId)}/commissionBps`).get()).val();
+  return Number.isFinite(Number(override)) && Number(override) >= 0 && Number(override) <= 5_000
+    ? Number(override)
+    : financePolicy.restaurantCommissionBps;
+}
+
 export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
   if (order.paymentMethod !== "cod" || order.status !== "Delivered" || !order.riderId) return;
   const financePolicy = await loadFinancePolicy();
+  const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
   // The immutable balanced journal is authoritative. The existing mutable
   // rider wallet remains only a backwards-compatible operational projection.
-  await persistCodOrderDeliveryLedger(order, financePolicy.restaurantCommissionBps);
+  await persistCodOrderDeliveryLedger(order, commissionBps);
   const ref = db.ref(`${ROOT}/riderWallets/${order.riderId}`);
   await ref.transaction((wallet: Record<string, unknown> | null) => {
     const current = wallet ?? {};
@@ -610,5 +632,6 @@ export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
 export async function recordOnlinePaymentLedger(order: SavrivoOrder): Promise<void> {
   if (order.paymentMethod === "cod" || order.status !== "Delivered" || !order.riderId) return;
   const financePolicy = await loadFinancePolicy();
-  await persistOnlineOrderDeliveryLedger(order, financePolicy.restaurantCommissionBps);
+  const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
+  await persistOnlineOrderDeliveryLedger(order, commissionBps);
 }

@@ -21,10 +21,12 @@ function pageSize(value: unknown): number {
 export async function reconcileOperationalOrderProjection(
   order: SavrivoOrder,
 ): Promise<OperationalOrderProjection> {
-  const next = buildOperationalOrderProjection(order);
+  let next: OperationalOrderProjection | undefined;
   const result = await db.ref(`${OPERATIONAL_ORDERS_ROOT}/${order.id}`).transaction(
-    (current: OperationalOrderProjection | null) =>
-      shouldApplyOperationalOrderProjection(current, next) ? next : undefined,
+    (current: OperationalOrderProjection | null) => {
+      next = buildOperationalOrderProjection(order, current);
+      return shouldApplyOperationalOrderProjection(current, next) ? next : undefined;
+    },
     undefined,
     false,
   );
@@ -35,7 +37,7 @@ export async function reconcileOperationalOrderProjection(
       updatedAt: order.updatedAt,
     });
   }
-  return (result.snapshot.val() as OperationalOrderProjection | null) ?? next;
+  return (result.snapshot.val() as OperationalOrderProjection | null) ?? next!;
 }
 
 function text(value: unknown, maximum: number): string | undefined {

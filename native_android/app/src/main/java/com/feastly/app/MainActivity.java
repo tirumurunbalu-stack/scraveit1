@@ -663,12 +663,7 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void createOrderNotificationChannel() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-    NotificationChannel channel = new NotificationChannel(
-        ORDER_CHANNEL, "Order updates", NotificationManager.IMPORTANCE_HIGH);
-    channel.setDescription("Confirmation and delivery arrival updates");
-    NotificationManager manager = (NotificationManager)getSystemService(Context.NOTIFICATION_SERVICE);
-    if (manager != null) manager.createNotificationChannel(channel);
+    CustomerMessagingService.createNotificationChannels(this);
   }
 
   private void showOrderNotification(String title, String body, int id) {

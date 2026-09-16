@@ -4,10 +4,12 @@ import type {MulticastMessage} from "firebase-admin/messaging";
 import {db, messaging} from "../admin";
 import {ROOT} from "../config";
 import {
+  buildCustomerBroadcastMessage,
   buildRemoveRiderOfferMessage,
   buildRestaurantNewOrderMessage,
   buildRiderOfferMessage,
   buildStopRestaurantAlarmMessage,
+  type CustomerBroadcastPayload,
 } from "../domain/notificationMessages";
 import type {
   NotificationOutboxInput,
@@ -59,6 +61,83 @@ async function restaurantUserIds(restaurantId: string): Promise<string[]> {
     ...Object.entries(normalized ?? {}).filter(([, member]) => member.active === true).map(([uid]) => uid),
     ...Object.entries(legacy ?? {}).filter(([, member]) => member.active === true).map(([uid]) => uid),
   ])];
+}
+
+interface CustomerBroadcastRecord {
+  id: string;
+  title: string;
+  message: string;
+  audience?: string;
+  city?: string;
+  area?: string;
+  restaurantId?: string;
+  deepLink?: string;
+  active?: boolean;
+}
+
+interface CustomerProfileForBroadcast {
+  preferences?: {notifications?: boolean};
+  addresses?: Array<{id?: string; city?: string; area?: string}>;
+  selectedAddressId?: string;
+}
+
+function normalizeAudienceKey(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Resolved at delivery time (not scheduling time) so a retry always reflects
+ * the latest opt-in/address data, matching how every other recipient kind in
+ * this outbox works.
+ */
+async function broadcastAudienceUserIds(broadcastId: string): Promise<string[]> {
+  const broadcast = (await db.ref(`${ROOT}/customerBroadcasts/${broadcastId}`).get())
+    .val() as CustomerBroadcastRecord | null;
+  if (!broadcast || broadcast.active === false) return [];
+  const audience = broadcast.audience || "all";
+
+  if (audience === "restaurant") {
+    if (!broadcast.restaurantId) return [];
+    const [ordersSnapshot, usersSnapshot] = await Promise.all([
+      db.ref(`${ROOT}/restaurantOrders/${broadcast.restaurantId}`).get(),
+      db.ref(`${ROOT}/users`).get(),
+    ]);
+    const candidateUids = Object.keys(ordersSnapshot.val() ?? {});
+    const users = (usersSnapshot.val() ?? {}) as Record<string, CustomerProfileForBroadcast>;
+    return candidateUids.filter((uid) => users[uid]?.preferences?.notifications !== false);
+  }
+
+  const usersSnapshot = await db.ref(`${ROOT}/users`).get();
+  const users = (usersSnapshot.val() ?? {}) as Record<string, CustomerProfileForBroadcast>;
+  const targetCity = normalizeAudienceKey(broadcast.city);
+  const targetArea = normalizeAudienceKey(broadcast.area);
+  return Object.entries(users).filter(([, profile]) => {
+    if (!profile || profile.preferences?.notifications === false) return false;
+    if (audience === "all") return true;
+    const addresses = Array.isArray(profile.addresses) ? profile.addresses : [];
+    const current = addresses.find((entry) => entry?.id === profile.selectedAddressId) ?? addresses[0];
+    if (!current) return false;
+    if (audience === "city") return normalizeAudienceKey(current.city || current.area) === targetCity;
+    if (audience === "area") return normalizeAudienceKey(current.area) === targetArea;
+    return false;
+  }).map(([uid]) => uid);
+}
+
+/**
+ * Deduplicated per occurrence (id + the scheduledAt that was actually due),
+ * not just per broadcast id, so a recurring broadcast's next occurrence -
+ * and a one-time broadcast that was rescheduled and reactivated after
+ * sending - are never blocked by an earlier occurrence's dedup record.
+ */
+export async function notifyCustomerBroadcast(broadcast: CustomerBroadcastPayload): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_BROADCAST",
+    aggregateType: "customerBroadcast",
+    aggregateId: broadcast.id,
+    deduplicationKey: `customer-broadcast:${broadcast.id}:${broadcast.scheduledAt}`,
+    recipient: {kind: "broadcast", id: broadcast.id, app: "customer"},
+    message: storedMessage(buildCustomerBroadcastMessage(broadcast)),
+  });
 }
 
 export interface NotificationDeliveryCounts {
@@ -201,6 +280,9 @@ export async function deliverNotificationRecord(
   switch (record.recipient.kind) {
   case "restaurant":
     uids = await restaurantUserIds(record.recipient.id);
+    break;
+  case "broadcast":
+    uids = await broadcastAudienceUserIds(record.recipient.id);
     break;
   case "user":
   case "rider":

@@ -201,6 +201,7 @@ export interface FeeInput {
   lateNightFee?: number;
   rainFee?: number;
   surgeFee?: number;
+  riderIncentiveFee?: number;
 }
 
 export function buildPricing(input: FeeInput): {pricing: PricingBreakdown; total: number} {
@@ -215,6 +216,7 @@ export function buildPricing(input: FeeInput): {pricing: PricingBreakdown; total
     lateNightFee: roundMoney(Math.max(0, input.lateNightFee ?? 0)),
     rainFee: roundMoney(Math.max(0, input.rainFee ?? 0)),
     surgeFee: roundMoney(Math.max(0, input.surgeFee ?? 0)),
+    riderIncentiveFee: roundMoney(Math.max(0, input.riderIncentiveFee ?? 0)),
     platformFee: roundMoney(Math.max(0, input.platformFee)),
     tax: roundMoney(taxable * Math.max(0, input.taxRate) / 100),
     tip: roundMoney(Math.max(0, input.tip)),
@@ -223,7 +225,8 @@ export function buildPricing(input: FeeInput): {pricing: PricingBreakdown; total
   };
   const total = roundMoney(
     pricing.subtotal - pricing.discount + pricing.deliveryFee + pricing.smallOrderFee +
-    pricing.lateNightFee + pricing.rainFee + pricing.surgeFee + pricing.platformFee + pricing.tax + pricing.tip,
+    pricing.lateNightFee + pricing.rainFee + pricing.surgeFee + pricing.riderIncentiveFee +
+    pricing.platformFee + pricing.tax + pricing.tip,
   );
   return {pricing, total};
 }

@@ -9,13 +9,19 @@ import {db} from "./admin";
 import {DATABASE_REGION, REGION, ROOT} from "./config";
 import {asHttpsError, DomainError} from "./errors";
 import {buildRiderJobProjection} from "./domain/riderJob";
+import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
+import {priceCart} from "./domain/order";
+import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weather";
+import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./services/catalog";
 import {
   claimOrderSchema,
   adminDashboardQuerySchema,
   adminRiderRewardsDashboardQuerySchema,
+  checkoutPricingPreviewSchema,
   createOrderSchema,
   createCodOrderSchema,
   declineOrderSchema,
+  exportPlatformDataWorkbookSchema,
   initiatePaymentSchema,
   markRiderArrivedRestaurantSchema,
   recoverDeliveryOtpSchema,
@@ -32,6 +38,10 @@ import {
   upsertRiderRewardCampaignSchema,
   validationMessage,
 } from "./schemas";
+import {
+  exportPlatformDataWorkbook as buildPlatformDataExport,
+  purgeExpiredPlatformDataExports,
+} from "./services/adminDataExport";
 import {
   advanceDispatchOffer,
   beginSequentialDispatch,
@@ -51,6 +61,7 @@ import {readPlatformConfiguration, updatePlatformConfiguration} from "./services
 import {loadCheckoutConfiguration} from "./services/platformConfig";
 import {
   deliverNotificationRecord,
+  notifyCustomerBroadcast,
   notifyCustomerRiderAssigned,
   notifyCustomerStatus,
   notifyRestaurantNewOrder,
@@ -325,6 +336,15 @@ export const getPlatformConfiguration = onCall({
   }
 });
 
+/**
+ * Optional cart context (restaurantId/items/addressId) turns this into a live
+ * checkout price preview too - the same rainFee/surgeFee/riderIncentiveFee
+ * loadServerFees() computes at real order creation, shown before the
+ * customer commits to placing the order. A preview failure never breaks the
+ * base checkout-configuration response (payment methods still load); it just
+ * means no feePreview is attached, same "fail closed" idiom used everywhere
+ * else these dynamic fees are computed.
+ */
 export const getCheckoutConfiguration = onCall({
   region: REGION,
   enforceAppCheck: true,
@@ -333,7 +353,36 @@ export const getCheckoutConfiguration = onCall({
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to view checkout configuration."));
   try {
-    return await loadCheckoutConfiguration(phonePeGateway.configured);
+    const config = await loadCheckoutConfiguration(phonePeGateway.configured);
+    const data = request.data as Record<string, unknown> | null | undefined;
+    if (!data || !data.restaurantId) return config;
+    try {
+      const input = parse(checkoutPricingPreviewSchema, data);
+      const [{restaurant, menuById}, {address}] = await Promise.all([
+        loadRestaurantAndMenu(input.restaurantId),
+        loadCustomerAddress(request.auth.uid, input.addressId),
+      ]);
+      const {subtotal} = priceCart(input.items, menuById);
+      const fees = await loadServerFees(restaurant, address, subtotal);
+      return {
+        ...config,
+        feePreview: {
+          deliveryFee: fees.deliveryFee,
+          platformFee: fees.platformFee,
+          smallOrderFee: subtotal < fees.smallOrderThreshold ? fees.smallOrderFee : 0,
+          lateNightFee: fees.lateNightFee,
+          rainFee: fees.rainFee,
+          surgeFee: fees.surgeFee,
+          riderIncentiveFee: fees.riderIncentiveFee,
+          riderIncentiveItems: fees.riderIncentiveItems,
+          weatherSeverity: fees.rainFee > 0 ? "verified_rain" : "",
+          activeOrders: fees.activeOrders,
+        },
+      };
+    } catch (previewError) {
+      logger.warn("getCheckoutConfiguration fee preview skipped", {uid: request.auth.uid, error: previewError});
+      return config;
+    }
   } catch (error) {
     logger.warn("getCheckoutConfiguration rejected", {uid: request.auth.uid, error});
     throw asHttpsError(error);
@@ -443,6 +492,49 @@ export const getAdminDashboard = onCall({
 });
 
 /**
+ * Owner-only bulk export: one workbook covering customers, riders,
+ * restaurants and admin/ops-admin accounts. Deliberately gated stricter than
+ * the rest of the admin surface (owner claim, not ops-admin) given the export
+ * covers every user's data - including restaurant bank/UPI payout details -
+ * at once rather than one record at a time. An optional city narrows
+ * customers, riders and restaurants to that city; admin accounts are never
+ * city-scoped.
+ */
+export const exportPlatformDataWorkbook = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 180,
+  memory: "512MiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to export platform data."));
+  try {
+    const input = parse(exportPlatformDataWorkbookSchema, request.data ?? {});
+    return await buildPlatformDataExport(request.auth.token, input.city);
+  } catch (error) {
+    logger.warn("exportPlatformDataWorkbook rejected", {
+      uid: request.auth.uid,
+      error: error instanceof Error ? error.message.slice(0, 160) : "unknown",
+    });
+    throw asHttpsError(error);
+  }
+});
+
+/**
+ * The generated export sits in Storage only long enough for the requesting
+ * device to download it - this is what actually bounds that, independent of
+ * the download link itself.
+ */
+export const purgeExpiredAdminDataExports = onSchedule({
+  schedule: "every 60 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+}, async () => {
+  const deleted = await purgeExpiredPlatformDataExports();
+  if (deleted > 0) logger.info("ADMIN_DATA_EXPORT_PURGE_RUN_COMPLETED", {deleted});
+});
+
+/**
  * Read-only rider/admin financial view. All money comes from validated,
  * backend-private ledger journals and the authoritative COD wallet projection.
  * A bounded/incomplete result never claims to be a current payable balance.
@@ -490,7 +582,10 @@ export const getAdminRiderRewardsDashboard = onCall({
   invoker: "public",
   enforceAppCheck: true,
   timeoutSeconds: 20,
-  memory: "128MiB",
+  // 128MiB was tight enough that ordinary codebase growth (shared across
+  // every function's cold start) pushed it past the limit, failing the
+  // readiness probe with FUNCTION_HTTP_503 before the handler ever ran.
+  memory: "256MiB",
   cpu: "gcf_gen1",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to view rider rewards operations."));
@@ -531,7 +626,9 @@ export const updateRiderRewardSettingsPolicy = onCall({
   invoker: "public",
   enforceAppCheck: true,
   timeoutSeconds: 20,
-  memory: "128MiB",
+  // Shares the same cold-start module bundle as getAdminRiderRewardsDashboard,
+  // which hit FUNCTION_HTTP_503 at 128MiB - see the comment there.
+  memory: "256MiB",
   cpu: "gcf_gen1",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to update rider incentive settings."));
@@ -700,6 +797,76 @@ export const processNotificationOutbox = onSchedule({
 });
 
 /**
+ * Finds customerBroadcasts whose scheduled time has arrived and enqueues a
+ * real FCM push for each. Enqueueing is idempotent (deduplicationKey is the
+ * broadcast id), so running this every minute against already-dispatched
+ * broadcasts is safe; it only ever sends each one once. Delivery retries are
+ * handled by the existing processNotificationOutbox worker above.
+ */
+export const dispatchCustomerBroadcasts = onSchedule({
+  schedule: "every 1 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+}, async () => {
+  const now = Date.now();
+  const snapshot = await db.ref(`${ROOT}/customerBroadcasts`).get();
+  const broadcasts = snapshot.val() as Record<string, {
+    id: string;
+    title: string;
+    message: string;
+    audience?: string;
+    city?: string;
+    area?: string;
+    restaurantId?: string;
+    deepLink?: string;
+    active?: boolean;
+    scheduledAt?: number;
+    expiresAt?: number;
+    repeat?: CustomerBroadcastRepeat;
+  }> | null;
+  if (!broadcasts) return;
+  const due = Object.values(broadcasts).filter((broadcast) => broadcast && broadcast.active !== false &&
+    Number(broadcast.scheduledAt) > 0 && Number(broadcast.scheduledAt) <= now &&
+    (!broadcast.expiresAt || Number(broadcast.expiresAt) > now));
+  for (const broadcast of due) {
+    try {
+      await notifyCustomerBroadcast(broadcast as typeof broadcast & {scheduledAt: number});
+      // Advance a recurring broadcast to its next occurrence, or retire a
+      // one-time (or exhausted) one so this scan skips it going forward.
+      const currentScheduledAt = Number(broadcast.scheduledAt);
+      const next = computeNextBroadcastOccurrence(currentScheduledAt, broadcast.repeat);
+      const path = `${ROOT}/customerBroadcasts/${broadcast.id}`;
+      if (next !== null && (!broadcast.expiresAt || next < Number(broadcast.expiresAt))) {
+        await db.ref().update({[`${path}/scheduledAt`]: next});
+      } else {
+        await db.ref().update({[`${path}/active`]: false});
+      }
+    } catch (error) {
+      logger.warn("CUSTOMER_BROADCAST_DISPATCH_FAILED", {broadcastId: broadcast.id, error});
+    }
+  }
+  if (due.length) logger.info("CUSTOMER_BROADCAST_DISPATCH_RUN_COMPLETED", {dueCount: due.length});
+});
+
+/**
+ * Refreshes the live rain signal every open restaurant's checkout relies on.
+ * loadServerFees() only ever trusts a fresh "verified_weather" pricingSignals
+ * entry, so a lookup failure here simply lets that signal go stale (no rain
+ * fee) rather than risk writing a guessed one.
+ */
+export const checkRainPricingSignals = onSchedule({
+  schedule: "every 15 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  secrets: [GOOGLE_WEATHER_API_KEY],
+}, async () => {
+  const summary = await refreshRainPricingSignals(GOOGLE_WEATHER_API_KEY.value());
+  logger.info("RAIN_PRICING_SIGNAL_RUN_COMPLETED", summary);
+});
+
+/**
  * Reconciles the narrow failure window between rider-claim reservation,
  * canonical order assignment, and projection fan-out. It never chooses a
  * winner: the canonical order transaction remains the sole authority.
@@ -820,6 +987,21 @@ export const onOrderUpdated = onValueUpdated({
   const before = event.data.before.val() as SavrivoOrder | null;
   const rawOrder = event.data.after.val() as SavrivoOrder | null;
   if (!before || !rawOrder) return;
+  // A retry can fire long after the order has advanced further (this trigger
+  // is configured with retry: true). Replaying a superseded status here would
+  // rewrite riderJobs/dispatchQueue/riderPresence back to that old status,
+  // visibly reverting an in-progress delivery in the rider app. Confirm this
+  // event still matches the canonical order before acting on it.
+  const latestForEvent = (await db.ref(`${ROOT}/orders/${rawOrder.customerId}/${rawOrder.id}`).get())
+    .val() as SavrivoOrder | null;
+  if (!latestForEvent || Number(latestForEvent.updatedAt) !== Number(rawOrder.updatedAt)) {
+    logger.info("STALE_ORDER_UPDATE_EVENT_IGNORED", {
+      orderId: rawOrder.id,
+      eventStatus: rawOrder.status,
+      latestStatus: latestForEvent?.status,
+    });
+    return;
+  }
   const order = await scrubLegacyPublicOtp(rawOrder);
   await reconcileRestaurantOrderProjection(order);
   await reconcileRestaurantWorkload(order);
@@ -856,8 +1038,17 @@ export const onOrderUpdated = onValueUpdated({
   }
   if (order.riderId) {
     if (order.status === "Assigned") {
+      // A rider can be pre-assigned and record verified restaurant arrival
+      // (phase "at_restaurant") before the kitchen marks Ready for pickup.
+      // That later transition auto-promotes the order back through this
+      // same "Assigned" branch — passing the existing job here (as the
+      // sibling branch below already does) lets buildRiderJobProjection's
+      // phase-rank guard keep the verified arrival instead of reverting the
+      // rider's screen to "I have arrived at the restaurant" again.
+      const existingJob = (await db.ref(`${ROOT}/riderJobs/${order.riderId}/${order.id}`).get())
+        .val() as Record<string, unknown> | null;
       await db.ref(ROOT).update({
-        [`riderJobs/${order.riderId}/${order.id}`]: buildRiderJobProjection(order),
+        [`riderJobs/${order.riderId}/${order.id}`]: buildRiderJobProjection(order, existingJob),
         [`dispatchQueue/${order.id}/status`]: "assigned",
         [`dispatchQueue/${order.id}/active`]: false,
         [`dispatchQueue/${order.id}/updatedAt`]: order.updatedAt,

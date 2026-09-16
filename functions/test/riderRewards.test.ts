@@ -769,3 +769,88 @@ describe("rider rewards engine", () => {
     });
   });
 });
+
+describe("optimistic-concurrency check does not false-abort on a fresh transaction path", () => {
+  // Firebase's RTDB transaction() may invoke the update callback with
+  // current=null even when real data exists at that path (it hasn't been
+  // synced locally yet) - the callback must not treat that as "the record
+  // is genuinely stale" and abort before the SDK gets a chance to retry with
+  // the real value. This MemoryRiderRewardsDatabase mock always resolves
+  // `current` accurately in one pass, so a never-before-seeded path is the
+  // one scenario it can reproduce: current is genuinely null there too, and
+  // the fix (only enforcing expectedUpdatedAt once current !== null) must
+  // not reject a first-ever save just because the caller supplied some
+  // expectedUpdatedAt value.
+
+  it("still creates rider reward settings on the very first save even if expectedUpdatedAt is (incorrectly) set", async () => {
+    const database = new MemoryRiderRewardsDatabase();
+    const now = new Date("2026-08-26T13:00:00+05:30").getTime();
+    const settings = await updateRiderRewardSettings("owner-1", ownerToken, {
+      operationId: "reward-settings-fresh",
+      expectedUpdatedAt: 999_999, // stale/meaningless on a path with no prior data
+      payoutMinimumPaise: 3_000,
+    }, database, () => now);
+    expect(settings.payoutMinimumPaise).toBe(3_000);
+    expect(settings.updatedAt).toBe(now);
+  });
+
+  it("still rejects a genuinely stale expectedUpdatedAt once real settings exist", async () => {
+    const database = new MemoryRiderRewardsDatabase();
+    const now = new Date("2026-08-26T13:00:00+05:30").getTime();
+    const first = await updateRiderRewardSettings("owner-1", ownerToken, {
+      operationId: "reward-settings-first",
+      payoutMinimumPaise: 3_000,
+    }, database, () => now);
+
+    await expect(updateRiderRewardSettings("owner-1", ownerToken, {
+      operationId: "reward-settings-second",
+      expectedUpdatedAt: first.updatedAt - 1, // deliberately wrong
+      payoutMinimumPaise: 4_000,
+    }, database, () => now + 1_000)).rejects.toThrow("Reward settings changed; refresh and retry.");
+  });
+
+  it("accepts a matching expectedUpdatedAt once real settings exist", async () => {
+    const database = new MemoryRiderRewardsDatabase();
+    const now = new Date("2026-08-26T13:00:00+05:30").getTime();
+    const first = await updateRiderRewardSettings("owner-1", ownerToken, {
+      operationId: "reward-settings-first",
+      payoutMinimumPaise: 3_000,
+    }, database, () => now);
+
+    const second = await updateRiderRewardSettings("owner-1", ownerToken, {
+      operationId: "reward-settings-second",
+      expectedUpdatedAt: first.updatedAt,
+      payoutMinimumPaise: 4_000,
+    }, database, () => now + 1_000);
+    expect(second.payoutMinimumPaise).toBe(4_000);
+  });
+
+  it("still creates a rider reward campaign on the very first save even if expectedUpdatedAt is (incorrectly) set", async () => {
+    const database = new MemoryRiderRewardsDatabase();
+    const now = new Date("2026-08-26T13:00:00+05:30").getTime();
+    const {campaign} = await upsertRiderRewardCampaign("owner-1", ownerToken, {
+      operationId: "reward-campaign-fresh",
+      campaignId: "lunch-surge",
+      expectedUpdatedAt: 999_999,
+      campaign: sampleCampaign(now),
+    }, database, () => now);
+    expect(campaign.updatedAt).toBe(now);
+  });
+
+  it("still rejects a genuinely stale expectedUpdatedAt once a campaign already exists", async () => {
+    const database = new MemoryRiderRewardsDatabase();
+    const now = new Date("2026-08-26T13:00:00+05:30").getTime();
+    const {campaign: first} = await upsertRiderRewardCampaign("owner-1", ownerToken, {
+      operationId: "reward-campaign-first",
+      campaignId: "lunch-surge",
+      campaign: sampleCampaign(now),
+    }, database, () => now);
+
+    await expect(upsertRiderRewardCampaign("owner-1", ownerToken, {
+      operationId: "reward-campaign-second",
+      campaignId: "lunch-surge",
+      expectedUpdatedAt: first.updatedAt - 1,
+      campaign: {...sampleCampaign(now), title: "Lunch surge v2"},
+    }, database, () => now + 1_000)).rejects.toThrow("Reward campaign changed; refresh and retry.");
+  });
+});

@@ -6,7 +6,7 @@ export const OUTBOX_TERMINAL_NEXT_ATTEMPT_AT = Number.MAX_SAFE_INTEGER;
 export const OUTBOX_STATUSES = ["pending", "processing", "delivered", "dead_letter"] as const;
 export type OutboxStatus = typeof OUTBOX_STATUSES[number];
 export type NotificationApp = "customer" | "restaurant" | "rider" | "admin";
-export type NotificationRecipientKind = "user" | "restaurant" | "rider" | "admin";
+export type NotificationRecipientKind = "user" | "restaurant" | "rider" | "admin" | "broadcast";
 
 export type RtdbValue = null | boolean | number | string | RtdbValue[] | RtdbObject;
 export interface RtdbObject {[key: string]: RtdbValue}
@@ -181,7 +181,7 @@ function cloneRtdbValue(value: RtdbValue, seen = new WeakSet<object>(), depth = 
 function normalizeRecipient(recipient: NotificationRecipient): NotificationRecipient {
   const kind = recipient.kind;
   const app = recipient.app;
-  if (!["user", "restaurant", "rider", "admin"].includes(kind)) throw new Error("INVALID_RECIPIENT_KIND");
+  if (!["user", "restaurant", "rider", "admin", "broadcast"].includes(kind)) throw new Error("INVALID_RECIPIENT_KIND");
   if (!["customer", "restaurant", "rider", "admin"].includes(app)) throw new Error("INVALID_RECIPIENT_APP");
   return {kind, app, id: boundedText(recipient.id, "RECIPIENT_ID", 256)};
 }

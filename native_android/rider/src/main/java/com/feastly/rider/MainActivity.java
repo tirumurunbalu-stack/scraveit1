@@ -415,7 +415,13 @@ public class MainActivity extends ComponentActivity {
                 if (!isTrustedPageLoaded()) return;
                 String target = destination == null ? "" : destination.trim();
                 if (target.length() == 0 || target.length() > 500 || containsControlCharacter(target)) return;
-                Uri googleNavigation = Uri.parse("google.navigation:q=" + Uri.encode(target));
+                // A "lat,lng" destination must reach Maps with a literal comma: this
+                // scheme is opaque (not URL-decoded), so Uri.encode turning "," into
+                // "%2C" stops Maps from recognizing coordinates and it falls back to
+                // a fuzzy text search at the wrong place. Free-text addresses still
+                // need normal encoding for spaces/punctuation.
+                boolean isCoordinatePair = target.matches("-?\\d+(\\.\\d+)?,-?\\d+(\\.\\d+)?");
+                Uri googleNavigation = Uri.parse("google.navigation:q=" + (isCoordinatePair ? target : Uri.encode(target)));
                 Intent maps = new Intent(Intent.ACTION_VIEW, googleNavigation);
                 maps.setPackage("com.google.android.apps.maps");
                 try { startActivity(maps); }

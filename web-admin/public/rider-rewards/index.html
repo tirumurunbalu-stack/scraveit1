@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rider Rewards &middot; Savrivo Admin</title>
+<link rel="stylesheet" href="../assets/savrivo-admin.css?v=4">
+</head>
+<body>
+<div class="shell" id="app-shell" hidden>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="mark">S</div>
+      <div><strong>Savrivo</strong><span>Web Admin</span></div>
+    </div>
+    <div class="sidebar-section-label">Sections</div>
+    <a class="sidebar-link active" href="./">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Rider Rewards
+    </a>
+    <a class="sidebar-link" href="../finance/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20M7 15h3"/></svg>
+      Finance
+    </a>
+    <div class="sidebar-link disabled">Orders (soon)</div>
+    <div class="sidebar-link disabled">Restaurants (soon)</div>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-account">
+      <div class="who" id="sidebar-who"></div>
+      <button class="sidebar-signout" id="signout-btn">Sign out</button>
+    </div>
+  </nav>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1>Rider Rewards</h1>
+        <p>Surge, incentive and milestone campaigns &mdash; the same data the Admin app manages.</p>
+      </div>
+      <div class="topbar-actions">
+        <input class="input" id="search-input" placeholder="Search campaigns…" style="width:220px;">
+        <button class="icon-btn" id="refresh-btn" title="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>
+        </button>
+        <button class="btn btn-primary" id="new-campaign-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          New campaign
+        </button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="load-error" class="notice notice-danger" hidden></div>
+      <div id="loading-block" class="loading-block"><span class="spinner dark"></span> Loading rider rewards…</div>
+
+      <div id="dashboard" hidden>
+        <section class="stat-grid" id="stat-grid" style="margin-bottom:20px;"></section>
+
+        <section class="card card-pad" style="margin-bottom:20px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" id="settings-toggle">
+            <h2 style="font-size:14px;">Global settings</h2>
+            <svg id="settings-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition: transform .15s;"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          <div id="settings-body" hidden style="margin-top:16px;"></div>
+        </section>
+
+        <div class="tabs" id="tabs"></div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Campaign</th><th>Kind</th><th>Status</th><th>Reward</th><th>Window</th>
+                <th>Riders</th><th>Accrued</th><th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="campaign-rows"></tbody>
+          </table>
+        </div>
+        <div id="table-empty" class="empty-state" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <p>No campaigns match this view.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div id="toast-stack"></div>
+<div id="drawer-root"></div>
+
+<script type="module" src="./dashboard.js?v=3"></script>
+</body>
+</html>

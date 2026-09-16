@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Savrivo Admin</title>
+<link rel="stylesheet" href="./assets/savrivo-admin.css?v=4">
+<style>
+  body { min-height: 100vh; }
+  #mfa-qr svg { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div class="login-shell" id="login-shell">
+  <div class="login-card" id="login-card" style="max-width:420px;">
+    <div class="login-mark">S</div>
+    <h1 id="card-title">Sign in</h1>
+    <p class="sub" id="card-sub">Use your Savrivo owner or ops-admin account &mdash; the same login as the Admin app.</p>
+
+    <form id="login-form">
+      <div class="field">
+        <label for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="notice notice-danger" id="login-error" hidden></div>
+      <div class="notice notice-success" id="login-notice" hidden></div>
+      <button class="btn btn-primary" type="submit" id="login-submit" style="width:100%; justify-content:center;">Sign in</button>
+      <button class="btn btn-ghost btn-sm" type="button" id="forgot-btn" style="width:100%; justify-content:center; margin-top:8px;">Forgot password?</button>
+      <div style="display:flex; align-items:center; gap:10px; margin:14px 0; color:var(--text-faint); font-size:11.5px;">
+        <div style="flex:1; height:1px; background:var(--border);"></div>or<div style="flex:1; height:1px; background:var(--border);"></div>
+      </div>
+      <button class="btn btn-secondary" type="button" id="google-btn" style="width:100%; justify-content:center;">
+        <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34.1 5.1 29.3 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21 21-9.4 21-21c0-1.2-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34.1 5.1 29.3 3 24 3 15.9 3 8.9 7.6 6.3 14.7z"/><path fill="#4CAF50" d="M24 45c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.3 36.6 26.8 37.5 24 37.5c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.4 40.3 16.1 45 24 45z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.6l6.2 5.2C40.9 36.3 44 30.7 44 24c0-1.2-.1-2.4-.4-3.5z"/></svg>
+        Continue with Google
+      </button>
+    </form>
+
+    <form id="mfa-form" hidden>
+      <div class="notice notice-info">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        <span>This account has two-factor authentication enabled. Enter the 6-digit code from your authenticator app.</span>
+      </div>
+      <div class="field">
+        <label for="mfa-code">Authenticator code</label>
+        <input class="input" id="mfa-code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="123456" required>
+      </div>
+      <div class="notice notice-danger" id="mfa-error" hidden></div>
+      <button class="btn btn-primary" type="submit" id="mfa-submit" style="width:100%; justify-content:center;">Verify</button>
+      <button class="btn btn-ghost btn-sm" type="button" id="mfa-cancel" style="width:100%; justify-content:center; margin-top:8px;">Back to sign in</button>
+    </form>
+
+    <div id="sections-view" hidden>
+      <div class="notice notice-success" id="who-notice"></div>
+      <div class="section-tiles">
+        <a class="section-tile" href="./rider-rewards/">
+          <div class="tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+          <h3>Rider Rewards</h3>
+          <p>Surge, incentive and milestone campaigns &mdash; create, edit, pause, archive.</p>
+        </a>
+        <a class="section-tile" href="./finance/">
+          <div class="tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20M7 15h3"/></svg></div>
+          <h3>Finance</h3>
+          <p>Ledger overview, COD remittance, rider payouts, restaurant settlements &amp; bank details.</p>
+        </a>
+        <div class="section-tile disabled">
+          <div class="tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></div>
+          <h3>Orders</h3>
+          <p>Coming next.</p>
+        </div>
+        <div class="section-tile disabled">
+          <div class="tile-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21V9l8-6 8 6v12"/><path d="M9 21v-6h6v6"/></svg></div>
+          <h3>Restaurants</h3>
+          <p>Coming next.</p>
+        </div>
+      </div>
+
+      <section class="card card-pad" id="security-card" style="margin-top:20px; text-align:left;">
+        <div class="cluster between"><h3 style="font-size:14px;">Two-factor authentication</h3><span class="badge" id="mfa-status-badge"></span></div>
+        <p class="hint" id="mfa-status-text" style="margin:6px 0 12px;"></p>
+        <div id="mfa-actions"></div>
+      </section>
+
+      <button class="btn btn-ghost btn-sm" id="signout-btn" style="margin-top:20px;">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-stack"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script type="module">
+  import {
+    ready, session, signIn, signInWithGoogle, resetPassword, signOutUser, onSessionChange,
+    completeMfaSignIn, enrolledTotpFactors, reauthenticateForMfa, startTotpEnrollment, completeTotpEnrollment, unenrollTotpFactor,
+  } from "./assets/firebase-client.js?v=5";
+
+  function toast(message, kind) {
+    const stack = document.getElementById("toast-stack");
+    const node = document.createElement("div");
+    node.className = "toast " + (kind || "");
+    node.textContent = message;
+    stack.appendChild(node);
+    setTimeout(() => node.remove(), 4200);
+  }
+
+  const loginForm = document.getElementById("login-form");
+  const mfaForm = document.getElementById("mfa-form");
+  const sectionsView = document.getElementById("sections-view");
+  const cardTitle = document.getElementById("card-title");
+  const cardSub = document.getElementById("card-sub");
+  const errorBox = document.getElementById("login-error");
+  const noticeBox = document.getElementById("login-notice");
+  const whoNotice = document.getElementById("who-notice");
+  const submitBtn = document.getElementById("login-submit");
+  const googleBtn = document.getElementById("google-btn");
+  const forgotBtn = document.getElementById("forgot-btn");
+  let pendingMfaResolver = null;
+
+  function render(state) {
+    mfaForm.hidden = true;
+    pendingMfaResolver = null;
+    if (state.user && state.isAdmin) {
+      loginForm.hidden = true;
+      sectionsView.hidden = false;
+      cardTitle.textContent = "Savrivo Admin";
+      cardSub.textContent = "Choose a section.";
+      whoNotice.textContent = "Signed in as " + (state.user.email || state.user.uid) + " (" + state.claims.savrivoRole + ").";
+      renderSecurityCard();
+    } else if (state.user && !state.isAdmin) {
+      loginForm.hidden = true;
+      sectionsView.hidden = true;
+      errorBox.hidden = false;
+      errorBox.textContent = "This account (" + (state.user.email || state.user.uid) + ") does not have platform admin access. Sign in with an owner or ops-admin account.";
+      loginForm.hidden = false;
+    } else {
+      loginForm.hidden = false;
+      sectionsView.hidden = true;
+    }
+  }
+
+  // Firebase's auth/* error codes, translated to what actually went wrong -
+  // "sign in failed" alone doesn't tell you whether the password is wrong or
+  // the account was only ever set up with Google (has no password at all).
+  function authErrorMessage(error) {
+    const code = String(error && error.code || "");
+    if (code === "auth/invalid-credential" || code === "auth/wrong-password") {
+      return "Wrong email or password. If you normally sign in with Google on the Admin app, use “Continue with Google” below instead — this account may not have a password set.";
+    }
+    if (code === "auth/user-not-found") return "No account found for that email.";
+    if (code === "auth/too-many-requests") return "Too many attempts. Wait a moment and try again, or use “Continue with Google”.";
+    if (code === "auth/popup-closed-by-user") return "";
+    if (code === "auth/network-request-failed") return "Network error — check your connection and try again.";
+    if (code === "auth/invalid-verification-code") return "That code is wrong or has expired. Codes refresh every 30 seconds — try the newest one.";
+    return "Sign in failed (" + (code || "unknown error") + "). " + (error && error.message ? String(error.message) : "");
+  }
+
+  ready().then(() => render(session()));
+  onSessionChange(render);
+
+  function showMfaChallenge(resolver) {
+    pendingMfaResolver = resolver;
+    loginForm.hidden = true;
+    mfaForm.hidden = false;
+    document.getElementById("mfa-error").hidden = true;
+    document.getElementById("mfa-code").value = "";
+    document.getElementById("mfa-code").focus();
+  }
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorBox.hidden = true;
+    noticeBox.hidden = true;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span> Signing in…';
+    try {
+      const state = await signIn(
+        document.getElementById("email").value.trim(),
+        document.getElementById("password").value,
+      );
+      if (!state.isAdmin) {
+        errorBox.hidden = false;
+        errorBox.textContent = "This account does not have platform admin access.";
+      }
+    } catch (error) {
+      if (error.code === "auth/multi-factor-auth-required") { showMfaChallenge(error.resolver); return; }
+      const message = authErrorMessage(error);
+      if (message) { errorBox.hidden = false; errorBox.textContent = message; }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Sign in";
+    }
+  });
+
+  googleBtn.addEventListener("click", async () => {
+    errorBox.hidden = true;
+    noticeBox.hidden = true;
+    googleBtn.disabled = true;
+    const original = googleBtn.innerHTML;
+    googleBtn.innerHTML = '<span class="spinner dark"></span> Opening Google sign-in…';
+    try {
+      const state = await signInWithGoogle();
+      if (!state.isAdmin) {
+        errorBox.hidden = false;
+        errorBox.textContent = "This Google account (" + (state.user.email || "") + ") does not have platform admin access.";
+      }
+    } catch (error) {
+      if (error.code === "auth/multi-factor-auth-required") { showMfaChallenge(error.resolver); return; }
+      const message = authErrorMessage(error);
+      if (message) { errorBox.hidden = false; errorBox.textContent = message; }
+    } finally {
+      googleBtn.disabled = false;
+      googleBtn.innerHTML = original;
+    }
+  });
+
+  forgotBtn.addEventListener("click", async () => {
+    const email = document.getElementById("email").value.trim();
+    errorBox.hidden = true;
+    noticeBox.hidden = true;
+    if (!email) {
+      errorBox.hidden = false;
+      errorBox.textContent = "Enter your email above first, then tap “Forgot password?”.";
+      return;
+    }
+    forgotBtn.disabled = true;
+    try {
+      await resetPassword(email);
+      noticeBox.hidden = false;
+      noticeBox.textContent = "If " + email + " has a password-based account, a reset link was sent.";
+    } catch (error) {
+      const message = authErrorMessage(error);
+      errorBox.hidden = false;
+      errorBox.textContent = message || "Could not send a reset email.";
+    } finally {
+      forgotBtn.disabled = false;
+    }
+  });
+
+  mfaForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const errBox = document.getElementById("mfa-error");
+    errBox.hidden = true;
+    if (!pendingMfaResolver) { errBox.hidden = false; errBox.textContent = "This challenge expired. Go back and sign in again."; return; }
+    const submit = document.getElementById("mfa-submit");
+    submit.disabled = true;
+    submit.innerHTML = '<span class="spinner"></span> Verifying…';
+    try {
+      const state = await completeMfaSignIn(pendingMfaResolver, document.getElementById("mfa-code").value);
+      if (!state.isAdmin) {
+        mfaForm.hidden = true; loginForm.hidden = false;
+        errorBox.hidden = false;
+        errorBox.textContent = "This account does not have platform admin access.";
+      }
+    } catch (error) {
+      errBox.hidden = false;
+      errBox.textContent = authErrorMessage(error);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Verify";
+    }
+  });
+  document.getElementById("mfa-cancel").addEventListener("click", () => {
+    pendingMfaResolver = null;
+    mfaForm.hidden = true;
+    loginForm.hidden = false;
+  });
+
+  document.getElementById("signout-btn").addEventListener("click", () => signOutUser());
+
+  // -------------------------------------------------------------------------
+  // Two-factor authentication enrollment (Google Authenticator via TOTP)
+  // -------------------------------------------------------------------------
+  function renderSecurityCard() {
+    const badge = document.getElementById("mfa-status-badge");
+    const text = document.getElementById("mfa-status-text");
+    const actions = document.getElementById("mfa-actions");
+    const factors = enrolledTotpFactors();
+    if (factors.length) {
+      badge.className = "badge badge-success";
+      badge.textContent = "Enabled";
+      text.textContent = "Signing in now requires a code from your authenticator app, in addition to your password or Google account.";
+      actions.innerHTML = '<button class="btn btn-danger btn-sm" id="mfa-remove-btn">Remove two-factor authentication</button>';
+      document.getElementById("mfa-remove-btn").addEventListener("click", () => removeMfa(factors[0].uid));
+    } else {
+      badge.className = "badge badge-warning";
+      badge.textContent = "Not enabled";
+      text.textContent = "Add a second factor with Google Authenticator (or any TOTP app) so a password or Google sign-in alone isn't enough to get in.";
+      actions.innerHTML = '<button class="btn btn-primary btn-sm" id="mfa-enable-btn">Enable with Google Authenticator</button>';
+      document.getElementById("mfa-enable-btn").addEventListener("click", beginEnrollment);
+    }
+  }
+
+  async function removeMfa(uid) {
+    if (!confirm("Remove two-factor authentication from this account? You'll be able to sign in with just your password or Google account again.")) return;
+    try {
+      await unenrollTotpFactor(uid);
+      toast("Two-factor authentication removed.", "success");
+      renderSecurityCard();
+    } catch (error) {
+      toast("Could not remove it. " + (error.message || ""), "danger");
+    }
+  }
+
+  async function beginEnrollment() {
+    const actions = document.getElementById("mfa-actions");
+    let secretBundle;
+    try {
+      secretBundle = await startTotpEnrollment();
+    } catch (error) {
+      if (error && error.code === "auth/requires-recent-login") {
+        renderReauthPrompt();
+        return;
+      }
+      toast("Could not start enrollment. " + (error.message || ""), "danger");
+      return;
+    }
+    renderEnrollmentStep(secretBundle);
+  }
+
+  function renderReauthPrompt() {
+    const actions = document.getElementById("mfa-actions");
+    actions.innerHTML = '<div class="notice notice-warning" style="margin-bottom:10px;">'
+      + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>'
+      + '<span>This is a sensitive change — confirm it\'s you before enabling two-factor authentication.</span></div>'
+      + '<div class="field"><label>Password</label><input class="input" id="reauth-password" type="password" autocomplete="current-password"></div>'
+      + '<button class="btn btn-primary btn-sm" id="reauth-confirm-btn">Confirm and continue</button>'
+      + '<button class="btn btn-ghost btn-sm" id="reauth-cancel-btn" style="margin-left:8px;">Cancel</button>';
+    document.getElementById("reauth-confirm-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("reauth-confirm-btn");
+      btn.disabled = true;
+      try {
+        await reauthenticateForMfa(document.getElementById("reauth-password").value);
+        beginEnrollment();
+      } catch (error) {
+        toast("Could not confirm it's you. " + (error.message || ""), "danger");
+        btn.disabled = false;
+      }
+    });
+    document.getElementById("reauth-cancel-btn").addEventListener("click", renderSecurityCard);
+  }
+
+  function renderEnrollmentStep(secretBundle) {
+    const actions = document.getElementById("mfa-actions");
+    actions.innerHTML = '<p style="font-size:12.5px; margin-bottom:10px;">1. Scan this QR code with Google Authenticator (or any TOTP app).</p>'
+      + '<div id="mfa-qr" style="margin-bottom:10px;"></div>'
+      + '<p class="hint" style="margin-bottom:10px;">Can\'t scan? Enter this key manually: <code style="user-select:all;">' + secretBundle.secretKey + '</code></p>'
+      + '<p style="font-size:12.5px; margin-bottom:6px;">2. Enter the 6-digit code the app is showing.</p>'
+      + '<div class="field"><input class="input" id="enroll-code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="123456"></div>'
+      + '<div class="notice notice-danger" id="enroll-error" hidden></div>'
+      + '<button class="btn btn-primary btn-sm" id="enroll-confirm-btn">Verify & enable</button>'
+      + '<button class="btn btn-ghost btn-sm" id="enroll-cancel-btn" style="margin-left:8px;">Cancel</button>'
+      + '<div class="notice notice-warning" style="margin-top:12px;">'
+      + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>'
+      + '<span>If you lose the device this is enrolled on, you will need another owner or ops-admin to help you regain access — there is no separate backup-code flow.</span></div>';
+
+    try {
+      const qr = window.qrcode(0, "M");
+      qr.addData(secretBundle.qrCodeUrl);
+      qr.make();
+      document.getElementById("mfa-qr").innerHTML = qr.createSvgTag(4, 4);
+    } catch (_) {
+      document.getElementById("mfa-qr").innerHTML = '<p class="hint">QR rendering failed — use the manual key below instead.</p>';
+    }
+
+    document.getElementById("enroll-confirm-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("enroll-confirm-btn");
+      const errBox = document.getElementById("enroll-error");
+      errBox.hidden = true;
+      btn.disabled = true;
+      try {
+        await completeTotpEnrollment(secretBundle.secret, document.getElementById("enroll-code").value, "Google Authenticator");
+        toast("Two-factor authentication enabled.", "success");
+        renderSecurityCard();
+      } catch (error) {
+        errBox.hidden = false;
+        errBox.textContent = authErrorMessage(error);
+        btn.disabled = false;
+      }
+    });
+    document.getElementById("enroll-cancel-btn").addEventListener("click", renderSecurityCard);
+  }
+</script>
+</body>
+</html>

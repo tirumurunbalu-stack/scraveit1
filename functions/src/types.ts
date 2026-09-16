@@ -93,6 +93,7 @@ export interface PricingBreakdown {
   lateNightFee: number;
   rainFee: number;
   surgeFee: number;
+  riderIncentiveFee: number;
   platformFee: number;
   tax: number;
   tip: number;

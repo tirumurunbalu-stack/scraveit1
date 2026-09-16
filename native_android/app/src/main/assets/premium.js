@@ -50,6 +50,7 @@
     receipt: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
     chat: '<path d="M21 12a8 8 0 0 1-8 8H4l2.1-3.2A8 8 0 1 1 21 12Z"/>',
+    scooter: '<circle cx="5.5" cy="14.9" r="3"/><circle cx="18.5" cy="14.9" r="3"/><path d="M8.5 14.9h6.6"/><path d="M15.1 14.9 17.4 7"/><path d="M15.2 6.4h4.2"/><path d="M4.6 8.4h4.2l2.4 6.5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
   };
 
@@ -166,7 +167,7 @@
     menuPrice: "all", menuSort: "recommended", ratingView: loadJSON("savrivo.customer.ratingView", "overall"),
     selectedRestaurantId: "the-waffle-spot-naidupeta", selectedOrderId: "", selectedMenuCategory: "All",
     online: navigator.onLine, loading: false, syncError: "", lastSync: 0,
-    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
+    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, trackingSeenAt:{}, trackingMap:null, trackingRoutes:{}, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
     addressMapDraft: null, addressMapZoom: 16, locationMode: "general", menuLoading:{}, menuRequests:{}, menuErrors:{}, homeBootStartedAt:perfNow(), homeVisibleLogged:false,
     checkout: Object.assign({deliveryMode:"asap", payment:"cod", instructions:"", contactless:false, pendingOrderId:"", pendingIdempotencyKey:""},loadJSON("savrivo.customer.checkout",{}))
   };
@@ -714,8 +715,8 @@
     const source = new EventSource(parameters
       ? dbQueryUrl(path, session.idToken, parameters)
       : dbUrl(path, session.idToken));
-    source.addEventListener("put", event => onChange(parseStreamEvent(event)));
-    source.addEventListener("patch", event => onChange(parseStreamEvent(event)));
+    source.addEventListener("put", event => onChange(parseStreamEvent(event), "put"));
+    source.addEventListener("patch", event => onChange(parseStreamEvent(event), "patch"));
     source.onerror = function () {
       source.__savrivoDisconnected=true;
       closeWatcher(source);
@@ -767,11 +768,27 @@
     state.watcherStarts[kind]=started;
     try{return await started;}catch(error){scheduleRealtimeReconnect(kind);throw error;}finally{state.watcherStarts[kind]=null;}
   }
-  function applyTrackingEvent(orderId, payload) {
+  function applyTrackingEvent(orderId, payload, eventName) {
     if (!payload) return;
     state.trackingHydrated[orderId]=true;
     if (payload.path === "/") {
-      if(payload.data==null)delete state.tracking[orderId];
+      if (eventName === "patch") {
+        // A root-path "patch" event merges these children into the existing
+        // record - Firebase's REST stream can consolidate a write that
+        // touches several direct children (e.g. just status+updatedAt) into
+        // a single event at path "/". Treating that the same as "put" would
+        // wipe out fields the write didn't touch (like the rider's lat/lng)
+        // even though they are still current.
+        const merged = Object.assign({}, state.tracking[orderId] || {});
+        const patchData = payload.data;
+        if (patchData && typeof patchData === "object") {
+          Object.keys(patchData).forEach(key => {
+            if (patchData[key] == null) delete merged[key]; else merged[key] = patchData[key];
+          });
+          state.tracking[orderId] = merged;
+        } else if (patchData == null) delete state.tracking[orderId];
+      }
+      else if(payload.data==null)delete state.tracking[orderId];
       else state.tracking[orderId] = payload.data || {};
     }
     else {
@@ -781,7 +798,10 @@
       state.tracking[orderId] = target;
     }
     state.lastSync = Date.now();
-    if (state.route === "tracking" && state.selectedOrderId === orderId) render({preserveScroll:true});
+    state.trackingSeenAt[orderId] = Date.now();
+    if (state.route === "tracking" && state.selectedOrderId === orderId) {
+      if (!patchTrackingMap(orderId)) render({preserveScroll:true});
+    }
   }
   async function hydrateInitialTracking(activeOrders){
     const missing=(activeOrders||[]).filter(order=>!state.trackingHydrated[order.id]);
@@ -810,7 +830,7 @@
     if(state.trackingWatcherStarts[order.id])return state.trackingWatcherStarts[order.id];
     const started=(async()=>{
       let source=null;
-      source=await watchPath(DB_ROOT+"/tracking/"+encodeURIComponent(order.id),payload=>applyTrackingEvent(order.id,payload),null,failed=>{
+      source=await watchPath(DB_ROOT+"/tracking/"+encodeURIComponent(order.id),(payload,eventName)=>applyTrackingEvent(order.id,payload,eventName),null,failed=>{
         if(state.trackingWatchers[order.id]===failed)delete state.trackingWatchers[order.id];
         scheduleTrackingReconnect(order.id);
       });
@@ -824,7 +844,7 @@
   async function refreshTrackingStreams(activeOrders) {
     const activeIds = new Set((activeOrders || []).map(order => order.id));
     Object.keys(state.trackingWatchers).forEach(id => {
-      if (!activeIds.has(id)) { closeWatcher(state.trackingWatchers[id]); delete state.trackingWatchers[id]; delete state.trackingHydrated[id]; delete state.tracking[id]; clearTimeout(state.trackingReconnectTimers[id]);delete state.trackingReconnectTimers[id]; }
+      if (!activeIds.has(id)) { closeWatcher(state.trackingWatchers[id]); delete state.trackingWatchers[id]; delete state.trackingHydrated[id]; delete state.tracking[id]; delete state.trackingSeenAt[id]; if(state.trackingMap&&state.trackingMap.orderId===id){clearTimeout(state.trackingMap.tileTimer);state.trackingMap=null;} clearTimeout(state.trackingReconnectTimers[id]);delete state.trackingReconnectTimers[id]; }
     });
     for (const order of activeOrders || []) {
       try { await ensureTrackingWatcher(order); } catch (_) { scheduleTrackingReconnect(order.id); }
@@ -967,14 +987,45 @@
   function clampLat(lat){return Math.max(-85.05112878,Math.min(85.05112878,Number(lat)||0));}
   function mapWorld(lat,lng,zoom){const size=256*Math.pow(2,zoom),x=(Number(lng)+180)/360*size,rad=clampLat(lat)*Math.PI/180,y=(1-Math.log(Math.tan(rad)+1/Math.cos(rad))/Math.PI)/2*size;return{x,y,size};}
   function worldToLatLng(x,y,zoom){const size=256*Math.pow(2,zoom),lng=x/size*360-180,n=Math.PI-2*Math.PI*y/size,lat=180/Math.PI*Math.atan(Math.sinh(n));return{lat:clampLat(lat),lng:Math.max(-180,Math.min(180,lng))};}
+  // Last-resort centre for the pin map, only reached when nothing is known about
+  // where this customer is. Deliberately paired with a wide zoom so it reads as
+  // "find your area" instead of pretending to be their street.
+  const ADDRESS_MAP_FALLBACK={lat:14.9077,lng:79.8946,zoom:12};
+  function coordinatePoint(source){
+    if(!source)return null;
+    const rawLat=source.lat,rawLng=source.lng;
+    // Number(null) and Number("") are 0, so empty values have to be rejected
+    // before the numeric check or a missing pin becomes a point at (0, 0).
+    if(rawLat==null||rawLng==null||rawLat===""||rawLng==="")return null;
+    const lat=Number(rawLat),lng=Number(rawLng);
+    if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+    if(lat<-90||lat>90||lng<-180||lng>180)return null;
+    if(lat===0&&lng===0)return null; // no real delivery address sits on Null Island
+    return {lat:lat,lng:lng};
+  }
+  // Open the pin map on the best thing we actually know: the address being
+  // edited, then their chosen address, then any saved address (a detected GPS
+  // one first), then the restaurant they are ordering from. The browsing
+  // restaurant is deliberately not used - it has a fixed default that would put
+  // every new customer in the same town.
+  function addressMapSeed(source){
+    const saved=state.profile.addresses||[];
+    const candidates=[source,currentAddress()]
+      .concat(saved.filter(entry=>entry&&entry.source==="gps"))
+      .concat(saved)
+      .concat([cartRestaurant()]);
+    for(let i=0;i<candidates.length;i++){
+      const point=coordinatePoint(candidates[i]);
+      if(point)return {lat:point.lat,lng:point.lng,zoom:16};
+    }
+    return {lat:ADDRESS_MAP_FALLBACK.lat,lng:ADDRESS_MAP_FALLBACK.lng,zoom:ADDRESS_MAP_FALLBACK.zoom};
+  }
   function openAddressSheet(address){
-    const source=address||{},fallback=currentAddress()||{};
-    const lat=Number.isFinite(Number(source.lat))?Number(source.lat):(Number.isFinite(Number(fallback.lat))?Number(fallback.lat):14.9077);
-    const lng=Number.isFinite(Number(source.lng))?Number(source.lng):(Number.isFinite(Number(fallback.lng))?Number(fallback.lng):79.8946);
-    state.addressMapDraft={lat,lng};state.addressMapZoom=16;setSheet({type:"address",address:clone(source)});
+    const source=address||{},seed=addressMapSeed(source);
+    state.addressMapDraft={lat:seed.lat,lng:seed.lng};state.addressMapZoom=seed.zoom;setSheet({type:"address",address:clone(source)});
   }
   function addressMapMarkup(){
-    const point=state.addressMapDraft||{lat:14.9077,lng:79.8946},zoom=Math.max(12,Math.min(18,Number(state.addressMapZoom)||16)),world=mapWorld(point.lat,point.lng,zoom),tileX=Math.floor(world.x/256),tileY=Math.floor(world.y/256),max=Math.pow(2,zoom),tiles=[];
+    const point=state.addressMapDraft||addressMapSeed(null),zoom=Math.max(12,Math.min(18,Number(state.addressMapZoom)||16)),world=mapWorld(point.lat,point.lng,zoom),tileX=Math.floor(world.x/256),tileY=Math.floor(world.y/256),max=Math.pow(2,zoom),tiles=[];
     for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let tx=(tileX+dx)%max;if(tx<0)tx+=max;const ty=Math.max(0,Math.min(max-1,tileY+dy)),left=(tileX+dx)*256-world.x,top=(tileY+dy)*256-world.y;tiles.push('<img alt="" aria-hidden="true" src="https://tile.openstreetmap.org/'+zoom+'/'+tx+'/'+ty+'.png" style="position:absolute;width:256px;height:256px;left:calc(50% + '+left.toFixed(1)+'px);top:calc(50% + '+top.toFixed(1)+'px);max-width:none">');}
     return '<div class="stack"><div class="cluster between"><div><strong>Delivery pin</strong><div class="caption">Tap the map to move the pin. Use phone location for your exact position.</div></div><div class="cluster"><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="-1" aria-label="Zoom out">−</button><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="1" aria-label="Zoom in">+</button></div></div><div data-action="address-map-pick" class="map-picker" role="button" tabindex="0" aria-label="Choose delivery location on map" style="height:250px;position:relative;overflow:hidden;border-radius:18px;border:1px solid var(--border);background:#dce7ef;touch-action:manipulation">'+tiles.join("")+'<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);font-size:34px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35));pointer-events:none">📍</div></div><div class="cluster wrap"><button type="button" class="button tonal grow" data-action="detect-address-location">'+icon("target","small")+' Use phone location</button><span class="caption">'+point.lat.toFixed(5)+', '+point.lng.toFixed(5)+'</span></div></div>';
   }
@@ -993,10 +1044,41 @@
   function lateNightFee(){if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
   function rainFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.rainFee||0));}
   function surgeFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.surgeFee||0));}
-  function orderTotal(){return Math.max(0,cartSubtotal()+deliveryFee()+platformFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+Number(state.tip||0)+tax()-discount());}
-  // Dynamic weather/demand pricing is calculated only by the trusted backend.
-  // The APK never contains a Weather API server key and never authorizes these fees.
-  async function refreshDynamicPricing(){const next={rainFee:0,surgeFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,serverAuthoritative:true,checkedAt:Date.now()};state.dynamicPricing=next;return next;}
+  function riderIncentiveFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.riderIncentiveFee||0));}
+  function riderIncentiveItems(){return(state.dynamicPricing&&Array.isArray(state.dynamicPricing.riderIncentiveItems))?state.dynamicPricing.riderIncentiveItems:[];}
+  function orderTotal(){return Math.max(0,cartSubtotal()+deliveryFee()+platformFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()+Number(state.tip||0)+tax()-discount());}
+  // Dynamic weather/demand/rider-incentive pricing is calculated only by the
+  // trusted backend - the APK never contains a Weather API server key and
+  // never authorizes these fees itself. This calls the live preview on
+  // getCheckoutConfiguration (same loadServerFees() computation used at real
+  // order creation) so the checkout screen shows the true fee before the
+  // customer commits, instead of guessing client-side. Any failure - no
+  // session, no cart/address yet, network issue - falls back to zero so
+  // checkout is never blocked by a preview problem; the real, authoritative
+  // fee is still enforced server-side when the order is actually placed.
+  const dynamicPricingFallback=()=>({rainFee:0,surgeFee:0,riderIncentiveFee:0,riderIncentiveItems:[],weatherSeverity:"",weatherChecked:false,activeOrders:0,serverAuthoritative:true,checkedAt:Date.now()});
+  async function refreshDynamicPricing(){
+    const fallback=dynamicPricingFallback();
+    const r=cartRestaurant(),addr=currentAddress();
+    if(!state.session||!r||!addr||!state.cart.length||!nativeAvailable("getCheckoutConfiguration")){state.dynamicPricing=fallback;return fallback}
+    try{
+      const raw=await nativeInvoke("getCheckoutConfiguration",{restaurantId:r.id,addressId:addr.id,items:callableCartItems()},{idToken:state.session.idToken,timeoutMs:15000});
+      const preview=raw&&typeof raw==="object"&&raw.feePreview&&typeof raw.feePreview==="object"?raw.feePreview:null;
+      const next=preview?{
+        rainFee:Math.max(0,Number(preview.rainFee||0)),
+        surgeFee:Math.max(0,Number(preview.surgeFee||0)),
+        riderIncentiveFee:Math.max(0,Number(preview.riderIncentiveFee||0)),
+        riderIncentiveItems:Array.isArray(preview.riderIncentiveItems)?preview.riderIncentiveItems.map(x=>({label:String(x&&x.label||"Surge fee"),amount:Math.max(0,Number(x&&x.amount||0))})).filter(x=>x.amount>0):[],
+        weatherSeverity:String(preview.weatherSeverity||""),weatherChecked:true,activeOrders:Math.max(0,Number(preview.activeOrders||0)),
+        serverAuthoritative:true,checkedAt:Date.now()
+      }:fallback;
+      state.dynamicPricing=next;
+      return next;
+    }catch(_){
+      state.dynamicPricing=fallback;
+      return fallback;
+    }
+  }
   function maskPhoneNumbers(value){return String(value||"").replace(/(?:\+?91[\s.()-]*)?[6-9](?:[\s.()-]*\d){9}/g,"[phone number hidden]")}
   function chatPath(o,channel){return DB_ROOT+"/orderChats/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(o.id)+"/"+channel}
   async function openOrderChat(o,channel,title){if(!o)return;try{const raw=await db("GET",chatPath(o,channel));state.chat={orderId:o.id,channel,messages:Object.keys(raw||{}).map(id=>Object.assign({id},raw[id]||{})).sort((a,b)=>Number(a.at||0)-Number(b.at||0)),title:title||"Order chat"};go("chat",{orderId:o.id,channel})}catch(e){toast("Chat could not open. "+friendlyError(e),"danger")}}
@@ -1038,7 +1120,7 @@
     return {addresses:remaining,selectedAddressId:selectedStillExists?selectedAddressId:(remaining[0]&&remaining[0].id||"")};
   }
   function revalidateCheckoutForAddressChange(){
-    state.dynamicPricing={rainFee:0,surgeFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};
+    state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};
     state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";persistCheckout();
   }
   async function deleteAddress(addressId){
@@ -1160,7 +1242,7 @@
     state.profile={name:"",email:"",phone:"",addresses:[],selectedAddressId:"",favourites:[],preferences:{theme:"system",vegetarian:false,notifications:true}};
     state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial";
     clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";state.recentSearches=[];
-    state.orders=[];state.tracking={};state.trackingHydrated={};state.reviews={};state.reviewsHydrated=false;state.reviewsHydratedUid="";state.reviewSyncSequence++;state.cart=[];state.checkout={deliveryMode:"asap",payment:"cod",instructions:"",contactless:false,pendingOrderId:"",pendingIdempotencyKey:""};state.history=[];state.route="login";
+    state.orders=[];state.tracking={};state.trackingHydrated={};state.trackingSeenAt={};state.trackingMap=null;state.reviews={};state.reviewsHydrated=false;state.reviewsHydratedUid="";state.reviewSyncSequence++;state.cart=[];state.checkout={deliveryMode:"asap",payment:"cod",instructions:"",contactless:false,pendingOrderId:"",pendingIdempotencyKey:""};state.history=[];state.route="login";
     ["savrivo.customer.profile","savrivo.customer.orders","savrivo.customer.cart","savrivo.customer.checkout","savrivo.customer.deliveryOtps"].forEach(key=>localStorage.removeItem(key));state.deliveryOtps={};
     applyTheme();render();if(showMessage!==false)toast("You have signed out safely.");
   }
@@ -1468,7 +1550,7 @@
   function cartItemMarkup(item) {
     return '<article class="cart-item"><img class="cart-thumb" src="'+h(safeUrl(item.image,"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><h3 class="card-title">'+h(item.name)+'</h3><p class="caption">'+h([item.variant,(item.addOns||[]).map(x=>x.name).join(", ")].filter(Boolean).join(" · ")||item.restaurantName)+'</p><strong>'+money((item.price+item.variantPrice+item.addOnTotal)*item.quantity)+'</strong></div><div class="quantity-control"><button data-action="cart-quantity" data-key="'+h(item.key)+'" data-delta="-1" aria-label="Remove one">−</button><span>'+item.quantity+'</span><button data-action="cart-quantity" data-key="'+h(item.key)+'" data-delta="1" aria-label="Add one">+</button></div></article>';
   }
-  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?'<div class="price-row success-text"><span>'+h(state.coupon.code)+' discount</span><span>−'+money(discount())+'</span></div>':'')+'<div class="price-row"><span>Estimated delivery fee</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+(smallOrderFee()>0?'<div class="price-row"><span>Estimated small-order fee</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>Estimated late-night fee</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>Estimated taxes</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip</span><span>'+money(state.tip)+'</span></div>':'')+(includeTotal?'<div class="price-row total"><span>Estimated total</span><span>'+money(orderTotal())+'</span></div>':'')+'</div>'}
+  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?'<div class="price-row success-text"><span>'+h(state.coupon.code)+' discount</span><span>−'+money(discount())+'</span></div>':'')+'<div class="price-row"><span>Estimated delivery fee</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>Estimated small-order fee</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>Estimated late-night fee</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>Estimated taxes</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip</span><span>'+money(state.tip)+'</span></div>':'')+(includeTotal?'<div class="price-row total"><span>Estimated total</span><span>'+money(orderTotal())+'</span></div>':'')+'</div>'}
   function screenCart() {
     const r=cartRestaurant();
     if(state.cart.length&&!r){
@@ -1614,18 +1696,655 @@
       +'</div>'+nav()+'</main>';
   }
 
-  function tileFor(lat,lng,zoom) {
-    if(!Number.isFinite(lat)||!Number.isFinite(lng))return"";const z=zoom||15,n=Math.pow(2,z),x=Math.floor((lng+180)/360*n),y=Math.floor((1-Math.asinh(Math.tan(lat*Math.PI/180))/Math.PI)/2*n);return"https://tile.openstreetmap.org/"+z+"/"+x+"/"+y+".png";
+  const TRACKING_MAP_MIN_ZOOM=12, TRACKING_MAP_MAX_ZOOM=18, TRACKING_MAP_FIT_PX=240, TRACKING_TILE_PX=256, TRACKING_MAX_TILES=80;
+  const TRACKING_POLL_MS=5000, TRACKING_STREAM_GRACE_MS=8000;
+  // The bottom sheet covers the lower part of the map, so the camera anchor sits
+  // at 27% from the top - the middle of the strip that stays visible. This must
+  // stay in sync with `.map-world { top: 27% }` in premium.css.
+  const TRACKING_MAP_VERTICAL_ANCHOR_PCT=27;
+  // One duration for the marker and the camera so they travel in lockstep; a
+  // linear curve matches the steady cadence the partner app uploads fixes at.
+  const TRACKING_GLIDE_MS=2600;
+  function trackingGeoPoints(order,live){
+    const riderPoint=coordinatePoint(live);
+    const restaurantPoint=coordinatePoint(order.restaurantLocation)||coordinatePoint(restaurant(order.restaurantId));
+    const customerPoint=coordinatePoint(order.address);
+    return {riderPoint,restaurantPoint,customerPoint};
+  }
+  function trackingAllPoints(points){
+    return [points.restaurantPoint,points.customerPoint,points.riderPoint].filter(Boolean);
+  }
+  function fitTrackingMapView(points){
+    let minLat=points[0].lat,maxLat=points[0].lat,minLng=points[0].lng,maxLng=points[0].lng;
+    for(const p of points){minLat=Math.min(minLat,p.lat);maxLat=Math.max(maxLat,p.lat);minLng=Math.min(minLng,p.lng);maxLng=Math.max(maxLng,p.lng);}
+    const center={lat:(minLat+maxLat)/2,lng:(minLng+maxLng)/2};
+    let zoom=TRACKING_MAP_MAX_ZOOM;
+    for(;zoom>TRACKING_MAP_MIN_ZOOM;zoom--){
+      const a=mapWorld(minLat,minLng,zoom),b=mapWorld(maxLat,maxLng,zoom);
+      if(Math.max(Math.abs(b.x-a.x),Math.abs(a.y-b.y))<=TRACKING_MAP_FIT_PX)break;
+    }
+    return {center,zoom};
+  }
+  // While the partner is still collecting the order the restaurant is what
+  // matters; once they are carrying it the customer's door is.
+  function trackingDestination(points,live){
+    if(String(live&&live.phase||"")==="pickup")return points.restaurantPoint||points.customerPoint||null;
+    return points.customerPoint||points.restaurantPoint||null;
+  }
+  function trackingCameraFocus(points,live){
+    const rider=points.riderPoint,destination=trackingDestination(points,live);
+    if(rider&&destination)return {lat:(rider.lat+destination.lat)/2,lng:(rider.lng+destination.lng)/2};
+    return rider||destination||null;
+  }
+  function trackingMapState(order,points){
+    const current=state.trackingMap;
+    if(current&&current.orderId===order.id)return current;
+    const all=trackingAllPoints(points);
+    if(!all.length)return null;
+    const fitted=fitTrackingMapView(all);
+    state.trackingMap={orderId:order.id,zoom:fitted.zoom,anchorLat:fitted.center.lat,anchorLng:fitted.center.lng,
+      panX:0,panY:0,userPanned:false,userZoomed:false,tileKey:"",tilePanX:0,tilePanY:0,tileTimer:null};
+    return state.trackingMap;
+  }
+  function trackingLocalPoint(ms,point){
+    const anchor=mapWorld(ms.anchorLat,ms.anchorLng,ms.zoom),p=mapWorld(point.lat,point.lng,ms.zoom);
+    return {x:p.x-anchor.x,y:p.y-anchor.y};
+  }
+  function trackingViewportSize(){
+    const card=document.getElementById("tracking-map-card");
+    const width=card&&card.clientWidth?card.clientWidth:(window.innerWidth||360);
+    const height=card&&card.clientHeight?card.clientHeight:(window.innerHeight||720);
+    return {width:Math.max(280,width),height:Math.max(420,height)};
+  }
+  function trackingTileRange(ms){
+    const anchor=mapWorld(ms.anchorLat,ms.anchorLng,ms.zoom),size=trackingViewportSize();
+    const above=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100),below=size.height-above;
+    const minX=anchor.x-ms.panX-size.width/2-TRACKING_TILE_PX,maxX=anchor.x-ms.panX+size.width/2+TRACKING_TILE_PX;
+    const minY=anchor.y-ms.panY-above-TRACKING_TILE_PX,maxY=anchor.y-ms.panY+below+TRACKING_TILE_PX;
+    return {originX:anchor.x,originY:anchor.y,
+      minTileX:Math.floor(minX/TRACKING_TILE_PX),maxTileX:Math.floor(maxX/TRACKING_TILE_PX),
+      minTileY:Math.floor(minY/TRACKING_TILE_PX),maxTileY:Math.floor(maxY/TRACKING_TILE_PX)};
+  }
+  function trackingTileKey(ms){
+    const r=trackingTileRange(ms);
+    return ms.zoom+":"+r.minTileX+","+r.maxTileX+","+r.minTileY+","+r.maxTileY;
+  }
+  function trackingTileList(ms){
+    const range=trackingTileRange(ms),max=Math.pow(2,ms.zoom),tiles=[];
+    for(let ty=range.minTileY;ty<=range.maxTileY;ty++){
+      if(ty<0||ty>=max)continue;
+      for(let tx=range.minTileX;tx<=range.maxTileX;tx++){
+        let wrapped=tx%max;if(wrapped<0)wrapped+=max;
+        tiles.push({key:ms.zoom+"/"+tx+"/"+ty,
+          src:"https://tile.openstreetmap.org/"+ms.zoom+"/"+wrapped+"/"+ty+".png",
+          left:tx*TRACKING_TILE_PX-range.originX,top:ty*TRACKING_TILE_PX-range.originY});
+        if(tiles.length>=TRACKING_MAX_TILES)return trackingOrderTiles(ms,tiles);
+      }
+    }
+    return trackingOrderTiles(ms,tiles);
+  }
+  // Nearest-to-the-middle first, so a fresh view fills in from where the eye is
+  // rather than from a corner.
+  function trackingOrderTiles(ms,tiles){
+    const focusX=-ms.panX,focusY=-ms.panY;
+    return tiles.slice().sort((a,b)=>
+      (Math.hypot(a.left+TRACKING_TILE_PX/2-focusX,a.top+TRACKING_TILE_PX/2-focusY))
+      -(Math.hypot(b.left+TRACKING_TILE_PX/2-focusX,b.top+TRACKING_TILE_PX/2-focusY)));
+  }
+  function trackingTileMarkup(ms){
+    return trackingTileList(ms).map(tile=>'<img alt="" aria-hidden="true" class="ready" data-tile="'+tile.key+'" src="'+tile.src+'" style="left:'+tile.left.toFixed(0)+'px;top:'+tile.top.toFixed(0)+'px">').join("");
+  }
+  function trackingPinMarkup(ms,variant,point,label,iconName,isLive){
+    if(!point)return '<span class="map-pin '+variant+'" style="display:none" aria-label="'+h(label)+'">'+icon(iconName)+'</span>';
+    const local=trackingLocalPoint(ms,point);
+    return '<span class="map-pin '+variant+(isLive?' live':'')+'" style="transform:translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)" aria-label="'+h(label)+'">'+icon(iconName)+'</span>';
+  }
+  // The delivery route (restaurant -> door) is a fixed path for an order, so it
+  // is fetched once from OSRM's free routing service and cached. It is drawn
+  // for context only; the partner's own position always comes from their GPS.
+  const TRACKING_ROUTE_ENDPOINT="https://router.project-osrm.org/route/v1/driving/";
+  const TRACKING_ROUTE_CACHE_KEY="savrivo.customer.routes";
+  const TRACKING_ROUTE_TTL_MS=30*24*60*60*1000;
+  const TRACKING_ROUTE_RETRY_MS=5*60*1000;
+  const TRACKING_ROUTE_MAX_CACHED=8;
+  function decodePolyline(encoded,precision){
+    const factor=Math.pow(10,Number.isFinite(precision)?precision:5),points=[];
+    let index=0,lat=0,lng=0;
+    while(index<encoded.length){
+      let result=1,shift=0,byte;
+      do{byte=encoded.charCodeAt(index++)-64;if(!Number.isFinite(byte))return[];result+=byte<<shift;shift+=5;}while(byte>=0x1f&&index<=encoded.length);
+      lat+=(result&1)?~(result>>1):(result>>1);
+      result=1;shift=0;
+      do{byte=encoded.charCodeAt(index++)-64;if(!Number.isFinite(byte))return[];result+=byte<<shift;shift+=5;}while(byte>=0x1f&&index<=encoded.length);
+      lng+=(result&1)?~(result>>1):(result>>1);
+      points.push({lat:lat/factor,lng:lng/factor});
+      if(points.length>4000)break;
+    }
+    return points;
+  }
+  function trackingRouteKey(from,to){
+    return from.lat.toFixed(5)+","+from.lng.toFixed(5)+">"+to.lat.toFixed(5)+","+to.lng.toFixed(5);
+  }
+  function readTrackingRouteCache(){
+    const raw=loadJSON(TRACKING_ROUTE_CACHE_KEY,{});
+    return raw&&typeof raw==="object"?raw:{};
+  }
+  function writeTrackingRouteCache(key,entry){
+    const cache=readTrackingRouteCache();
+    cache[key]=entry;
+    const keys=Object.keys(cache).sort((a,b)=>Number(cache[b].at||0)-Number(cache[a].at||0));
+    const trimmed={};
+    keys.slice(0,TRACKING_ROUTE_MAX_CACHED).forEach(k=>{trimmed[k]=cache[k];});
+    try{localStorage.setItem(TRACKING_ROUTE_CACHE_KEY,JSON.stringify(trimmed));}catch(_){}
+  }
+  function cachedTrackingRoute(key){
+    const entry=readTrackingRouteCache()[key];
+    if(!entry||!entry.polyline||Date.now()-Number(entry.at||0)>TRACKING_ROUTE_TTL_MS)return null;
+    return entry.polyline;
+  }
+  function trackingRoutePoints(order){
+    const points=trackingGeoPoints(order,{});
+    if(!points.restaurantPoint||!points.customerPoint)return null;
+    const key=trackingRouteKey(points.restaurantPoint,points.customerPoint);
+    const live=state.trackingRoutes[key];
+    if(live&&live.points)return live;
+    const polyline=cachedTrackingRoute(key);
+    if(polyline){
+      const decoded=decodePolyline(polyline);
+      if(decoded.length>=2){
+        state.trackingRoutes[key]=trackingRouteMetrics(decoded);
+        return state.trackingRoutes[key];
+      }
+    }
+    // The free public OSRM router can be slow, rate-limited or briefly unreachable
+    // from a mobile connection, and ensureTrackingRoute only retries every
+    // TRACKING_ROUTE_RETRY_MS after a failure - rather than showing no line at all
+    // in the meantime, draw a straight line between the two points. It is not
+    // cached, so it is transparently replaced by the real road-following polyline
+    // the moment ensureTrackingRoute succeeds (state.trackingRoutes[key] then has
+    // .points and the check above returns it directly).
+    return trackingRouteMetrics([points.restaurantPoint,points.customerPoint]);
+  }
+  async function ensureTrackingRoute(order){
+    const points=trackingGeoPoints(order,{});
+    if(!points.restaurantPoint||!points.customerPoint||!state.online)return;
+    const key=trackingRouteKey(points.restaurantPoint,points.customerPoint);
+    const existing=state.trackingRoutes[key];
+    if(existing&&(existing.points||existing.pending))return;
+    if(existing&&existing.failedAt&&Date.now()-existing.failedAt<TRACKING_ROUTE_RETRY_MS)return;
+    if(cachedTrackingRoute(key))return;
+    state.trackingRoutes[key]={pending:true};
+    try{
+      const from=points.restaurantPoint,to=points.customerPoint;
+      const url=TRACKING_ROUTE_ENDPOINT
+        +from.lng.toFixed(6)+","+from.lat.toFixed(6)+";"+to.lng.toFixed(6)+","+to.lat.toFixed(6)
+        +"?overview=full&geometries=polyline";
+      const response=await fetch(url,{method:"GET",cache:"force-cache"});
+      if(!response.ok)throw new Error("route request failed");
+      const payload=await response.json();
+      const polyline=payload&&payload.code==="Ok"&&Array.isArray(payload.routes)&&payload.routes[0]?payload.routes[0].geometry:"";
+      const decoded=typeof polyline==="string"&&polyline.length>1?decodePolyline(polyline):[];
+      if(decoded.length<2)throw new Error("route had no usable geometry");
+      state.trackingRoutes[key]=trackingRouteMetrics(decoded);
+      writeTrackingRouteCache(key,{polyline:polyline,at:Date.now()});
+      if(state.route==="tracking")render({preserveScroll:true});
+    }catch(_){
+      state.trackingRoutes[key]={failedAt:Date.now()};
+    }
+  }
+  // ---- route geometry -------------------------------------------------------
+  // The drawn line is the road still ahead of the partner. Every new fix is
+  // projected onto the route, and the trim point is then eased along the road
+  // between fixes so the line retracts continuously instead of in steps.
+  const TRACKING_ON_ROUTE_TOLERANCE_M=140, TRACKING_MAX_REWIND_M=25;
+  function trackingMetres(a,b){
+    const km=geoDistanceKm(a.lat,a.lng,b.lat,b.lng);
+    return km==null?0:km*1000;
+  }
+  function trackingRouteMetrics(points){
+    const cumulative=[0];
+    for(let i=1;i<points.length;i++)cumulative.push(cumulative[i-1]+trackingMetres(points[i-1],points[i]));
+    return {points:points,cumulative:cumulative,total:cumulative[cumulative.length-1]||0};
+  }
+  // Closest point on the route, as a distance along it plus how far off it the
+  // fix landed - the offset is what tells us the partner is actually on this road.
+  function trackingProjectOnRoute(route,point){
+    const cosLat=Math.cos(point.lat*Math.PI/180);
+    const toX=lng=>lng*111320*cosLat,toY=lat=>lat*110540;
+    const px=toX(point.lng),py=toY(point.lat);
+    let bestProgress=0,bestOffset=Infinity;
+    for(let i=1;i<route.points.length;i++){
+      const a=route.points[i-1],b=route.points[i];
+      const ax=toX(a.lng),ay=toY(a.lat),bx=toX(b.lng),by=toY(b.lat);
+      const dx=bx-ax,dy=by-ay,lengthSquared=dx*dx+dy*dy;
+      let t=lengthSquared>0?((px-ax)*dx+(py-ay)*dy)/lengthSquared:0;
+      t=Math.max(0,Math.min(1,t));
+      const offset=Math.hypot(px-(ax+dx*t),py-(ay+dy*t));
+      if(offset<bestOffset){
+        bestOffset=offset;
+        bestProgress=route.cumulative[i-1]+(route.cumulative[i]-route.cumulative[i-1])*t;
+      }
+    }
+    return {progress:bestProgress,offset:bestOffset};
+  }
+  function trackingPointAtProgress(route,progress){
+    const target=Math.max(0,Math.min(route.total,progress));
+    let i=1;
+    while(i<route.cumulative.length&&route.cumulative[i]<target)i++;
+    if(i>=route.cumulative.length)return route.points[route.points.length-1];
+    const a=route.points[i-1],b=route.points[i],span=route.cumulative[i]-route.cumulative[i-1];
+    const t=span>0?(target-route.cumulative[i-1])/span:0;
+    return {lat:a.lat+(b.lat-a.lat)*t,lng:a.lng+(b.lng-a.lng)*t};
+  }
+  function trackingRemainingRoute(route,progress){
+    const remaining=[trackingPointAtProgress(route,progress)];
+    for(let i=0;i<route.points.length;i++)if(route.cumulative[i]>progress)remaining.push(route.points[i]);
+    if(remaining.length<2)remaining.push(route.points[route.points.length-1]);
+    return remaining;
+  }
+  // The line belongs to the delivery leg only. While the partner is still
+  // collecting the order they simply move around with no line drawn.
+  function trackingDeliveryLegActive(order,live){
+    const phase=String(live&&live.phase||"");
+    if(phase==="delivery")return true;
+    if(phase==="pickup")return false;
+    return ["Out for delivery","Near you","Arrived"].indexOf(String(order&&order.status||""))!==-1;
+  }
+  function trackingRouteView(order,live){
+    const route=trackingRoutePoints(order);
+    if(!route||route.points.length<2)return null;
+    if(!trackingDeliveryLegActive(order,live))return null;
+    const ms=state.trackingMap;
+    if(!ms)return null;
+    const riderLat=Number(live.lat),riderLng=Number(live.lng);
+    if(!Number.isFinite(riderLat)||!Number.isFinite(riderLng))return {route:route,progress:ms.routeProgress||0,snapped:false};
+    const projected=trackingProjectOnRoute(route,{lat:riderLat,lng:riderLng});
+    if(projected.offset>TRACKING_ON_ROUTE_TOLERANCE_M)return {route:route,progress:ms.routeProgress||0,snapped:false};
+    return {route:route,progress:projected.progress,snapped:true};
+  }
+  // The svg keeps a frame sized to the whole route so that trimming the line
+  // only rewrites its points - the element itself never has to move or resize.
+  function trackingRouteFrame(ms,route){
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    route.points.forEach(point=>{
+      const p=trackingLocalPoint(ms,point);
+      minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);
+    });
+    const pad=8;
+    return {minX:minX-pad,minY:minY-pad,width:Math.max(1,maxX-minX)+pad*2,height:Math.max(1,maxY-minY)+pad*2};
+  }
+  function trackingRouteCoords(ms,route,frame,progress){
+    return trackingRemainingRoute(route,progress).map(point=>{
+      const p=trackingLocalPoint(ms,point);
+      return (p.x-frame.minX).toFixed(1)+","+(p.y-frame.minY).toFixed(1);
+    }).join(" ");
+  }
+  function trackingRouteMarkup(ms,order,live){
+    const view=trackingRouteView(order,live);
+    if(!view)return "";
+    if(!Number.isFinite(ms.routeProgress))ms.routeProgress=view.snapped?view.progress:0;
+    const route=view.route,frame=trackingRouteFrame(ms,route);
+    const coords=trackingRouteCoords(ms,route,frame,ms.routeProgress);
+    return '<svg class="map-route" aria-hidden="true" width="'+frame.width.toFixed(0)+'" height="'+frame.height.toFixed(0)+'"'
+      +' viewBox="0 0 '+frame.width.toFixed(0)+' '+frame.height.toFixed(0)+'"'
+      +' style="left:'+frame.minX.toFixed(1)+'px;top:'+frame.minY.toFixed(1)+'px">'
+      +'<polyline class="map-route-casing" points="'+coords+'"/>'
+      +'<polyline class="map-route-line" points="'+coords+'"/>'
+      +'</svg>';
+  }
+  // One animation frame of the retracting line: redraw the remaining road and
+  // put the scooter exactly on it, so marker and line can never disagree.
+  function paintTrackingRoute(){
+    const ms=state.trackingMap,card=document.getElementById("tracking-map-card");
+    if(!ms||!card)return;
+    const order=orderById(ms.orderId);
+    if(!order)return;
+    const live=state.tracking[ms.orderId]||{};
+    const view=trackingRouteView(order,live);
+    if(!view)return;
+    const route=view.route,progress=Number.isFinite(ms.routeProgress)?ms.routeProgress:0;
+    const svg=card.querySelector(".map-route");
+    if(svg){
+      const coords=trackingRouteCoords(ms,route,trackingRouteFrame(ms,route),progress);
+      const lines=svg.querySelectorAll("polyline");
+      for(let i=0;i<lines.length;i++)lines[i].setAttribute("points",coords);
+    }
+    const rider=card.querySelector(".map-pin.rider");
+    if(rider){
+      const local=trackingLocalPoint(ms,trackingPointAtProgress(route,progress));
+      rider.style.transition="none";
+      rider.style.display="";
+      rider.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
+    }
+  }
+  function startTrackingRouteGlide(target){
+    const ms=state.trackingMap;
+    if(!ms)return;
+    ms.routeFrom=Number.isFinite(ms.routeProgress)?ms.routeProgress:target;
+    ms.routeTarget=target;
+    ms.routeGlideStart=Date.now();
+    if(ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
+    ms.routeAnim=typeof requestAnimationFrame==="function"?requestAnimationFrame(stepTrackingRouteGlide):null;
+    if(!ms.routeAnim){ms.routeProgress=target;paintTrackingRoute();}
+  }
+  function stepTrackingRouteGlide(){
+    const ms=state.trackingMap;
+    if(!ms)return;
+    if(state.route!=="tracking"){ms.routeAnim=null;return;}
+    const elapsed=Date.now()-ms.routeGlideStart;
+    const t=TRACKING_GLIDE_MS>0?Math.min(1,elapsed/TRACKING_GLIDE_MS):1;
+    ms.routeProgress=ms.routeFrom+(ms.routeTarget-ms.routeFrom)*t;
+    paintTrackingRoute();
+    ms.routeAnim=t<1&&typeof requestAnimationFrame==="function"?requestAnimationFrame(stepTrackingRouteGlide):null;
+  }
+  function stopTrackingRouteGlide(){
+    const ms=state.trackingMap;
+    if(ms&&ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
+    if(ms)ms.routeAnim=null;
+  }
+  function trackingMapMarkup(order,live,full){
+    const points=trackingGeoPoints(order,live);
+    const ms=trackingMapState(order,points);
+    if(!ms){
+      return '<section class="card map-card map-card-empty'+(full?' map-card-full':'')+'"><div class="map-placeholder">'+icon("pin")+'<p class="supporting">The live map will appear once delivery locations are available.</p></div></section>';
+    }
+    ms.tileKey=trackingTileKey(ms);
+    ms.tilePanX=ms.panX;ms.tilePanY=ms.panY;
+    const fresh=!!(live.updatedAt&&Date.now()-Number(live.updatedAt)<45000);
+    return '<section class="card map-card'+(full?' map-card-full':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'">'
+      +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
+      +'<div class="map-tiles">'+trackingTileMarkup(ms)+'</div>'
+      +trackingRouteMarkup(ms,order,live)
+      +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
+      +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
+      +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","scooter",fresh)
+      +'</div>'
+      +'<div class="map-overlay"><span class="status-pill map-status-pill '+(fresh?'success':'warning')+'">'+(fresh?'LIVE':'STALE')+'</span><span class="map-attribution">© OpenStreetMap</span></div>'
+      +'<div class="map-controls">'
+      +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="1" aria-label="Zoom in">+</button>'
+      +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="-1" aria-label="Zoom out">&#8722;</button>'
+      +'<button type="button" class="map-control'+(ms.userPanned||ms.userZoomed?'':' hidden')+'" id="tracking-recenter" data-action="tracking-recenter" aria-label="Recentre the map">'+icon("target")+'</button>'
+      +'</div>'
+      +'</section>';
+  }
+  function applyTrackingCamera(animate){
+    const world=document.getElementById("tracking-map-world"),ms=state.trackingMap;
+    if(!world||!ms)return;
+    world.style.transition=animate?("transform "+TRACKING_GLIDE_MS+"ms linear"):"none";
+    world.style.transform='translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)';
+  }
+  function refreshTrackingTiles(){
+    const ms=state.trackingMap,card=document.getElementById("tracking-map-card");
+    if(!ms||!card)return;
+    const key=trackingTileKey(ms);
+    if(key===ms.tileKey)return;
+    const layer=card.querySelector(".map-tiles");
+    if(!layer)return;
+    ms.tileKey=key;ms.tilePanX=ms.panX;ms.tilePanY=ms.panY;
+    // Reconcile rather than re-writing innerHTML. Recreating every <img> on each
+    // pan makes tiles that are already on screen blink out and back in, which is
+    // what reads as the map "glitching" while it is dragged.
+    const wanted=trackingTileList(ms),keep={},existing={};
+    let node=layer.firstElementChild;
+    while(node){const id=node.getAttribute("data-tile");if(id)existing[id]=node;node=node.nextElementSibling;}
+    wanted.forEach(tile=>{
+      keep[tile.key]=true;
+      const current=existing[tile.key];
+      if(current){current.style.left=tile.left.toFixed(0)+"px";current.style.top=tile.top.toFixed(0)+"px";return;}
+      const img=document.createElement("img");
+      img.alt="";img.setAttribute("aria-hidden","true");img.setAttribute("data-tile",tile.key);
+      img.style.left=tile.left.toFixed(0)+"px";img.style.top=tile.top.toFixed(0)+"px";
+      img.addEventListener("load",function(){img.classList.add("ready");});
+      img.src=tile.src;
+      if(img.complete)img.classList.add("ready");
+      layer.appendChild(img);
+    });
+    Object.keys(existing).forEach(id=>{if(!keep[id])existing[id].remove();});
+  }
+  function trackingCameraFollow(points,live){
+    const ms=state.trackingMap;
+    if(!ms||ms.userPanned)return;
+    const focus=trackingCameraFocus(points,live);
+    if(!focus)return;
+    const local=trackingLocalPoint(ms,focus),nextX=-local.x,nextY=-local.y;
+    if(Math.abs(nextX-ms.panX)<1&&Math.abs(nextY-ms.panY)<1)return;
+    ms.panX=nextX;ms.panY=nextY;
+    applyTrackingCamera(true);
+    clearTimeout(ms.tileTimer);
+    ms.tileTimer=setTimeout(refreshTrackingTiles,TRACKING_GLIDE_MS+80);
+  }
+  function setTrackingPin(card,selector,ms,point,isLive){
+    const element=card.querySelector(selector);
+    if(!element)return;
+    if(!point){element.style.display="none";return;}
+    const local=trackingLocalPoint(ms,point);
+    element.style.display="";
+    element.style.transition="";
+    element.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
+    if(isLive!=null)element.classList.toggle("live",!!isLive);
+  }
+  function patchTrackingMap(orderId){
+    const card=document.getElementById("tracking-map-card");
+    if(!card||card.dataset.orderId!==orderId)return false;
+    const ms=state.trackingMap;
+    if(!ms||ms.orderId!==orderId)return false;
+    const order=orderById(orderId);if(!order)return false;
+    const live=state.tracking[orderId]||{};
+    const points=trackingGeoPoints(order,live);
+    const all=trackingAllPoints(points);
+    if(!all.length)return false;
+    // Only ever widen the view, and only when the points genuinely no longer
+    // fit: auto-zooming back in would undo a manual zoom a couple of seconds
+    // after the partner makes it, and would keep nudging the scale around.
+    // A zoom change rescales every local coordinate, so that one case still
+    // needs a full re-render; everything else is animated in place.
+    const fitted=fitTrackingMapView(all);
+    if(!ms.userPanned&&!ms.userZoomed&&fitted.zoom<ms.zoom){
+      ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
+      ms.panX=0;ms.panY=0;ms.tileKey="";
+      return false;
+    }
+    const fresh=!!(live.updatedAt&&Date.now()-Number(live.updatedAt)<45000);
+    setTrackingPin(card,".map-pin.restaurant",ms,points.restaurantPoint,null);
+    setTrackingPin(card,".map-pin.home",ms,points.customerPoint,null);
+    // On the delivery leg the scooter is driven along the route itself, which
+    // both keeps it on the road and lets the line retract in step with it.
+    const routeView=trackingRouteView(order,live);
+    if(routeView&&routeView.snapped){
+      let target=routeView.progress;
+      // GPS noise must not make the line grow back; only real backtracking does.
+      if(Number.isFinite(ms.routeProgress)&&target<ms.routeProgress-TRACKING_MAX_REWIND_M)target=ms.routeProgress;
+      const rider=card.querySelector(".map-pin.rider");
+      if(rider)rider.classList.toggle("live",fresh);
+      startTrackingRouteGlide(target);
+    }else{
+      stopTrackingRouteGlide();
+      setTrackingPin(card,".map-pin.rider",ms,points.riderPoint,fresh);
+    }
+    trackingCameraFollow(points,live);
+    const pillEl=card.querySelector(".map-status-pill");if(pillEl){pillEl.textContent=fresh?"LIVE":"STALE";pillEl.className="status-pill map-status-pill "+(fresh?"success":"warning");}
+    const lastLocEl=document.getElementById("tracking-last-location");if(lastLocEl)lastLocEl.textContent=live.updatedAt?dateTime(live.updatedAt):"Not received";
+    const accuracyEl=document.getElementById("tracking-accuracy");if(accuracyEl)accuracyEl.textContent=live.accuracy?Math.round(live.accuracy)+" m":"Not available";
+    const sharingEl=document.getElementById("tracking-sharing-state");if(sharingEl)sharingEl.textContent=live.status||"Waiting";
+    return true;
+  }
+  // Zooms about a point in the card's own coordinates, so a pinch or a double
+  // tap keeps whatever is under the fingers pinned in place.
+  function trackingZoomAround(delta,focusX,focusY){
+    const ms=state.trackingMap;
+    if(!ms)return false;
+    const next=Math.max(TRACKING_MAP_MIN_ZOOM,Math.min(TRACKING_MAP_MAX_ZOOM,ms.zoom+Number(delta||0)));
+    if(next===ms.zoom)return false;
+    const size=trackingViewportSize();
+    const centreX=size.width/2,centreY=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100);
+    const pointX=Number.isFinite(focusX)?focusX:centreX,pointY=Number.isFinite(focusY)?focusY:centreY;
+    const anchor=mapWorld(ms.anchorLat,ms.anchorLng,ms.zoom);
+    const under=worldToLatLng(anchor.x+(pointX-centreX-ms.panX),anchor.y+(pointY-centreY-ms.panY),ms.zoom);
+    ms.zoom=next;ms.anchorLat=under.lat;ms.anchorLng=under.lng;
+    ms.panX=pointX-centreX;ms.panY=pointY-centreY;
+    ms.userZoomed=true;ms.tileKey="";
+    render({preserveScroll:true});
+    return true;
+  }
+  function trackingZoomBy(delta){
+    trackingZoomAround(delta);
+  }
+  function trackingRecenter(){
+    const ms=state.trackingMap;
+    if(!ms)return;
+    const order=orderById(ms.orderId);
+    if(!order)return;
+    const points=trackingGeoPoints(order,state.tracking[ms.orderId]||{});
+    const all=trackingAllPoints(points);
+    if(!all.length)return;
+    const fitted=fitTrackingMapView(all);
+    ms.userPanned=false;ms.userZoomed=false;ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
+    ms.panX=0;ms.panY=0;ms.tileKey="";
+    render({preserveScroll:true});
+  }
+  let trackingDrag=null,trackingPinch=null,trackingLastTap=0,trackingLastTapX=0,trackingLastTapY=0;
+  const trackingPointers=Object.create(null);
+  function trackingPointerList(){
+    return Object.keys(trackingPointers).map(id=>trackingPointers[id]);
+  }
+  function trackingCardPoint(card,clientX,clientY){
+    const rect=card.getBoundingClientRect();
+    return {x:clientX-rect.left,y:clientY-rect.top};
+  }
+  function trackingMapCard(target){
+    return target&&target.closest?target.closest("#tracking-map-card"):null;
+  }
+  function trackingMapPointerDown(event){
+    if(state.route!=="tracking")return;
+    const card=trackingMapCard(event.target);
+    if(!card)return;
+    if(event.target.closest(".map-controls")||event.target.closest(".map-overlay"))return;
+    const ms=state.trackingMap;
+    if(!ms)return;
+    trackingPointers[event.pointerId]={x:event.clientX,y:event.clientY};
+    // Capture so a finger that slides off the map still finishes its gesture.
+    try{if(card.setPointerCapture)card.setPointerCapture(event.pointerId);}catch(_){}
+    const active=trackingPointerList();
+    if(active.length>=2){
+      trackingDrag=null;
+      const a=active[0],b=active[1];
+      trackingPinch={startDistance:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),scale:1,
+        midX:(a.x+b.x)/2,midY:(a.y+b.y)/2};
+      applyTrackingPinchPreview();
+      return;
+    }
+    trackingDrag={id:event.pointerId,startX:event.clientX,startY:event.clientY,panX:ms.panX,panY:ms.panY,moved:false};
+  }
+  function trackingMapPointerMove(event){
+    if(!(event.pointerId in trackingPointers))return;
+    trackingPointers[event.pointerId]={x:event.clientX,y:event.clientY};
+    const ms=state.trackingMap;
+    if(!ms)return;
+    const active=trackingPointerList();
+    if(trackingPinch&&active.length>=2){
+      const a=active[0],b=active[1],distance=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y));
+      trackingPinch.scale=Math.min(6,Math.max(0.2,distance/trackingPinch.startDistance));
+      trackingPinch.midX=(a.x+b.x)/2;trackingPinch.midY=(a.y+b.y)/2;
+      applyTrackingPinchPreview();
+      if(event.cancelable)event.preventDefault();
+      return;
+    }
+    if(!trackingDrag||event.pointerId!==trackingDrag.id)return;
+    const dx=event.clientX-trackingDrag.startX,dy=event.clientY-trackingDrag.startY;
+    if(!trackingDrag.moved&&Math.abs(dx)<4&&Math.abs(dy)<4)return;
+    trackingDrag.moved=true;
+    ms.panX=trackingDrag.panX+dx;ms.panY=trackingDrag.panY+dy;
+    if(!ms.userPanned){
+      ms.userPanned=true;
+      const button=document.getElementById("tracking-recenter");
+      if(button)button.classList.remove("hidden");
+    }
+    clearTimeout(ms.tileTimer);
+    applyTrackingCamera(false);
+    if(Math.abs(ms.panX-ms.tilePanX)>TRACKING_TILE_PX/2||Math.abs(ms.panY-ms.tilePanY)>TRACKING_TILE_PX/2)refreshTrackingTiles();
+    if(event.cancelable)event.preventDefault();
+  }
+  function trackingMapPointerUp(event){
+    const known=event&&(event.pointerId in trackingPointers);
+    if(event)delete trackingPointers[event.pointerId];
+    if(trackingPinch){
+      if(trackingPointerList().length<2){
+        const pinch=trackingPinch;
+        trackingPinch=null;
+        trackingDrag=null;
+        commitTrackingPinch(pinch);
+      }
+      return;
+    }
+    if(!trackingDrag||(event&&event.pointerId!==trackingDrag.id))return;
+    const moved=trackingDrag.moved,drag=trackingDrag;
+    trackingDrag=null;
+    if(moved){refreshTrackingTiles();return;}
+    if(!known||!event)return;
+    // A quick second tap in the same spot zooms in, like any other map.
+    const card=document.getElementById("tracking-map-card");
+    const now=Date.now();
+    if(card&&now-trackingLastTap<320&&Math.abs(event.clientX-trackingLastTapX)<32&&Math.abs(event.clientY-trackingLastTapY)<32){
+      trackingLastTap=0;
+      const point=trackingCardPoint(card,event.clientX,event.clientY);
+      trackingZoomAround(1,point.x,point.y);
+      return;
+    }
+    trackingLastTap=now;trackingLastTapX=event.clientX;trackingLastTapY=event.clientY;
+    void drag;
+  }
+  // Live feedback while the fingers are still down: scale the whole world layer
+  // about the pinch midpoint. The real zoom (and correct tiles) is applied once
+  // the gesture ends.
+  function applyTrackingPinchPreview(){
+    const world=document.getElementById("tracking-map-world"),card=document.getElementById("tracking-map-card"),ms=state.trackingMap;
+    if(!world||!card||!ms||!trackingPinch)return;
+    const point=trackingCardPoint(card,trackingPinch.midX,trackingPinch.midY);
+    const size=trackingViewportSize();
+    const originX=point.x-size.width/2-ms.panX;
+    const originY=point.y-size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100)-ms.panY;
+    world.style.transition="none";
+    world.style.transformOrigin=originX.toFixed(1)+"px "+originY.toFixed(1)+"px";
+    world.style.transform='translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0) scale('+trackingPinch.scale.toFixed(3)+')';
+  }
+  function commitTrackingPinch(pinch){
+    const world=document.getElementById("tracking-map-world"),card=document.getElementById("tracking-map-card");
+    if(world)world.style.transformOrigin="";
+    const ms=state.trackingMap;
+    if(!ms||!card){applyTrackingCamera(false);return;}
+    const steps=Math.round(Math.log(pinch.scale)/Math.LN2);
+    const point=trackingCardPoint(card,pinch.midX,pinch.midY);
+    // Drop the preview scale first so the map can never be left mid-pinch,
+    // whatever the zoom step turns out to be.
+    applyTrackingCamera(false);
+    if(steps)trackingZoomAround(steps,point.x,point.y);
   }
   function screenChat(){const o=state.orders.find(x=>x.id===state.chat.orderId),messages=state.chat.messages||[];if(!o)return screenOrders();return'<main class="screen"><div class="screen-content page-stack">'+topbar(state.chat.title||"Order chat","Order "+o.id)+'<div class="notice info">'+icon("shield","small")+'<span>Real phone numbers are not displayed. Phone numbers typed in chat are automatically hidden.</span></div><section class="card chat-thread">'+(messages.length?messages.map(m=>'<div class="chat-message '+(m.senderId===state.session.uid?'mine':'')+'"><strong>'+h(m.senderRole||"user")+'</strong><p>'+h(m.body||"")+'</p><span class="caption">'+h(dateTime(m.at))+'</span></div>').join(""):emptyState("help","No messages yet","Use chat to coordinate this order."))+'</section><form id="chat-form" class="card cluster"><input class="input grow" name="message" maxlength="800" placeholder="Type a message" required><button class="button primary" type="submit">Send</button></form></div>'+nav()+'</main>'}
+  function trackingPartnerCard(order,live){
+    if(!order.riderId)return "";
+    const name=order.riderName||live.riderName||"Delivery partner";
+    const reachable=!TERMINAL_STATES.has(order.status);
+    return '<section class="card cluster between tracking-partner">'
+      +'<div class="cluster"><span class="avatar">'+h(String(name).slice(0,1).toUpperCase())+'</span>'
+      +'<div><strong>'+h(name)+'</strong><p class="caption">Your delivery partner</p></div></div>'
+      +'<div class="cluster">'
+      +(order.riderPhone&&reachable?'<a class="icon-button" href="tel:'+h(order.riderPhone)+'" aria-label="Call '+h(name)+'">'+icon("phone")+'</a>':'')
+      +'<button class="icon-button" data-action="open-order-chat" data-channel="customerRider" data-order-id="'+h(order.id)+'" aria-label="Chat with '+h(name)+'">'+icon("chat")+'</button>'
+      +'</div></section>';
+  }
   function screenTracking() {
     const order=orderById();if(!order)return screenOrder();
-    const live=state.tracking[order.id]||{},lat=Number(live.lat),lng=Number(live.lng),fresh=live.updatedAt&&Date.now()-Number(live.updatedAt)<45000;
-    const tile=tileFor(lat,lng,15);
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Live delivery",order.restaurant||order.id)+networkBanner()
-      +'<section class="card map-card"><div class="map-canvas" '+(tile?'style="background-image:linear-gradient(rgba(220,235,243,.18),rgba(220,235,243,.18)),url('+h(tile)+')"':'')+'></div><span class="map-pin rider">'+icon("pin")+'</span><span class="map-pin home">'+icon("home")+'</span><div class="map-overlay"><div class="cluster between"><div><strong>'+(fresh?'Location updated '+h(timeAgo(live.updatedAt)):'Waiting for a fresh rider location')+'</strong><p class="caption">Location-only map · © OpenStreetMap contributors</p></div><span class="status-pill '+(fresh?'success':'warning')+'">'+(fresh?'LIVE':'STALE')+'</span></div></div></section>'
-      +'<section class="card brand-card stack"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><h1 class="page-title">'+(order.status==="Arrived"?'Your partner is at the delivery location.':order.status==="Near you"?'Your partner is nearby.':'Your meal is on the way.')+'</h1><p class="supporting">'+(live.riderName?h(live.riderName)+' is sharing location for this active order.':'Tracking begins after a partner is assigned and starts delivery.')+'</p></section>'
-      +'<section class="card stack"><h2 class="section-title">Tracking health</h2><div class="price-row"><span>Last location</span><strong>'+h(live.updatedAt?dateTime(live.updatedAt):"Not received")+'</strong></div><div class="price-row"><span>Accuracy</span><strong>'+h(live.accuracy?Math.round(live.accuracy)+" m":"Not available")+'</strong></div><div class="price-row"><span>Sharing state</span><strong>'+h(live.status||"Waiting")+'</strong></div></section><div class="notice info">'+icon("shield","small")+'<span>Location is visible only for this active order and must be removed by the production retention service after completion.</span></div><button class="button tonal full" data-action="refresh">'+icon("refresh")+' Refresh tracking</button></div>'+nav()+'</main>';
+    const live=state.tracking[order.id]||{};
+    ensureTrackingRoute(order);
+    return '<main class="screen no-nav tracking-screen">'
+      +trackingMapMarkup(order,live,true)
+      +'<button class="back-button floating-back" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +'<div class="tracking-sheet-scroll">'
+      +networkBanner()
+      +'<section class="card brand-card stack"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><h1 class="page-title">'+(order.status==="Arrived"?'Your partner is at the delivery location.':order.status==="Near you"?'Your partner is nearby.':'Your meal is on the way.')+'</h1><p class="supporting">'+h(order.restaurant||order.id)+(live.riderName?' · '+h(live.riderName)+' is sharing location for this active order.':' · Tracking begins after a partner is assigned and starts delivery.')+'</p></section>'
+      +trackingPartnerCard(order,live)
+      +'<section class="card stack"><h2 class="section-title">Tracking health</h2><div class="price-row"><span>Last location</span><strong id="tracking-last-location">'+h(live.updatedAt?dateTime(live.updatedAt):"Not received")+'</strong></div><div class="price-row"><span>Accuracy</span><strong id="tracking-accuracy">'+h(live.accuracy?Math.round(live.accuracy)+" m":"Not available")+'</strong></div><div class="price-row"><span>Sharing state</span><strong id="tracking-sharing-state">'+h(live.status||"Waiting")+'</strong></div></section><div class="notice info">'+icon("shield","small")+'<span>Location is visible only for this active order and must be removed by the production retention service after completion.</span></div><button class="button tonal full" data-action="refresh">'+icon("refresh")+' Refresh tracking</button>'
+      +'</div></main>';
   }
 
   function promoCard(promo) {
@@ -1785,7 +2504,7 @@
     const saved=Object.assign({id:orderId},order||{});
     state.orders=[saved].concat(state.orders.filter(x=>x.id!==orderId));persistOrders();
     if(deliveryOtp)state.deliveryOtps[orderId]=deliveryOtp;
-    state.cart=[];state.coupon=null;state.tip=0;state.dynamicPricing={rainFee:0,surgeFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
+    state.cart=[];state.coupon=null;state.tip=0;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
     toast(recovered?"Your existing order was restored safely.":"Order placed successfully.","success");go("order",{orderId:orderId});
   }
 
@@ -1840,9 +2559,9 @@
     if(!state.online){toast("Reconnect to place this order safely.","danger");return;}
     if(!r||!r.open){toast("This restaurant is not accepting orders right now.","danger");return;}
     if(!paymentMethodEnabled(state.checkout.payment)){toast("This payment method is not available right now. Choose another option.","danger");reconcileCheckoutPaymentSelection();render({preserveScroll:true});return;}
-    await refreshDynamicPricing();
     state.checkout.instructions=(document.getElementById("checkout-instructions")||{}).value||state.checkout.instructions;
     state.loading=true;render({preserveScroll:true});
+    await refreshDynamicPricing();
     const idempotencyKey=orderIdempotencyKey();
     const requestPayload={
       idempotencyKey:idempotencyKey,restaurantId:r.id,addressId:address.id,items:callableCartItems(),
@@ -1886,7 +2605,7 @@
       customerPhone:address.phone||state.profile.phone,restaurantId:r.id,restaurant:r.name,
       restaurantLocation:{address:r.address||"",lat:Number.isFinite(Number(r.lat))?Number(r.lat):null,lng:Number.isFinite(Number(r.lng))?Number(r.lng):null},
       items:state.cart.map(item=>({itemId:item.itemId,name:item.name,quantity:item.quantity,price:item.price,variant:item.variant||"",variantPrice:item.variantPrice||0,addOns:item.addOns||[],addOnTotal:item.addOnTotal||0,note:item.note||"",diet:item.diet||""})),
-      pricing:{subtotal:cartSubtotal(),discount:discount(),deliveryFee:deliveryFee(),smallOrderFee:smallOrderFee(),lateNightFee:lateNightFee(),rainFee:rainFee(),surgeFee:surgeFee(),platformFee:platformFee(),tax:tax(),tip:Number(state.tip||0),currency:"INR",source:"catalog_snapshot_v3"},
+      pricing:{subtotal:cartSubtotal(),discount:discount(),deliveryFee:deliveryFee(),smallOrderFee:smallOrderFee(),lateNightFee:lateNightFee(),rainFee:rainFee(),surgeFee:surgeFee(),riderIncentiveFee:riderIncentiveFee(),platformFee:platformFee(),tax:tax(),tip:Number(state.tip||0),currency:"INR",source:"catalog_snapshot_v3"},
       pricingContext:{distanceKm:Number((restaurantDistanceKm(r)||0).toFixed(2)),platformFeeRule:platformFeeDetails().rule,weatherSeverity:state.dynamicPricing.weatherSeverity||"",surgeActiveOrders:Number(state.dynamicPricing.activeOrders||0),pricedAt:Date.now()},
       total:orderTotal(),coupon:eligibleCoupon()&&state.coupon.code||"",paymentMethod:"cod",paymentState:"cash_due",
       deliveryMode:"asap",address:clone(address),instructions:state.checkout.instructions||"",contactless:state.checkout.contactless===true,
@@ -2006,11 +2725,13 @@
       if(control.classList.contains("sheet-backdrop")&&event.target.closest("[data-sheet-surface]"))return;
       closeSheet();return;
     }
-    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);return;}
+    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
     if(action==="quick-rate"){go("review",{orderId:control.dataset.orderId});return;}
     if(action==="escalate-support"){escalateSupport();return;}
     if(action==="back"){goBack();return;}
+    if(action==="tracking-zoom"){trackingZoomBy(Number(control.dataset.delta||0));return;}
+    if(action==="tracking-recenter"){trackingRecenter();return;}
     if(action==="welcome-signup"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("signup");return;}
     if(action==="welcome-login"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("login");return;}
     if(action==="google-signin"){openGoogleSignIn();return;}
@@ -2100,7 +2821,7 @@
     if(action==="confirm-delete-address"){await deleteAddress(control.dataset.addressId);return;}
     if(action==="detect-address-location"){requestLocation("address");return;}
     if(action==="address-map-zoom"){state.addressMapZoom=Math.max(12,Math.min(18,state.addressMapZoom+Number(control.dataset.delta||0)));renderSheet();return;}
-    if(action==="address-map-pick"){const rect=control.getBoundingClientRect(),point=state.addressMapDraft||{lat:14.9077,lng:79.8946},world=mapWorld(point.lat,point.lng,state.addressMapZoom),next=worldToLatLng(world.x+(event.clientX-rect.left-rect.width/2),world.y+(event.clientY-rect.top-rect.height/2),state.addressMapZoom);state.addressMapDraft=next;if(state.sheet&&state.sheet.address){state.sheet.address.lat=next.lat;state.sheet.address.lng=next.lng;}renderSheet();return;}
+    if(action==="address-map-pick"){const rect=control.getBoundingClientRect(),point=state.addressMapDraft||addressMapSeed(null),world=mapWorld(point.lat,point.lng,state.addressMapZoom),next=worldToLatLng(world.x+(event.clientX-rect.left-rect.width/2),world.y+(event.clientY-rect.top-rect.height/2),state.addressMapZoom);state.addressMapDraft=next;if(state.sheet&&state.sheet.address){state.sheet.address.lat=next.lat;state.sheet.address.lng=next.lng;}renderSheet();return;}
     if(action==="select-address"){selectAddress(control.dataset.addressId);return;}
     if(action==="toggle-preference"){
       const key=control.dataset.key;state.profile.preferences[key]=!state.profile.preferences[key];persistProfile();applyTheme();render({preserveScroll:true});
@@ -2114,6 +2835,31 @@
   }
   app.addEventListener("click",handleActionClick);
   sheetRegion.addEventListener("click",handleActionClick);
+  // Bound to #app rather than the map itself: every render replaces the map's
+  // DOM, but #app survives, so these stay attached for the life of the session.
+  // Safety net for the live map. The realtime stream is the primary source, but
+  // a WebView loses long-lived connections on network handovers and app
+  // switches, which strands the map on a stale position. If no frame has
+  // arrived recently while the tracking screen is open, re-read the record
+  // directly. Costs one small request every few seconds, and only then.
+  async function pollTrackingFallback(){
+    if(state.route!=="tracking"||!state.session||!state.online)return;
+    const orderId=state.selectedOrderId;
+    if(!orderId)return;
+    if(Date.now()-Number(state.trackingSeenAt[orderId]||0)<TRACKING_STREAM_GRACE_MS)return;
+    try{
+      const value=await db("GET",DB_ROOT+"/tracking/"+encodeURIComponent(orderId));
+      applyTrackingEvent(orderId,{path:"/",data:value===undefined?null:value},"put");
+    }catch(_){}
+  }
+  setInterval(pollTrackingFallback,TRACKING_POLL_MS);
+  document.addEventListener("visibilitychange",function(){
+    if(document.visibilityState==="visible"&&state.route==="tracking")pollTrackingFallback();
+  });
+  app.addEventListener("pointerdown",trackingMapPointerDown);
+  document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
+  document.addEventListener("pointerup",trackingMapPointerUp);
+  document.addEventListener("pointercancel",trackingMapPointerUp);
 
   app.addEventListener("input",function(event){
     if(event.target.id==="search-input"){state.query=event.target.value;scheduleSearchUpdate();}

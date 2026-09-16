@@ -313,7 +313,7 @@ public class MainActivity extends ComponentActivity {
 
   private void handleBackRequest() {
     if (!isTrustedPageLoaded()) { confirmExit(); return; }
-    webView.evaluateJavascript("window.handleAdminBack ? window.handleAdminBack() : 'root'", result -> {
+    webView.evaluateJavascript("window.FeastlyRestaurantBack ? window.FeastlyRestaurantBack() : 'root'", result -> {
       if (result != null && result.contains("handled")) return;
       confirmExit();
     });

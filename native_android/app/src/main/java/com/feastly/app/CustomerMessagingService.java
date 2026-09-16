@@ -21,6 +21,7 @@ import java.util.Map;
 /** Receives Customer order updates and FCM installation-token changes. */
 public final class CustomerMessagingService extends FirebaseMessagingService {
   static final String ORDER_CHANNEL = "customer_orders";
+  static final String PROMOTIONS_CHANNEL = "customer_promotions";
   static final String PUSH_ACTION = "com.feastly.app.CUSTOMER_PUSH_EVENT";
   static final String EXTRA_PUSH_JSON = "savrivo_push_json";
   private static final String PREFS = "savrivo_customer_push_events_v1";
@@ -42,10 +43,15 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     publishToRunningApp(this, event);
 
     String type = event.optString("type", "");
-    if (!"ORDER_STATUS".equals(type)) return;
-    String title = event.optString("title", "Scraveit order update");
-    String body = event.optString("body", "Your order has an update.");
-    showOrderNotification(event, title, body);
+    if ("ORDER_STATUS".equals(type)) {
+      String title = event.optString("title", "Scraveit order update");
+      String body = event.optString("body", "Your order has an update.");
+      showOrderNotification(event, title, body);
+    } else if ("CUSTOMER_BROADCAST".equals(type)) {
+      String title = event.optString("title", "Scraveit");
+      String body = event.optString("body", "");
+      showBroadcastNotification(event, title, body);
+    }
   }
 
   @Override public void onDeletedMessages() {
@@ -62,8 +68,14 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
         ORDER_CHANNEL, "Order updates", NotificationManager.IMPORTANCE_HIGH);
     channel.setDescription("Order confirmation, preparation and delivery updates");
     channel.enableVibration(true);
+    NotificationChannel promotions = new NotificationChannel(
+        PROMOTIONS_CHANNEL, "Offers and announcements", NotificationManager.IMPORTANCE_DEFAULT);
+    promotions.setDescription("Scheduled offers and announcements from Scraveit");
     NotificationManager manager = context.getSystemService(NotificationManager.class);
-    if (manager != null) manager.createNotificationChannel(channel);
+    if (manager != null) {
+      manager.createNotificationChannel(channel);
+      manager.createNotificationChannel(promotions);
+    }
   }
 
   static JSONObject consumePendingEvent(Context context) {
@@ -137,6 +149,32 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
         .setCategory(Notification.CATEGORY_STATUS)
         .setPriority(Notification.PRIORITY_HIGH)
         .setOnlyAlertOnce(true)
+        .setAutoCancel(true)
+        .setContentIntent(pending);
+    NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager != null) manager.notify(notificationId, builder.build());
+  }
+
+  private void showBroadcastNotification(JSONObject event, String title, String body) {
+    if (body.length() == 0) return;
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+    createNotificationChannels(this);
+    String broadcastId = event.optString("broadcastId", "broadcast");
+    int notificationId = 0x5B000000 | (broadcastId.hashCode() & 0x00ffffff);
+    Intent launch = new Intent(this, MainActivity.class)
+        .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(EXTRA_PUSH_JSON, event.toString());
+    PendingIntent pending = PendingIntent.getActivity(this, notificationId, launch,
+        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ? new Notification.Builder(this, PROMOTIONS_CHANNEL) : new Notification.Builder(this);
+    builder.setSmallIcon(R.drawable.savrivo_notification)
+        .setColor(getColor(R.color.savrivo_primary))
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(new Notification.BigTextStyle().bigText(body))
+        .setCategory(Notification.CATEGORY_PROMO)
         .setAutoCancel(true)
         .setContentIntent(pending);
     NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
