@@ -3620,7 +3620,14 @@ export async function upsertRiderRewardCampaign(
       }
       return existing;
     }
-    if (input.expectedUpdatedAt !== undefined && existingUpdatedAt !== input.expectedUpdatedAt) {
+    // current can be null on the transaction's first pass even when the path
+    // has real data - the RTDB client hasn't synced this location locally
+    // yet, not a signal that the record is genuinely empty. Only compare
+    // against expectedUpdatedAt once we have data to compare against;
+    // otherwise the SDK's own optimistic-concurrency retry (which re-invokes
+    // this callback with the real committed value) would be short-circuited
+    // by an abort based on a value we never actually confirmed.
+    if (current !== null && input.expectedUpdatedAt !== undefined && existingUpdatedAt !== input.expectedUpdatedAt) {
       abort = new DomainError("aborted", "Reward campaign changed; refresh and retry.");
       return undefined;
     }
@@ -3672,7 +3679,11 @@ export async function updateRiderRewardSettings(
       }
       return raw;
     }
-    if (input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
+    // See the matching comment in upsertRiderRewardCampaign above: current
+    // can be null on the transaction's first pass even when real data
+    // exists at this path, so only enforce the optimistic-concurrency check
+    // once we actually have data to compare expectedUpdatedAt against.
+    if (current !== null && input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
       abort = new DomainError("aborted", "Reward settings changed; refresh and retry.");
       return undefined;
     }

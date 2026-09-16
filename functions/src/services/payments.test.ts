@@ -124,6 +124,7 @@ function sampleOrder(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
       lateNightFee: 0,
       rainFee: 0,
       surgeFee: 0,
+      riderIncentiveFee: 0,
       platformFee: 5,
       tax: 6,
       tip: 10,

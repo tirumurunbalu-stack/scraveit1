@@ -3,6 +3,12 @@ import {ROOT} from "../config";
 import {haversineKm, roundMoney} from "../domain/order";
 import {trustedActiveOrderCount} from "../domain/workload";
 import {DomainError} from "../errors";
+import {
+  checkoutEligibleRiderIncentiveCampaigns,
+  normalizeCheckoutCampaign,
+  resolveCheckoutRiderIncentiveFeePaise,
+  resolveCheckoutRiderIncentiveLineItems,
+} from "../domain/riderIncentiveEligibility";
 import type {Address, CatalogItem, CatalogRestaurant} from "../types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -92,17 +98,26 @@ export async function loadServerFees(
   lateNightFee: number;
   rainFee: number;
   surgeFee: number;
+  riderIncentiveFee: number;
+  riderIncentiveCampaignIds: string[];
+  riderIncentiveItems: {label: string; amount: number}[];
   distanceKm: number;
   activeOrders: number;
 }> {
-  const [settingsSnapshot, loadSnapshot, signalSnapshot] = await Promise.all([
+  const [settingsSnapshot, loadSnapshot, signalSnapshot, campaignsSnapshot] = await Promise.all([
     db.ref(`${ROOT}/settings/customer`).get(),
     db.ref(`${ROOT}/private/restaurantWorkload/${restaurant.id}`).get(),
     db.ref(`${ROOT}/pricingSignals/${restaurant.id}`).get(),
+    // A read failure here must never block checkout - it just means no
+    // rider-incentive surcharge is applied, same "fail closed" idiom as rain.
+    db.ref(`${ROOT}/private/riderRewards/campaigns`).get().catch(() => null),
   ]);
   const settings = (settingsSnapshot.val() ?? {}) as UnknownRecord;
   const load = (loadSnapshot.val() ?? {}) as UnknownRecord;
   const signal = (signalSnapshot.val() ?? {}) as UnknownRecord;
+  const riderCampaigns = records<{id: string}>(campaignsSnapshot?.val())
+    .map((entry) => normalizeCheckoutCampaign(entry.id, entry))
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   const distanceKm = haversineKm(restaurant, address);
   const maxDeliveryKm = finite(settings.maxDeliveryKm, 15);
   if (maxDeliveryKm > 0 && distanceKm > maxDeliveryKm) {
@@ -144,6 +159,22 @@ export async function loadServerFees(
   const rainFee = settings.rainFeeEnabled === true && validUntil > Date.now() && signal.kind === "verified_weather"
     ? Math.min(500, Math.max(0, finite(signal.rainFee))) : 0;
 
+  // Mirrors, at checkout time, exactly which per-order rider bonuses will
+  // actually be credited to whichever rider ends up delivering this order -
+  // same time-window/day/restaurant/zone/order-value/rain-only checks, and
+  // the same stack-vs-highest-only payout rule, as the delivery-time
+  // crediting path in services/riderRewards.ts.
+  const eligibleRiderIncentiveCampaigns = checkoutEligibleRiderIncentiveCampaigns(riderCampaigns, Date.now(), {
+    restaurantId: restaurant.id,
+    area: address.area || address.label || "",
+    subtotalPaise: Math.round(subtotal * 100),
+    rainFeeApplied: rainFee > 0,
+  });
+  const riderIncentive = resolveCheckoutRiderIncentiveFeePaise(eligibleRiderIncentiveCampaigns);
+  const riderIncentiveItems = resolveCheckoutRiderIncentiveLineItems(eligibleRiderIncentiveCampaigns)
+    .map((item) => ({label: item.label, amount: roundMoney(item.amountPaise / 100)}))
+    .filter((item) => item.amount > 0);
+
   return {
     deliveryFee: roundMoney(Math.max(0, deliveryFee)),
     platformFee: roundMoney(Math.max(0, finite(settings.platformFee, finite(restaurant.platformFee, 9)))),
@@ -153,6 +184,9 @@ export async function loadServerFees(
     lateNightFee: Math.max(0, lateNightFee),
     rainFee,
     surgeFee: Math.max(0, surgeFee),
+    riderIncentiveFee: roundMoney(riderIncentive.amountPaise / 100),
+    riderIncentiveCampaignIds: riderIncentive.campaignIds,
+    riderIncentiveItems,
     distanceKm,
     activeOrders,
   };
