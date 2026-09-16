@@ -37,7 +37,8 @@ public final class SavrivoCallableClient {
             "getRiderFinancialSummary", "getRiderRewardsDashboard",
             "getAdminRiderRewardsDashboard", "upsertRiderRewardCampaignPolicy",
             "updateRiderRewardSettingsPolicy", "getRestaurantSettlementSummary",
-            "getPlatformConfiguration", "updatePlatformConfigurationPolicy"));
+            "getPlatformConfiguration", "updatePlatformConfigurationPolicy",
+            "exportPlatformDataWorkbook"));
     private static final ExecutorService NETWORK = Executors.newFixedThreadPool(3);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;
@@ -148,6 +149,11 @@ public final class SavrivoCallableClient {
     public static void getPlatformConfiguration(
             Context context, String idToken, JSONObject payload, Callback callback) {
         call(context, "getPlatformConfiguration", idToken, payload, callback);
+    }
+
+    public static void exportPlatformDataWorkbook(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "exportPlatformDataWorkbook", idToken, payload, callback);
     }
 
     public static void updatePlatformConfigurationPolicy(

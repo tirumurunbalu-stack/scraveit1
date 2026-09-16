@@ -34,3 +34,25 @@ img,svg,video,canvas{max-width:100%}
 .chip:active{transform:scale(.98)}
 .chip:disabled{opacity:.5;cursor:default;transform:none}
 .chip.active{background:var(--brand-soft);border-color:color-mix(in srgb,var(--brand),transparent 58%);color:var(--brand)}
+.accordion{border:1px solid var(--border);border-radius:18px;overflow:hidden;background:var(--surface)}
+.accordion-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;cursor:pointer;background:var(--raised);border:none;width:100%;text-align:left;font:inherit;color:inherit}
+.accordion-header .chevron{transition:transform .16s;flex:0 0 auto}
+.accordion-header.open .chevron{transform:rotate(90deg)}
+.accordion-body{padding:14px 16px 16px;display:grid;gap:12px}
+.accordion-body.collapsed{display:none}
+.pill-row{display:flex;flex-wrap:wrap;gap:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:999px;background:var(--raised);border:1px solid var(--border);font-size:13px;font-weight:750;color:var(--ink)}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.pill.success{background:var(--success-soft);color:var(--success);border-color:transparent}
+.pill.warning{background:var(--warning-soft);color:var(--warning);border-color:transparent}
+.pill.danger{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+.milestone-track{display:flex;gap:10px;overflow-x:auto;padding:4px 2px;scrollbar-width:none;-ms-overflow-style:none}
+.milestone-track::-webkit-scrollbar{display:none}
+.milestone-node{min-width:96px;flex:0 0 auto;border-radius:16px;border:1px solid var(--border);background:var(--raised);padding:12px;text-align:center;display:grid;gap:6px}
+.milestone-node.reached{border-color:var(--success);background:var(--success-soft)}
+.milestone-node .lock{color:var(--muted);font-size:13px}
+.milestone-node .amount{font-size:16px;font-weight:850}
+.milestone-node .target{font-size:11px;color:var(--muted)}
+.rain-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--brand-soft);color:var(--brand);font-size:12px;font-weight:800}
+.row-card{border:1px dashed var(--border2);border-radius:14px;padding:12px;display:grid;gap:10px;background:var(--raised)}
+.row-card .row-head{display:flex;justify-content:space-between;align-items:center;gap:8px}

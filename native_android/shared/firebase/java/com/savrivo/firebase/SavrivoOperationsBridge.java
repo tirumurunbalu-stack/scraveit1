@@ -335,6 +335,31 @@ public final class SavrivoOperationsBridge {
         }
     }
 
+    @JavascriptInterface public void exportPlatformDataWorkbook(
+            String requestId, String idToken, String payloadJson) {
+        try {
+            if (payloadJson == null || payloadJson.length() > 64_000) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, "NATIVE_DATA_EXPORT_UNAVAILABLE", () -> {
+                if (!valid(requestId, idToken)
+                        || !"admin".equals(SavrivoFirebase.appRole(activity))) {
+                    respond(requestId, false,
+                            "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                SavrivoCallableClient.exportPlatformDataWorkbook(activity, idToken, payload,
+                        (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "exportPlatformDataWorkbook bridge failed", error);
+            respond(requestId, false,
+                    "{\"error\":{\"message\":\"NATIVE_DATA_EXPORT_UNAVAILABLE\"}}");
+        }
+    }
+
     @JavascriptInterface public void updatePlatformConfigurationPolicy(
             String requestId, String idToken, String payloadJson) {
         try {
