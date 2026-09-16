@@ -69,6 +69,9 @@
             "platformFee": {
               ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
             },
+            "commissionBps": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000)"
+            },
             "opensUntil": {
               ".validate": "newData.isString() && newData.val().length <= 40",
               ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))"
@@ -214,6 +217,67 @@
             "autoAcceptOrders": {
               ".validate": "newData.isBoolean()",
               ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "payoutProfile": {
+              ".validate": "!newData.exists() || newData.hasChildren(['legalBusinessName','beneficiaryName','contactPhone','contactEmail','preferredMethod','upiId','bankAccountHolderName','bankAccountNumber','bankIfsc','bankName','branchName','accountType','panNumber','gstin','notes','verificationStatus','updatedAt','updatedBy'])",
+              ".write": "auth != null && ((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin') || (root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner') || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner'))",
+              "legalBusinessName": {
+                ".validate": "newData.isString() && newData.val().length <= 160"
+              },
+              "beneficiaryName": {
+                ".validate": "newData.isString() && newData.val().length <= 160"
+              },
+              "contactPhone": {
+                ".validate": "newData.isString() && newData.val().length <= 24"
+              },
+              "contactEmail": {
+                ".validate": "newData.isString() && newData.val().length <= 254 && (newData.val() === '' || newData.val().matches(/^\\S+@\\S+\\.\\S+$/))"
+              },
+              "preferredMethod": {
+                ".validate": "newData.isString() && (newData.val() === 'upi' || newData.val() === 'imps' || newData.val() === 'neft')"
+              },
+              "upiId": {
+                ".validate": "newData.isString() && newData.val().length <= 256 && (newData.val() === '' || newData.val().matches(/^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,64}$/))"
+              },
+              "bankAccountHolderName": {
+                ".validate": "newData.isString() && newData.val().length <= 160"
+              },
+              "bankAccountNumber": {
+                ".validate": "newData.isString() && newData.val().length <= 20 && (newData.val() === '' || newData.val().matches(/^[0-9]{6,20}$/))"
+              },
+              "bankIfsc": {
+                ".validate": "newData.isString() && newData.val().length <= 11 && (newData.val() === '' || newData.val().matches(/^[A-Z]{4}0[A-Z0-9]{6}$/))"
+              },
+              "bankName": {
+                ".validate": "newData.isString() && newData.val().length <= 160"
+              },
+              "branchName": {
+                ".validate": "newData.isString() && newData.val().length <= 160"
+              },
+              "accountType": {
+                ".validate": "newData.isString() && (newData.val() === 'savings' || newData.val() === 'current')"
+              },
+              "panNumber": {
+                ".validate": "newData.isString() && newData.val().length <= 10 && (newData.val() === '' || newData.val().matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/))"
+              },
+              "gstin": {
+                ".validate": "newData.isString() && newData.val().length <= 15 && (newData.val() === '' || newData.val().matches(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/))"
+              },
+              "notes": {
+                ".validate": "newData.isString() && newData.val().length <= 1000"
+              },
+              "verificationStatus": {
+                ".validate": "newData.isString() && newData.val().length <= 40"
+              },
+              "updatedAt": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+              },
+              "updatedBy": {
+                ".validate": "newData.isString() && newData.val().length <= 254"
+              },
+              "$other": {
+                ".validate": false
+              }
             }
           }
         },
@@ -272,11 +336,20 @@
               "lng": {
                 ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
               },
-              "$other": {
-                ".validate": false
-              },
               "city": {
                 ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              },
+              "formattedAddress": {
+                ".validate": "newData.isString() && newData.val().length <= 600"
+              },
+              "serviceAreaId": {
+                ".validate": "newData.isString() && newData.val().length <= 200"
+              },
+              "needsLocationPin": {
+                ".validate": "newData.isBoolean()"
+              },
+              "$other": {
+                ".validate": false
               }
             }
           },
@@ -403,7 +476,7 @@
               }
             },
             "pricing": {
-              ".validate": "newData.hasChildren(['subtotal','discount','deliveryFee','smallOrderFee','lateNightFee','rainFee','surgeFee','platformFee','tax','tip','currency','source']) && newData.child('subtotal').val() >= newData.child('discount').val() && (newData.child('discount').val() === 0 || (newData.parent().child('coupon').isString() && newData.parent().child('coupon').val().length > 0))",
+              ".validate": "newData.hasChildren(['subtotal','discount','deliveryFee','smallOrderFee','lateNightFee','rainFee','surgeFee','riderIncentiveFee','platformFee','tax','tip','currency','source']) && newData.child('subtotal').val() >= newData.child('discount').val() && (newData.child('discount').val() === 0 || (newData.parent().child('coupon').isString() && newData.parent().child('coupon').val().length > 0))",
               "subtotal": {
                 ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 1000000"
               },
@@ -442,10 +515,13 @@
               },
               "surgeFee": {
                 ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000"
+              },
+              "riderIncentiveFee": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
               }
             },
             "total": {
-              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1200000 && newData.val() >= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() - 0.01 && newData.val() <= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() + 0.01"
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1200000 && newData.val() >= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/riderIncentiveFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() - 0.01 && newData.val() <= newData.parent().child('pricing/subtotal').val() - newData.parent().child('pricing/discount').val() + newData.parent().child('pricing/deliveryFee').val() + newData.parent().child('pricing/smallOrderFee').val() + newData.parent().child('pricing/lateNightFee').val() + newData.parent().child('pricing/rainFee').val() + newData.parent().child('pricing/surgeFee').val() + newData.parent().child('pricing/riderIncentiveFee').val() + newData.parent().child('pricing/platformFee').val() + newData.parent().child('pricing/tax').val() + newData.parent().child('pricing/tip').val() + 0.01"
             },
             "coupon": {
               ".validate": "newData.isString() && newData.val().length <= 60"
@@ -2069,6 +2145,23 @@
           },
           "createdBy": {
             ".validate": "newData.isString() && newData.val().length <= 254"
+          },
+          "repeat": {
+            ".validate": "!newData.exists() || newData.hasChildren(['type'])",
+            "type": {
+              ".validate": "newData.val() === 'none' || newData.val() === 'daily' || newData.val() === 'weekly' || newData.val() === 'custom'"
+            },
+            "days": {
+              "$index": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 6"
+              }
+            },
+            "intervalDays": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 365"
+            },
+            "$other": {
+              ".validate": false
+            }
           },
           "$other": {
             ".validate": false

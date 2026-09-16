@@ -44,6 +44,16 @@ export const recoverDeliveryOtpSchema = z.object({
   orderId: identifier,
 }).strict();
 
+// Optional cart context for getCheckoutConfiguration's fee-preview fields -
+// intentionally accepts only items/restaurantId/addressId, never a client-
+// supplied subtotal or fee amount, so the preview is computed the exact same
+// server-trusted way as order creation itself.
+export const checkoutPricingPreviewSchema = z.object({
+  restaurantId: identifier,
+  items: z.array(cartLineSchema).min(1).max(MAX_CART_LINES),
+  addressId: identifier,
+}).strict();
+
 export const statusSchema = z.enum([
   "Order placed",
   "Accepted",
@@ -153,6 +163,11 @@ export const adminDashboardQuerySchema = z.object({
 }).strict();
 
 export type AdminDashboardQueryInput = z.infer<typeof adminDashboardQuerySchema>;
+
+/** An empty/omitted city exports every city; a non-empty one scopes customers, riders and restaurants to it. */
+export const exportPlatformDataWorkbookSchema = z.object({
+  city: z.string().trim().max(120).optional(),
+}).strict();
 
 /**
  * Rider finance is a read-only, bounded server projection. A rider omits
@@ -421,7 +436,12 @@ export const riderRewardCampaignSchema = z.object({
     }
     targets.add(milestone.target);
   }
-  if (value.conditionGroups.length === 0 && value.requireDailyLoginSession !== true &&
+  // Archiving only files a campaign away - it must never be blocked by a content-quality
+  // rule meant for campaigns still being actively created or edited, or a legacy-shaped
+  // campaign could never be archived at all. Restoring it back out of the archive does
+  // still have to satisfy this rule, same as creating a new campaign would.
+  if (value.archived !== true && value.conditionGroups.length === 0 &&
+      value.requireDailyLoginSession !== true &&
       value.kind === "milestone_bonus" && value.timeSlots.length > 0) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
