@@ -1,15 +1,38 @@
 import {stripPrivateOrderFields} from "./orderSecurity";
 import type {OrderStatus, SavrivoOrder} from "../types";
 
+export interface RiderArrivalVerification {
+  verified: true;
+  verifiedAt: number;
+  distanceMeters: number;
+  accuracyMeters: number;
+  source: string;
+}
+
 export type RestaurantOrderProjection = Omit<SavrivoOrder, "customerPhone" | "address"> & {
   address: {label: string; area: string; city?: string};
+  riderArrivalVerified?: true;
+  riderArrivedRestaurantAt?: number;
+  riderArrivalVerification?: RiderArrivalVerification;
 };
 
-/** Restaurant operations need the order, not a customer's phone or drop pin. */
-export function buildRestaurantOrderProjection(order: SavrivoOrder): RestaurantOrderProjection {
+/**
+ * Restaurant operations need the order, not a customer's phone or drop pin.
+ *
+ * Verified rider restaurant arrival is written directly onto this projection
+ * by markRiderArrivedRestaurant and never lives on the canonical order. A
+ * rebuild driven purely by `order` must carry it forward for the same rider
+ * assignment, or a later kitchen status update (e.g. Preparing -> Ready for
+ * pickup, which also auto-promotes to Assigned) would silently erase an
+ * arrival the rider already verified before the kitchen marked it ready.
+ */
+export function buildRestaurantOrderProjection(
+  order: SavrivoOrder,
+  existing?: RestaurantOrderProjection | null,
+): RestaurantOrderProjection {
   const clean = stripPrivateOrderFields(order);
   const {customerPhone: _phone, address, ...rest} = clean;
-  return {
+  const projection: RestaurantOrderProjection = {
     ...rest,
     address: {
       label: address.label,
@@ -17,6 +40,17 @@ export function buildRestaurantOrderProjection(order: SavrivoOrder): RestaurantO
       ...(address.city ? {city: address.city} : {}),
     },
   };
+  if (existing && existing.riderId && order.riderId && existing.riderId === order.riderId &&
+      existing.riderArrivalVerified === true) {
+    projection.riderArrivalVerified = true;
+    if (existing.riderArrivedRestaurantAt !== undefined) {
+      projection.riderArrivedRestaurantAt = existing.riderArrivedRestaurantAt;
+    }
+    if (existing.riderArrivalVerification !== undefined) {
+      projection.riderArrivalVerification = existing.riderArrivalVerification;
+    }
+  }
+  return projection;
 }
 
 const STATUS_RANK: Record<OrderStatus, number> = {

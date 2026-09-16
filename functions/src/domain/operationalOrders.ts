@@ -57,10 +57,22 @@ function sortKey(lane: "active" | "recent", timestamp: number, orderId: string):
 /**
  * Privacy-minimized current operational head. It intentionally excludes
  * addresses, phone numbers, item details, notes, OTPs and payment secrets.
+ *
+ * Verified rider restaurant arrival is written directly onto this projection
+ * (never onto the canonical order), so a rebuild driven purely by `order`
+ * must carry it forward for the same rider assignment via `existing`, or a
+ * later kitchen status update would silently erase an arrival the rider
+ * already verified before the kitchen marked the order ready.
  */
-export function buildOperationalOrderProjection(order: SavrivoOrder): OperationalOrderProjection {
+export function buildOperationalOrderProjection(
+  order: SavrivoOrder,
+  existing?: OperationalOrderProjection | null,
+): OperationalOrderProjection {
   const active = isOperationalOrderActive(order.status);
   const updatedAt = sortTimestamp(order.updatedAt);
+  const riderId = order.riderId ? String(order.riderId).slice(0, 128) : undefined;
+  const carryArrival = Boolean(existing && existing.riderId && riderId && existing.riderId === riderId &&
+    existing.riderArrivalVerified === true && existing.riderArrivedRestaurantAt !== undefined);
   return {
     version: OPERATIONAL_ORDER_PROJECTION_VERSION,
     source: "functions",
@@ -68,7 +80,10 @@ export function buildOperationalOrderProjection(order: SavrivoOrder): Operationa
     customerId: order.customerId,
     restaurantId: order.restaurantId,
     restaurantName: String(order.restaurant ?? "").trim().slice(0, 160),
-    ...(order.riderId ? {riderId: String(order.riderId).slice(0, 128)} : {}),
+    ...(riderId ? {riderId} : {}),
+    ...(carryArrival
+      ? {riderArrivalVerified: true as const, riderArrivedRestaurantAt: existing!.riderArrivedRestaurantAt}
+      : {}),
     status: order.status,
     active,
     ...(active
