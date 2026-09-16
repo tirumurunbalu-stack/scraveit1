@@ -63,3 +63,6 @@ local.properties
 local.properties
 *.keystore
 native_android.zip
+
+# Local Firebase Hosting deploy cache
+.firebase/
