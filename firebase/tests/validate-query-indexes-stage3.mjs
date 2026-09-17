@@ -28,7 +28,10 @@ assert.deepEqual(
   addReviewedQueryIndexes(stage2),
   "Stage 3 may only add the explicitly reviewed .indexOn declarations to stage 2.",
 );
-assert.equal(REVIEWED_QUERY_INDEXES.length, 1, "Every new staged index needs an explicit source-query review.");
+// 1: promotions/code, reviewed against the bounded coupon lookup below.
+// 2: catalog/restaurants/citySort, reviewed against the customer app's
+//    paged city range query, also asserted below.
+assert.equal(REVIEWED_QUERY_INDEXES.length, 2, "Every new staged index needs an explicit source-query review.");
 assert.deepEqual(
   normalizeIndexOn(stage3.rules.feastly.promotions[".indexOn"]),
   ["code"],
@@ -37,6 +40,17 @@ assert.deepEqual(
 
 // Existing indexed production queries must remain covered.
 assert.ok(normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("city"));
+// The active rules index citySort because the customer app queries it. Any
+// staged file that ships without it turns that query into a full-catalogue
+// read at exactly the scale this staging exists to protect.
+assert.ok(
+  normalizeIndexOn(active.rules.feastly.catalog.restaurants[".indexOn"]).includes("citySort"),
+  "Active rules must index citySort.",
+);
+assert.ok(
+  normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("citySort"),
+  "Stage 3 must index citySort.",
+);
 assert.ok(normalizeIndexOn(stage3.rules.feastly.dispatchQueue[".indexOn"]).includes("status"));
 assert.ok(normalizeIndexOn(stage3.rules.feastly.staff[".indexOn"]).includes("restaurantId"));
 assert.ok(normalizeIndexOn(stage3.rules.feastly.private.notificationOutbox[".indexOn"]).includes("nextAttemptAt"));
@@ -73,8 +87,17 @@ assert.match(
 );
 
 const customer = readText("native_android/app/src/main/assets/premium.js");
-assert.match(customer, /function restaurantSummaryQuery\(\)/);
-assert.match(customer, /orderBy:JSON\.stringify\("city"\).*limitToFirst:"100"/s);
+assert.match(customer, /function restaurantSummaryQuery\(cursor\)/);
+assert.match(
+  customer,
+  /orderBy:JSON\.stringify\("citySort"\),\s*startAt:JSON\.stringify\(range\.startAt\),\s*endAt:JSON\.stringify\(range\.endAt\),\s*limitToFirst:/s,
+  "The customer catalogue must stay a bounded range over the indexed citySort field.",
+);
+assert.match(
+  customer,
+  /limitToFirst:String\(CATALOG_PAGE_SIZE\+\(cursor\?1:0\)\)/,
+  "Every catalogue page must carry a limit; an unbounded read is what this file exists to prevent.",
+);
 assert.match(
   customer,
   /const parameters=kind==="catalog"\?restaurantSummaryQuery\(\):null;/,

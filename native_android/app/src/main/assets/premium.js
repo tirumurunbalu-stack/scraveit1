@@ -160,6 +160,13 @@
     session: cachedSession,
     profile: Object.assign({name:"", email:"", phone:"", addresses:[], selectedAddressId:"", favourites:[], preferences:{theme:"system", vegetarian:false, notifications:true}}, cachedProfile),
     catalog: {}, catalogMode: "loading", catalogLoaded: false, homeStatus:"initial", catalogRequestSequence:0, appliedCatalogSequence:0,
+    // Paging state for the customer's own city. catalogCursor is the citySort
+    // value of the last restaurant loaded, not an offset, so pages stay stable
+    // even when the catalogue changes underneath.
+    catalogCursor:"", catalogHasMore:false, catalogLoadingMore:false, catalogPages:1, catalogCity:"",
+    // Name matches fetched from the server for the whole city. Kept apart from
+    // the catalogue so browsing still shows the city in its own order.
+    searchCatalog:{}, searchFetched:{}, searchLoading:false, searchSequence:0,
     promotions: [], settings: {platformFee:15, taxRate:0, freeDeliveryAbove:0, maxDeliveryKm:15, deliverySlabs:{"0":{maxKm:2,fee:29},"1":{maxKm:4,fee:39},"2":{maxKm:6,fee:59},"3":{maxKm:8,fee:79},"4":{maxKm:10,fee:99},"5":{maxKm:12,fee:119},"6":{maxKm:15,fee:139}}, platformFeeOverrides:{cities:{},categories:{},restaurants:{},orderValueRules:{}}, rainFeeEnabled:true,rainLightFee:9,rainModerateFee:19,rainHeavyFee:29,rainSevereFee:39,rainMinProbability:35,rainLightMm:0.1,rainModerateMm:1,rainHeavyMm:4,rainSevereMm:10,surgeEnabled:true,surgeLowOrders:4,surgeMediumOrders:8,surgeHighOrders:12,surgeLowFee:9,surgeMediumFee:19,surgeHighFee:29,maxSurgeFee:39,smallOrderFeeEnabled:true,smallOrderThreshold:149,smallOrderFee:19,lateNightFeeEnabled:true,lateNightStartHour:23,lateNightEndHour:5,lateNightFee:19}, checkoutConfig:null,
     orders: loadJSON("savrivo.customer.orders", []), ordersHydrated:false, ordersHydratedUid:"", tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
     cart: loadJSON("savrivo.customer.cart", []), coupon: null, tip: 0,
@@ -268,7 +275,14 @@
   function cacheMap(){const value=loadJSON(HOME_CACHE_KEY,{});return value&&typeof value==="object"?value:{}}
   function saveHomeCache(){
     const scope=homeScope(currentAddress()),cache=cacheMap(),catalog={};
-    Object.keys(state.catalog||{}).forEach(id=>catalog[id]=homeSummary(state.catalog[id]));
+    // Only the first page is cached, in the order the server returns it. A
+    // customer who paged deep would otherwise see the restored list shrink
+    // back to one page the moment the live refresh landed, and storing every
+    // page of every saved address is what fills up local storage.
+    Object.keys(state.catalog||{})
+      .sort((a,b)=>String((state.catalog[a]||{}).citySort||a).localeCompare(String((state.catalog[b]||{}).citySort||b)))
+      .slice(0,CATALOG_PAGE_SIZE)
+      .forEach(id=>catalog[id]=homeSummary(state.catalog[id]));
     cache[scope]={savedAt:Date.now(),catalog};
     Object.keys(cache).sort((a,b)=>Number(cache[b]&&cache[b].savedAt||0)-Number(cache[a]&&cache[a].savedAt||0)).slice(HOME_CACHE_MAX_AREAS).forEach(key=>delete cache[key]);
     saveJSON(HOME_CACHE_KEY,cache);
@@ -556,16 +570,92 @@
     return full;
   }
 
-  function restaurantSummaryQuery(){
-    const address=currentAddress(),city=String(address&&address.city||"").trim();
-    if(city){
-      return {orderBy:JSON.stringify("city"),equalTo:JSON.stringify(city),limitToFirst:"100"};
-    }
-    return {orderBy:JSON.stringify("$key"),limitToFirst:"100"};
+  // ---- catalogue index ---------------------------------------------------
+  // These must produce values byte-identical to functions/src/domain/
+  // catalogIndex.ts, because both address the same citySort range. A
+  // divergence here does not surface as a wrong number - it silently returns
+  // the wrong restaurants, or none at all.
+  const CATALOG_RANGE_END="";
+  const CATALOG_PAGE_SIZE=40;
+  // Hard ceiling on how much of one city is ever held in memory or rebuilt on
+  // a refresh. Nobody scrolls 320 restaurants; anyone looking for a specific
+  // one searches, which queries the whole city on the server regardless.
+  const CATALOG_MAX_PAGES=8;
+  function catalogCityKey(value){
+    return String(value==null?"":value).trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,80)||"unknown";
+  }
+  function catalogNameKey(value){
+    return String(value==null?"":value).trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,120);
+  }
+  function cityListingRange(city){
+    const key=catalogCityKey(city);
+    return {startAt:key+"|",endAt:key+"|"+CATALOG_RANGE_END};
+  }
+  function cityListingRangeAfter(city,cursor){
+    const range=cityListingRange(city),value=String(cursor||"");
+    return value>range.startAt&&value<range.endAt?{startAt:value,endAt:range.endAt}:range;
+  }
+  function citySearchRange(city,query){
+    const key=catalogCityKey(city),prefix=catalogNameKey(query);
+    return prefix?{startAt:key+"|"+prefix,endAt:key+"|"+prefix+CATALOG_RANGE_END}:cityListingRange(city);
   }
 
-  async function fetchRestaurantSummaries(){
-    return dbGetQuery(DB_ROOT+"/catalog/restaurants",restaurantSummaryQuery(),10000);
+  /** The city every catalogue query is scoped to. Empty means the customer has
+   *  no address yet, which is the one case that cannot be paged or searched on
+   *  the server - there is no range to walk. */
+  function catalogCity(){
+    const address=currentAddress();
+    return String(address&&address.city||"").trim();
+  }
+
+  /** One page of the customer's own city, ordered by name. `cursor` is the
+   *  citySort value of the last restaurant already shown; Firebase returns
+   *  that row again, so one extra is requested and the caller drops it. */
+  function restaurantSummaryQuery(cursor){
+    const city=catalogCity();
+    if(!city)return {orderBy:JSON.stringify("$key"),limitToFirst:String(CATALOG_PAGE_SIZE)};
+    const range=cursor?cityListingRangeAfter(city,cursor):cityListingRange(city);
+    return {
+      orderBy:JSON.stringify("citySort"),
+      startAt:JSON.stringify(range.startAt),
+      endAt:JSON.stringify(range.endAt),
+      limitToFirst:String(CATALOG_PAGE_SIZE+(cursor?1:0)),
+    };
+  }
+
+  async function fetchRestaurantSummaries(cursor){
+    return dbGetQuery(DB_ROOT+"/catalog/restaurants",restaurantSummaryQuery(cursor),10000);
+  }
+
+  /** Walks the customer's city from the top for `pages` pages.
+   *
+   *  A refresh has to rebuild everything the customer already scrolled
+   *  through, not just the first page - otherwise a live catalogue update
+   *  snaps the list back to 40 restaurants underneath them. The page count is
+   *  capped so that however far anyone scrolls, a refresh stays a bounded
+   *  number of requests rather than growing with the size of the city. */
+  async function fetchCatalogPages(pages){
+    const pageable=!!catalogCity();
+    const wanted=pageable?Math.max(1,Math.min(CATALOG_MAX_PAGES,Number(pages)||1)):1;
+    const merged={};
+    let cursor="",loaded=0,hasMore=false;
+    for(let page=0;page<wanted;page++){
+      const records=await fetchRestaurantSummaries(cursor)||{};
+      const size=Object.keys(records).length;
+      Object.keys(records).forEach(id=>{merged[id]=records[id]});
+      loaded=page+1;
+      const next=catalogCursorFrom(records);
+      // A resumed page replays the cursor row, so it only advanced if the
+      // highest value came back higher than the one asked for.
+      const advanced=next>cursor;
+      if(advanced)cursor=next;
+      // A full page back means there is very likely another one.
+      hasMore=pageable&&advanced&&loaded<CATALOG_MAX_PAGES&&size>=CATALOG_PAGE_SIZE+(page?1:0);
+      if(!hasMore)break;
+    }
+    return {records:merged,cursor,hasMore,pages:loaded};
   }
 
   async function syncSecondaryHomeData(){
@@ -621,16 +711,109 @@
     return request;
   }
 
+  /** Highest citySort value in a page - the resume point for the next one. */
+  function catalogCursorFrom(records){
+    let cursor="";
+    Object.keys(records||{}).forEach(id=>{
+      const value=String((records[id]||{}).citySort||"");
+      if(value>cursor)cursor=value;
+    });
+    return cursor;
+  }
+
+  /** Clears everything that only made sense for the previous city. */
+  function resetCatalogPaging(city){
+    state.catalogCity=String(city||"");
+    state.catalogPages=1;state.catalogCursor="";state.catalogHasMore=false;
+    state.searchCatalog={};state.searchFetched={};
+  }
+
+  /** The device only holds the pages the customer actually scrolled through,
+   *  so filtering that locally cannot find a restaurant further down the
+   *  city's list - it would report "nothing matched" for a restaurant that is
+   *  open and deliverable. This asks the server for name matches across the
+   *  whole city and merges them into the search screen only. */
+  async function searchCityCatalog(query){
+    const city=catalogCity(),prefix=catalogNameKey(query);
+    if(!city||!prefix||!state.session)return;
+    const key=catalogCityKey(city)+"|"+prefix;
+    if(state.searchFetched[key])return;
+    state.searchFetched[key]=true;
+    const sequence=++state.searchSequence;
+    state.searchLoading=true;
+    try{
+      const range=citySearchRange(city,query);
+      const records=await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
+        orderBy:JSON.stringify("citySort"),
+        startAt:JSON.stringify(range.startAt),
+        endAt:JSON.stringify(range.endAt),
+        limitToFirst:String(CATALOG_PAGE_SIZE),
+      },10000)||{};
+      if(sequence!==state.searchSequence)return;
+      // Typing walks through many prefixes; without a ceiling a long session
+      // would accumulate every restaurant the customer ever half-typed.
+      if(Object.keys(state.searchCatalog).length>CATALOG_PAGE_SIZE*CATALOG_MAX_PAGES)state.searchCatalog={};
+      Object.keys(records).forEach(id=>{
+        if(state.catalog[id])return;
+        const restaurant=normalizeRestaurantSummary(id,records[id]);
+        if(restaurant.archived!==true)state.searchCatalog[id]=restaurant;
+      });
+    }catch(error){
+      // Leave it retryable rather than remembering a failure as "no matches".
+      delete state.searchFetched[key];
+    }finally{
+      if(sequence===state.searchSequence)state.searchLoading=false;
+      if(state.route==="search")updateSearchResults();
+    }
+  }
+
+  /** Appends the next page of the customer's city to what is already shown.
+   *  Never replaces the catalogue, so scrolling further can't discard what the
+   *  customer is already looking at. */
+  async function loadMoreRestaurants(){
+    if(state.catalogLoadingMore||!state.catalogHasMore||!state.catalogCursor)return;
+    state.catalogLoadingMore=true;render({preserveScroll:true});
+    try{
+      const records=await fetchRestaurantSummaries(state.catalogCursor)||{};
+      const cursor=state.catalogCursor;
+      let added=0;
+      Object.keys(records).forEach(id=>{
+        // Firebase returns the cursor row itself again; it is already shown.
+        if(String((records[id]||{}).citySort||"")===cursor)return;
+        const restaurant=normalizeRestaurantSummary(id,records[id]);
+        if(restaurant.archived!==true){state.catalog[id]=restaurant;added++;}
+      });
+      const nextCursor=catalogCursorFrom(records);
+      if(nextCursor>cursor){state.catalogCursor=nextCursor;state.catalogPages=(state.catalogPages||1)+1;}
+      state.catalogHasMore=added>0&&nextCursor>cursor&&state.catalogPages<CATALOG_MAX_PAGES;
+      saveHomeCache();
+    }catch(error){
+      toast("More restaurants could not be loaded. Check your connection.","danger");
+    }finally{
+      state.catalogLoadingMore=false;render({preserveScroll:true});
+    }
+  }
+
   async function syncCatalog() {
     if (!state.session) return;
     const sequence=++state.catalogRequestSequence,started=perfNow(),hadCache=state.catalogLoaded&&Object.keys(state.catalog).length>0;
     state.homeStatus=hadCache?"refreshing":"loadingWithoutCache";
-    perfLog("REMOTE_CATALOG_STARTED",started,{sequence,scope:homeScope(currentAddress()),cachedRestaurants:Object.keys(state.catalog).length});
+    // Moving to another city invalidates the pages and the searches held for
+    // the old one. Checking it here rather than in each place an address can
+    // change means no path can leave another city's restaurants on screen.
+    const city=catalogCity();
+    if(city!==state.catalogCity)resetCatalogPaging(city);
+    const pages=state.catalogPages||1;
+    perfLog("REMOTE_CATALOG_STARTED",started,{sequence,scope:homeScope(currentAddress()),cachedRestaurants:Object.keys(state.catalog).length,pages});
     try {
-      const records=await fetchRestaurantSummaries()||{};
+      const page=await fetchCatalogPages(pages);
+      const records=page.records;
       if(sequence<state.catalogRequestSequence){perfLog("STALE_CATALOG_IGNORED",started,{sequence,latest:state.catalogRequestSequence});return}
       const next={};
       Object.keys(records).forEach(id=>{const restaurant=normalizeRestaurantSummary(id,records[id]);if(restaurant.archived!==true)next[id]=restaurant});
+      state.catalogHasMore=page.hasMore;
+      state.catalogCursor=page.cursor;
+      state.catalogPages=page.pages;
       state.catalog=next;state.catalogMode="live";state.catalogLoaded=true;state.homeStatus=Object.keys(next).length?"success":"empty";
       state.appliedCatalogSequence=sequence;state.lastSync=Date.now();state.syncError="";saveHomeCache();warmCatalogImages();
       const payloadBytes=(()=>{try{return JSON.stringify(records).length}catch(_){return 0}})();
@@ -1007,9 +1190,19 @@
     return Number.isFinite(own)&&own>0 ? own : Number(state.settings.maxDeliveryKm||15);
   }
 
+  function addressIsPinned(address){
+    return !!(address&&Number.isFinite(Number(address.lat))&&Number.isFinite(Number(address.lng)));
+  }
+  // Fails closed once the delivery address has a pin: a restaurant we cannot
+  // locate cannot be promised a delivery, and showing it only leads the
+  // customer to build a cart the server then refuses at checkout. Before a pin
+  // exists nothing can be measured, so everything stays visible and the app's
+  // existing "add a map pin" prompt is what moves the customer forward.
   function restaurantServiceable(r) {
+    if(!addressIsPinned(currentAddress()))return true;
     const d=restaurantDistanceKm(r);
-    return d==null || d<=deliveryRadiusKm(r);
+    if(d==null)return false;
+    return d<=deliveryRadiusKm(r);
   }
 
   function keyName(value){return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")}
@@ -1722,7 +1915,13 @@
     return restaurantHasOffer(r)?"Offer":"";
   }
   function restaurantsFiltered() {
-    let list=Object.values(state.catalog).filter(r=>r.archived!==true);
+    // While searching, the server's city-wide name matches join the pages
+    // already on the device. Every filter below still applies to them, so a
+    // restaurant found this way is still only shown if it is deliverable.
+    const source=state.route==="search"&&searchKey(state.query)&&Object.keys(state.searchCatalog).length
+      ? Object.assign({},state.catalog,state.searchCatalog)
+      : state.catalog;
+    let list=Object.values(source).filter(r=>r.archived!==true);
 
     if(state.cuisine!=="All")
       list=list.filter(r=>(r.cuisines||[]).some(c=>keyName(c)===keyName(state.cuisine))||keyName(r.category)===keyName(state.cuisine)||discoveryItems(r).some(i=>keyName(i.category)===keyName(state.cuisine)));
@@ -1815,7 +2014,12 @@
       +'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div>'+(recommended.length?'<div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No matches in this city","Try another address, category or filter.","open-filters","Change filters"))+'</section>'
       +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All restaurants</h2><p class="supporting">'+restaurants.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch restaurant rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
       +(restaurants.length?'<div class="restaurant-list">'+restaurants.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No restaurants are live","Choose another saved address or clear the filters.","open-filters","Change filters"))
-      +((state.homeStatus==="refreshing"||state.loading)&&restaurants.length?loadingRow("Refreshing restaurants in the background…"):"")+'</section>'
+      +((state.homeStatus==="refreshing"||state.loading)&&restaurants.length?loadingRow("Refreshing restaurants in the background…"):"")
+      // Only offered when the server actually has another page for this city,
+      // so it never appears at the end of a short catalogue.
+      +(state.catalogHasMore?(state.catalogLoadingMore
+        ?loadingRow("Loading more restaurants…")
+        :'<button class="button secondary full" data-action="load-more-restaurants">Show more restaurants</button>'):"")+'</section>'
       +(state.catalogMode==="packaged"?'<div class="notice warning">'+icon("info","small")+'<div><strong>Live menu unavailable</strong><div class="caption">Ordering is paused until the latest restaurant catalogue is available.</div></div></div>':'')
       +'</div>'+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
   }
@@ -1839,6 +2043,9 @@
     if(state.homeStatus==="errorWithoutCache"&&!Object.keys(state.catalog).length)return emptyState("warning","Search could not be loaded","Check your connection and retry the live catalogue.","refresh","Retry");
     const results=restaurantsFiltered();
     if(results.length)return '<div class="restaurant-list two-column">'+results.map(r=>restaurantCard(r,false)).join("")+'</div>';
+    // Saying "nothing matched" before the city-wide lookup has answered would
+    // be wrong for exactly the restaurants this lookup exists to find.
+    if(state.searchLoading)return loadingRow("Searching restaurants near you…");
     if(searchKey(state.query))return emptyState("search","Nothing matched","Try another dish, cuisine or spelling.","clear-search","Clear search");
     if(state.cuisine!=="All"||state.diet!=="all"||state.homeFilter!=="all")return emptyState("search","No restaurants match these filters","Change a category or filter to see more results.","open-filters","Change filters");
     return emptyState("search","No restaurants are available","Retry the live catalogue or choose another saved address.","refresh","Retry");
@@ -3037,6 +3244,9 @@
 
   function updateSearchResults() {
     const node=document.getElementById("search-results");if(node)node.innerHTML=searchContentMarkup();
+    // Re-entrant by design: this returns immediately once the term has been
+    // looked up, and its own re-render is what lands the results.
+    searchCityCatalog(state.query);
   }
   function scheduleSearchUpdate() {
     clearTimeout(state.searchDebounceTimer);
@@ -3120,6 +3330,7 @@
       state.coupon=promo;state.couponAuto=false;state.couponDismissedFor="";
       toast("Offer applied.","success");render({preserveScroll:true});return;
     }
+    if(action==="load-more-restaurants"){loadMoreRestaurants();return;}
     if(action==="remove-coupon"){
       state.couponDismissedFor=state.cart.length?state.cart[0].restaurantId:"";
       state.coupon=null;state.couponAuto=false;

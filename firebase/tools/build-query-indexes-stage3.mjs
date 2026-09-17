@@ -15,6 +15,14 @@ export const stage3Path = join(firebaseDirectory, "feastly-realtime-database-rul
 // its exact query and confirming the path/field against the current schema.
 export const REVIEWED_QUERY_INDEXES = Object.freeze([
   Object.freeze({path: Object.freeze(["rules", "feastly", "promotions"]), fields: Object.freeze(["code"])}),
+  // citySort backs the customer app's catalogue: one range query per city that
+  // serves the listing, each further page, and name search. Without the index
+  // that query degrades to reading every restaurant in the country to sort
+  // them, which is the exact failure this staging file exists to prevent.
+  Object.freeze({
+    path: Object.freeze(["rules", "feastly", "catalog", "restaurants"]),
+    fields: Object.freeze(["citySort"]),
+  }),
 ]);
 
 function clone(value) {

@@ -24,6 +24,7 @@ fi
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_review_state.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_contained_reliability.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_search_reliability.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/customer_catalog_paging.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/finance_ui_truthfulness.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/restaurant_alarm_reconciliation.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/handover_status_guard.js"
