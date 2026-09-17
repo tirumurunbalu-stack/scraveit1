@@ -1,3 +1,5 @@
+import type {DeliveryEstimateBasis} from "./domain/deliveryEstimate";
+
 export type ActorRole = "customer" | "staff" | "owner" | "ops_admin" | "rider" | "system";
 
 export type OrderStatus =
@@ -160,8 +162,12 @@ export interface SavrivoOrder {
   statusHistory: Record<string, StatusEvent>;
   createdAt: number;
   updatedAt: number;
+  /** Server-computed delivery window, from distance, kitchen load, rider
+   *  supply and peak hour - not the restaurant's static catalogue figure. */
   etaMin: number;
   etaMax: number;
+  etaConfidence?: "high" | "medium" | "low";
+  etaBasis?: DeliveryEstimateBasis;
   riderId?: string;
   riderName?: string;
   riderPhone?: string;

@@ -559,6 +559,22 @@
             "etaMax": {
               ".validate": "newData.isNumber() && newData.val() >= newData.parent().child('etaMin').val() && newData.val() <= 360"
             },
+            "etaConfidence": {
+              ".validate": "newData.isString() && (newData.val() === 'high' || newData.val() === 'medium' || newData.val() === 'low')"
+            },
+            "etaBasis": {
+              ".validate": "newData.hasChildren(['prepMinMinutes','prepMaxMinutes','travelMinutes','kitchenLoadMinutes','riderWaitMinutes','peakMinutes','distanceKm','activeOrders'])",
+              "prepMinMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "prepMaxMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "travelMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "kitchenLoadMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "riderWaitMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "peakMinutes": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360" },
+              "distanceKm": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000" },
+              "activeOrders": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000" },
+              "availableRiders": { ".validate": "!newData.exists() || newData.val() === null || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000)" },
+              "$other": { ".validate": false }
+            },
             "cancelReason": {
               ".write": "auth != null && (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true) || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) && newData.isString()",
               ".validate": "newData.isString() && newData.val().length <= 500"

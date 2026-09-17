@@ -13,6 +13,11 @@ import {
   roundMoney,
 } from "../domain/order";
 import {deliveryOtpRecoveryAllowed, legacyOtpVerifier, stripPrivateOrderFields} from "../domain/orderSecurity";
+import {availabilityCityKey} from "../domain/dispatch";
+import {countAvailableRiders, estimateDelivery} from "../domain/deliveryEstimate";
+// Same staleness bar dispatch itself uses to decide a rider is really there,
+// so the delivery estimate and the dispatcher never disagree about supply.
+import {DEFAULT_DISPATCH_POLICY} from "../domain/dispatchPolicy";
 import {deriveLifecycleFromCanonicalState} from "../domain/lifecycle";
 import {
   resolveFinancePaymentSelection,
@@ -367,9 +372,21 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     loadCustomerAddress(uid, input.addressId),
   ]);
   const {items, subtotal} = priceCart(input.items, menuById);
-  const [fees, discount] = await Promise.all([
+  const [fees, discount, availableRiders] = await Promise.all([
     loadServerFees(restaurant, address, subtotal),
     calculateDiscount(input.couponCode, subtotal, restaurant.id),
+    // Rider supply feeds the delivery estimate only. A read failure must never
+    // block an order, so it degrades to "unknown" - which the estimator treats
+    // as unknown rather than as zero riders.
+    db.ref(`${ROOT}/riderAvailabilityByCity/${availabilityCityKey(restaurant.city)}`)
+      .limitToFirst(500).get()
+      .then((snapshot) => countAvailableRiders(
+        snapshot.val(), Date.now(), DEFAULT_DISPATCH_POLICY.presenceFreshMs,
+      ))
+      .catch((error) => {
+        logger.warn("DELIVERY_ESTIMATE_RIDER_SUPPLY_READ_FAILED", {restaurantId: restaurant.id, error});
+        return null;
+      }),
   ]);
   const {pricing, total} = buildPricing({
     subtotal,
@@ -394,6 +411,14 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
 
   const now = Date.now();
   const financePolicy = await loadFinancePolicy(now);
+  const deliveryEstimate = estimateDelivery({
+    kitchenEtaMinMinutes: restaurant.etaMin,
+    kitchenEtaMaxMinutes: restaurant.etaMax,
+    distanceKm: fees.distanceKm,
+    activeOrders: fees.activeOrders,
+    availableRiders,
+    occurredAt: now,
+  });
   // Reserve the OTP before committing the canonical order. A process failure
   // can leave a harmless private reservation, but can never leave a live order
   // whose customer OTP is unrecoverable.
@@ -439,8 +464,12 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     statusHistory: {[eventKey(now, uid)]: event},
     createdAt: now,
     updatedAt: now,
-    etaMin: Number(restaurant.etaMin),
-    etaMax: Number(restaurant.etaMax),
+    etaMin: deliveryEstimate.etaMinMinutes,
+    etaMax: deliveryEstimate.etaMaxMinutes,
+    etaConfidence: deliveryEstimate.confidence,
+    // Kept so a late delivery can be explained after the fact, and so the
+    // promise can be scored against the actual time once enough have landed.
+    etaBasis: deliveryEstimate.basis,
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
 
