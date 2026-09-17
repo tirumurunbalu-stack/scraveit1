@@ -92,6 +92,7 @@ import {readAdminDashboard} from "./services/adminDashboard";
 import {readFinanceStatement} from "./services/financeStatement";
 import {citySortNeedsUpdate, citySortValue} from "./domain/catalogIndex";
 import {searchTokenUpdates} from "./domain/catalogSearchTokens";
+import {geoSortNeedsUpdate, geoSortValue} from "./domain/catalogGeoIndex";
 import {
   recordRestaurantSettlement as writeRestaurantSettlement,
   recordRiderPayout as writeRiderPayout,
@@ -1172,14 +1173,27 @@ export const onCatalogRestaurantWritten = onValueWritten({
   }
 
   if (!after) return;
-  const restaurant = after as {name?: unknown; city?: unknown; citySort?: unknown};
+  const restaurant = after as {
+    name?: unknown; city?: unknown; lat?: unknown; lng?: unknown;
+    citySort?: unknown; geoSort?: unknown;
+  };
   const source = {id: restaurantId, name: restaurant.name, city: restaurant.city};
-  // Writing only when the stored value is actually wrong is what stops this
-  // trigger re-firing on its own write.
-  if (!citySortNeedsUpdate(source, restaurant.citySort)) return;
-  const value = citySortValue(source);
-  await db.ref(`${ROOT}/catalog/restaurants/${restaurantId}/citySort`).set(value);
-  logger.info("CATALOG_CITY_SORT_REINDEXED", {restaurantId, citySort: value});
+  const geoSource = {id: restaurantId, city: restaurant.city, lat: restaurant.lat, lng: restaurant.lng};
+
+  // Writing only when a stored value is actually wrong is what stops this
+  // trigger re-firing on its own write. Both sort keys go in one update so a
+  // restaurant is never indexed by name but not by position, or the reverse.
+  const fields: Record<string, string | null> = {};
+  if (citySortNeedsUpdate(source, restaurant.citySort)) fields.citySort = citySortValue(source);
+  if (geoSortNeedsUpdate(geoSource, restaurant.geoSort)) {
+    // A restaurant with no usable coordinates has no place in the proximity
+    // index; clearing it is what removes one that used to have them.
+    fields.geoSort = geoSortValue(geoSource) || null;
+  }
+  if (Object.keys(fields).length === 0) return;
+
+  await db.ref(`${ROOT}/catalog/restaurants/${restaurantId}`).update(fields);
+  logger.info("CATALOG_SORT_KEYS_REINDEXED", {restaurantId, ...fields});
 });
 
 export const onRiderPresenceUpdated = onValueWritten({

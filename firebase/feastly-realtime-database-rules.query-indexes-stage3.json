@@ -23,7 +23,8 @@
         "restaurants": {
           ".indexOn": [
             "city",
-            "citySort"
+            "citySort",
+            "geoSort"
           ],
           "$restaurantId": {
             ".validate": "!newData.exists() || (newData.hasChildren(['id','name','address','etaMin','etaMax','deliveryFee','platformFee','open','archived']) && newData.child('id').val() === $restaurantId)",
@@ -194,6 +195,12 @@
             "city": {
               ".validate": "newData.isString() && newData.val().length <= 120",
               ".write": "auth != null && ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true)))"
+            },
+            "citySort": {
+              ".validate": "newData.isString() && newData.val().length <= 400"
+            },
+            "geoSort": {
+              ".validate": "newData.isString() && newData.val().length <= 400"
             },
             "category": {
               ".validate": "newData.isString() && newData.val().length <= 120",
@@ -566,6 +573,42 @@
             },
             "etaMax": {
               ".validate": "newData.isNumber() && newData.val() >= newData.parent().child('etaMin').val() && newData.val() <= 360"
+            },
+            "etaConfidence": {
+              ".validate": "newData.isString() && (newData.val() === 'high' || newData.val() === 'medium' || newData.val() === 'low')"
+            },
+            "etaBasis": {
+              ".validate": "newData.hasChildren(['prepMinMinutes','prepMaxMinutes','travelMinutes','kitchenLoadMinutes','riderWaitMinutes','peakMinutes','distanceKm','activeOrders'])",
+              "prepMinMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "prepMaxMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "travelMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "kitchenLoadMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "riderWaitMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "peakMinutes": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+              },
+              "distanceKm": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+              },
+              "activeOrders": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+              },
+              "availableRiders": {
+                ".validate": "!newData.exists() || newData.val() === null || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000)"
+              },
+              "$other": {
+                ".validate": false
+              }
             },
             "cancelReason": {
               ".write": "auth != null && (((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('permissions/orders').val() === true) || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) && newData.isString()",
@@ -995,6 +1038,9 @@
           "panNumber": {
             ".validate": "newData.isString() && newData.val().matches(/^[A-Z]{5}[0-9]{4}[A-Z]$/) && (!data.exists() || newData.val() === data.val() || data.child('status').val() === 'rejected')"
           },
+          "referredByCode": {
+            ".validate": "newData.isString() && (newData.val().matches(/^\\d{6}$/) || newData.val().matches(/^SRV-[0-9A-F]{2,240}$/))"
+          },
           "status": {
             ".validate": "(newData.val() === 'submitted' || newData.val() === 'under_review' || newData.val() === 'rejected' || newData.val() === 'approved' || newData.val() === 'suspended') && (newData.val() !== 'approved' || (root.child('feastly/riderDocuments').child($uid).hasChildren(['aadhaarFront','aadhaarBack','panCopy']) && newData.parent().child('documentsVerified').val() === true))"
           },
@@ -1053,11 +1099,11 @@
           "panCopy": {
             ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
           },
-          "$other": {
-            ".validate": false
-          },
           "updatedAt": {
             ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "$other": {
+            ".validate": false
           }
         }
       },
@@ -1155,6 +1201,15 @@
           },
           "minimumOrder": {
             ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
+          },
+          "restaurantIds": {
+            ".validate": "newData.hasChildren() || !newData.exists()",
+            "$index": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 128"
+            }
+          },
+          "firstOrderOnly": {
+            ".validate": "newData.isBoolean()"
           },
           "expiresAt": {
             ".validate": "newData.isNumber() && newData.val() > 0"
@@ -1418,10 +1473,6 @@
             }
           }
         },
-        "private": {
-          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
-          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')"
-        },
         "$other": {
           ".validate": false
         }
@@ -1677,6 +1728,57 @@
       "admin": {
         ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
         ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')"
+      },
+      "private": {
+        ".read": false,
+        ".write": false,
+        "operations": {
+          "orders": {
+            ".indexOn": [
+              "activeSortKey",
+              "recentSortKey"
+            ]
+          }
+        },
+        "notificationOutbox": {
+          ".indexOn": [
+            "nextAttemptAt"
+          ]
+        },
+        "financialLedger": {
+          "journals": {
+            ".indexOn": [
+              "occurredAt"
+            ]
+          }
+        },
+        "riderRewards": {
+          "activityEvents": {
+            "$riderId": {
+              ".indexOn": [
+                "occurredAt"
+              ]
+            }
+          },
+          "campaignProgress": {
+            "$campaignId": {
+              ".indexOn": [
+                "generatedAt"
+              ]
+            }
+          }
+        }
+      },
+      "riderWallets": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        ".write": false,
+        ".indexOn": [
+          "codOutstanding"
+        ],
+        "$riderId": {
+          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": false
+        }
       },
       "$other": {
         ".validate": false
@@ -2061,15 +2163,6 @@
         ".read": false,
         ".write": false
       },
-      "private": {
-        ".read": false,
-        ".write": false,
-        "notificationOutbox": {
-          ".indexOn": [
-            "nextAttemptAt"
-          ]
-        }
-      },
       "backendEvents": {
         ".read": false,
         ".write": false
@@ -2093,14 +2186,6 @@
       "deviceTokens": {
         ".read": false,
         ".write": false
-      },
-      "riderWallets": {
-        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
-        ".write": false,
-        "$riderId": {
-          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
-          ".write": false
-        }
       },
       "pricingSignals": {
         ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",

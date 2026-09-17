@@ -19,9 +19,12 @@ export const REVIEWED_QUERY_INDEXES = Object.freeze([
   // serves the listing, each further page, and name search. Without the index
   // that query degrades to reading every restaurant in the country to sort
   // them, which is the exact failure this staging file exists to prevent.
+  // geoSort backs the same catalogue's proximity ordering: one range query per
+  // geohash cell around the customer, so a city larger than the delivery
+  // radius still loads nearest-first instead of alphabetically.
   Object.freeze({
     path: Object.freeze(["rules", "feastly", "catalog", "restaurants"]),
-    fields: Object.freeze(["citySort"]),
+    fields: Object.freeze(["citySort", "geoSort"]),
   }),
 ]);
 

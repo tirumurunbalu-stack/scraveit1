@@ -29,8 +29,9 @@ assert.deepEqual(
   "Stage 3 may only add the explicitly reviewed .indexOn declarations to stage 2.",
 );
 // 1: promotions/code, reviewed against the bounded coupon lookup below.
-// 2: catalog/restaurants/citySort, reviewed against the customer app's
-//    paged city range query, also asserted below.
+// 2: catalog/restaurants/{citySort, geoSort}, reviewed against the customer
+//    app's paged city range query and its proximity cell query, both
+//    asserted below.
 assert.equal(REVIEWED_QUERY_INDEXES.length, 2, "Every new staged index needs an explicit source-query review.");
 assert.deepEqual(
   normalizeIndexOn(stage3.rules.feastly.promotions[".indexOn"]),
@@ -50,6 +51,17 @@ assert.ok(
 assert.ok(
   normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("citySort"),
   "Stage 3 must index citySort.",
+);
+// Same requirement for geoSort: it backs the proximity query the catalogue
+// now loads by, and a staged rollout missing it degrades that query the same
+// way a missing citySort would.
+assert.ok(
+  normalizeIndexOn(active.rules.feastly.catalog.restaurants[".indexOn"]).includes("geoSort"),
+  "Active rules must index geoSort.",
+);
+assert.ok(
+  normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("geoSort"),
+  "Stage 3 must index geoSort.",
 );
 assert.ok(normalizeIndexOn(stage3.rules.feastly.dispatchQueue[".indexOn"]).includes("status"));
 assert.ok(normalizeIndexOn(stage3.rules.feastly.staff[".indexOn"]).includes("restaurantId"));

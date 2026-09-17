@@ -610,6 +610,107 @@
     return String(address&&address.city||"").trim();
   }
 
+  // ---- proximity index -----------------------------------------------------
+  // Mirrors functions/src/domain/catalogGeoIndex.ts, query side only - the
+  // client never computes or writes geoSort, it only reads with a range built
+  // from the same geohash. See that file for why the alphabetical listing
+  // above is the wrong key to load by once a city outgrows its delivery
+  // radius: it loads the alphabetically-first restaurants, not the nearest
+  // ones, so a restaurant two kilometres away whose name starts with Z can
+  // never appear.
+  const GEOHASH_ALPHABET="0123456789bcdefghjkmnpqrstuvwxyz";
+  // Two precisions, because one fixed cell size cannot serve both a dense city
+  // and the platform's delivery radius. A level-5 cell (~4.7km) stays
+  // selective in a dense city but under-covers the 15km default delivery
+  // radius; a level-4 cell (~19.5km+) covers it but in a city no bigger than
+  // that itself, its "neighbourhood" is the whole city. So the tight tier is
+  // tried first, and the wide tier only when it comes back thin - which is
+  // the uncommon case.
+  const GEO_QUERY_PRECISION_TIGHT=5;
+  const GEO_QUERY_PRECISION_WIDE=4;
+  // Per cell, per tier. Bounds the request however dense the area is; a
+  // legitimately large deliverable set is revealed to the customer in full
+  // once fetched (see fetchGeoCatalogRecords), not paged further.
+  const GEO_CELL_FETCH_LIMIT=60;
+
+  // Deliberately not Number(value): Number(null) and Number("") are both 0,
+  // which would silently geocode a missing coordinate to Null Island instead
+  // of failing - the same trap geoDistanceKm and coordinatePoint already
+  // guard against elsewhere in this file.
+  function geoCoordinate(value){
+    if(typeof value==="number")return value;
+    if(typeof value==="string"&&value.trim()!=="")return Number(value);
+    return NaN;
+  }
+  function geohashEncode(latitude,longitude,precision){
+    const lat=geoCoordinate(latitude),lng=geoCoordinate(longitude);
+    if(!Number.isFinite(lat)||!Number.isFinite(lng))return "";
+    if(lat<-90||lat>90||lng<-180||lng>180)return "";
+    let latMin=-90,latMax=90,lngMin=-180,lngMax=180,hash="",bits=0,bitCount=0,longitudeTurn=true;
+    while(hash.length<precision){
+      if(longitudeTurn){
+        const mid=(lngMin+lngMax)/2;
+        if(lng>=mid){bits=(bits<<1)+1;lngMin=mid}else{bits<<=1;lngMax=mid}
+      }else{
+        const mid=(latMin+latMax)/2;
+        if(lat>=mid){bits=(bits<<1)+1;latMin=mid}else{bits<<=1;latMax=mid}
+      }
+      longitudeTurn=!longitudeTurn;
+      if(++bitCount===5){hash+=GEOHASH_ALPHABET[bits];bits=0;bitCount=0}
+    }
+    return hash;
+  }
+  function geohashBounds(hash){
+    const value=String(hash||"");
+    if(!value)return null;
+    let latMin=-90,latMax=90,lngMin=-180,lngMax=180,longitudeTurn=true;
+    for(let i=0;i<value.length;i++){
+      const index=GEOHASH_ALPHABET.indexOf(value[i]);
+      if(index<0)return null;
+      for(let shift=4;shift>=0;shift--){
+        const bit=(index>>shift)&1;
+        if(longitudeTurn){
+          const mid=(lngMin+lngMax)/2;
+          if(bit)lngMin=mid;else lngMax=mid;
+        }else{
+          const mid=(latMin+latMax)/2;
+          if(bit)latMin=mid;else latMax=mid;
+        }
+        longitudeTurn=!longitudeTurn;
+      }
+    }
+    return {latMin,latMax,lngMin,lngMax};
+  }
+  /** The customer's cell plus its eight neighbours, at `precision`. Stepping
+   *  one cell width out from the centre and re-encoding, same as the server -
+   *  the identical answer with no neighbour-lookup table to get subtly wrong
+   *  in only one of the two copies. */
+  function geohashNeighborhood(latitude,longitude,precision){
+    const center=geohashEncode(latitude,longitude,precision);
+    if(!center)return [];
+    const bounds=geohashBounds(center);
+    if(!bounds)return [];
+    const latStep=bounds.latMax-bounds.latMin,lngStep=bounds.lngMax-bounds.lngMin;
+    const centerLat=(bounds.latMin+bounds.latMax)/2,centerLng=(bounds.lngMin+bounds.lngMax)/2;
+    const cells={};
+    [-1,0,1].forEach(latOffset=>{
+      [-1,0,1].forEach(lngOffset=>{
+        const lat=centerLat+latOffset*latStep;
+        if(lat>90||lat<-90)return;
+        let lng=centerLng+lngOffset*lngStep;
+        if(lng>180)lng-=360;
+        if(lng<-180)lng+=360;
+        const cell=geohashEncode(lat,lng,precision);
+        if(cell)cells[cell]=true;
+      });
+    });
+    return Object.keys(cells).sort();
+  }
+  function geoCellRange(city,cell){
+    const key=catalogCityKey(city);
+    return {startAt:key+"|"+cell,endAt:key+"|"+cell+CATALOG_RANGE_END};
+  }
+
   /** One page of the customer's own city, ordered by name. `cursor` is the
    *  citySort value of the last restaurant already shown; Firebase returns
    *  that row again, so one extra is requested and the caller drops it. */
@@ -656,6 +757,70 @@
       if(!hasMore)break;
     }
     return {records:merged,cursor,hasMore,pages:loaded};
+  }
+
+  /** Every restaurant in one geohash cell of one city, capped per cell. */
+  async function fetchGeoCell(city,cell,limit){
+    const range=geoCellRange(city,cell);
+    try{
+      return await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
+        orderBy:JSON.stringify("geoSort"),
+        startAt:JSON.stringify(range.startAt),
+        endAt:JSON.stringify(range.endAt),
+        limitToFirst:String(limit),
+      },10000);
+    }catch(error){return null}
+  }
+
+  /** The customer's neighbourhood at one precision: up to nine small parallel
+   *  range queries, merged. One cell failing must not take the rest down with
+   *  it - a customer's own cell missing a network blip should still see their
+   *  eight neighbours. */
+  async function fetchGeoNeighborhood(city,address,precision,limitPerCell){
+    const cells=geohashNeighborhood(address.lat,address.lng,precision);
+    const results=await Promise.all(cells.map(cell=>fetchGeoCell(city,cell,limitPerCell)));
+    const merged={};
+    results.forEach(records=>{
+      if(!records)return;
+      Object.keys(records).forEach(id=>{merged[id]=records[id]});
+    });
+    return merged;
+  }
+
+  /** Loads by proximity instead of by name, for a customer who has pinned an
+   *  exact location. Tight first - selective in a dense city - and only wide
+   *  when tight comes back thin, which is the uncommon case (see the comment
+   *  on GEO_QUERY_PRECISION_TIGHT/WIDE for why neither tier alone is right).
+   *
+   *  Returns the whole neighbourhood in one shot rather than a cursor to page
+   *  through: unlike an alphabetical listing, there is no "next" restaurant to
+   *  reveal by walking further - what's deliverable to this address is what
+   *  it is, and existing sort/filter already reorders it for display. */
+  async function fetchGeoCatalogRecords(address){
+    const city=catalogCity();
+    if(!city)return {records:{},cursor:"",hasMore:false,pages:1};
+    let merged=await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT);
+    if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
+      const wide=await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT);
+      merged=Object.assign({},merged,wide);
+    }
+    // A hard ceiling, same reasoning as the alphabetical path's page cap: a
+    // request must stay bounded however dense the deliverable area gets.
+    const ids=Object.keys(merged),max=CATALOG_PAGE_SIZE*CATALOG_MAX_PAGES;
+    const records=ids.length<=max?merged:ids.slice(0,max).reduce((out,id)=>{out[id]=merged[id];return out},{});
+    return {records,cursor:"",hasMore:false,pages:1};
+  }
+
+  /** Everything the home screen needs to load one batch of restaurants,
+   *  branching on whether the customer has pinned an exact location. A pin
+   *  means real coordinates to search by proximity; without one there is
+   *  nothing to measure distance from, so the alphabetical listing - the only
+   *  one this app has ever shown before today - is what a customer sees while
+   *  choosing or confirming their address. */
+  async function fetchCatalogRecords(pages){
+    const address=currentAddress();
+    if(addressIsPinned(address))return fetchGeoCatalogRecords(address);
+    return fetchCatalogPages(pages);
   }
 
   async function syncSecondaryHomeData(){
@@ -869,7 +1034,7 @@
     const pages=state.catalogPages||1;
     perfLog("REMOTE_CATALOG_STARTED",started,{sequence,scope:homeScope(currentAddress()),cachedRestaurants:Object.keys(state.catalog).length,pages});
     try {
-      const page=await fetchCatalogPages(pages);
+      const page=await fetchCatalogRecords(pages);
       const records=page.records;
       if(sequence<state.catalogRequestSequence){perfLog("STALE_CATALOG_IGNORED",started,{sequence,latest:state.catalogRequestSequence});return}
       const next={};
