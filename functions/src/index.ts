@@ -16,6 +16,7 @@ import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./serv
 import {
   claimOrderSchema,
   adminDashboardQuerySchema,
+  financeStatementQuerySchema,
   adminRiderRewardsDashboardQuerySchema,
   checkoutPricingPreviewSchema,
   createOrderSchema,
@@ -88,6 +89,7 @@ import {reconcileRiderOperationalWorkload} from "./services/riderWorkload";
 import {recordRiderCodRemittance} from "./services/codRemittance";
 import {markRiderArrivedRestaurant as recordRiderRestaurantArrival} from "./services/riderRestaurantArrival";
 import {readAdminDashboard} from "./services/adminDashboard";
+import {readFinanceStatement} from "./services/financeStatement";
 import {
   recordRestaurantSettlement as writeRestaurantSettlement,
   recordRiderPayout as writeRiderPayout,
@@ -484,6 +486,31 @@ export const getAdminDashboard = onCall({
     return await readAdminDashboard(request.auth.token, input);
   } catch (error) {
     logger.warn("getAdminDashboard rejected", {
+      uid: request.auth.uid,
+      error: error instanceof Error ? error.message.slice(0, 160) : "unknown",
+    });
+    throw asHttpsError(error);
+  }
+});
+
+/**
+ * Itemized, bank-statement-style ledger read for an explicit day/week/month/
+ * year window the web admin computes client-side. Same owner/ops-admin bar
+ * and bounded-read discipline as getAdminDashboard's finance summary - just
+ * scoped to a caller-chosen window instead of "most recent N".
+ */
+export const getFinanceStatement = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 20,
+  memory: "256MiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to view the finance statement."));
+  try {
+    const input = parse(financeStatementQuerySchema, request.data ?? {});
+    return await readFinanceStatement(request.auth.token, input);
+  } catch (error) {
+    logger.warn("getFinanceStatement rejected", {
       uid: request.auth.uid,
       error: error instanceof Error ? error.message.slice(0, 160) : "unknown",
     });

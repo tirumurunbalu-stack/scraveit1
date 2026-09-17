@@ -208,6 +208,10 @@ const state = {
   riderFinanceById: {}, riderFinanceLoadingById: {}, riderFinanceErrorById: {},
   restaurantsDirectory: null, restaurantsLoading: false, restaurantQuery: "", selectedRestaurantId: "",
   settlementById: {}, settlementLoadingById: {}, settlementErrorById: {},
+  statementPeriodType: "day", statementAnchor: Date.now(), statementLoading: false, statementError: "",
+  statementData: null, statementYearRows: null, statementExpandedId: "",
+  statementSelYear: null, statementSelMonth: null, statementSelWeekStart: null, statementSelDay: null,
+  statementSelYearPage: null,
 };
 
 function codExposureByRider(riderId) {
@@ -314,12 +318,14 @@ function render() {
   else if (state.tab === "riderPayouts") renderRiderPayoutsTab();
   else if (state.tab === "restaurantSettlements") renderRestaurantSettlementsTab();
   else if (state.tab === "bankPayouts") renderBankPayoutsTab();
+  else if (state.tab === "statement") { renderStatementTab(); loadStatement(); }
 }
 function renderTabs() {
-  const tabs = [["overview", "Overview"], ["riderPayouts", "Rider payouts"], ["restaurantSettlements", "Restaurant settlements"], ["bankPayouts", "Bank & payouts"]];
+  const tabs = [["overview", "Overview"], ["riderPayouts", "Rider payouts"], ["restaurantSettlements", "Restaurant settlements"], ["bankPayouts", "Bank & payouts"], ["statement", "Statement"]];
   document.getElementById("tabs").innerHTML = tabs.map(([key, label]) => (
     '<div class="tab' + (state.tab === key ? " active" : "") + '" data-tab="' + key + '">' + h(label) + "</div>"
   )).join("");
+  document.getElementById("panel-statement").hidden = state.tab !== "statement";
   document.getElementById("panel-overview").hidden = state.tab !== "overview";
   document.getElementById("panel-riderPayouts").hidden = state.tab !== "riderPayouts";
   document.getElementById("panel-restaurantSettlements").hidden = state.tab !== "restaurantSettlements";
@@ -974,6 +980,367 @@ async function onSaveBankPayouts(event) {
     saveBtn.textContent = original;
   }
 }
+
+// ---------------------------------------------------------------------------
+// statement tab - a bank-statement-style itemized read of the immutable
+// ledger for a day/week/month/year, built on getFinanceStatement's bounded
+// [startAt, endAt) window. All boundary math is pinned to Asia/Kolkata via a
+// fixed +5:30 offset (India has no DST, so this is exact and never needs a
+// timezone library) rather than the admin's own browser timezone, so two
+// admins in different timezones see the same "today".
+// ---------------------------------------------------------------------------
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const EVENT_TYPE_LABELS = {
+  cod_delivery: "COD order delivered", cod_collection: "COD cash collected", cod_remittance: "COD remittance to platform",
+  restaurant_payable: "Restaurant payable accrued", platform_commission: "Platform commission", platform_fee: "Platform fee",
+  rider_earning: "Rider earning accrued", rider_incentive: "Rider incentive", rider_referral_reward: "Rider referral reward",
+  rider_payout: "Rider payout", rider_tip: "Rider tip", payment: "Online payment received", refund: "Refund", adjustment: "Adjustment",
+};
+function eventTypeLabel(type) { return EVENT_TYPE_LABELS[type] || type; }
+function istParts(ms) {
+  const shifted = new Date(Number(ms) + IST_OFFSET_MS);
+  return {
+    y: shifted.getUTCFullYear(), mo: shifted.getUTCMonth(), d: shifted.getUTCDate(), dow: shifted.getUTCDay(),
+  };
+}
+function istMidnight(y, mo, d) { return Date.UTC(y, mo, d) - IST_OFFSET_MS; }
+function startOfIstDay(ms) { const p = istParts(ms); return istMidnight(p.y, p.mo, p.d); }
+function startOfIstWeek(ms) { const p = istParts(ms); return istMidnight(p.y, p.mo, p.d - p.dow); }
+function startOfIstMonth(ms) { const p = istParts(ms); return istMidnight(p.y, p.mo, 1); }
+function startOfIstYear(ms) { const p = istParts(ms); return istMidnight(p.y, 0, 1); }
+function addIstDays(ms, n) { const p = istParts(ms); return istMidnight(p.y, p.mo, p.d + n); }
+function addIstMonths(ms, n) { const p = istParts(ms); return istMidnight(p.y, p.mo + n, 1); }
+function addIstYears(ms, n) { const p = istParts(ms); return istMidnight(p.y + n, 0, 1); }
+function statementPeriodRange(type, anchor) {
+  if (type === "day") { const s = startOfIstDay(anchor); return {startAt: s, endAt: addIstDays(s, 1)}; }
+  if (type === "week") { const s = startOfIstWeek(anchor); return {startAt: s, endAt: addIstDays(s, 7)}; }
+  if (type === "month") { const s = startOfIstMonth(anchor); return {startAt: s, endAt: addIstMonths(s, 1)}; }
+  const s = startOfIstYear(anchor); return {startAt: s, endAt: addIstYears(s, 1)};
+}
+function statementEntryTime(ms) {
+  return new Date(Number(ms)).toLocaleString("en-IN", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata"});
+}
+
+async function loadStatement() {
+  state.statementLoading = true;
+  state.statementError = "";
+  renderStatementTab();
+  try {
+    if (state.statementPeriodType === "year") {
+      const yearStart = startOfIstYear(state.statementAnchor);
+      const months = Array.from({length: 12}, (_, i) => addIstMonths(yearStart, i)).filter((m) => m <= Date.now());
+      const results = await Promise.all(months.map((m) => {
+        const {startAt, endAt} = statementPeriodRange("month", m);
+        return callFunction("getFinanceStatement", {startAt, endAt, limit: 3000});
+      }));
+      state.statementYearRows = months.map((m, i) => ({monthStart: m, statement: results[i]}));
+      state.statementData = null;
+    } else {
+      const {startAt, endAt} = statementPeriodRange(state.statementPeriodType, state.statementAnchor);
+      state.statementData = await callFunction("getFinanceStatement", {startAt, endAt, limit: 3000});
+      state.statementYearRows = null;
+    }
+  } catch (error) {
+    state.statementError = error.message || "Could not load the statement.";
+  } finally {
+    state.statementLoading = false;
+    renderStatementTab();
+  }
+}
+
+function statementSummaryCardsHtml(totalsByEventType, entryCount) {
+  if (!totalsByEventType || !totalsByEventType.length) return '<p class="hint">No transactions in this period.</p>';
+  const cards = totalsByEventType.map((t) => (
+    '<div class="stat-card"><div class="label">' + h(eventTypeLabel(t.eventType)) + '</div>'
+    + '<div class="value">' + h(moneyPaise(t.grossPaise)) + '</div>'
+    + '<div class="sub">' + h(t.count) + (t.count === 1 ? " transaction" : " transactions") + '</div></div>'
+  )).join("");
+  return '<section class="stat-grid" style="margin-bottom:20px;">' + cards
+    + '<div class="stat-card"><div class="label">Total entries</div><div class="value">' + h(entryCount) + '</div><div class="sub">this period</div></div>'
+    + '</section>';
+}
+
+function statementEntryRowsHtml(entries) {
+  if (!entries.length) {
+    return '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h10"/></svg><p>No transactions in this period.</p></div>';
+  }
+  return '<div class="table-wrap"><table class="data-table"><thead><tr>'
+    + '<th>Date &amp; time</th><th>Type</th><th>Order</th><th>Reference</th><th style="text-align:right;">Amount</th>'
+    + '</tr></thead><tbody>'
+    + entries.map((e) => {
+      const expanded = state.statementExpandedId === e.journalId;
+      const legsHtml = expanded ? '<tr class="row-detail"><td colspan="5"><div class="cell-sub">'
+        + e.legs.map((l) => (l.side === "debit" ? "Debit " : "Credit ") + h(l.accountId) + ": " + h(moneyPaise(l.amountPaise))).join("<br>")
+        + '</div></td></tr>' : "";
+      return '<tr class="row-clickable" data-statement-toggle="' + h(e.journalId) + '">'
+        + '<td><div class="cell-sub">' + h(statementEntryTime(e.occurredAt)) + '</div></td>'
+        + '<td>' + h(eventTypeLabel(e.eventType)) + '</td>'
+        + '<td><div class="cell-sub">' + h(e.orderId || "—") + '</div></td>'
+        + '<td><div class="cell-sub">' + h(e.actorId || "—") + '</div></td>'
+        + '<td style="text-align:right;">' + h(moneyPaise(e.grossPaise)) + '</td>'
+        + '</tr>' + legsHtml;
+    }).join("")
+    + '</tbody></table></div>';
+}
+
+function statementYearRowsHtml(rows) {
+  if (!rows || !rows.length) return '<p class="hint">No data yet for this year.</p>';
+  return '<div class="table-wrap"><table class="data-table"><thead><tr><th>Month</th><th>Transactions</th><th style="text-align:right;">Total</th></tr></thead><tbody>'
+    + rows.map((r) => {
+      const total = (r.statement.totalsByEventType || []).reduce((sum, t) => sum + t.grossPaise, 0);
+      return '<tr class="row-clickable" data-statement-month="' + r.monthStart + '">'
+        + '<td>' + h(new Date(r.monthStart).toLocaleDateString("en-IN", {month: "long", year: "numeric", timeZone: "Asia/Kolkata"})) + '</td>'
+        + '<td>' + h(r.statement.entryCount) + (r.statement.truncated ? ' <span class="badge badge-warning">Truncated</span>' : "") + '</td>'
+        + '<td style="text-align:right;">' + h(moneyPaise(total)) + '</td></tr>';
+    }).join("") + '</tbody></table></div>';
+}
+
+// ---------------------------------------------------------------------------
+// statement period selector - a year -> month -> week -> day cascade shown
+// directly on the page: pick a year to see that whole year's transactions,
+// and optionally narrow down to a month within it, a week within that month,
+// and a day within that week. Not narrowing further at any level is how you
+// stop there - there's no separate "just show the year" toggle to find, it's
+// simply what happens when you don't go on to pick a month.
+// ---------------------------------------------------------------------------
+const STATEMENT_YEAR_MIN = 2026;
+const STATEMENT_YEAR_MAX = 2126;
+const STATEMENT_YEARS_PER_PAGE = 12;
+const MONTH_LABELS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function statementYearPageStart(year) {
+  const clamped = Math.max(STATEMENT_YEAR_MIN, Math.min(STATEMENT_YEAR_MAX, year));
+  return STATEMENT_YEAR_MIN + Math.floor((clamped - STATEMENT_YEAR_MIN) / STATEMENT_YEARS_PER_PAGE) * STATEMENT_YEARS_PER_PAGE;
+}
+function statementMonthWeekStarts(year, month0) {
+  const monthStart = istMidnight(year, month0, 1);
+  const monthEnd = addIstMonths(monthStart, 1);
+  const weeks = [];
+  let cursor = startOfIstWeek(monthStart);
+  while (cursor < monthEnd) { weeks.push(cursor); cursor = addIstDays(cursor, 7); }
+  return weeks;
+}
+
+function statementYearGridHtml() {
+  const pageStart = state.statementSelYearPage;
+  const pageEnd = Math.min(STATEMENT_YEAR_MAX, pageStart + STATEMENT_YEARS_PER_PAGE - 1);
+  const years = [];
+  for (let y = pageStart; y <= pageEnd; y += 1) years.push(y);
+  const canPrev = pageStart > STATEMENT_YEAR_MIN;
+  const canNext = pageEnd < STATEMENT_YEAR_MAX;
+  return '<div class="cluster between" style="margin-bottom:10px;">'
+    + '<button type="button" class="icon-btn" id="statement-year-prev"' + (canPrev ? "" : " disabled") + '>&larr;</button>'
+    + '<strong style="font-size:13px;">' + pageStart + ' – ' + pageEnd + '</strong>'
+    + '<button type="button" class="icon-btn" id="statement-year-next"' + (canNext ? "" : " disabled") + '>&rarr;</button>'
+    + '</div>'
+    + '<div class="chip-row" id="statement-year-grid">'
+    + years.map((y) => '<button type="button" class="chip" data-pick-year="' + y + '">' + y + '</button>').join("")
+    + '</div>';
+}
+function statementMonthGridHtml() {
+  return '<div class="chip-row" id="statement-month-grid">'
+    + MONTH_LABELS_SHORT.map((label, i) => '<button type="button" class="chip" data-pick-month="' + i + '">' + h(label) + '</button>').join("")
+    + '</div>';
+}
+function statementWeekListHtml(year, month0) {
+  const weeks = statementMonthWeekStarts(year, month0);
+  const dayFmt = (ms) => new Date(ms).toLocaleDateString("en-IN", {day: "numeric", month: "short", timeZone: "Asia/Kolkata"});
+  return '<div class="table-wrap"><table class="data-table"><tbody id="statement-week-list">'
+    + weeks.map((w, i) => (
+      '<tr class="row-clickable" data-pick-week="' + w + '"><td>Week ' + (i + 1) + '</td>'
+      + '<td class="cell-sub">' + h(dayFmt(w)) + ' – ' + h(dayFmt(addIstDays(w, 6))) + '</td></tr>'
+    )).join("") + '</tbody></table></div>';
+}
+function statementWeekDayChipsHtml(weekStart) {
+  const dayFmt = (ms) => new Date(ms).toLocaleDateString("en-IN", {weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata"});
+  const todayStart = startOfIstDay(Date.now());
+  const days = Array.from({length: 7}, (_, i) => addIstDays(weekStart, i));
+  return '<div class="chip-row" id="statement-day-grid">'
+    + days.map((d) => (
+      '<button type="button" class="chip" data-pick-day="' + d + '" style="' + (d === todayStart ? "border-color:var(--brand);font-weight:700;" : "") + '">' + h(dayFmt(d)) + '</button>'
+    )).join("") + '</div>';
+}
+
+/** Re-derives the internal statementPeriodType/statementAnchor from whichever
+ * level is deepest in the cascading selection, and reloads that period. */
+function statementApplySelection() {
+  state.statementExpandedId = "";
+  if (state.statementSelDay != null) {
+    state.statementPeriodType = "day"; state.statementAnchor = state.statementSelDay;
+  } else if (state.statementSelWeekStart != null) {
+    state.statementPeriodType = "week"; state.statementAnchor = state.statementSelWeekStart;
+  } else if (state.statementSelMonth != null) {
+    state.statementPeriodType = "month"; state.statementAnchor = istMidnight(state.statementSelYear, state.statementSelMonth, 1);
+  } else if (state.statementSelYear != null) {
+    state.statementPeriodType = "year"; state.statementAnchor = istMidnight(state.statementSelYear, 0, 1);
+  } else {
+    state.statementData = null;
+    state.statementYearRows = null;
+    renderStatementTab();
+    return;
+  }
+  loadStatement();
+}
+
+function statementLevelCardHtml(title, chosenLabel, onChangeId, pickerHtml) {
+  if (chosenLabel != null) {
+    return '<section class="card card-pad" style="margin-bottom:16px;">'
+      + '<div class="cluster between"><p class="hint" style="margin:0;">' + h(title) + '</p>'
+      + '<div class="cluster" style="gap:10px;"><strong style="font-size:13.5px;">' + h(chosenLabel) + '</strong>'
+      + '<button type="button" class="btn btn-ghost btn-sm" id="' + onChangeId + '">Change</button></div></div>'
+      + '</section>';
+  }
+  return '<section class="card card-pad" style="margin-bottom:16px;">'
+    + '<p class="hint" style="margin-bottom:10px;">' + h(title) + '</p>' + pickerHtml + '</section>';
+}
+
+function renderStatementTab() {
+  const box = document.getElementById("panel-statement");
+  if (box.hidden) return;
+  const body = document.getElementById("statement-body");
+  if (state.statementSelYearPage == null) state.statementSelYearPage = statementYearPageStart(istParts(Date.now()).y);
+
+  const dayFmt = (ms) => new Date(ms).toLocaleDateString("en-IN", {day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata"});
+
+  let levelsHtml = statementLevelCardHtml(
+    "Which year's transactions would you like to see?",
+    state.statementSelYear != null ? String(state.statementSelYear) : null,
+    "statement-change-year",
+    statementYearGridHtml(),
+  );
+
+  if (state.statementSelYear != null) {
+    levelsHtml += statementLevelCardHtml(
+      state.statementSelMonth != null ? "Month" : "Want to narrow down to a specific month in " + state.statementSelYear + "?",
+      state.statementSelMonth != null ? MONTH_LABELS_SHORT[state.statementSelMonth] + " " + state.statementSelYear : null,
+      "statement-change-month",
+      statementMonthGridHtml(),
+    );
+  }
+
+  if (state.statementSelYear != null && state.statementSelMonth != null) {
+    const weekLabel = state.statementSelWeekStart != null
+      ? dayFmt(state.statementSelWeekStart) + " – " + dayFmt(addIstDays(state.statementSelWeekStart, 6)) : null;
+    levelsHtml += statementLevelCardHtml(
+      state.statementSelWeekStart != null ? "Week"
+        : "Want to narrow down to a specific week in " + MONTH_LABELS_SHORT[state.statementSelMonth] + " " + state.statementSelYear + "?",
+      weekLabel,
+      "statement-change-week",
+      statementWeekListHtml(state.statementSelYear, state.statementSelMonth),
+    );
+  }
+
+  if (state.statementSelWeekStart != null) {
+    levelsHtml += statementLevelCardHtml(
+      state.statementSelDay != null ? "Day" : "Want to narrow down to a specific day in that week?",
+      state.statementSelDay != null ? dayFmt(state.statementSelDay) : null,
+      "statement-change-day",
+      statementWeekDayChipsHtml(state.statementSelWeekStart),
+    );
+  }
+
+  let resultsHtml;
+  if (state.statementSelYear == null) {
+    resultsHtml = "";
+  } else if (state.statementLoading) {
+    resultsHtml = '<div class="loading-block"><span class="spinner dark"></span> Loading statement…</div>';
+  } else if (state.statementError) {
+    resultsHtml = '<div class="notice notice-danger">' + h(state.statementError) + '</div>';
+  } else if (state.statementPeriodType === "year") {
+    resultsHtml = statementYearRowsHtml(state.statementYearRows);
+  } else {
+    const data = state.statementData;
+    resultsHtml = data
+      ? (data.truncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>More transactions exist in this period than shown here (page limit reached) — totals below cover only the ' + h(data.entryCount) + ' shown, not the whole period.</span></div>' : "")
+        + statementSummaryCardsHtml(data.totalsByEventType, data.entryCount)
+        + statementEntryRowsHtml(data.entries)
+      : "";
+  }
+
+  body.innerHTML = levelsHtml + '<div id="statement-content">' + resultsHtml + '</div>';
+
+  const yearPrev = document.getElementById("statement-year-prev");
+  if (yearPrev) yearPrev.addEventListener("click", () => {
+    state.statementSelYearPage = Math.max(STATEMENT_YEAR_MIN, state.statementSelYearPage - STATEMENT_YEARS_PER_PAGE);
+    renderStatementTab();
+  });
+  const yearNext = document.getElementById("statement-year-next");
+  if (yearNext) yearNext.addEventListener("click", () => {
+    state.statementSelYearPage = Math.min(STATEMENT_YEAR_MAX, state.statementSelYearPage + STATEMENT_YEARS_PER_PAGE);
+    renderStatementTab();
+  });
+  const yearGrid = document.getElementById("statement-year-grid");
+  if (yearGrid) yearGrid.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-pick-year]");
+    if (!btn) return;
+    state.statementSelYear = Number(btn.dataset.pickYear);
+    state.statementSelMonth = null; state.statementSelWeekStart = null; state.statementSelDay = null;
+    statementApplySelection();
+  });
+  const changeYear = document.getElementById("statement-change-year");
+  if (changeYear) changeYear.addEventListener("click", () => {
+    state.statementSelYear = null; state.statementSelMonth = null; state.statementSelWeekStart = null; state.statementSelDay = null;
+    statementApplySelection();
+  });
+
+  const monthGrid = document.getElementById("statement-month-grid");
+  if (monthGrid) monthGrid.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-pick-month]");
+    if (!btn) return;
+    state.statementSelMonth = Number(btn.dataset.pickMonth);
+    state.statementSelWeekStart = null; state.statementSelDay = null;
+    statementApplySelection();
+  });
+  const changeMonth = document.getElementById("statement-change-month");
+  if (changeMonth) changeMonth.addEventListener("click", () => {
+    state.statementSelMonth = null; state.statementSelWeekStart = null; state.statementSelDay = null;
+    statementApplySelection();
+  });
+
+  const weekList = document.getElementById("statement-week-list");
+  if (weekList) weekList.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-pick-week]");
+    if (!row) return;
+    state.statementSelWeekStart = Number(row.dataset.pickWeek);
+    state.statementSelDay = null;
+    statementApplySelection();
+  });
+  const changeWeek = document.getElementById("statement-change-week");
+  if (changeWeek) changeWeek.addEventListener("click", () => {
+    state.statementSelWeekStart = null; state.statementSelDay = null;
+    statementApplySelection();
+  });
+
+  const dayGrid = document.getElementById("statement-day-grid");
+  if (dayGrid) dayGrid.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-pick-day]");
+    if (!btn) return;
+    state.statementSelDay = Number(btn.dataset.pickDay);
+    statementApplySelection();
+  });
+  const changeDay = document.getElementById("statement-change-day");
+  if (changeDay) changeDay.addEventListener("click", () => {
+    state.statementSelDay = null;
+    statementApplySelection();
+  });
+
+  document.getElementById("statement-content").addEventListener("click", (event) => {
+    const monthRow = event.target.closest("[data-statement-month]");
+    if (monthRow) {
+      state.statementSelMonth = istParts(Number(monthRow.dataset.statementMonth)).mo;
+      state.statementSelWeekStart = null; state.statementSelDay = null;
+      statementApplySelection();
+      return;
+    }
+    const toggleRow = event.target.closest("[data-statement-toggle]");
+    if (toggleRow) {
+      const id = toggleRow.dataset.statementToggle;
+      state.statementExpandedId = state.statementExpandedId === id ? "" : id;
+      renderStatementTab();
+    }
+  });
+}
+
 
 // ---------------------------------------------------------------------------
 // wiring

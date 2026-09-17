@@ -164,6 +164,20 @@ export const adminDashboardQuerySchema = z.object({
 
 export type AdminDashboardQueryInput = z.infer<typeof adminDashboardQuerySchema>;
 
+/**
+ * An explicit [startAt, endAt) ledger window for the finance statement view -
+ * the web admin computes what "today"/"this week"/"this month"/"this year"
+ * means in wall-clock terms and sends the resulting epoch boundaries; the
+ * server only ever reads a bounded, validated page in between them.
+ */
+export const financeStatementQuerySchema = z.object({
+  startAt: z.number().int().min(0),
+  endAt: z.number().int().min(0),
+  limit: z.number().int().min(1).max(3000).optional(),
+}).strict().refine((value) => value.endAt > value.startAt, {message: "endAt must be after startAt"});
+
+export type FinanceStatementQueryInput = z.infer<typeof financeStatementQuerySchema>;
+
 /** An empty/omitted city exports every city; a non-empty one scopes customers, riders and restaurants to it. */
 export const exportPlatformDataWorkbookSchema = z.object({
   city: z.string().trim().max(120).optional(),
