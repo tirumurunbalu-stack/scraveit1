@@ -231,6 +231,11 @@ function rewardSummary(campaign) {
   return ms.length === 1 ? first.target + " → " + moneyPaise(first.rewardAmountPaise)
     : first.target + "→" + moneyPaise(first.rewardAmountPaise) + " … " + last.target + "→" + moneyPaise(last.rewardAmountPaise);
 }
+function timeSlotsSummary(campaign) {
+  const slots = campaign.timeSlots || [];
+  if (!slots.length) return campaign.kind === "per_order_bonus" ? "All day" : "—";
+  return slots.map((s) => (s.label ? h(s.label) + ": " : "") + minuteToClock(s.startMinute) + "–" + minuteToClock(s.endMinute)).join("<br>");
+}
 function matchesQuery(view, query) {
   if (!query) return true;
   const q = query.toLowerCase();
@@ -285,6 +290,7 @@ function renderTable() {
       + '<td>' + statusBadge(c) + '</td>'
       + '<td>' + h(rewardSummary(c)) + '</td>'
       + '<td><div class="cell-sub">' + h(dateRange) + '</div></td>'
+      + '<td><div class="cell-sub">' + timeSlotsSummary(c) + '</div></td>'
       + '<td>' + h(view.totalRidersEnrolled || 0) + '</td>'
       + '<td>' + h(moneyPaise(view.totalAccruedPaise || 0)) + '</td>'
       + '<td><div class="cell-actions" data-stop>'
