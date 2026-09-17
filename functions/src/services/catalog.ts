@@ -192,7 +192,25 @@ export async function loadServerFees(
   };
 }
 
-export async function calculateDiscount(code: string, subtotal: number, restaurantId: string): Promise<number> {
+/**
+ * A first-order offer exists to buy a new customer, so any previous order at
+ * all disqualifies it - including one that was cancelled, which would
+ * otherwise be an obvious way to keep claiming it. An unknown customer is
+ * treated as "not new": failing closed costs at most one missed discount,
+ * while failing open hands out an unlimited one.
+ */
+async function customerHasOrderedBefore(customerId: string): Promise<boolean> {
+  if (!customerId) return true;
+  const snapshot = await db.ref(`${ROOT}/orders/${customerId}`).limitToFirst(1).get();
+  return snapshot.exists();
+}
+
+export async function calculateDiscount(
+  code: string,
+  subtotal: number,
+  restaurantId: string,
+  customerId: string,
+): Promise<number> {
   if (!code) return 0;
   const snapshot = await db.ref(`${ROOT}/promotions`).orderByChild("code").equalTo(code).limitToFirst(5).get();
   const promotions = records<UnknownRecord>(snapshot.val());
@@ -207,6 +225,9 @@ export async function calculateDiscount(code: string, subtotal: number, restaura
   const restaurants = Array.isArray(promotion.restaurantIds) ? promotion.restaurantIds.map(String) : [];
   if (restaurants.length && !restaurants.includes(restaurantId)) {
     throw new DomainError("failed-precondition", "Coupon is not valid for this restaurant.");
+  }
+  if (promotion.firstOrderOnly === true && await customerHasOrderedBefore(customerId)) {
+    throw new DomainError("failed-precondition", "This offer is only for a first Scraveit order.");
   }
   return roundMoney(Math.min(subtotal * finite(promotion.percent) / 100, finite(promotion.maxDiscount, subtotal)));
 }

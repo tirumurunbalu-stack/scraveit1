@@ -374,7 +374,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   const {items, subtotal} = priceCart(input.items, menuById);
   const [fees, discount, availableRiders] = await Promise.all([
     loadServerFees(restaurant, address, subtotal),
-    calculateDiscount(input.couponCode, subtotal, restaurant.id),
+    calculateDiscount(input.couponCode, subtotal, restaurant.id, uid),
     // Rider supply feeds the delivery estimate only. A read failure must never
     // block an order, so it degrades to "unknown" - which the estimator treats
     // as unknown rather than as zero riders.

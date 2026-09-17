@@ -1241,6 +1241,15 @@
           "minimumOrder": {
             ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000"
           },
+          "restaurantIds": {
+            ".validate": "newData.hasChildren() || !newData.exists()",
+            "$index": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 128"
+            }
+          },
+          "firstOrderOnly": {
+            ".validate": "newData.isBoolean()"
+          },
           "expiresAt": {
             ".validate": "newData.isNumber() && newData.val() > 0"
           },

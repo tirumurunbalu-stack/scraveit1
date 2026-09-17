@@ -161,7 +161,7 @@
     profile: Object.assign({name:"", email:"", phone:"", addresses:[], selectedAddressId:"", favourites:[], preferences:{theme:"system", vegetarian:false, notifications:true}}, cachedProfile),
     catalog: {}, catalogMode: "loading", catalogLoaded: false, homeStatus:"initial", catalogRequestSequence:0, appliedCatalogSequence:0,
     promotions: [], settings: {platformFee:15, taxRate:0, freeDeliveryAbove:0, maxDeliveryKm:15, deliverySlabs:{"0":{maxKm:2,fee:29},"1":{maxKm:4,fee:39},"2":{maxKm:6,fee:59},"3":{maxKm:8,fee:79},"4":{maxKm:10,fee:99},"5":{maxKm:12,fee:119},"6":{maxKm:15,fee:139}}, platformFeeOverrides:{cities:{},categories:{},restaurants:{},orderValueRules:{}}, rainFeeEnabled:true,rainLightFee:9,rainModerateFee:19,rainHeavyFee:29,rainSevereFee:39,rainMinProbability:35,rainLightMm:0.1,rainModerateMm:1,rainHeavyMm:4,rainSevereMm:10,surgeEnabled:true,surgeLowOrders:4,surgeMediumOrders:8,surgeHighOrders:12,surgeLowFee:9,surgeMediumFee:19,surgeHighFee:29,maxSurgeFee:39,smallOrderFeeEnabled:true,smallOrderThreshold:149,smallOrderFee:19,lateNightFeeEnabled:true,lateNightStartHour:23,lateNightEndHour:5,lateNightFee:19}, checkoutConfig:null,
-    orders: loadJSON("savrivo.customer.orders", []), tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
+    orders: loadJSON("savrivo.customer.orders", []), ordersHydrated:false, ordersHydratedUid:"", tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
     cart: loadJSON("savrivo.customer.cart", []), coupon: null, tip: 0,
     // couponAuto: this offer was chosen for the customer, so a better one may
     // replace it. couponDismissedFor: the restaurant whose auto-offer they
@@ -663,6 +663,11 @@
       const before = {};
       state.orders.forEach(order=>before[order.id]=order.status);
       state.orders = normalizeOrders(map);
+      // The cached order list cannot prove a customer is new - a returning
+      // customer on a fresh install starts with an empty one. Only a completed
+      // remote read can, and a first-order offer depends on knowing which.
+      state.ordersHydrated = true;
+      state.ordersHydratedUid = String(state.session&&state.session.uid||"");
       persistOrders();
       state.orders.forEach(order => {
         if (TERMINAL_STATES.has(order.status) && state.deliveryOtps[order.id]) {
@@ -1077,9 +1082,20 @@
     const cap=Number(promotion.maxDiscount);
     return roundMoney(Math.min(subtotal*Number(promotion.percent||0)/100,Number.isFinite(cap)?cap:subtotal));
   }
+  /** Whether this account can still claim a first-order offer. Fails closed:
+   *  until the order list has actually been read back for THIS account, a
+   *  returning customer on a fresh install looks identical to a new one, and
+   *  offering them a first-order code only to have the server reject it would
+   *  fail their whole order. */
+  function firstOrderOfferAvailable(){
+    const uid=String(state.session&&state.session.uid||"");
+    if(!uid||!state.ordersHydrated||state.ordersHydratedUid!==uid)return false;
+    return state.orders.length===0;
+  }
   function promotionEligible(promotion,restaurantId,subtotal,now){
     if(!promotion||promotion.active!==true)return false;
     if(promotion.expiresAt&&Number(now)>Number(promotion.expiresAt))return false;
+    if(promotion.firstOrderOnly===true&&!firstOrderOfferAvailable())return false;
     if(promotion.minimumOrder&&subtotal<Number(promotion.minimumOrder))return false;
     // An empty restaurantIds list means "every restaurant", which is how the
     // server reads it. Treating it as "no restaurant" silently hid offers.
