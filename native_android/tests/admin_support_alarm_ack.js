@@ -138,6 +138,62 @@ function ticket(overrides = {}) {
   assert.ok(starts[2].body.includes("1 unresolved service request"), "only the separate unacknowledged request remains in the alarm");
 
   process.stdout.write("✓ Admin support alarm acknowledgements are activity-based and duplicate-safe\n");
+
+  // -------------------------------------------------------------------------
+  // Reproduces the reported bug: the alarm does not stop after opening or
+  // resolving a ticket. Root cause is sync()'s 60s reconcile poll doing a
+  // plain GET /support and replacing state.support wholesale - if that GET
+  // was in flight when the admin acted, its response reflects the database
+  // from before the PATCH committed and silently undoes the acknowledgement.
+  // -------------------------------------------------------------------------
+  const owner = loadAdmin();
+  owner.api.state.session = { uid: "admin", email: "admin@example.test", idToken: "token", refreshToken: "refresh", expiresAt: Date.now() + 600000 };
+  owner.api.state.role = "owner";
+  owner.api.state.support = { "customer-a": { "ticket-a": ticket() } };
+  owner.api.syncSupportAlarm();
+  assert.strictEqual(owner.nativeCalls.filter((call) => call.type === "start").length, 1, "the new ticket rings once before being opened");
+
+  await owner.api.openSupportTicket("customer-a", "ticket-a");
+  assert.strictEqual(owner.nativeCalls.filter((call) => call.type === "stop").length, 1, "opening stops the alarm");
+  const openedTicket = owner.api.state.support["customer-a"]["ticket-a"];
+
+  // A background reconcile poll's GET had already been sent before the admin
+  // opened the ticket, so its response is the pre-open snapshot.
+  const staleFromPoll = { "customer-a": { "ticket-a": ticket() } };
+  owner.api.state.support = owner.api.mergeSupportSnapshot(owner.api.state.support, staleFromPoll);
+  assert.strictEqual(owner.api.state.support["customer-a"]["ticket-a"].status, openedTicket.status,
+    "a stale poll response landing right after open() does not revert the status");
+  owner.api.syncSupportAlarm();
+  assert.strictEqual(owner.nativeCalls.filter((call) => call.type === "start").length, 1,
+    "the stale poll response does not restart the alarm after opening");
+
+  await owner.api.closeTicket("customer-a", "ticket-a");
+  assert.strictEqual(owner.nativeCalls.filter((call) => call.type === "stop").length, 2, "resolving stops the alarm");
+  assert.strictEqual(owner.api.state.support["customer-a"]["ticket-a"].status, "closed", "ticket is closed locally");
+
+  // Same race again, this time right after resolving.
+  const staleFromPollAfterClose = { "customer-a": { "ticket-a": Object.assign({}, ticket(), {status: "open"}) } };
+  owner.api.state.support = owner.api.mergeSupportSnapshot(owner.api.state.support, staleFromPollAfterClose);
+  assert.strictEqual(owner.api.state.support["customer-a"]["ticket-a"].status, "closed",
+    "a stale poll response landing right after resolving does not reopen the ticket");
+  owner.api.syncSupportAlarm();
+  assert.strictEqual(owner.nativeCalls.filter((call) => call.type === "start").length, 1,
+    "the stale poll response does not restart the alarm after resolving");
+
+  // A ticket the admin has never touched (no local admin-ack signal at all)
+  // must always adopt whatever the server has - this is the normal, non-race
+  // path the merge must not interfere with.
+  const untouchedLocal = { "customer-b": { "ticket-b": ticket({ id: "ticket-b", uid: "customer-b" }) } };
+  const untouchedServer = { "customer-b": { "ticket-b": Object.assign({}, ticket({ id: "ticket-b", uid: "customer-b" }), {
+    message: "I need help with my order | a second message", updatedAt: 5000,
+  }) } };
+  const adopted = owner.api.mergeSupportSnapshot(untouchedLocal, untouchedServer);
+  assert.strictEqual(adopted["customer-b"]["ticket-b"].updatedAt, 5000,
+    "a ticket with no local admin action always adopts the server's latest data");
+  assert.strictEqual(adopted["customer-b"]["ticket-b"].message, "I need help with my order | a second message",
+    "including a genuinely new customer message");
+
+  process.stdout.write("✓ A stale background poll cannot silently undo an open or resolve action\n");
 })().catch((error) => {
   console.error(error);
   process.exit(1);

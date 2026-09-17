@@ -182,7 +182,7 @@
     if(owner()){
       const required=await Promise.all([loadAdminDashboard(),db("GET",ROOT+"/catalog/restaurants"),loadPlatformConfiguration().then(value=>({ok:true,value})).catch(error=>({ok:false,error}))]);
       const extra=await Promise.all([optional(ROOT+"/users",{}),optional(ROOT+"/riders",{}),optional(ROOT+"/riderPresence",{}),optional(ROOT+"/riderJobs",{}),optional(ROOT+"/staff",{}),optional(ROOT+"/tracking",{}),optional(ROOT+"/promotions",{}),optional(ROOT+"/settings",{}),optional(ROOT+"/support",{}),optional(ROOT+"/audit",{}),optional(ROOT+"/localAds",{}),optional(ROOT+"/customerBroadcasts",{}),optional(ROOT+"/menus",{}),optional(ROOT+"/restaurantApplications",{}),optional(ROOT+"/restaurantMembers",{})]);
-      state.orders=required[0].orders;state.dashboardStatusCounts=required[0].statusCounts;state.dashboardFinance=required[0].finance;state.dashboardCodExposure=required[0].codExposure;state.dashboardGeneratedAt=required[0].generatedAt;state.catalog=required[1]||{};if(required[2]&&required[2].ok){state.platformConfig=required[2].value;state.platformConfigError="";state.platformConfigLastSync=Date.now()}else if(required[2]&&!required[2].ok){state.platformConfigError=friendly(required[2].error)}[state.users,state.riders,state.riderPresence,state.riderJobs,state.staffData,state.tracking,state.promotions,state.settings,state.support,state.audit,state.localAds,state.broadcasts,state.normalizedMenus,state.restaurantApplications,state.restaurantMembers]=extra;overlayNormalizedMenus();syncSupportAlarm();
+      state.orders=required[0].orders;state.dashboardStatusCounts=required[0].statusCounts;state.dashboardFinance=required[0].finance;state.dashboardCodExposure=required[0].codExposure;state.dashboardGeneratedAt=required[0].generatedAt;state.catalog=required[1]||{};if(required[2]&&required[2].ok){state.platformConfig=required[2].value;state.platformConfigError="";state.platformConfigLastSync=Date.now()}else if(required[2]&&!required[2].ok){state.platformConfigError=friendly(required[2].error)}const previousSupport=state.support;[state.users,state.riders,state.riderPresence,state.riderJobs,state.staffData,state.tracking,state.promotions,state.settings,state.support,state.audit,state.localAds,state.broadcasts,state.normalizedMenus,state.restaurantApplications,state.restaurantMembers]=extra;state.support=mergeSupportSnapshot(previousSupport,state.support);overlayNormalizedMenus();syncSupportAlarm();
     }else{
       const rid=state.staff.restaurantId,required=await Promise.all([db("GET",ROOT+"/catalog/restaurants"),db("GET",ROOT+"/restaurantOrders/"+encodeURIComponent(rid)),optional(ROOT+"/menus/"+encodeURIComponent(rid),{})]);
       state.catalog=required[0]||{};state.normalizedMenus={[rid]:required[2]||{}};overlayNormalizedMenus();state.orders=flatten(required[1]);state.dashboardCodExposure=null;state.users={};state.riders={};state.riderPresence={};state.riderJobs={};state.staffData={};state.restaurantMembers={};state.promotions={};state.settings={};state.support={};state.audit={};state.platformConfig=null;state.platformConfigError="";state.platformConfigLastSync=0;
@@ -255,6 +255,39 @@
   function supportAlarmKey(t){return [t.uid||t.userId||"",t.id||"",supportActivityKey(t)].join(":")}
   function supportAlarmSignature(list){return list.map(supportAlarmKey).sort().join("|")}
   function stopSupportAlarmNow(){state.supportAlarmSignature="";if(!window.FeastlyAdminNative)return;try{FeastlyAdminNative.stopSupportAlarm(8801)}catch(_){}}
+  const SUPPORT_ADMIN_FIELDS=["status","seenAt","seenActivityAt","seenActivityKey","resolvedAt","resolvedBy","adminUpdatedAt"];
+  function supportAdminAckSignal(t){return Math.max(Number(t&&t.seenAt||0),Number(t&&t.resolvedAt||0),Number(t&&t.adminUpdatedAt||0))}
+  // sync() replaces state.support wholesale from a plain GET every reconcile
+  // poll (every 60s). openSupportTicket()/closeTicket() apply their PATCH to
+  // the server AND mutate the local ticket in place immediately. If a poll's
+  // GET was already in flight when the admin acted, its response reflects
+  // the database from before that PATCH committed - wholesale-replacing
+  // state.support with it would silently undo the just-applied open/resolve
+  // and restart the alarm. Merging instead of replacing keeps whichever side
+  // (local or incoming) reflects the more recent admin acknowledgement, per
+  // ticket, while still adopting genuinely newer server data (a different
+  // admin device acting, or a brand-new/updated ticket) normally.
+  function mergeSupportSnapshot(existing,incoming){
+    const merged={};
+    const uids=new Set(Object.keys(existing||{}).concat(Object.keys(incoming||{})));
+    uids.forEach(uid=>{
+      const localTickets=(existing&&existing[uid])||{},serverTickets=(incoming&&incoming[uid])||{};
+      const ids=new Set(Object.keys(localTickets).concat(Object.keys(serverTickets)));
+      const mergedTickets={};
+      ids.forEach(id=>{
+        const local=localTickets[id],server=serverTickets[id];
+        if(!server){if(local)mergedTickets[id]=local;return}
+        if(!local){mergedTickets[id]=server;return}
+        if(supportAdminAckSignal(local)>supportAdminAckSignal(server)){
+          const combined=Object.assign({},server);
+          SUPPORT_ADMIN_FIELDS.forEach(field=>{if(local[field]!==undefined)combined[field]=local[field]});
+          mergedTickets[id]=combined;
+        }else mergedTickets[id]=server;
+      });
+      merged[uid]=mergedTickets;
+    });
+    return merged;
+  }
   function syncSupportAlarm(){const list=unseenSupport();if(!window.FeastlyAdminNative)return;try{if(list.length){const signature=supportAlarmSignature(list);if(signature!==state.supportAlarmSignature){state.supportAlarmSignature=signature;FeastlyAdminNative.startSupportAlarm("Scraveit support",list.length+" unresolved service request"+(list.length===1?"":"s")+" need attention.",8801)}}else if(state.supportAlarmSignature){state.supportAlarmSignature="";FeastlyAdminNative.stopSupportAlarm(8801)}}catch(_){}}
 
   function screenDashboard(){const finance=state.dashboardFinance,ledgerAccountCount=finance?Object.keys(finance.windowNetMovementPaise||{}).length:0,newOrders=state.orders.filter(o=>o.status==="Order placed"),ready=state.orders.filter(o=>o.status==="Ready for pickup"&&!o.riderId),overdue=state.orders.filter(o=>["Accepted","Preparing"].includes(o.status)&&Date.now()-Number(o.updatedAt||o.createdAt)>35*60000),approved=Object.values(state.riders||{}).filter(r=>r.status==="approved");const attention=[...newOrders,...overdue,...ready].filter((o,i,a)=>a.findIndex(x=>x.id===o.id)===i).slice(0,6);
@@ -1080,7 +1113,16 @@ function formatBytes(n){n=Number(n||0);if(!Number.isFinite(n)||n<=0)return"0 B";
   async function toggleAd(id){const ad=state.localAds[id];if(!ad)return;const active=ad.active===false;try{await db("PATCH",ROOT+"/localAds/"+id,{active,updatedAt:Date.now()});ad.active=active;render({preserve:true})}catch(e){toast(friendly(e),"danger")}}
   async function openSupportTicket(uidValue,id){const t=state.support[uidValue]&&state.support[uidValue][id];if(!t)return;const previous={seenAt:t.seenAt,seenActivityAt:t.seenActivityAt,seenActivityKey:t.seenActivityKey,status:t.status};const now=Date.now(),activityAt=supportActivityAt(t),activityKey=supportActivityKey(t),seenAt=Math.max(Number(t.seenAt||0),activityAt,now);t.seenAt=seenAt;t.seenActivityAt=activityAt;t.seenActivityKey=activityKey;if(t.status==="open")t.status="in_progress";stopSupportAlarmNow();setSheet({type:"supportTicket",uid:uidValue,id});try{await db("PATCH",ROOT+"/support/"+uidValue+"/"+id,{seenAt:t.seenAt,seenActivityAt:t.seenActivityAt,seenActivityKey:t.seenActivityKey,status:t.status,adminUpdatedAt:now})}catch(e){Object.assign(t,previous);syncSupportAlarm();toast("Could not mark this request as opened. "+friendly(e),"danger");return}syncSupportAlarm();render({preserve:true})}
 
-  async function closeTicket(uidValue,id){if(!owner())return;const t=state.support[uidValue]&&state.support[uidValue][id];const previous=t?{status:t.status,seenAt:t.seenAt,resolvedAt:t.resolvedAt,resolvedBy:t.resolvedBy}:null;const now=Date.now();if(t){t.status="closed";t.seenAt=Number(t.seenAt||0)||now;t.resolvedAt=now;t.resolvedBy=state.session.email}stopSupportAlarmNow();try{await db("PATCH",ROOT+"/support/"+uidValue+"/"+id,{status:"closed",seenAt:t?t.seenAt:now,resolvedAt:now,resolvedBy:state.session.email,updatedAt:now});syncSupportAlarm();await writeAudit("support.resolve",id,uidValue);toast("Support request marked resolved.","success");if(state.sheet&&state.sheet.type==="supportTicket"&&state.sheet.uid===uidValue&&state.sheet.id===id)renderSheet();else render({preserve:true})}catch(e){if(t&&previous)Object.assign(t,previous);syncSupportAlarm();toast(friendly(e),"danger")}}
+  // Only the PATCH itself is allowed to trigger a revert: once the server
+  // has actually accepted "closed", nothing that happens afterwards (writing
+  // the audit entry, re-rendering the sheet) may un-resolve the ticket or
+  // restart the alarm again just because one of those unrelated steps threw.
+  // closeTicket previously wrapped the render() call in the same try as the
+  // PATCH, so a rendering error after a successful resolve would revert the
+  // ticket to unresolved locally and re-arm the alarm even though the server
+  // already had it marked closed - indistinguishable, from the admin's seat,
+  // from "marking resolved didn't work."
+  async function closeTicket(uidValue,id){if(!owner())return;const t=state.support[uidValue]&&state.support[uidValue][id];const previous=t?{status:t.status,seenAt:t.seenAt,resolvedAt:t.resolvedAt,resolvedBy:t.resolvedBy}:null;const now=Date.now();if(t){t.status="closed";t.seenAt=Number(t.seenAt||0)||now;t.resolvedAt=now;t.resolvedBy=state.session.email}stopSupportAlarmNow();try{await db("PATCH",ROOT+"/support/"+uidValue+"/"+id,{status:"closed",seenAt:t?t.seenAt:now,resolvedAt:now,resolvedBy:state.session.email,updatedAt:now})}catch(e){if(t&&previous)Object.assign(t,previous);syncSupportAlarm();toast(friendly(e),"danger");return}syncSupportAlarm();toast("Support request marked resolved.","success");try{await writeAudit("support.resolve",id,uidValue)}catch(_){}if(state.sheet&&state.sheet.type==="supportTicket"&&state.sheet.uid===uidValue&&state.sheet.id===id)renderSheet();else render({preserve:true})}
 
   Object.assign(SCREENS,{launch:screenLaunch,login:screenLogin,dashboard:screenDashboard,financeReport:screenFinanceReport,orders:screenOrders,order:screenOrder,restaurants:screenRestaurants,restaurantEditor:screenRestaurantEditor,restaurantApplications:screenRestaurantApplications,restaurantAppReview:screenRestaurantAppReview,riders:screenRiders,riderReview:screenRiderReview,more:screenMore,customers:screenCustomers,staff:screenStaff,riderRewards:screenRiderRewards,promotions:screenPromotions,settings:screenSettings,bankPayouts:screenBankPayouts,notifications:screenNotifications,ads:screenAds,support:screenSupportQueue,audit:screenAudit,dataExport:screenDataExport});
   function applyTheme(){const theme=localStorage.getItem("savrivo.control.theme")||"dark";document.documentElement.dataset.theme=theme;const meta=document.querySelector('meta[name="theme-color"]');if(meta)meta.content=theme==="dark"?"#071426":"#F6F9FD"}
@@ -1117,6 +1159,6 @@ function formatBytes(n){n=Number(n||0);if(!Number.isFinite(n)||n<=0)return"0 B";
 
   async function bootstrap(){applyTheme();if(!state.session){state.route="login";render();app.setAttribute("aria-busy","false");return}state.loading=true;state.route="launch";render();try{await ensure()}catch(e){state.session=null;state.role="";persistSession();state.route="login";toast("Your operations session expired. Sign in again.","danger");state.loading=false;app.setAttribute("aria-busy","false");render();return}try{await resolveRole()}catch(e){if(e&&(e.message==="STAFF_INACTIVE"||e.message==="AUTH_REQUIRED")){state.session=null;state.role="";persistSession();state.route="login";toast("Your operations session expired. Sign in again.","danger");state.loading=false;app.setAttribute("aria-busy","false");render();return}state.error=friendly(e);if(state.session&&state.session.role){state.role=state.session.role}else{state.role="owner"}await enterOperations({silentFailure:true});state.loading=false;app.setAttribute("aria-busy","false");render();return}await enterOperations();state.loading=false;app.setAttribute("aria-busy","false");render()}
   window.addEventListener("online",()=>{state.online=true;if(state.session)refresh();else render({preserve:true})});window.addEventListener("offline",()=>{state.online=false;render({preserve:true})});document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&state.session&&state.online)requestSync(true).then(()=>{if(!["restaurantEditor","menuEditor"].includes(state.route))render({preserve:true})}).catch(()=>{})});
-  if(window.__SAVRIVO_ADMIN_TEST__)window.__SAVRIVO_ADMIN_SUPPORT_TEST__={state,unseenSupport,syncSupportAlarm,openSupportTicket,supportActivityAt,supportActivityKey,supportNeedsAttention};
+  if(window.__SAVRIVO_ADMIN_TEST__)window.__SAVRIVO_ADMIN_SUPPORT_TEST__={state,unseenSupport,syncSupportAlarm,openSupportTicket,closeTicket,supportActivityAt,supportActivityKey,supportNeedsAttention,mergeSupportSnapshot,sync};
   if(!window.__SAVRIVO_ADMIN_TEST__)bootstrap();
 })();
