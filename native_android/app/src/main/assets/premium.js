@@ -163,6 +163,10 @@
     promotions: [], settings: {platformFee:15, taxRate:0, freeDeliveryAbove:0, maxDeliveryKm:15, deliverySlabs:{"0":{maxKm:2,fee:29},"1":{maxKm:4,fee:39},"2":{maxKm:6,fee:59},"3":{maxKm:8,fee:79},"4":{maxKm:10,fee:99},"5":{maxKm:12,fee:119},"6":{maxKm:15,fee:139}}, platformFeeOverrides:{cities:{},categories:{},restaurants:{},orderValueRules:{}}, rainFeeEnabled:true,rainLightFee:9,rainModerateFee:19,rainHeavyFee:29,rainSevereFee:39,rainMinProbability:35,rainLightMm:0.1,rainModerateMm:1,rainHeavyMm:4,rainSevereMm:10,surgeEnabled:true,surgeLowOrders:4,surgeMediumOrders:8,surgeHighOrders:12,surgeLowFee:9,surgeMediumFee:19,surgeHighFee:29,maxSurgeFee:39,smallOrderFeeEnabled:true,smallOrderThreshold:149,smallOrderFee:19,lateNightFeeEnabled:true,lateNightStartHour:23,lateNightEndHour:5,lateNightFee:19}, checkoutConfig:null,
     orders: loadJSON("savrivo.customer.orders", []), tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
     cart: loadJSON("savrivo.customer.cart", []), coupon: null, tip: 0,
+    // couponAuto: this offer was chosen for the customer, so a better one may
+    // replace it. couponDismissedFor: the restaurant whose auto-offer they
+    // removed, so it is not silently re-applied under them.
+    couponAuto: false, couponDismissedFor: "",
     query: "", recentSearches:normalizedRecentSearches(loadJSON(searchHistoryKey(cachedSession&&cachedSession.uid),[])), searchDebounceTimer:null, cuisine: "All", diet: "all", sort: "recommended", homeFilter: "all",
     menuPrice: "all", menuSort: "recommended", ratingView: loadJSON("savrivo.customer.ratingView", "overall"),
     selectedRestaurantId: "the-waffle-spot-naidupeta", selectedOrderId: "", selectedMenuCategory: "All",
@@ -193,7 +197,11 @@
   }
 
   function persistProfile() { saveJSON("savrivo.customer.profile", state.profile); }
-  function persistCart() { saveJSON("savrivo.customer.cart", state.cart); }
+  // Every cart mutation funnels through here, which makes it the one place
+  // that can keep the auto-applied offer honest as the basket changes - an
+  // offer that stops qualifying (basket dropped below its minimum) has to be
+  // dropped too, or checkout would send a code the server then rejects.
+  function persistCart() { refreshAutoOffer(); saveJSON("savrivo.customer.cart", state.cart); }
   function persistCheckout() { saveJSON("savrivo.customer.checkout", state.checkout); }
   function persistOrders() { saveJSON("savrivo.customer.orders", state.orders.slice(0,60)); }
   function persistReviews() { if(state.session&&state.session.uid)saveJSON(reviewCacheKey(state.session.uid),state.reviews||{}); }
@@ -921,11 +929,29 @@
     const scroller=pageScroller();
     return scroller ? Number(scroller.scrollTop||0) : Number(window.scrollY||0);
   }
+  // Several background syncs on app open (catalog, secondary home data,
+  // realtime listeners) can each finish within the same second or two and
+  // every one calls render({preserveScroll:true}). The restore below is
+  // deferred to the next animation frame, so if two of these renders land
+  // close together, the second render's scrollY capture (in render(), via
+  // currentPageScrollTop()) can happen AFTER the first render's innerHTML
+  // swap already reset scrollTop to 0 but BEFORE that first render's own
+  // deferred restore ran - capturing a stale 0 that then gets applied,
+  // snapping the page back to the top even though the user never scrolled
+  // away. pendingScrollTarget is "where we're about to put the scroll
+  // position, if that hasn't happened yet" - render() prefers it over a
+  // live DOM read exactly when a restore is still in flight, so a chain of
+  // back-to-back renders all agree on the same real position instead of
+  // each other's transient post-reset 0.
+  let pendingScrollTarget = null;
   function setPageScrollTop(value) {
+    const target = Math.max(0, Number(value || 0));
+    pendingScrollTarget = target;
     requestAnimationFrame(()=>{
       const scroller=pageScroller();
-      if(scroller){scroller.scrollTop=Math.max(0,Number(value||0));return;}
-      try{window.scrollTo(0,Math.max(0,Number(value||0)))}catch(_){}
+      if(scroller){scroller.scrollTop=target;}
+      else{try{window.scrollTo(0,target)}catch(_){}}
+      if(pendingScrollTarget===target)pendingScrollTarget=null;
     });
   }
   function resetPageScroll(){setPageScrollTop(0);}
@@ -1037,8 +1063,68 @@
   function deliveryFee(){return deliveryFeeForRestaurant(cartRestaurant(),cartSubtotal());}
   function platformFeeDetails(){const r=cartRestaurant(),base=Number(state.settings.platformFee==null?9:state.settings.platformFee),over=state.settings.platformFeeOverrides||{},subtotal=cartSubtotal(),addr=currentAddress()||{},rid=keyName(r&&r.id),area=keyName(addr.area),city=keyName(r&&r.city||addr.city||addr.area),category=keyName(r&&r.category||r&&r.type||(r&&r.cuisines||[])[0]);if(over.restaurants&&over.restaurants[rid]!=null)return{fee:Number(over.restaurants[rid]),rule:"Restaurant override"};const rules=over.orderValueRules||{};for(const k of Object.keys(rules)){const rule=rules[k]||{},min=Number(rule.min||0),max=rule.max==null?Infinity:Number(rule.max);if(subtotal>=min&&subtotal<=max&&Number.isFinite(Number(rule.fee)))return{fee:Number(rule.fee),rule:"Order value override"}}if(over.categories&&over.categories[category]!=null)return{fee:Number(over.categories[category]),rule:"Category override"};if(over.areas&&over.areas[area]!=null)return{fee:Number(over.areas[area]),rule:"Area override"};if(over.cities&&over.cities[city]!=null)return{fee:Number(over.cities[city]),rule:"City override"};return{fee:base,rule:"Global default"}}
   function platformFee(){return Math.max(0,platformFeeDetails().fee);}
-  function eligibleCoupon(){if(!state.coupon||!state.cart.length||state.coupon.active!==true)return null;if(state.coupon.expiresAt&&Date.now()>Number(state.coupon.expiresAt))return null;if(state.coupon.minimumOrder&&cartSubtotal()<Number(state.coupon.minimumOrder))return null;if(Array.isArray(state.coupon.restaurantIds)&&!state.coupon.restaurantIds.includes(state.cart[0].restaurantId))return null;return state.coupon;}
-  function discount(){const coupon=eligibleCoupon();return coupon?Math.min(Number(coupon.maxDiscount||99999),cartSubtotal()*Number(coupon.percent||0)/100):0;}
+  // ---- offers -----------------------------------------------------------
+  // The discount maths below mirrors calculateDiscount() in
+  // functions/src/services/catalog.ts exactly. The server decides what is
+  // actually charged, so any figure shown here that disagrees with it quotes
+  // the customer one price and bills another. Two divergences were live: a
+  // missing cap fell back to 99999 here but to the subtotal on the server,
+  // and a promotion saved with maxDiscount:0 showed a discount here while the
+  // server correctly gave none.
+  function roundMoney(value){return Math.round((Number(value)+Number.EPSILON)*100)/100;}
+  function promotionDiscount(promotion,subtotal){
+    if(!promotion)return 0;
+    const cap=Number(promotion.maxDiscount);
+    return roundMoney(Math.min(subtotal*Number(promotion.percent||0)/100,Number.isFinite(cap)?cap:subtotal));
+  }
+  function promotionEligible(promotion,restaurantId,subtotal,now){
+    if(!promotion||promotion.active!==true)return false;
+    if(promotion.expiresAt&&Number(now)>Number(promotion.expiresAt))return false;
+    if(promotion.minimumOrder&&subtotal<Number(promotion.minimumOrder))return false;
+    // An empty restaurantIds list means "every restaurant", which is how the
+    // server reads it. Treating it as "no restaurant" silently hid offers.
+    const scoped=Array.isArray(promotion.restaurantIds)?promotion.restaurantIds:[];
+    return !(scoped.length&&!scoped.includes(restaurantId));
+  }
+  function bestOfferFor(restaurantId,subtotal,now){
+    let best=null,bestValue=0;
+    (state.promotions||[]).forEach(promotion=>{
+      if(!promotionEligible(promotion,restaurantId,subtotal,now))return;
+      const value=promotionDiscount(promotion,subtotal);
+      if(value>bestValue){best=promotion;bestValue=value;}
+    });
+    return best;
+  }
+  /** Highest advertised discount for a restaurant while browsing, where there
+   *  is no cart yet - so a minimum-order rule cannot be checked and is instead
+   *  enforced and shown once the customer has items. */
+  function restaurantOfferPercent(restaurant){
+    let best=0;
+    (state.promotions||[]).forEach(promotion=>{
+      if(!promotionEligible(promotion,restaurant&&restaurant.id,Infinity,Date.now()))return;
+      const percent=Number(promotion.percent||0);
+      if(percent>best)best=percent;
+    });
+    return best;
+  }
+  /** A customer should not have to know a code exists to get the best price.
+   *  A code they typed themselves always wins, and an offer they removed stays
+   *  removed until they change restaurant or empty the cart. */
+  function refreshAutoOffer(){
+    if(!state.cart.length){state.coupon=null;state.couponAuto=false;state.couponDismissedFor="";return;}
+    const restaurantId=state.cart[0].restaurantId;
+    if(state.coupon&&!state.couponAuto)return;
+    if(state.couponDismissedFor&&state.couponDismissedFor===restaurantId)return;
+    const best=bestOfferFor(restaurantId,cartSubtotal(),Date.now());
+    if(!best){if(state.couponAuto){state.coupon=null;state.couponAuto=false;}return;}
+    if(state.coupon&&state.coupon.code===best.code)return;
+    state.coupon=best;state.couponAuto=true;
+  }
+  function eligibleCoupon(){
+    if(!state.coupon||!state.cart.length)return null;
+    return promotionEligible(state.coupon,state.cart[0].restaurantId,cartSubtotal(),Date.now())?state.coupon:null;
+  }
+  function discount(){return promotionDiscount(eligibleCoupon(),cartSubtotal());}
   function tax(){return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
   function smallOrderFee(){return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
   function lateNightFee(){if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
@@ -1251,9 +1337,23 @@
   function orderById(id) { return state.orders.find(x=>x.id===(id||state.selectedOrderId)) || null; }
   function statusIndex(status) { return Math.max(0,ORDER_FLOW.indexOf(status)); }
   function statusTone(status) { if(status==="Delivered")return"success";if(status==="Cancelled")return"danger";if(["Preparing","Ready for pickup"].includes(status))return"warning";return""; }
+  // The backend now quotes a real delivery window computed from distance,
+  // kitchen load, rider supply and peak hour, so this counts that promise
+  // down instead of throwing etaMin away and inventing a "+6 min" spread
+  // around etaMax. When an order runs past its window it says so rather than
+  // showing a number that is already known to be wrong.
   function etaText(order) {
-    if(!order)return""; if(order.status==="Delivered")return"Delivered";if(order.status==="Cancelled")return"Cancelled";
-    const elapsed=Math.max(0,Date.now()-Number(order.createdAt||Date.now()));const estimate=Math.max(4,Number(order.etaMax||35)-Math.floor(elapsed/60000));return estimate+"–"+(estimate+6)+" min";
+    if(!order)return"";
+    if(order.status==="Delivered")return"Delivered";
+    if(order.status==="Cancelled")return"Cancelled";
+    const promisedMin=Number(order.etaMin||0),promisedMax=Number(order.etaMax||0);
+    if(!(promisedMax>0))return"";
+    const elapsed=Math.max(0,Math.floor((Date.now()-Number(order.createdAt||Date.now()))/60000));
+    const lower=promisedMin-elapsed,upper=promisedMax-elapsed;
+    if(upper<=-5)return"Taking longer than expected";
+    if(upper<=0)return"Arriving any moment";
+    if(lower<=0)return"Under "+upper+" min";
+    return lower+"–"+upper+" min";
   }
 
   function parentTab() {
@@ -1278,13 +1378,123 @@
   function loadingRow(label){return'<div class="load-row"><span class="spinner" aria-hidden="true"></span><span>'+h(label||"Loading")+'</span></div>';}
   function emptyState(ic,title,copy,action,label){return'<div class="empty-state"><div><div class="empty-visual">'+icon(ic,"large")+'</div><h2 class="section-title">'+h(title)+'</h2><p class="supporting" style="margin-top:8px">'+h(copy)+'</p>'+(action?'<button class="button secondary" style="margin-top:18px" data-action="'+h(action)+'">'+h(label||"Continue")+'</button>':'')+'</div></div>';}
 
+  // ---------------------------------------------------------------------
+  // In-place DOM reconciliation.
+  //
+  // Replacing app.innerHTML wholesale on every render destroys and recreates
+  // the <main> scroller and every <img> inside it. That forces the scroll
+  // position to be captured and restored around each render (racy, and it
+  // interrupts an in-progress touch drag), and it makes already-decoded
+  // images re-attach and repaint - which is why background syncs during
+  // startup read as the page "pulling" while it is being scrolled.
+  //
+  // Reconciling instead keeps the scroller element itself alive, so
+  // scrollTop is simply never disturbed, and leaves any <img> whose src has
+  // not changed completely untouched so it never repaints. Every listener in
+  // this file is delegated to #app / document rather than bound per node, so
+  // updating nodes in place cannot drop or duplicate handlers.
+  // ---------------------------------------------------------------------
+  // Routes that manage part of their own DOM imperatively (the tracking map's
+  // tiles/markers/transforms, and the search screen's #search-results panel)
+  // are rebuilt wholesale exactly as before - reconciling them would fight
+  // those hand-written updates.
+  const MORPH_BLOCKED_ROUTES = {tracking:true, search:true};
+  const LIVE_VALUE_TAGS = {INPUT:true, TEXTAREA:true, SELECT:true};
+
+  function sameNodeShape(oldNode, newNode) {
+    if (oldNode.nodeType !== newNode.nodeType) return false;
+    if (oldNode.nodeType !== 1) return true;
+    if (oldNode.tagName !== newNode.tagName) return false;
+    return (oldNode.getAttribute("id") || "") === (newNode.getAttribute("id") || "");
+  }
+
+  function syncAttributes(oldEl, newEl) {
+    const next = newEl.attributes;
+    for (let i = 0; i < next.length; i++) {
+      const name = next[i].name, value = next[i].value;
+      // Comparing first matters most for <img src>: re-setting an identical
+      // src can restart the image load, which is the repaint we are avoiding.
+      if (oldEl.getAttribute(name) !== value) oldEl.setAttribute(name, value);
+    }
+    const current = oldEl.attributes;
+    for (let i = current.length - 1; i >= 0; i--) {
+      const name = current[i].name;
+      if (!newEl.hasAttribute(name)) oldEl.removeAttribute(name);
+    }
+  }
+
+  function morphNode(oldNode, newNode) {
+    if (oldNode.nodeType !== 1) {
+      if (oldNode.nodeValue !== newNode.nodeValue) oldNode.nodeValue = newNode.nodeValue;
+      return;
+    }
+    if (LIVE_VALUE_TAGS[oldNode.tagName]) {
+      // What the customer has typed/picked lives on the property, not the
+      // attribute, so only follow the attribute when the render actually
+      // changed it - otherwise an unrelated background sync would wipe
+      // half-entered input.
+      const hadValue = oldNode.getAttribute("value"), nextValue = newNode.getAttribute("value");
+      const hadChecked = oldNode.hasAttribute("checked"), nextChecked = newNode.hasAttribute("checked");
+      syncAttributes(oldNode, newNode);
+      if (nextValue !== null && nextValue !== hadValue) oldNode.value = nextValue;
+      if (nextChecked !== hadChecked) oldNode.checked = nextChecked;
+    } else {
+      syncAttributes(oldNode, newNode);
+    }
+    morphChildren(oldNode, newNode);
+  }
+
+  function morphChildren(target, source) {
+    let oldNode = target.firstChild, newNode = source.firstChild;
+    while (newNode) {
+      const nextNew = newNode.nextSibling;
+      if (!oldNode) { target.appendChild(newNode); newNode = nextNew; continue; }
+      const nextOld = oldNode.nextSibling;
+      if (sameNodeShape(oldNode, newNode)) morphNode(oldNode, newNode);
+      else target.replaceChild(newNode, oldNode);
+      oldNode = nextOld; newNode = nextNew;
+    }
+    while (oldNode) { const nextOld = oldNode.nextSibling; target.removeChild(oldNode); oldNode = nextOld; }
+  }
+
+  let lastRenderedHtml = null;
+  let lastRenderedRoute = null;
   function render(options) {
     applyTheme();
-    const scrollY = options && options.preserveScroll ? currentPageScrollTop() : 0;
+    const preserving = !!(options && options.preserveScroll);
     const renderer = SCREENS[state.route] || screenHome;
-    app.innerHTML = renderer(); app.setAttribute("aria-busy",state.loading?"true":"false");
+    const html = renderer();
+    // Nothing on screen would change: leave the DOM (and any active gesture)
+    // strictly alone.
+    if (preserving && html === lastRenderedHtml) { renderSheet(); return; }
+
+    const canMorph = lastRenderedHtml !== null
+      && state.route === lastRenderedRoute
+      && !MORPH_BLOCKED_ROUTES[state.route]
+      && !!app.firstElementChild;
+    // Only meaningful when the scroller is about to be destroyed; must be read
+    // before any DOM write.
+    const scrollY = (!canMorph && preserving)
+      ? (pendingScrollTarget !== null ? pendingScrollTarget : currentPageScrollTop())
+      : 0;
+
+    lastRenderedHtml = html;
+    lastRenderedRoute = state.route;
+
+    if (canMorph) {
+      const incoming = document.createElement("div");
+      incoming.innerHTML = html;
+      morphChildren(app, incoming);
+    } else {
+      app.innerHTML = html;
+    }
+    app.setAttribute("aria-busy", state.loading ? "true" : "false");
     renderSheet();
-    if(options&&options.preserveScroll)setPageScrollTop(scrollY);
+    // After a reconcile the scroller survived untouched, so there is no
+    // position to restore - only an explicit non-preserving render still has
+    // to send it back to the top.
+    if (canMorph) { if (!preserving) setPageScrollTop(0); }
+    else setPageScrollTop(scrollY);
   }
 
   function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
@@ -1366,14 +1576,107 @@
     return '<button class="active-order" data-action="open-order" data-order-id="'+h(order.id)+'"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.18);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><div><h2 class="section-title">'+h(order.restaurant||"Your order")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div><div class="status-progress"><span style="width:'+orderProgress(order)+'%"></span></div><div class="cluster between supporting"><span>Order '+h(order.id)+'</span><span>View journey '+icon("chevron","small")+'</span></div></button>';
   }
   function discoveryItems(restaurant){return restaurant&&restaurant.menuLoaded?(restaurant.menu||[]):(restaurant&&restaurant.menuIndex||[])}
-  function cuisineList() {
-    const all=new Set(["All"]);
-    Object.values(state.catalog).forEach(r=>{
-      (r.cuisines||[]).forEach(c=>all.add(c));
-      discoveryItems(r).filter(i=>i.archived!==true).forEach(i=>all.add(i.category||"Menu"));
+  // -----------------------------------------------------------------------
+  // Browse categories.
+  //
+  // Every chip is derived from what the catalogue actually contains and is
+  // counted with the same rule the filter uses, so a category can never be
+  // offered that leads to an empty screen. This previously hard-coded
+  // Biryani/Fried Rice/Dosa/Pizza/Burgers/Desserts unconditionally, so a
+  // customer could tap food nobody sells and land on "No restaurants match".
+  //
+  // Labels are taken only from the fields that describe a restaurant's food
+  // (its cuisine tags and category). Menu-section names still count towards a
+  // category's matches - the filter matches them - but are never offered as a
+  // chip of their own: across a large catalogue they collapse into generic
+  // sections ("Starters", "Main Course", the default "Menu") that nobody
+  // browses by, and they would crowd out real cuisines.
+  // -----------------------------------------------------------------------
+  const NON_BROWSABLE_CATEGORY_KEYS = {
+    "multi-cuisine":true,"multicuisine":true,"restaurant":true,"restaurants":true,
+    "menu":true,"food":true,"foods":true,"other":true,"others":true,"misc":true,
+    "miscellaneous":true,"general":true,"default":true,"uncategorized":true,
+    "uncategorised":true,"none":true,"na":true,"n-a":true,"test":true,
+  };
+  const MAX_CATEGORY_CHIPS = 14;
+
+  /** A cuisine worth offering, or null for placeholder/meaningless values. */
+  function browsableCategory(value) {
+    const label=String(value==null?"":value).trim().replace(/\s+/g," ");
+    const key=keyName(label);
+    if(!key||NON_BROWSABLE_CATEGORY_KEYS[key])return null;
+    // Two characters or fewer, or nothing alphabetic at all, is placeholder
+    // data ("Gg", "--", "1") rather than something a customer would tap.
+    if(label.length<3||!/[a-z]/i.test(label))return null;
+    return {key,label};
+  }
+
+  /** Restaurants reachable from the saved address, before any chip or toggle
+   *  is applied. Mirrors the address scoping inside restaurantsFiltered(). */
+  function restaurantsAtAddress() {
+    let list=Object.values(state.catalog).filter(r=>r.archived!==true);
+    const address=currentAddress();
+    const customerCity=keyName(address&&address.city||"");
+    if(customerCity){
+      const cityTagged=list.some(r=>keyName(r.city||""));
+      if(cityTagged)list=list.filter(r=>!keyName(r.city||"")||keyName(r.city)===customerCity);
+    }
+    if(address&&Number.isFinite(Number(address.lat))&&Number.isFinite(Number(address.lng)))
+      list=list.filter(restaurantServiceable);
+    return list;
+  }
+
+  let categoryCache={signature:null,list:[]};
+  function browsableCategories() {
+    const list=restaurantsAtAddress(),address=currentAddress()||{};
+    // Counting walks every menu, which is wasted work on the many renders
+    // where nothing about the catalogue changed. The signature covers only
+    // restaurants, so it stays cheap as the catalogue grows.
+    let signature=keyName(address.city||"")+"|"+(address.lat||"")+","+(address.lng||"")+"|"+list.length;
+    for(let i=0;i<list.length;i++)
+      signature+="|"+list[i].id+":"+(list[i].updatedAt||0)+":"+(list[i].menuLoaded?1:0);
+    if(signature===categoryCache.signature)return categoryCache.list;
+
+    const counts={},labels={};
+    list.forEach(r=>{
+      const matched={};
+      const offer=value=>{
+        const category=browsableCategory(value);
+        if(!category)return;
+        if(!labels[category.key])labels[category.key]=category.label;
+        matched[category.key]=true;
+      };
+      (r.cuisines||[]).forEach(offer);
+      offer(r.category);
+      // Counted, never labelled - see the note above.
+      discoveryItems(r).forEach(item=>{
+        const key=keyName(item&&item.category||"");
+        if(key&&!NON_BROWSABLE_CATEGORY_KEYS[key])matched[key]=true;
+      });
+      Object.keys(matched).forEach(key=>{counts[key]=(counts[key]||0)+1;});
     });
-    ["Biryani","Fried Rice","Dosa","Pizza","Burgers","Desserts"].forEach(c=>all.add(c));
-    return Array.from(all).slice(0,14);
+
+    const result=Object.keys(labels)
+      .filter(key=>counts[key]>0)
+      .map(key=>({key,label:labels[key],count:counts[key]}))
+      .sort((left,right)=>right.count-left.count||left.label.localeCompare(right.label))
+      .slice(0,MAX_CATEGORY_CHIPS);
+    categoryCache={signature,list:result};
+    return result;
+  }
+
+  function categoryChipsHtml() {
+    const categories=browsableCategories();
+    // A single category cannot narrow anything down, so the row would only be
+    // noise. It appears by itself once the catalogue carries more than one.
+    if(categories.length<2)return"";
+    // Counts only earn their space once they actually tell categories apart.
+    const showCounts=categories.some(category=>category.count>1);
+    const chip=(value,label,count)=>'<button class="chip '+(keyName(state.cuisine)===keyName(value)?'active':'')
+      +'" data-action="cuisine" data-value="'+h(value)+'">'+h(label)
+      +(count?'<span class="chip-count">'+h(count)+'</span>':'')+'</button>';
+    return '<div class="chip-row">'+chip("All","All",0)
+      +categories.map(category=>chip(category.label,category.label,showCounts?category.count:0)).join("")+'</div>';
   }
   function isPureVegRestaurant(r){
     if(r&&r.pureVeg===true)return true;
@@ -1390,8 +1693,17 @@
     const overall=count>0&&Number.isFinite(rawOverall)&&rawOverall>=1&&rawOverall<=5?rawOverall:0;
     return state.ratingView==="mine"?{value:personal,label:personal?"Your rating":"Not rated by you"}:{value:overall,label:overall?count+" customer rating"+(count===1?"":"s"):"No ratings yet"};
   }
+  // Previously badged a restaurant whenever any active promotion existed,
+  // ignoring expiry and restaurant scoping - so a long-expired offer kept
+  // advertising itself. promotionEligible() applies the same rules the server
+  // uses to honour the code.
   function restaurantHasOffer(r){
-    return !!(r.offer||r.discount||r.offerText||(state.promotions||[]).some(p=>p&&p.active===true&&(!Array.isArray(p.restaurantIds)||p.restaurantIds.includes(r.id))));
+    return !!(r.offer||r.discount||r.offerText||restaurantOfferPercent(r)>0);
+  }
+  function restaurantOfferLabel(r){
+    const percent=restaurantOfferPercent(r);
+    if(percent>0)return Math.round(percent)+"% OFF";
+    return restaurantHasOffer(r)?"Offer":"";
   }
   function restaurantsFiltered() {
     let list=Object.values(state.catalog).filter(r=>r.archived!==true);
@@ -1465,7 +1777,7 @@
 
     return list;
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),distance=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),distanceText=distance==null?"":distance.toFixed(distance<10?1:0)+" km",rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New";return'<article class="restaurant-card '+(horizontal?'horizontal':'')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="restaurant-media"><img src="'+h(safeUrl(r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="media-badge">'+(r.open?'Open':'Closed')+'</span><button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-copy"><div class="restaurant-title-row"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rating compact">'+icon("star","small")+'<strong>'+h(ratingText)+'</strong></span></div><div class="cluster wrap restaurant-badges">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span>':'')+(restaurantHasOffer(r)?'<span class="offer-badge">Offer</span>':'')+'<span class="rating-caption">'+h(rating.label)+'</span></div><p class="supporting restaurant-cuisines">'+h((r.cuisines||[]).join(" · "))+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</span>'+(distanceText?'<span>'+icon("pin","small")+' '+h(distanceText)+'</span>':'')+'<span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></div></div></article>'}
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),distance=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),distanceText=distance==null?"":distance.toFixed(distance<10?1:0)+" km",rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New";return'<article class="restaurant-card '+(horizontal?'horizontal':'')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="restaurant-media"><img src="'+h(safeUrl(r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="media-badge">'+(r.open?'Open':'Closed')+'</span><button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-copy"><div class="restaurant-title-row"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rating compact">'+icon("star","small")+'<strong>'+h(ratingText)+'</strong></span></div><div class="cluster wrap restaurant-badges">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span>':'')+(restaurantOfferLabel(r)?'<span class="offer-badge">'+h(restaurantOfferLabel(r))+'</span>':'')+'<span class="rating-caption">'+h(rating.label)+'</span></div><p class="supporting restaurant-cuisines">'+h((r.cuisines||[]).join(" · "))+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</span>'+(distanceText?'<span>'+icon("pin","small")+' '+h(distanceText)+'</span>':'')+'<span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></div></div></article>'}
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenHome() {
@@ -1479,7 +1791,11 @@
       +(active?activeOrderCard(active):postDeliveryCard())
       +'<button class="search-trigger" data-action="go" data-route="search">'+icon("search")+'<span>Search dishes, restaurants or cuisines</span></button>'
       +'<div class="home-promo">'+localAdMarkup()+'</div>'
-      +'<section class="stack"><div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div><div class="chip-row">'+cuisineList().map(c=>'<button class="chip '+(state.cuisine===c?'active':'')+'" data-action="cuisine" data-value="'+h(c)+'">'+h(c)+'</button>').join("")+'</div><div class="chip-row discovery-filters"><button class="chip" data-action="open-filters">'+icon("filter","small")+' Filters</button><button class="chip '+(state.homeFilter==="under250"?'active':'')+'" data-action="home-filter" data-value="under250">Under ₹250</button><button class="chip '+(state.homeFilter==="offers"?'active':'')+'" data-action="home-filter" data-value="offers">Offers</button><button class="chip '+(state.homeFilter==="pureveg"?'active':'')+'" data-action="home-filter" data-value="pureveg">Pure veg</button></div></section>'
+      +'<section class="stack">'
+      // The heading only earns its place when there is something under it to
+      // browse; the filter row below stands on its own either way.
+      +(categoryChipsHtml()?'<div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div>'+categoryChipsHtml():'')
+      +'<div class="chip-rowdiscovery-filters"><button class="chip" data-action="open-filters">'+icon("filter","small")+' Filters</button><button class="chip '+(state.homeFilter==="under250"?'active':'')+'" data-action="home-filter" data-value="under250">Under ₹250</button><button class="chip '+(state.homeFilter==="offers"?'active':'')+'" data-action="home-filter" data-value="offers">Offers</button><button class="chip '+(state.homeFilter==="pureveg"?'active':'')+'" data-action="home-filter" data-value="pureveg">Pure veg</button></div></section>'
       +'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div>'+(recommended.length?'<div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No matches in this city","Try another address, category or filter.","open-filters","Change filters"))+'</section>'
       +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All restaurants</h2><p class="supporting">'+restaurants.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch restaurant rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
       +(restaurants.length?'<div class="restaurant-list">'+restaurants.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No restaurants are live","Choose another saved address or clear the filters.","open-filters","Change filters"))
@@ -1515,7 +1831,7 @@
   function screenSearch() {
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Find your next meal","Search live menus, cuisines and restaurants.",'<button class="icon-button" data-action="open-filters" aria-label="Open filters">'+icon("filter")+'</button>')+networkBanner()
       +'<div class="input-wrap"><span class="input-icon">'+icon("search")+'</span><input id="search-input" class="input with-icon with-action" value="'+h(state.query)+'" placeholder="Try waffles, desserts or ice cream" autocomplete="off" enterkeyhint="search" aria-label="Search"><button class="icon-button flat input-action" data-action="clear-search" aria-label="Clear search">'+icon("close")+'</button></div>'
-      +'<div class="chip-row">'+cuisineList().map(c=>'<button class="chip '+(state.cuisine===c?'active':'')+'" data-action="cuisine" data-value="'+h(c)+'">'+h(c)+'</button>').join("")+'</div>'
+      +categoryChipsHtml()
       +'<div id="search-results" class="stack-lg">'+searchContentMarkup()+'</div></div>'+nav()+'</main>';
   }
 
@@ -1561,7 +1877,7 @@
         +'<button class="button tonal full" data-action="go-home">Browse live restaurants</button></div>'+nav()+'</main>';
     }
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Your cart",r?r.name:"Ready when you are")+networkBanner()
-      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2><div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+priceBreakdown(true)+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
+      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+priceBreakdown(true)+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
   }
 
   function addressSummary(address) {
@@ -2783,7 +3099,15 @@
       if(promo.expiresAt&&Date.now()>Number(promo.expiresAt)){toast("That offer has expired.","danger");return;}
       if(promo.minimumOrder&&cartSubtotal()<Number(promo.minimumOrder)){toast("This offer needs a minimum item total of "+money(promo.minimumOrder)+".","danger");return;}
       if(Array.isArray(promo.restaurantIds)&&!promo.restaurantIds.includes(state.cart[0].restaurantId)){toast("That offer is not eligible for this restaurant.","danger");return;}
-      state.coupon=promo;toast("Offer applied.","success");render({preserveScroll:true});return;
+      // A code the customer typed is theirs, not ours: it must never be
+      // replaced by an automatically chosen one, even a larger one.
+      state.coupon=promo;state.couponAuto=false;state.couponDismissedFor="";
+      toast("Offer applied.","success");render({preserveScroll:true});return;
+    }
+    if(action==="remove-coupon"){
+      state.couponDismissedFor=state.cart.length?state.cart[0].restaurantId:"";
+      state.coupon=null;state.couponAuto=false;
+      toast("Offer removed.","success");render({preserveScroll:true});return;
     }
     if(action==="set-tip"){
       state.tip=Math.max(0,Math.min(1000,Number(control.dataset.value||0)));

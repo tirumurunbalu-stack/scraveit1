@@ -354,6 +354,9 @@ h1, h2, h3, .display, .brand-word {
   cursor: pointer;
 }
 .chip.active { background: var(--brand); border-color: var(--brand); color: white; }
+/* How many restaurants a category actually has. Only rendered once the counts
+   differ between categories, so it never shows a row of identical "1"s. */
+.chip-count { margin-left: 7px; opacity: .62; font-weight: 700; font-variant-numeric: tabular-nums; }
 .chip.success { background: var(--success-soft); border-color: transparent; color: var(--success); }
 
 .active-order {
@@ -687,6 +690,10 @@ body {
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   scrollbar-width: none;
+  /* Scroll anchoring stays enabled (the browser default): renders now update
+     this element in place instead of replacing it, so the browser's own
+     compensation is free to do its job when content above the viewport
+     legitimately changes height. */
 }
 #app > main::-webkit-scrollbar { width: 0; height: 0; }
 #app > main.screen,
@@ -745,6 +752,11 @@ html.keyboard-open select:focus {
 .pure-veg-badge { color: var(--success); background: var(--success-soft); }
 .pure-veg-badge.large { padding: 8px 11px; font-size: 12px; }
 .offer-badge { color: #9a5800; background: #fff1cb; }
+/* The offer the customer is actually getting, shown before the code field so
+   the saving is visible without hunting for it. */
+.applied-offer { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px;
+  background: var(--success-soft, #e4f6ee); color: var(--success, #12905c); }
+.applied-offer .caption { color: inherit; opacity: .78; }
 .rating-caption { color: var(--ink-soft); font-size: 10px; font-weight: 750; }
 .restaurant-hero { height: min(36dvh, 250px); min-height: 205px; max-height: 40dvh; }
 .restaurant-hero > img { height: 100%; }
