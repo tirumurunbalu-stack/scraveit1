@@ -90,6 +90,7 @@ import {recordRiderCodRemittance} from "./services/codRemittance";
 import {markRiderArrivedRestaurant as recordRiderRestaurantArrival} from "./services/riderRestaurantArrival";
 import {readAdminDashboard} from "./services/adminDashboard";
 import {readFinanceStatement} from "./services/financeStatement";
+import {citySortNeedsUpdate, citySortValue} from "./domain/catalogIndex";
 import {
   recordRestaurantSettlement as writeRestaurantSettlement,
   recordRiderPayout as writeRiderPayout,
@@ -1133,6 +1134,32 @@ export const onOrderUpdated = onValueUpdated({
     }));
   }
   await Promise.all(notifications);
+});
+
+/**
+ * Keeps each restaurant's citySort index value in step with its name and city.
+ *
+ * Maintained here rather than in the apps because the catalogue is written by
+ * the admin app, the restaurant app and the onboarding flow, and an index that
+ * only some writers maintain is worse than none - it makes a restaurant
+ * silently unlistable. Writing the value re-fires this trigger, which is why
+ * it writes only when the stored value is genuinely stale.
+ */
+export const onCatalogRestaurantWritten = onValueWritten({
+  ref: `/${ROOT}/catalog/restaurants/{restaurantId}`,
+  region: DATABASE_REGION,
+  retry: true,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+}, async (event) => {
+  if (!event.data.after.exists()) return;
+  const restaurantId = String(event.params.restaurantId);
+  const restaurant = event.data.after.val() as {name?: unknown; city?: unknown; citySort?: unknown};
+  const source = {id: restaurantId, name: restaurant.name, city: restaurant.city};
+  if (!citySortNeedsUpdate(source, restaurant.citySort)) return;
+  const value = citySortValue(source);
+  await db.ref(`${ROOT}/catalog/restaurants/${restaurantId}/citySort`).set(value);
+  logger.info("CATALOG_CITY_SORT_REINDEXED", {restaurantId, citySort: value});
 });
 
 export const onRiderPresenceUpdated = onValueWritten({
