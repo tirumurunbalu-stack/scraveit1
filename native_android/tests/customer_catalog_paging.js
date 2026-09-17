@@ -100,7 +100,8 @@ function harness(rows, city) {
       return server.query(restaurantSummaryQuery(cursor));
     }
     ${extract("fetchCatalogPages")}
-    return {fetchCatalogPages, restaurantSummaryQuery, citySearchRange, catalogCursorFrom, server};
+    return {fetchCatalogPages, restaurantSummaryQuery, citySearchRange, catalogCursorFrom,
+            catalogCityKey, catalogNameKey, server};
   `);
   return factory(server, city);
 }
@@ -112,6 +113,17 @@ function city(name, count, offset) {
     const n = String((offset || 0) + i).padStart(4, "0");
     return {id: `${key}-${n}`, name: `Place ${n}`, city: name, citySort: `${key}|place-${n}|${key}-${n}`};
   });
+}
+
+/** The word-index helpers, lifted out of the shipped file on their own. */
+function tokenHelpers() {
+  return new Function(`
+    const CATALOG_RANGE_END = "\\uf8ff";
+    ${extract("catalogCityKey")}
+    ${extract("searchTokenRange")}
+    ${extract("restaurantIdFromTokenKey")}
+    return {searchTokenRange, restaurantIdFromTokenKey};
+  `)();
 }
 
 let failures = 0;
@@ -281,6 +293,88 @@ async function checkAsync(label, fn) {
     assert.strictEqual(app.catalogCursorFrom({a: {}, b: {citySort: ""}, c: null}), "");
     assert.strictEqual(app.catalogCursorFrom({a: {citySort: "nellore|a|a"}, b: {}}), "nellore|a|a");
   });
+
+  console.log("\nthe client's index maths agrees with the server's");
+  // The app and Functions address the same citySort range and the same
+  // searchTokens keys. A divergence here does not show up as a wrong number -
+  // it silently returns the wrong restaurants, or none at all.
+  {
+    const indexSource = fs.readFileSync(
+      path.join(__dirname, "..", "..", "functions", "src", "domain", "catalogIndex.ts"), "utf8");
+    const tokenSource = fs.readFileSync(
+      path.join(__dirname, "..", "..", "functions", "src", "domain", "catalogSearchTokens.ts"), "utf8");
+    const dispatchSource = fs.readFileSync(
+      path.join(__dirname, "..", "..", "functions", "src", "domain", "dispatch.ts"), "utf8");
+
+    // The server rules these tests compare against, restated. The assertions
+    // directly below keep this restatement honest: if the real source stops
+    // matching its shape, they fail rather than quietly comparing nothing.
+    check("the server source still has the shape these comparisons assume", () => {
+      assert.ok(dispatchSource.includes(".slice(0, 80)"), "dispatch cityKey no longer slices to 80");
+      assert.ok(dispatchSource.includes('|| "unknown"'), "dispatch cityKey lost its unknown fallback");
+      assert.ok(indexSource.includes(".slice(0, 120)"), "catalogIndex nameKey no longer slices to 120");
+      assert.ok(indexSource.includes("`${city}|${name}|${id}`"), "citySort is no longer city|name|id");
+      assert.ok(tokenSource.includes("`${token}|${String(restaurantId"), "token key is no longer token|id");
+      assert.ok(/const MAX_TOKEN_LENGTH = 40;/.test(tokenSource), "token length cap is no longer 40");
+      assert.ok(/split\(\/\[\^a-z0-9\]\+\/\)/.test(tokenSource), "tokenizer no longer splits on non-alphanumerics");
+    });
+
+    const app = harness([], "Nellore");
+    const serverCityKey = v => String(v ?? "").trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "unknown";
+    const serverNameKey = v => String(v ?? "").trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 120);
+
+    check("city keys match", () => {
+      ["Nellore", "  nellore  ", "NAIDUPETA", "New Delhi", "Bengaluru/Bangalore", "", "   ", "x".repeat(200)]
+        .forEach(v => assert.strictEqual(app.catalogCityKey(v), serverCityKey(v), JSON.stringify(v.slice(0, 20))));
+    });
+
+    check("name keys match", () => {
+      ["The Waffle Spot", "Highway cross", "Sri Krishna Bhavan & Co.", "  spaced  ", "ÀccentÉd", "123", "", "y".repeat(200)]
+        .forEach(v => assert.strictEqual(app.catalogNameKey(v), serverNameKey(v), JSON.stringify(v.slice(0, 20))));
+    });
+
+    check("listing and search ranges match", () => {
+      ["Nellore", "Naidupeta", ""].forEach(city => {
+        assert.deepStrictEqual(app.citySearchRange(city, ""),
+          {startAt: serverCityKey(city) + "|", endAt: serverCityKey(city) + "|"},
+          "empty query must fall back to the whole city: " + JSON.stringify(city));
+        ["waffle", "high", "The"].forEach(query => {
+          const prefix = serverNameKey(query);
+          assert.deepStrictEqual(app.citySearchRange(city, query), {
+            startAt: serverCityKey(city) + "|" + prefix,
+            endAt: serverCityKey(city) + "|" + prefix + "",
+          }, JSON.stringify(city) + "/" + JSON.stringify(query));
+        });
+      });
+    });
+
+    check("word lookup ranges match", () => {
+      const app2 = tokenHelpers();
+      const serverRange = (city, query) => {
+        const prefix = String(query ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+          .map(t => t.slice(0, 40))[0];
+        return prefix ? {cityKey: serverCityKey(city), startAt: prefix, endAt: prefix + ""} : null;
+      };
+      ["waffle", "waffle spot", "WAFFLE", "  waffle  ", "", "!!!", "z".repeat(60), "99"].forEach(query => {
+        assert.deepStrictEqual(app2.searchTokenRange("Nellore", query), serverRange("Nellore", query),
+          JSON.stringify(query.slice(0, 20)));
+      });
+    });
+
+    check("the restaurant id is read out of a key the same way", () => {
+      const app2 = tokenHelpers();
+      const serverId = key => {
+        const value = String(key ?? ""), separator = value.indexOf("|");
+        return separator < 0 ? "" : value.slice(separator + 1);
+      };
+      ["waffle|spot1", "waffle|id|with|pipes", "malformed", "", "|leading"].forEach(key => {
+        assert.strictEqual(app2.restaurantIdFromTokenKey(key), serverId(key), JSON.stringify(key));
+      });
+      assert.strictEqual(app2.restaurantIdFromTokenKey(null), serverId(null));
+    });
+  }
 
   console.log("\n" + (failures ? failures + " FAILED" : "ALL PASSED"));
   process.exit(failures ? 1 : 0);

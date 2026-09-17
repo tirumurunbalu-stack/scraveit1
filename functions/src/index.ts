@@ -91,6 +91,7 @@ import {markRiderArrivedRestaurant as recordRiderRestaurantArrival} from "./serv
 import {readAdminDashboard} from "./services/adminDashboard";
 import {readFinanceStatement} from "./services/financeStatement";
 import {citySortNeedsUpdate, citySortValue} from "./domain/catalogIndex";
+import {searchTokenUpdates} from "./domain/catalogSearchTokens";
 import {
   recordRestaurantSettlement as writeRestaurantSettlement,
   recordRiderPayout as writeRiderPayout,
@@ -1152,10 +1153,29 @@ export const onCatalogRestaurantWritten = onValueWritten({
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (event) => {
-  if (!event.data.after.exists()) return;
   const restaurantId = String(event.params.restaurantId);
-  const restaurant = event.data.after.val() as {name?: unknown; city?: unknown; citySort?: unknown};
+  const withId = (snapshot: {exists(): boolean; val(): unknown}) =>
+    snapshot.exists() ? {...(snapshot.val() as Record<string, unknown>), id: restaurantId} : null;
+  const before = withId(event.data.before);
+  const after = withId(event.data.after);
+
+  // The word index has to be maintained on deletion too - a restaurant that is
+  // gone must stop being findable, and only `before` knows what to remove.
+  const tokenUpdates = searchTokenUpdates(before, after);
+  if (Object.keys(tokenUpdates).length > 0) {
+    await db.ref(`${ROOT}/catalog/searchTokens`).update(tokenUpdates);
+    logger.info("CATALOG_SEARCH_TOKENS_REINDEXED", {
+      restaurantId,
+      added: Object.values(tokenUpdates).filter((value) => value === true).length,
+      removed: Object.values(tokenUpdates).filter((value) => value === null).length,
+    });
+  }
+
+  if (!after) return;
+  const restaurant = after as {name?: unknown; city?: unknown; citySort?: unknown};
   const source = {id: restaurantId, name: restaurant.name, city: restaurant.city};
+  // Writing only when the stored value is actually wrong is what stops this
+  // trigger re-firing on its own write.
   if (!citySortNeedsUpdate(source, restaurant.citySort)) return;
   const value = citySortValue(source);
   await db.ref(`${ROOT}/catalog/restaurants/${restaurantId}/citySort`).set(value);

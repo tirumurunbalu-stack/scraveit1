@@ -728,6 +728,58 @@
     state.searchCatalog={};state.searchFetched={};
   }
 
+  // ---- word index --------------------------------------------------------
+  // Mirrors functions/src/domain/catalogSearchTokens.ts. The server writes
+  // /catalog/searchTokens/<cityKey>/<word>|<restaurantId>, so a key-ordered
+  // prefix range answers "which restaurants in this city use this word",
+  // which is what makes a middle-of-the-name search work at all.
+  const SEARCH_TOKEN_LIMIT=40;
+  // Each hit costs one record read, so this bounds a search to a predictable
+  // amount of work however common the word is.
+  const SEARCH_TOKEN_FETCH_LIMIT=20;
+
+  function searchTokenRange(city,query){
+    const cityKey=catalogCityKey(city);
+    const prefix=String(query==null?"":query).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)[0];
+    if(!prefix)return null;
+    return {cityKey,startAt:prefix.slice(0,40),endAt:prefix.slice(0,40)+CATALOG_RANGE_END};
+  }
+  function restaurantIdFromTokenKey(key){
+    const value=String(key==null?"":key),separator=value.indexOf("|");
+    return separator<0?"":value.slice(separator+1);
+  }
+
+  /** Restaurant records matching any word of `query` within the city.
+   *  Resolves to [] rather than rejecting: a word-index miss must never take
+   *  down the name search running alongside it. */
+  async function searchCityTokens(city,query){
+    const range=searchTokenRange(city,query);
+    if(!range||!range.cityKey)return [];
+    let keys=[];
+    try{
+      const hits=await dbGetQuery(DB_ROOT+"/catalog/searchTokens/"+encodeURIComponent(range.cityKey),{
+        orderBy:JSON.stringify("$key"),
+        startAt:JSON.stringify(range.startAt),
+        endAt:JSON.stringify(range.endAt),
+        limitToFirst:String(SEARCH_TOKEN_LIMIT),
+      },10000)||{};
+      keys=Object.keys(hits);
+    }catch(error){return []}
+    const ids=[];
+    keys.forEach(key=>{
+      const id=restaurantIdFromTokenKey(key);
+      // One restaurant matches several words of the same query; already
+      // knowing it means no read at all.
+      if(id&&ids.indexOf(id)<0&&!state.catalog[id]&&!state.searchCatalog[id])ids.push(id);
+    });
+    const wanted=ids.slice(0,SEARCH_TOKEN_FETCH_LIMIT);
+    const loaded=await Promise.all(wanted.map(async id=>{
+      try{return {id,record:await db("GET",DB_ROOT+"/catalog/restaurants/"+encodeURIComponent(id))}}
+      catch(error){return {id,record:null}}
+    }));
+    return loaded.filter(entry=>entry.record);
+  }
+
   /** The device only holds the pages the customer actually scrolled through,
    *  so filtering that locally cannot find a restaurant further down the
    *  city's list - it would report "nothing matched" for a restaurant that is
@@ -743,12 +795,18 @@
     state.searchLoading=true;
     try{
       const range=citySearchRange(city,query);
-      const records=await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
-        orderBy:JSON.stringify("citySort"),
-        startAt:JSON.stringify(range.startAt),
-        endAt:JSON.stringify(range.endAt),
-        limitToFirst:String(CATALOG_PAGE_SIZE),
-      },10000)||{};
+      const [byName,byWord]=await Promise.all([
+        dbGetQuery(DB_ROOT+"/catalog/restaurants",{
+          orderBy:JSON.stringify("citySort"),
+          startAt:JSON.stringify(range.startAt),
+          endAt:JSON.stringify(range.endAt),
+          limitToFirst:String(CATALOG_PAGE_SIZE),
+        },10000),
+        // The name range only matches the start of a name, so "waffle" would
+        // miss "The Waffle Spot". The word index covers the rest.
+        searchCityTokens(city,query),
+      ]);
+      const records=byName||{};
       if(sequence!==state.searchSequence)return;
       // Typing walks through many prefixes; without a ceiling a long session
       // would accumulate every restaurant the customer ever half-typed.
@@ -757,6 +815,11 @@
         if(state.catalog[id])return;
         const restaurant=normalizeRestaurantSummary(id,records[id]);
         if(restaurant.archived!==true)state.searchCatalog[id]=restaurant;
+      });
+      (byWord||[]).forEach(entry=>{
+        if(state.catalog[entry.id]||!entry.record)return;
+        const restaurant=normalizeRestaurantSummary(entry.id,entry.record);
+        if(restaurant.archived!==true)state.searchCatalog[entry.id]=restaurant;
       });
     }catch(error){
       // Leave it retryable rather than remembering a failure as "no matches".

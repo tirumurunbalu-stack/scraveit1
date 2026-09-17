@@ -223,6 +223,13 @@
             }
           }
         },
+        "searchTokens": {
+          "$cityKey": {
+            "$entry": {
+              ".validate": "newData.isBoolean() && newData.val() === true"
+            }
+          }
+        },
         "$other": {
           ".validate": false
         }
