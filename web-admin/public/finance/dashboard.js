@@ -1102,6 +1102,25 @@ function csvRow(fields) { return fields.map(csvField).join(",") + "\r\n"; }
  *  tax split alongside the gross amount - so the file a CA or the GSTN
  *  offline tool actually imports foots to the same summary cards shown on
  *  screen, not a re-derived figure that could quietly drift from it. */
+/** `YYYY-MM-DD HH:mm:ss` in IST, deliberately not a locale-formatted string
+ *  like "27 Aug 2026 at 11:33 PM": Excel's CSV importer sniffs any
+ *  date-looking text and tries to convert it, but a natural-language string
+ *  is ambiguous enough that it does so inconsistently row to row - some
+ *  rows staying literal text, others getting silently reparsed into a
+ *  different, wrong date (seen in practice: "27 Aug 2026 at 11:33 PM"
+ *  became 8/9/2002 in one row and stayed text in the next), and the
+ *  rendering even varies by browser since toLocaleString's wording isn't
+ *  fixed across engines. ISO order (year first) has no such ambiguity in any
+ *  locale, so every spreadsheet and every GST/accounting import reads it
+ *  identically - the worst case left is a column too narrow to show it
+ *  ("####"), a one-click width fix, never a wrong value. */
+function isoIst(ms) {
+  const shifted = new Date(Number(ms) + IST_OFFSET_MS);
+  const pad = (n) => String(n).padStart(2, "0");
+  return shifted.getUTCFullYear() + "-" + pad(shifted.getUTCMonth() + 1) + "-" + pad(shifted.getUTCDate())
+    + " " + pad(shifted.getUTCHours()) + ":" + pad(shifted.getUTCMinutes()) + ":" + pad(shifted.getUTCSeconds());
+}
+
 function statementCsv(entries) {
   let csv = csvRow([
     "Date & time (IST)", "Type", "Order ID", "Reference", "Gross (₹)",
@@ -1110,7 +1129,7 @@ function statementCsv(entries) {
   entries.forEach((e) => {
     const a = e.allocation || {grossPaise: e.grossPaise, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0};
     csv += csvRow([
-      new Date(e.occurredAt).toLocaleString("en-IN", {dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata"}),
+      isoIst(e.occurredAt),
       eventTypeLabel(e.eventType),
       e.orderId || "",
       e.actorId || "",

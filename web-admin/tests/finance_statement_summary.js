@@ -56,13 +56,15 @@ function harness() {
     }
     const EVENT_TYPE_LABELS = {cod_delivery: "COD order delivered", rider_incentive: "Rider incentive", payment: "Online payment received"};
     function eventTypeLabel(type) { return EVENT_TYPE_LABELS[type] || type; }
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     ${extract("statementAllocationCardsHtml")}
     ${extract("sumYearAllocation")}
     ${extract("sumYearEntryCount")}
     ${extract("csvField")}
     ${extract("csvRow")}
+    ${extract("isoIst")}
     ${extract("statementCsv")}
-    return {statementAllocationCardsHtml, sumYearAllocation, sumYearEntryCount, statementCsv, moneyPaise};
+    return {statementAllocationCardsHtml, sumYearAllocation, sumYearEntryCount, statementCsv, moneyPaise, isoIst};
   `);
   return factory();
 }
@@ -195,6 +197,21 @@ function check(label, fn) {
   check("an empty statement still produces a valid header-only file", () => {
     const csv = app.statementCsv([]);
     assert.strictEqual(csv.trim(), "Date & time (IST),Type,Order ID,Reference,Gross (₹),Restaurant (₹),Rider (₹),Platform (₹),Tax (₹)");
+  });
+
+  check("the date column is unambiguous ISO, not a locale string Excel mis-sniffs", () => {
+    // The actual bug reported: a locale-formatted date/time ("27 Aug 2026 at
+    // 11:33 PM") got Excel's CSV importer to guess inconsistently row to
+    // row - some rows stayed text, one silently became "8/9/2002". ISO
+    // (year first) is unambiguous in every locale, so this must never
+    // regress back to a natural-language string.
+    const iso = app.isoIst(Date.UTC(2026, 7, 27, 18, 3)); // 27 Aug 2026, 23:33 IST
+    assert.strictEqual(iso, "2026-08-27 23:33:00");
+    assert.ok(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso), "not the expected ISO shape: " + iso);
+
+    const csv = app.statementCsv(ENTRIES);
+    const dateCell = csv.trim().split("\r\n")[1].split(",")[0];
+    assert.ok(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateCell), "CSV date column is not ISO: " + dateCell);
   });
 
   console.log("\n" + (failures ? failures + " FAILED" : "ALL PASSED"));
