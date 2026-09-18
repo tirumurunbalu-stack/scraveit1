@@ -200,17 +200,23 @@ describe("who the period's money belongs to", () => {
     });
   }
 
-  it("splits one delivered order into the restaurant's, the rider's and the platform's share", async () => {
+  /** The identity every allocation must satisfy: nothing counted twice,
+   *  nothing left uncounted. */
+  const expectReconciles = (allocation: {grossPaise: number; restaurantPaise: number; riderPaise: number; platformPaise: number; taxPaise: number}) => {
+    expect(allocation.restaurantPaise + allocation.riderPaise + allocation.platformPaise + allocation.taxPaise)
+      .toBe(allocation.grossPaise);
+  };
+
+  it("splits one delivered order into gross, the restaurant's, the rider's, the platform's and tax", async () => {
     const result = await load([orderDelivered("o1", 100, "r1", "rd1")]);
     expect(result.allocation).toEqual({
+      grossPaise: 40_000,
       restaurantPaise: 24_000,
       riderPaise: 6_000 + 1_000,
       platformPaise: 6_000 + 2_000,
+      taxPaise: 1_000,
     });
-    // Sanity check against the source of truth: everyone's share plus tax
-    // must equal what the customer actually paid.
-    const total = result.allocation.restaurantPaise + result.allocation.riderPaise + result.allocation.platformPaise;
-    expect(total + 1_000 /* tax */).toBe(40_000);
+    expectReconciles(result.allocation);
   });
 
   it("adds several orders together", async () => {
@@ -218,35 +224,41 @@ describe("who the period's money belongs to", () => {
       orderDelivered("o1", 100, "r1", "rd1"),
       orderDelivered("o2", 200, "r1", "rd2"),
     ]);
+    expect(result.allocation.grossPaise).toBe(40_000 * 2);
     expect(result.allocation.restaurantPaise).toBe(24_000 * 2);
     expect(result.allocation.riderPaise).toBe(7_000 * 2);
     expect(result.allocation.platformPaise).toBe(8_000 * 2);
+    expect(result.allocation.taxPaise).toBe(1_000 * 2);
+    expectReconciles(result.allocation);
   });
 
-  it("counts an actual restaurant settlement run as the restaurant's money too", async () => {
-    const result = await load([
+  it("does not let a settlement run inflate a party's share past what they actually earned", async () => {
+    // This is the behaviour change a tax statement needs: a payout run
+    // clearing what a restaurant was owed is a different question - has it
+    // been paid yet - answered elsewhere (Restaurant settlements), not by
+    // growing this period's figure past the order's own share of gross.
+    const withoutPayout = await load([orderDelivered("o1", 100, "r1", "rd1")]);
+    const withPayout = await load([
       orderDelivered("o1", 100, "r1", "rd1"),
       restaurantSettled("s1", 150, "r1", 24_000),
     ]);
-    // Both the order's accrual and the payout that actually cleared it count
-    // as real restaurant-bound money that moved in this period.
-    expect(result.allocation.restaurantPaise).toBe(24_000 + 24_000);
+    expect(withPayout.allocation.restaurantPaise).toBe(withoutPayout.allocation.restaurantPaise);
+    expectReconciles(withPayout.allocation);
   });
 
-  it("counts an actual rider payout run as the rider's money too", async () => {
-    const result = await load([
+  it("does not let a rider payout run inflate the rider's share either", async () => {
+    const withoutPayout = await load([orderDelivered("o1", 100, "r1", "rd1")]);
+    const withPayout = await load([
       orderDelivered("o1", 100, "r1", "rd1"),
       riderPaidOut("p1", 150, "rd1", 6_000, 1_000),
     ]);
-    expect(result.allocation.riderPaise).toBe(7_000 + 7_000);
+    expect(withPayout.allocation.riderPaise).toBe(withoutPayout.allocation.riderPaise);
+    expectReconciles(withPayout.allocation);
   });
 
-  it("does not count a settlement-run debit for the wrong party's account", async () => {
-    // A restaurant_payable event only clears restaurant-payable; it must
-    // never be read as rider money, and vice versa.
+  it("a settlement run on its own contributes nothing - it is not gross, just a later cash movement", async () => {
     const result = await load([restaurantSettled("s1", 100, "r1", 24_000)]);
-    expect(result.allocation.riderPaise).toBe(0);
-    expect(result.allocation.platformPaise).toBe(0);
+    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0});
   });
 
   it("leaves out a refund clawback rather than guessing whether it was a real reduction", async () => {
@@ -254,14 +266,17 @@ describe("who the period's money belongs to", () => {
       orderDelivered("o1", 100, "r1", "rd1"),
       restaurantRefundClawback("adj1", 150, "r1", 24_000),
     ]);
-    // The clawback debit is deliberately not subtracted: unlike a settlement
-    // run's debit, an adjustment's event type alone cannot prove what kind of
-    // change it represents, so this statement reports only what it can name
-    // with certainty rather than silently netting a plausible-looking figure.
+    // The clawback debit is deliberately not subtracted: unlike gross, whose
+    // source accounts are unambiguous by construction, a generic "adjustment"
+    // event type alone cannot prove what kind of change this debit
+    // represents, so it is left out rather than netted on a guess. Because it
+    // touches neither a gross nor an expense account, it also cannot spoil
+    // the reconciliation identity - it is simply invisible to it either way.
     expect(result.allocation.restaurantPaise).toBe(24_000);
+    expectReconciles(result.allocation);
   });
 
-  it("nets a rider reward expense out of platform revenue", async () => {
+  it("nets a rider reward expense out of platform revenue, and it still reconciles", async () => {
     const result = await load([
       orderDelivered("o1", 100, "r1", "rd1"),
       riderIncentive("i1", 150, "rd1", 1_000),
@@ -269,16 +284,44 @@ describe("who the period's money belongs to", () => {
     expect(result.allocation.platformPaise).toBe(8_000 - 1_000);
     // And the reward itself is real money the rider received.
     expect(result.allocation.riderPaise).toBe(7_000 + 1_000);
+    // The incentive is not itself part of any order's gross - it is a
+    // transfer from the platform's own pocket to the rider's - so gross is
+    // unchanged, and the identity holds only because the transfer nets to
+    // zero across the four buckets (+1,000 rider, -1,000 platform).
+    expect(result.allocation.grossPaise).toBe(40_000);
+    expectReconciles(result.allocation);
   });
 
   it("can report a loss period honestly rather than floor it at zero", async () => {
     const result = await load([riderIncentive("i1", 100, "rd1", 5_000)]);
     expect(result.allocation.platformPaise).toBe(-5_000);
+    expect(result.allocation.grossPaise).toBe(0);
+    expectReconciles(result.allocation);
   });
 
   it("reports zero allocation for an empty period rather than throwing", async () => {
     const result = await load([]);
-    expect(result.allocation).toEqual({restaurantPaise: 0, riderPaise: 0, platformPaise: 0});
+    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0});
+  });
+
+  it("gives every entry its own allocation that sums exactly to the period total", async () => {
+    const result = await load([
+      orderDelivered("o1", 100, "r1", "rd1"),
+      orderDelivered("o2", 200, "r2", "rd2"),
+      riderIncentive("i1", 300, "rd1", 1_000),
+    ]);
+    const summed = result.entries.reduce(
+      (acc, e) => ({
+        grossPaise: acc.grossPaise + e.allocation.grossPaise,
+        restaurantPaise: acc.restaurantPaise + e.allocation.restaurantPaise,
+        riderPaise: acc.riderPaise + e.allocation.riderPaise,
+        platformPaise: acc.platformPaise + e.allocation.platformPaise,
+        taxPaise: acc.taxPaise + e.allocation.taxPaise,
+      }),
+      {grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0},
+    );
+    expect(summed).toEqual(result.allocation);
+    result.entries.forEach((e) => expectReconciles(e.allocation));
   });
 
   it("allocates only over the journals it was actually given, truncation included", async () => {

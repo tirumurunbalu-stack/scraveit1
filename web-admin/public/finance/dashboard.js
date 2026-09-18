@@ -1057,21 +1057,106 @@ async function loadStatement() {
  *  level of the statement (day/week/month/year), right above the event-type
  *  breakdown, since "who got what" is usually the first question a bank
  *  statement is opened to answer. */
+/** Restaurant + rider + platform + tax always add up to exactly this gross
+ *  figure - every rupee of order value lands in exactly one of the four,
+ *  never split across two, never left over. Safe to hand to a tax filer for
+ *  that reason: nothing here can be entered twice by construction, and the
+ *  five numbers together tell the whole story of where one rupee of gross
+ *  order value went. */
 function statementAllocationCardsHtml(allocation, hasEntries) {
   // Deliberately deferring to the "No transactions in this period" hint the
-  // event-type cards already show, rather than rendering three ₹0 cards that
+  // event-type cards already show, rather than rendering five ₹0 cards that
   // could read as a broken load instead of a genuinely quiet period.
   if (!allocation || !hasEntries) return "";
-  const card = (label, paise, sub) => (
-    '<div class="stat-card"><div class="label">' + h(label) + '</div>'
+  const card = (label, paise, sub, emphasis) => (
+    '<div class="stat-card"' + (emphasis ? ' style="border-color:var(--brand);"' : '') + '><div class="label">' + h(label) + '</div>'
     + '<div class="value">' + h(moneyPaise(paise)) + '</div>'
     + '<div class="sub">' + h(sub) + '</div></div>'
   );
-  return '<section class="stat-grid" style="margin-bottom:12px;">'
-    + card("Restaurant settlement", allocation.restaurantPaise, "Owed or paid to restaurants")
-    + card("Rider payout", allocation.riderPaise, "Earnings, tips and incentives")
+  return '<section class="stat-grid" style="margin-bottom:6px;">'
+    + card("Total gross", allocation.grossPaise, "Order value delivered this period", true)
+    + card("Restaurant settlement", allocation.restaurantPaise, "Owed to restaurants from these orders")
+    + card("Rider payout", allocation.riderPaise, "Base earnings + tips + incentives below, already added in")
     + card("Platform profit", allocation.platformPaise, "Commission and fees, net of rider rewards")
-    + '</section>';
+    + card("Tax collected", allocation.taxPaise, "Held for government remittance, not platform income")
+    + '</section>'
+    + '<p class="hint" style="margin:0 0 20px;">These five figures add up exactly - restaurant + rider + platform + tax = total gross - so nothing here should be entered twice into a return. The transaction types below (COD order delivered, Rider incentive, ...) are what make up the rider payout and platform profit figures above, not additional amounts on top of them.</p>';
+}
+
+// ---------------------------------------------------------------------------
+// statement download - a CSV of exactly the itemized rows already on screen
+// ---------------------------------------------------------------------------
+// CSV, not .xlsx: it needs no library to build correctly, opens directly in
+// Excel or Google Sheets, and every GST/accounting tool a small operator
+// would actually hand this to (Tally, Zoho Books, ClearTax, the GSTN's own
+// offline utilities) accepts CSV as an import format - it is the one format
+// that is never the wrong answer here, which a spreadsheet-specific format
+// is not guaranteed to be.
+function csvField(value) {
+  const text = String(value == null ? "" : value);
+  return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+}
+function csvRow(fields) { return fields.map(csvField).join(",") + "\r\n"; }
+
+/** One row per transaction, each carrying its own restaurant/rider/platform/
+ *  tax split alongside the gross amount - so the file a CA or the GSTN
+ *  offline tool actually imports foots to the same summary cards shown on
+ *  screen, not a re-derived figure that could quietly drift from it. */
+function statementCsv(entries) {
+  let csv = csvRow([
+    "Date & time (IST)", "Type", "Order ID", "Reference", "Gross (₹)",
+    "Restaurant (₹)", "Rider (₹)", "Platform (₹)", "Tax (₹)",
+  ]);
+  entries.forEach((e) => {
+    const a = e.allocation || {grossPaise: e.grossPaise, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0};
+    csv += csvRow([
+      new Date(e.occurredAt).toLocaleString("en-IN", {dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata"}),
+      eventTypeLabel(e.eventType),
+      e.orderId || "",
+      e.actorId || "",
+      (a.grossPaise / 100).toFixed(2),
+      (a.restaurantPaise / 100).toFixed(2),
+      (a.riderPaise / 100).toFixed(2),
+      (a.platformPaise / 100).toFixed(2),
+      (a.taxPaise / 100).toFixed(2),
+    ]);
+  });
+  return csv;
+}
+
+function downloadCsv(fileName, csvText) {
+  // A UTF-8 BOM so Excel on Windows - still the most common destination for
+  // a file like this - renders the ₹ symbol correctly instead of mangling it.
+  const blob = new Blob(["﻿" + csvText], {type: "text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const link = el('<a href="' + url + '" download="' + h(fileName) + '" style="display:none"></a>');
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** A short, filename-and-button-safe label for whichever day/week/month is
+ *  currently selected - independent of the level cards' own date formatting
+ *  above, which includes markup and punctuation a filename cannot hold. */
+function statementPeriodFileLabel() {
+  const dateFmt = (ms) => new Date(ms).toLocaleDateString("en-IN", {day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata"});
+  if (state.statementPeriodType === "day" && state.statementSelDay != null) return dateFmt(state.statementSelDay);
+  if (state.statementPeriodType === "week" && state.statementSelWeekStart != null) {
+    return dateFmt(state.statementSelWeekStart) + " to " + dateFmt(addIstDays(state.statementSelWeekStart, 6));
+  }
+  if (state.statementPeriodType === "month" && state.statementSelMonth != null) {
+    return MONTH_LABELS_SHORT[state.statementSelMonth] + " " + state.statementSelYear;
+  }
+  return dateFmt(state.statementAnchor);
+}
+
+function statementDownloadButtonHtml(periodLabel) {
+  return '<button type="button" class="btn btn-secondary btn-sm" id="statement-download" style="margin-bottom:16px;">'
+    + downloadIcon() + ' Download ' + h(periodLabel) + ' (CSV)</button>';
+}
+function downloadIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>';
 }
 
 function statementSummaryCardsHtml(totalsByEventType, entryCount) {
@@ -1114,15 +1199,25 @@ function statementEntryRowsHtml(entries) {
  *  no new classification logic runs client-side, so this can never disagree
  *  with what a single month's own statement shows. */
 function sumYearAllocation(rows) {
-  const total = {restaurantPaise: 0, riderPaise: 0, platformPaise: 0};
+  const total = {grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0};
   (rows || []).forEach((r) => {
     const a = r.statement && r.statement.allocation;
     if (!a) return;
+    total.grossPaise += a.grossPaise;
     total.restaurantPaise += a.restaurantPaise;
     total.riderPaise += a.riderPaise;
     total.platformPaise += a.platformPaise;
+    total.taxPaise += a.taxPaise;
   });
   return total;
+}
+
+/** How many transactions the year holds in total - the per-month table below
+ *  already shows each month's own count, but not the year's, and "how many
+ *  transactions this year" is exactly the kind of thing a tax filer checks
+ *  first. */
+function sumYearEntryCount(rows) {
+  return (rows || []).reduce((sum, r) => sum + (r.statement ? r.statement.entryCount : 0), 0);
 }
 
 function statementYearRowsHtml(rows) {
@@ -1288,25 +1383,50 @@ function renderStatementTab() {
     resultsHtml = '<div class="loading-block"><span class="spinner dark"></span> Loading statement…</div>';
   } else if (state.statementError) {
     resultsHtml = '<div class="notice notice-danger">' + h(state.statementError) + '</div>';
-  } else if (state.statementPeriodType === "year") {
-    const rows = state.statementYearRows;
-    const anyTruncated = !!(rows && rows.some((r) => r.statement.truncated));
-    resultsHtml = rows
-      ? (anyTruncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>At least one month hit its page limit — the totals below cover only what was fetched for that month, not its whole transaction history.</span></div>' : "")
-        + statementAllocationCardsHtml(sumYearAllocation(rows), rows.some((r) => r.statement.entryCount > 0))
-        + statementYearRowsHtml(rows)
-      : "";
   } else {
-    const data = state.statementData;
-    resultsHtml = data
-      ? (data.truncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>More transactions exist in this period than shown here (page limit reached) — totals below cover only the ' + h(data.entryCount) + ' shown, not the whole period.</span></div>' : "")
-        + statementAllocationCardsHtml(data.allocation, data.entryCount > 0)
-        + statementSummaryCardsHtml(data.totalsByEventType, data.entryCount)
-        + statementEntryRowsHtml(data.entries)
-      : "";
+    state.statementDownloadEntries = null;
+    state.statementDownloadFileName = "";
+
+    if (state.statementPeriodType === "year") {
+      const rows = state.statementYearRows;
+      const anyTruncated = !!(rows && rows.some((r) => r.statement.truncated));
+      const totalEntries = rows ? sumYearEntryCount(rows) : 0;
+      resultsHtml = rows
+        ? (anyTruncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>At least one month hit its page limit — the totals below cover only what was fetched for that month, not its whole transaction history.</span></div>' : "")
+          + statementAllocationCardsHtml(sumYearAllocation(rows), totalEntries > 0)
+          + (totalEntries > 0
+            ? '<p class="hint" style="margin-top:-8px;margin-bottom:16px;">' + h(totalEntries) + (totalEntries === 1 ? " transaction" : " transactions") + " across " + h(state.statementSelYear) + '.</p>'
+              + statementDownloadButtonHtml(String(state.statementSelYear))
+            : "")
+          + statementYearRowsHtml(rows)
+        : "";
+      if (rows && totalEntries > 0) {
+        state.statementDownloadEntries = rows.flatMap((r) => r.statement.entries);
+        state.statementDownloadFileName = "savrivo-statement-" + state.statementSelYear + ".csv";
+      }
+    } else {
+      const data = state.statementData;
+      resultsHtml = data
+        ? (data.truncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>More transactions exist in this period than shown here (page limit reached) — totals below cover only the ' + h(data.entryCount) + ' shown, not the whole period.</span></div>' : "")
+          + statementAllocationCardsHtml(data.allocation, data.entryCount > 0)
+          + statementSummaryCardsHtml(data.totalsByEventType, data.entryCount)
+          + (data.entryCount > 0 ? statementDownloadButtonHtml(statementPeriodFileLabel()) : "")
+          + statementEntryRowsHtml(data.entries)
+        : "";
+      if (data && data.entryCount > 0) {
+        state.statementDownloadEntries = data.entries;
+        state.statementDownloadFileName = "savrivo-statement-" + statementPeriodFileLabel().replace(/\s+/g, "-").toLowerCase() + ".csv";
+      }
+    }
   }
 
   body.innerHTML = levelsHtml + '<div id="statement-content">' + resultsHtml + '</div>';
+
+  const downloadBtn = document.getElementById("statement-download");
+  if (downloadBtn) downloadBtn.addEventListener("click", () => {
+    if (!state.statementDownloadEntries || !state.statementDownloadEntries.length) return;
+    downloadCsv(state.statementDownloadFileName, statementCsv(state.statementDownloadEntries));
+  });
 
   const yearPrev = document.getElementById("statement-year-prev");
   if (yearPrev) yearPrev.addEventListener("click", () => {

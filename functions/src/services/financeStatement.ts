@@ -37,6 +37,11 @@ export interface FinanceStatementEntry {
   readonly actorId?: string;
   readonly grossPaise: number;
   readonly legs: readonly FinanceStatementEntryLeg[];
+  /** This one transaction's own split - see FinanceStatementAllocation. The
+   *  period total is exactly the sum of every entry's allocation, so a
+   *  downloaded statement can show a per-row breakdown that always foots to
+   *  the summary cards above it. */
+  readonly allocation: FinanceStatementAllocation;
 }
 
 export interface FinanceStatementTypeTotal {
@@ -50,11 +55,25 @@ export interface FinanceStatementTypeTotal {
  * event type - "how much of this is the restaurant's, the rider's, mine" -
  * which is what an operator actually wants from a bank-statement view, not a
  * list of internal event names.
+ *
+ * `restaurantPaise + riderPaise + platformPaise + taxPaise` always equals
+ * `grossPaise` exactly - every rupee of delivered order value lands in
+ * exactly one of the four, never more than one, never left over. That
+ * identity is what makes these numbers safe to hand to a tax filer: nothing
+ * here can be double-counted by construction, and `financeStatement.test.ts`
+ * asserts the identity itself, not just individual figures, so a future
+ * change that breaks it fails a test before it ships.
  */
 export interface FinanceStatementAllocation {
+  /** The order value this covers - independently derived from what the
+   *  customer actually paid (see summarizeGross), not from adding the other
+   *  four together. A mismatch between this and their sum would mean a leg
+   *  went uncounted, which is exactly what this independence is for. */
+  readonly grossPaise: number;
   readonly restaurantPaise: number;
   readonly riderPaise: number;
   readonly platformPaise: number;
+  readonly taxPaise: number;
 }
 
 export interface FinanceStatement {
@@ -87,6 +106,11 @@ function toEntry(journal: LedgerJournal): FinanceStatementEntry {
     ...(journal.actorId ? {actorId: journal.actorId} : {}),
     grossPaise: journal.debitTotalPaise,
     legs: journal.entries.map((entry) => ({accountId: entry.accountId, side: entry.side, amountPaise: entry.amountPaise})),
+    // One journal's own split, by the identical rule the period total uses -
+    // see summarizeAllocation. Computed per-entry (not sliced out of the
+    // period total afterwards) so a downloaded statement's rows always add up
+    // to the summary exactly, checked directly in financeStatement.test.ts.
+    allocation: summarizeAllocation([journal]),
   };
 }
 
@@ -108,6 +132,9 @@ const RIDER_EARNINGS_PREFIX = "liability:rider-earnings:";
 const RIDER_TIPS_PREFIX = "liability:rider-tips:";
 const REVENUE_PREFIX = "revenue:";
 const EXPENSE_PREFIX = "expense:";
+const TAX_PAYABLE_ACCOUNT = "liability:tax-payable";
+const COD_RECEIVABLE_PREFIX = "asset:cod-receivable:";
+const CUSTOMER_ORDER_FUNDS_PREFIX = "liability:customer-order-funds:";
 
 /**
  * Regroups a period's journals by who the money belongs to, straight from the
@@ -115,50 +142,71 @@ const EXPENSE_PREFIX = "expense:";
  * different lens on the same double-entry legs `totalsByEventType` already
  * summarizes by event name.
  *
- * Every order-delivery journal (`cod_delivery`/`payment`) credits exactly
- * one of `liability:restaurant-payable:<id>`, `liability:rider-earnings:<id>`,
- * `liability:rider-tips:<id>` and the platform's own `revenue:*` accounts in
- * the same balanced entry (see `allocationCredits` in `services/ledger.ts`) -
- * so summing those credits across the period answers "how much did each
- * party earn from what was delivered here" directly and unambiguously.
- *
- * A genuine settlement run (`restaurant_payable`/`rider_payout` event types)
- * later *debits* that same liability account to clear it when the money
- * actually leaves the platform - that debit is added too, because it is
- * real money reaching that party, just through a different kind of journal.
- * A debit from any other event type (for example an explicit refund
- * clawback) is deliberately left out rather than guessed at: this statement
- * only reports movements it can name with certainty, not net a liability
- * balance across dissimilar event types.
+ * This is accrual, deliberately, not a cash-movement ledger: every
+ * order-delivery journal (`cod_delivery`/`payment`) credits exactly one of
+ * `liability:restaurant-payable:<id>`, `liability:rider-earnings:<id>` /
+ * `liability:rider-tips:<id>`, the platform's `revenue:*` accounts and
+ * `liability:tax-payable` in the same balanced entry (see `allocationCredits`
+ * in `services/ledger.ts`) - so summing those credits across the period
+ * answers "how much did each party earn from what was delivered here",
+ * and every rupee of gross lands in exactly one bucket, never zero, never two.
+ * A later settlement run (`restaurant_payable`/`rider_payout`) *debiting* that
+ * same liability account to actually pay it out is a different question -
+ * "has this been paid yet" - answered by the dedicated Rider payouts and
+ * Restaurant settlements sections, not counted here: doing so would make a
+ * restaurant's figure grow past its own share of gross the moment a payout
+ * runs in the same period, breaking the one invariant this statement exists
+ * to guarantee.
  *
  * Platform revenue nets `revenue:*` credits against `expense:*` debits (rider
  * reward campaigns are funded from an expense account, per
- * `buildRiderIncentiveJournal`/`buildReferralRewardJournal`), so the figure
- * is commission and fees earned minus what the platform actually spent on
- * rider rewards in the same period - not a full profit-and-loss statement,
- * since costs outside this ledger (infrastructure, payroll, ...) play no
- * part in it.
+ * `buildRiderIncentiveJournal`/`buildReferralRewardJournal`) - commission and
+ * fees earned minus what the platform actually spent on rider rewards in the
+ * same period, not a full profit-and-loss statement, since costs outside
+ * this ledger (infrastructure, payroll, ...) play no part in it. A reward
+ * credited to a rider and expensed by the platform cancels out in the sum of
+ * all four buckets, which is exactly why the identity holds through it.
+ *
+ * Gross is deliberately NOT restaurant+rider+platform+tax added back together
+ * - that would make the identity true by definition and catch nothing. It is
+ * derived independently, from the debit that records what the customer
+ * actually paid (`asset:cod-receivable:<riderId>` for a COD order,
+ * `liability:customer-order-funds:<orderId>` when it is released at
+ * delivery) - a different account family entirely. If a future account type
+ * ever went uncounted by the four buckets above, this independent figure
+ * would stop matching their sum, and the reconciliation test would fail.
  */
 function summarizeAllocation(journals: readonly LedgerJournal[]): FinanceStatementAllocation {
+  let grossPaise = 0;
   let restaurantPaise = 0;
   let riderPaise = 0;
   let platformPaise = 0;
+  let taxPaise = 0;
   for (const journal of journals) {
     for (const entry of journal.entries) {
-      const isRestaurantPayable = entry.accountId.startsWith(RESTAURANT_PAYABLE_PREFIX);
-      const isRiderPayable = entry.accountId.startsWith(RIDER_EARNINGS_PREFIX) || entry.accountId.startsWith(RIDER_TIPS_PREFIX);
       if (entry.side === "credit") {
-        if (isRestaurantPayable) restaurantPaise += entry.amountPaise;
-        else if (isRiderPayable) riderPaise += entry.amountPaise;
+        if (entry.accountId.startsWith(RESTAURANT_PAYABLE_PREFIX)) restaurantPaise += entry.amountPaise;
+        else if (entry.accountId.startsWith(RIDER_EARNINGS_PREFIX) || entry.accountId.startsWith(RIDER_TIPS_PREFIX)) riderPaise += entry.amountPaise;
         else if (entry.accountId.startsWith(REVENUE_PREFIX)) platformPaise += entry.amountPaise;
+        else if (entry.accountId === TAX_PAYABLE_ACCOUNT) taxPaise += entry.amountPaise;
       } else {
-        if (isRestaurantPayable && journal.eventType === "restaurant_payable") restaurantPaise += entry.amountPaise;
-        else if (isRiderPayable && journal.eventType === "rider_payout") riderPaise += entry.amountPaise;
-        else if (entry.accountId.startsWith(EXPENSE_PREFIX)) platformPaise -= entry.amountPaise;
+        if (entry.accountId.startsWith(EXPENSE_PREFIX)) platformPaise -= entry.amountPaise;
+        else if (journal.eventType === "cod_delivery" && entry.accountId.startsWith(COD_RECEIVABLE_PREFIX)) grossPaise += entry.amountPaise;
+        else if (journal.eventType === "payment" && entry.accountId.startsWith(CUSTOMER_ORDER_FUNDS_PREFIX)) grossPaise += entry.amountPaise;
       }
     }
   }
-  return {restaurantPaise, riderPaise, platformPaise};
+  return {grossPaise, restaurantPaise, riderPaise, platformPaise, taxPaise};
+}
+
+function addAllocation(a: FinanceStatementAllocation, b: FinanceStatementAllocation): FinanceStatementAllocation {
+  return {
+    grossPaise: a.grossPaise + b.grossPaise,
+    restaurantPaise: a.restaurantPaise + b.restaurantPaise,
+    riderPaise: a.riderPaise + b.riderPaise,
+    platformPaise: a.platformPaise + b.platformPaise,
+    taxPaise: a.taxPaise + b.taxPaise,
+  };
 }
 
 /**
