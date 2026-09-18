@@ -19,7 +19,11 @@ function uid() {
 function moneyPaise(paise) {
   const value = Number(paise);
   if (!Number.isFinite(value)) return "₹0";
-  return "₹" + (value / 100).toLocaleString("en-IN", {minimumFractionDigits: 0, maximumFractionDigits: 2});
+  // The sign belongs before the currency symbol ("-₹50"), not after it
+  // ("₹-50") - only a factor here because platform profit can now go
+  // negative in a period where rider rewards outspent commission and fees.
+  const sign = value < 0 ? "-" : "";
+  return sign + "₹" + (Math.abs(value) / 100).toLocaleString("en-IN", {minimumFractionDigits: 0, maximumFractionDigits: 2});
 }
 function dateTimeWithYear(t) {
   return t ? new Date(Number(t)).toLocaleString("en-IN", {day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit"}) : "—";
@@ -1048,6 +1052,28 @@ async function loadStatement() {
   }
 }
 
+/** Three cards regrouping the same period's money by who it belongs to -
+ *  restaurant, rider, platform - instead of by event type. Shown at every
+ *  level of the statement (day/week/month/year), right above the event-type
+ *  breakdown, since "who got what" is usually the first question a bank
+ *  statement is opened to answer. */
+function statementAllocationCardsHtml(allocation, hasEntries) {
+  // Deliberately deferring to the "No transactions in this period" hint the
+  // event-type cards already show, rather than rendering three ₹0 cards that
+  // could read as a broken load instead of a genuinely quiet period.
+  if (!allocation || !hasEntries) return "";
+  const card = (label, paise, sub) => (
+    '<div class="stat-card"><div class="label">' + h(label) + '</div>'
+    + '<div class="value">' + h(moneyPaise(paise)) + '</div>'
+    + '<div class="sub">' + h(sub) + '</div></div>'
+  );
+  return '<section class="stat-grid" style="margin-bottom:12px;">'
+    + card("Restaurant settlement", allocation.restaurantPaise, "Owed or paid to restaurants")
+    + card("Rider payout", allocation.riderPaise, "Earnings, tips and incentives")
+    + card("Platform profit", allocation.platformPaise, "Commission and fees, net of rider rewards")
+    + '</section>';
+}
+
 function statementSummaryCardsHtml(totalsByEventType, entryCount) {
   if (!totalsByEventType || !totalsByEventType.length) return '<p class="hint">No transactions in this period.</p>';
   const cards = totalsByEventType.map((t) => (
@@ -1081,6 +1107,22 @@ function statementEntryRowsHtml(entries) {
         + '</tr>' + legsHtml;
     }).join("")
     + '</tbody></table></div>';
+}
+
+/** Adds up each already-fetched month's server-computed allocation into one
+ *  year total. Pure arithmetic over numbers the server already produced -
+ *  no new classification logic runs client-side, so this can never disagree
+ *  with what a single month's own statement shows. */
+function sumYearAllocation(rows) {
+  const total = {restaurantPaise: 0, riderPaise: 0, platformPaise: 0};
+  (rows || []).forEach((r) => {
+    const a = r.statement && r.statement.allocation;
+    if (!a) return;
+    total.restaurantPaise += a.restaurantPaise;
+    total.riderPaise += a.riderPaise;
+    total.platformPaise += a.platformPaise;
+  });
+  return total;
 }
 
 function statementYearRowsHtml(rows) {
@@ -1247,11 +1289,18 @@ function renderStatementTab() {
   } else if (state.statementError) {
     resultsHtml = '<div class="notice notice-danger">' + h(state.statementError) + '</div>';
   } else if (state.statementPeriodType === "year") {
-    resultsHtml = statementYearRowsHtml(state.statementYearRows);
+    const rows = state.statementYearRows;
+    const anyTruncated = !!(rows && rows.some((r) => r.statement.truncated));
+    resultsHtml = rows
+      ? (anyTruncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>At least one month hit its page limit — the totals below cover only what was fetched for that month, not its whole transaction history.</span></div>' : "")
+        + statementAllocationCardsHtml(sumYearAllocation(rows), rows.some((r) => r.statement.entryCount > 0))
+        + statementYearRowsHtml(rows)
+      : "";
   } else {
     const data = state.statementData;
     resultsHtml = data
       ? (data.truncated ? '<div class="notice notice-warning">' + warningIcon() + '<span>More transactions exist in this period than shown here (page limit reached) — totals below cover only the ' + h(data.entryCount) + ' shown, not the whole period.</span></div>' : "")
+        + statementAllocationCardsHtml(data.allocation, data.entryCount > 0)
         + statementSummaryCardsHtml(data.totalsByEventType, data.entryCount)
         + statementEntryRowsHtml(data.entries)
       : "";
