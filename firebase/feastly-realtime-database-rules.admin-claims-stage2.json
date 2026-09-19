@@ -24,7 +24,8 @@
           ".indexOn": [
             "city",
             "citySort",
-            "geoSort"
+            "geoSort",
+            "geoSortGlobal"
           ],
           "$restaurantId": {
             ".validate": "!newData.exists() || (newData.hasChildren(['id','name','address','etaMin','etaMax','deliveryFee','platformFee','open','archived']) && newData.child('id').val() === $restaurantId)",
@@ -200,6 +201,9 @@
               ".validate": "newData.isString() && newData.val().length <= 400"
             },
             "geoSort": {
+              ".validate": "newData.isString() && newData.val().length <= 400"
+            },
+            "geoSortGlobal": {
               ".validate": "newData.isString() && newData.val().length <= 400"
             },
             "category": {

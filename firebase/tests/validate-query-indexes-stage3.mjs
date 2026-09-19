@@ -29,9 +29,9 @@ assert.deepEqual(
   "Stage 3 may only add the explicitly reviewed .indexOn declarations to stage 2.",
 );
 // 1: promotions/code, reviewed against the bounded coupon lookup below.
-// 2: catalog/restaurants/{citySort, geoSort}, reviewed against the customer
-//    app's paged city range query and its proximity cell query, both
-//    asserted below.
+// 2: catalog/restaurants/{citySort, geoSort, geoSortGlobal}, reviewed against
+//    the customer app's paged city range query, its proximity cell query, and
+//    its city-agnostic proximity fallback, all asserted below.
 assert.equal(REVIEWED_QUERY_INDEXES.length, 2, "Every new staged index needs an explicit source-query review.");
 assert.deepEqual(
   normalizeIndexOn(stage3.rules.feastly.promotions[".indexOn"]),
@@ -62,6 +62,17 @@ assert.ok(
 assert.ok(
   normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("geoSort"),
   "Stage 3 must index geoSort.",
+);
+// And for geoSortGlobal: it is what actually finds a restaurant when a
+// customer's address and the restaurant's own city field spell the same real
+// place differently - a staged rollout missing it silently reopens that gap.
+assert.ok(
+  normalizeIndexOn(active.rules.feastly.catalog.restaurants[".indexOn"]).includes("geoSortGlobal"),
+  "Active rules must index geoSortGlobal.",
+);
+assert.ok(
+  normalizeIndexOn(stage3.rules.feastly.catalog.restaurants[".indexOn"]).includes("geoSortGlobal"),
+  "Stage 3 must index geoSortGlobal.",
 );
 assert.ok(normalizeIndexOn(stage3.rules.feastly.dispatchQueue[".indexOn"]).includes("status"));
 assert.ok(normalizeIndexOn(stage3.rules.feastly.staff[".indexOn"]).includes("restaurantId"));

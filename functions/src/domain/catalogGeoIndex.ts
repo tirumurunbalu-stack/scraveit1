@@ -15,9 +15,27 @@ import {availabilityCityKey} from "./dispatch";
  * square cell, and the cell around the customer plus its eight neighbours
  * covers the area they can actually order from.
  *
- * The city stays in the key so this never crosses a city boundary - a
- * restaurant can be close and still belong to a city the customer is not
- * ordering in.
+ * The city stays in geoSort's key so a listing scoped to one city never
+ * crosses into another - a restaurant can be close and still belong to a
+ * city the customer is not ordering in.
+ *
+ * That city key is a free-text string, though, and two independent sources
+ * write it: a restaurant owner types theirs once at onboarding, a customer's
+ * address gets theirs from GPS reverse-geocoding. Real places have more than
+ * one accepted spelling - Naidupet/Naidupeta, Bengaluru/Bangalore,
+ * Visakhapatnam/Vizag - so the same real place can produce two different
+ * strings, and a customer standing next to a restaurant sees nothing because
+ * the two labels do not match character-for-character.
+ *
+ * geoSortGlobal exists for exactly this: `<geohash>|<id>`, no city at all. A
+ * customer's own delivery radius is what actually decides deliverability
+ * (enforced client-side, unconditionally, on every candidate this or geoSort
+ * ever returns) - two real cities are essentially always farther apart than
+ * any sane delivery radius, so this does not reopen the cross-city leak
+ * geoSort's city key guards against; it only stops a spelling mismatch from
+ * hiding a restaurant that is genuinely next door. The client tries the
+ * city-scoped geoSort first and only reaches for this when that comes back
+ * thin - the common case never pays for the wider, unscoped read.
  */
 
 /** Geohash alphabet: base32 without a, i, l or o. */
@@ -216,4 +234,26 @@ export function geoCellRange(city: unknown, cell: string): {startAt: string; end
  */
 export function geoSortNeedsUpdate(restaurant: GeoIndexSource, storedValue: unknown): boolean {
   return String(storedValue ?? "") !== geoSortValue(restaurant);
+}
+
+/**
+ * `<geohash>|<id>` - the same position as geoSortValue, deliberately with no
+ * city. See the module doc comment above for why this exists alongside it
+ * rather than instead of it.
+ */
+export function geoSortGlobalValue(restaurant: GeoIndexSource): string {
+  const id = String(restaurant.id ?? "").trim().slice(0, 128);
+  const hash = geohashEncode(restaurant.lat, restaurant.lng);
+  if (!id || !hash) return "";
+  return `${hash}|${id}`;
+}
+
+/** The range covering one cell, with no city to scope it to. */
+export function geoGlobalCellRange(cell: string): {startAt: string; endAt: string} {
+  return {startAt: cell, endAt: `${cell}`};
+}
+
+/** Same purpose as geoSortNeedsUpdate, for the city-agnostic value. */
+export function geoSortGlobalNeedsUpdate(restaurant: GeoIndexSource, storedValue: unknown): boolean {
+  return String(storedValue ?? "") !== geoSortGlobalValue(restaurant);
 }

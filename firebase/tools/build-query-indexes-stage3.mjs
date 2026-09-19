@@ -21,10 +21,15 @@ export const REVIEWED_QUERY_INDEXES = Object.freeze([
   // them, which is the exact failure this staging file exists to prevent.
   // geoSort backs the same catalogue's proximity ordering: one range query per
   // geohash cell around the customer, so a city larger than the delivery
-  // radius still loads nearest-first instead of alphabetically.
+  // radius still loads nearest-first instead of alphabetically. geoSortGlobal
+  // is the same position with no city prefix, queried only when geoSort comes
+  // back thin - a restaurant owner's and a GPS geocoder's spelling of the same
+  // real place ("Naidupet" vs "Naidupeta") do not always match character for
+  // character, and geoSort alone would hide a restaurant from a customer
+  // standing right next to it over nothing but that mismatch.
   Object.freeze({
     path: Object.freeze(["rules", "feastly", "catalog", "restaurants"]),
-    fields: Object.freeze(["citySort", "geoSort"]),
+    fields: Object.freeze(["citySort", "geoSort", "geoSortGlobal"]),
   }),
 ]);
 

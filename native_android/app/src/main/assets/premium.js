@@ -710,6 +710,11 @@
     const key=catalogCityKey(city);
     return {startAt:key+"|"+cell,endAt:key+"|"+cell+CATALOG_RANGE_END};
   }
+  /** Same cell, with no city to scope it to - see geoSortGlobal in
+   *  functions/src/domain/catalogGeoIndex.ts for why this exists. */
+  function geoGlobalCellRange(cell){
+    return {startAt:cell,endAt:cell+CATALOG_RANGE_END};
+  }
 
   /** One page of the customer's own city, ordered by name. `cursor` is the
    *  citySort value of the last restaurant already shown; Firebase returns
@@ -772,6 +777,19 @@
     }catch(error){return null}
   }
 
+  /** Every restaurant in one geohash cell, with no city to scope it to. */
+  async function fetchGeoCellGlobal(cell,limit){
+    const range=geoGlobalCellRange(cell);
+    try{
+      return await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
+        orderBy:JSON.stringify("geoSortGlobal"),
+        startAt:JSON.stringify(range.startAt),
+        endAt:JSON.stringify(range.endAt),
+        limitToFirst:String(limit),
+      },10000);
+    }catch(error){return null}
+  }
+
   /** The customer's neighbourhood at one precision: up to nine small parallel
    *  range queries, merged. One cell failing must not take the rest down with
    *  it - a customer's own cell missing a network blip should still see their
@@ -787,10 +805,34 @@
     return merged;
   }
 
+  /** Same neighbourhood, no city required. Only reached when the city-scoped
+   *  tiers come back thin - see fetchGeoCatalogRecords. */
+  async function fetchGeoNeighborhoodGlobal(address,precision,limitPerCell){
+    const cells=geohashNeighborhood(address.lat,address.lng,precision);
+    const results=await Promise.all(cells.map(cell=>fetchGeoCellGlobal(cell,limitPerCell)));
+    const merged={};
+    results.forEach(records=>{
+      if(!records)return;
+      Object.keys(records).forEach(id=>{merged[id]=records[id]});
+    });
+    return merged;
+  }
+
   /** Loads by proximity instead of by name, for a customer who has pinned an
    *  exact location. Tight first - selective in a dense city - and only wide
    *  when tight comes back thin, which is the uncommon case (see the comment
    *  on GEO_QUERY_PRECISION_TIGHT/WIDE for why neither tier alone is right).
+   *
+   *  A third, city-agnostic tier only runs when the city-scoped tiers are
+   *  STILL thin after that: a restaurant owner's and a GPS geocoder's
+   *  spelling of the same real place do not always match character for
+   *  character ("Naidupet" vs "Naidupeta" is a real one this app hit), and a
+   *  customer standing right next to a restaurant must not see nothing over
+   *  a spelling difference neither side can control. This tier costs nothing
+   *  for the common case - a matching city name with restaurants nearby
+   *  never reaches it - and restaurantServiceable()'s real distance check
+   *  still excludes anything this widens to that is not actually
+   *  deliverable, exactly as it already does for the city-scoped tiers.
    *
    *  Returns the whole neighbourhood in one shot rather than a cursor to page
    *  through: unlike an alphabetical listing, there is no "next" restaurant to
@@ -803,6 +845,14 @@
     if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
       const wide=await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT);
       merged=Object.assign({},merged,wide);
+    }
+    if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
+      const globalTight=await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT);
+      merged=Object.assign({},merged,globalTight);
+    }
+    if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
+      const globalWide=await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT);
+      merged=Object.assign({},merged,globalWide);
     }
     // A hard ceiling, same reasoning as the alphabetical path's page cap: a
     // request must stay bounded however dense the deliverable area gets.

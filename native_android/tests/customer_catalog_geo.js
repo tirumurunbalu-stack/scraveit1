@@ -77,9 +77,7 @@ function makeServer(rows) {
       requests++;
       const limit = Number(parameters.limitToFirst);
       const byKey = parameters.orderBy === '"$key"';
-      const field = byKey
-        ? "id"
-        : parameters.orderBy === '"geoSort"' ? "geoSort" : "citySort";
+      const field = byKey ? "id" : JSON.parse(parameters.orderBy);
       const startAt = byKey ? "" : JSON.parse(parameters.startAt);
       const endAt = byKey ? "￿" : JSON.parse(parameters.endAt);
       const out = {};
@@ -122,6 +120,7 @@ function harness(rows, address) {
     ${extract("geohashBounds")}
     ${extract("geohashNeighborhood")}
     ${extract("geoCellRange")}
+    ${extract("geoGlobalCellRange")}
     async function fetchRestaurantSummaries(cursor) {
       return server.query(restaurantSummaryQuery(cursor));
     }
@@ -135,12 +134,22 @@ function harness(rows, address) {
         limitToFirst: String(limit),
       });
     }
+    async function fetchGeoCellGlobal(cell, limit) {
+      const range = geoGlobalCellRange(cell);
+      return server.query({
+        orderBy: JSON.stringify("geoSortGlobal"),
+        startAt: JSON.stringify(range.startAt),
+        endAt: JSON.stringify(range.endAt),
+        limitToFirst: String(limit),
+      });
+    }
     ${extract("fetchGeoNeighborhood")}
+    ${extract("fetchGeoNeighborhoodGlobal")}
     ${extract("fetchGeoCatalogRecords")}
     ${extract("fetchCatalogRecords")}
     return {
-      fetchCatalogRecords, fetchGeoCatalogRecords, fetchGeoNeighborhood, fetchCatalogPages,
-      geohashEncode, geohashNeighborhood, geoCellRange, catalogCityKey, catalogNameKey, addressIsPinned, server,
+      fetchCatalogRecords, fetchGeoCatalogRecords, fetchGeoNeighborhood, fetchGeoNeighborhoodGlobal, fetchCatalogPages,
+      geohashEncode, geohashNeighborhood, geoCellRange, geoGlobalCellRange, catalogCityKey, catalogNameKey, addressIsPinned, server,
     };
   `);
   return factory(server, address);
@@ -165,6 +174,7 @@ function indexValues(app, restaurant) {
   return {
     citySort: `${cityKey}|${nameKey}|${restaurant.id}`,
     geoSort: restaurant.id && hash ? `${cityKey}|${hash}|${restaurant.id}` : null,
+    geoSortGlobal: restaurant.id && hash ? `${hash}|${restaurant.id}` : null,
   };
 }
 
@@ -334,9 +344,11 @@ async function checkAsync(label, fn) {
 
   await checkAsync("widens to the wide tier only when the tight tier is thin", async () => {
     const app0 = harness([], null);
-    // Sparse: few restaurants, spread wide - the tight 3x3 (~14km box) will
-    // likely come back under CATALOG_PAGE_SIZE, forcing a widen.
-    const rows = denseCity(app0, "Nellore", 8, 40);
+    // Spread wide enough that tight alone comes back thin, but with enough
+    // restaurants that the wide tier already satisfies the page size - so
+    // the newer city-agnostic tiers below are never reached, isolating this
+    // test to exactly the tight-to-wide escalation it names.
+    const rows = denseCity(app0, "Nellore", 45, 40);
     const app = harness(rows, { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng });
     await app.fetchGeoCatalogRecords({ lat: NELLORE.lat, lng: NELLORE.lng });
     // 9 tight cells, then 9 wide cells once tight came back thin.
@@ -360,14 +372,40 @@ async function checkAsync(label, fn) {
       "must not grow with city size");
   });
 
-  await checkAsync("never reaches into another city, even one right next door", async () => {
+  await checkAsync("never reaches into a genuinely distant city, even with every tier active", async () => {
     const app0 = harness([], null);
+    // Only 20 restaurants, so every tier (tight, wide, global-tight,
+    // global-wide) runs - proving the far city stays excluded is only
+    // meaningful when the fallback tiers are actually exercised.
     const nellore = denseCity(app0, "Nellore", 20, 3);
-    const naidupeta = denseCity(app0, "Naidupeta", 20, 3); // same coordinates, different city
-    const app = harness(nellore.concat(naidupeta), { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng });
+    // A whole 5 degrees away (~550km) - comfortably past the wide tier's
+    // *actual* per-direction reach, not just its guaranteed minimum (a
+    // level-4 cell's longer edge is ~38km, so a merely-60km separation is not
+    // reliably enough once orientation is allowed to vary).
+    const distant = denseCity(app0, "Naidupeta", 20, 3).map((r) => ({...r, lat: r.lat + 5, lng: r.lng + 5}))
+      .map((r) => ({...r, ...indexValues(app0, r)}));
+    const app = harness(nellore.concat(distant), { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng });
     const result = await app.fetchGeoCatalogRecords({ lat: NELLORE.lat, lng: NELLORE.lng });
     const cities = new Set(Object.values(result.records).map((r) => r.city));
     assert.deepStrictEqual([...cities], ["Nellore"]);
+  });
+
+  await checkAsync("finds a restaurant at the same real place whose city was spelled differently", async () => {
+    // The actual reported bug: a restaurant owner wrote "Naidupeta", the
+    // customer's GPS address came back "Naidupet" - one real place, two
+    // strings, and geoSort's city scoping alone hides the restaurant from a
+    // customer standing right next to it.
+    const app0 = harness([], null);
+    const spot = { id: "waffle1", name: "The Waffle Spot", city: "Naidupeta", lat: 13.91747864, lng: 79.89603288 };
+    const restaurant = { ...spot, ...indexValues(app0, spot) };
+    const customerAddress = { city: "Naidupet", lat: 13.9174256, lng: 79.895822 }; // metres away
+    const app = harness([restaurant], customerAddress);
+
+    const cityScopedOnly = await app.fetchGeoNeighborhood("Naidupet", customerAddress, GEO_QUERY_PRECISION_TIGHT, 60);
+    assert.deepStrictEqual(Object.keys(cityScopedOnly), [], "sanity: the bug must actually reproduce against geoSort alone");
+
+    const result = await app.fetchGeoCatalogRecords(customerAddress);
+    assert.deepStrictEqual(Object.keys(result.records), ["waffle1"], "the global tier must find it");
   });
 
   await checkAsync("a customer elsewhere in the same city gets a different neighbourhood", async () => {

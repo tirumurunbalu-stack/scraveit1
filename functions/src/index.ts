@@ -92,7 +92,7 @@ import {readAdminDashboard} from "./services/adminDashboard";
 import {readFinanceStatement} from "./services/financeStatement";
 import {citySortNeedsUpdate, citySortValue} from "./domain/catalogIndex";
 import {searchTokenUpdates} from "./domain/catalogSearchTokens";
-import {geoSortNeedsUpdate, geoSortValue} from "./domain/catalogGeoIndex";
+import {geoSortGlobalNeedsUpdate, geoSortGlobalValue, geoSortNeedsUpdate, geoSortValue} from "./domain/catalogGeoIndex";
 import {
   recordRestaurantSettlement as writeRestaurantSettlement,
   recordRiderPayout as writeRiderPayout,
@@ -1175,20 +1175,24 @@ export const onCatalogRestaurantWritten = onValueWritten({
   if (!after) return;
   const restaurant = after as {
     name?: unknown; city?: unknown; lat?: unknown; lng?: unknown;
-    citySort?: unknown; geoSort?: unknown;
+    citySort?: unknown; geoSort?: unknown; geoSortGlobal?: unknown;
   };
   const source = {id: restaurantId, name: restaurant.name, city: restaurant.city};
   const geoSource = {id: restaurantId, city: restaurant.city, lat: restaurant.lat, lng: restaurant.lng};
 
   // Writing only when a stored value is actually wrong is what stops this
-  // trigger re-firing on its own write. Both sort keys go in one update so a
-  // restaurant is never indexed by name but not by position, or the reverse.
+  // trigger re-firing on its own write. All three sort keys go in one update
+  // so a restaurant is never indexed by name or position in one but not the
+  // others.
   const fields: Record<string, string | null> = {};
   if (citySortNeedsUpdate(source, restaurant.citySort)) fields.citySort = citySortValue(source);
   if (geoSortNeedsUpdate(geoSource, restaurant.geoSort)) {
     // A restaurant with no usable coordinates has no place in the proximity
     // index; clearing it is what removes one that used to have them.
     fields.geoSort = geoSortValue(geoSource) || null;
+  }
+  if (geoSortGlobalNeedsUpdate(geoSource, restaurant.geoSortGlobal)) {
+    fields.geoSortGlobal = geoSortGlobalValue(geoSource) || null;
   }
   if (Object.keys(fields).length === 0) return;
 

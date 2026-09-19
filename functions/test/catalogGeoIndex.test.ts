@@ -3,6 +3,9 @@ import {
   GEO_QUERY_PRECISION_TIGHT,
   GEO_QUERY_PRECISION_WIDE,
   geoCellRange,
+  geoGlobalCellRange,
+  geoSortGlobalNeedsUpdate,
+  geoSortGlobalValue,
   geoSortNeedsUpdate,
   geoSortValue,
   geohashBounds,
@@ -260,5 +263,70 @@ describe("what this actually fixes", () => {
     const there = new Set(inCells(geohashNeighborhood(NELLORE.lat + 0.15, NELLORE.lng + 0.15)).map((r) => r.id));
     expect(there.size).toBeGreaterThan(0);
     expect([...there].some((id) => !here.has(id))).toBe(true);
+  });
+});
+
+describe("the city-agnostic index (geoSortGlobal)", () => {
+  // The real, reported bug: a restaurant owner typed "Naidupeta"; the same
+  // customer's GPS-detected address came back "Naidupet". One real place,
+  // two strings - geoSort's city-scoped range finds nothing for either party
+  // because they never match character-for-character.
+  const RESTAURANT = {id: "waffle1", name: "The Waffle Spot", city: "Naidupeta", lat: 13.91747864, lng: 79.89603288};
+  const CUSTOMER = {lat: 13.9174256, lng: 79.895822}; // metres away, not kilometres
+
+  it("produces a value with no city in it", () => {
+    const value = geoSortGlobalValue(RESTAURANT);
+    expect(value).not.toContain("naidupeta");
+    expect(value).not.toContain("Naidupeta");
+    expect(value.split("|")).toHaveLength(2); // <geohash>|<id>, not <city>|<geohash>|<id>
+  });
+
+  it("is blind to a spelling mismatch that hides the restaurant from geoSort", () => {
+    // First, prove the reported bug actually reproduces against geoSort: a
+    // customer whose address says "Naidupet" gets a range scoped to a
+    // different city key than the restaurant's "Naidupeta" ever writes to.
+    const customerRange = geoCellRange("Naidupet", geohashEncode(CUSTOMER.lat, CUSTOMER.lng, GEO_QUERY_PRECISION_TIGHT));
+    const restaurantValue = geoSortValue(RESTAURANT);
+    expect(restaurantValue >= customerRange.startAt && restaurantValue <= customerRange.endAt).toBe(false);
+
+    // Now prove the fix: the same cell, read from the global index instead,
+    // finds it regardless of what either side called the city.
+    const cell = geohashEncode(CUSTOMER.lat, CUSTOMER.lng, GEO_QUERY_PRECISION_TIGHT);
+    const globalRange = geoGlobalCellRange(cell);
+    const globalValue = geoSortGlobalValue(RESTAURANT);
+    expect(globalValue >= globalRange.startAt && globalValue <= globalRange.endAt).toBe(true);
+  });
+
+  it("still will not return a restaurant genuinely far away, with no city check needed", () => {
+    // Real cities sit far enough apart that the geohash cell itself excludes
+    // them - the earlier "never reaches into another city" test already
+    // proves this at the geoSort level; this confirms the global index has
+    // the same property for free, since it uses the identical cell math.
+    const distant = {id: "n1", name: "Zaika", city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng};
+    const cell = geohashEncode(CUSTOMER.lat, CUSTOMER.lng, GEO_QUERY_PRECISION_WIDE);
+    const range = geoGlobalCellRange(cell);
+    const value = geoSortGlobalValue(distant);
+    expect(value >= range.startAt && value <= range.endAt).toBe(false);
+  });
+
+  it("writes only when the stored value is actually wrong", () => {
+    const current = geoSortGlobalValue(RESTAURANT);
+    expect(geoSortGlobalNeedsUpdate(RESTAURANT, current)).toBe(false);
+    expect(geoSortGlobalNeedsUpdate(RESTAURANT, undefined)).toBe(true);
+    expect(geoSortGlobalNeedsUpdate({...RESTAURANT, lat: 14.5}, current)).toBe(true);
+    // Unlike geoSortNeedsUpdate, a city change alone must NOT need an update -
+    // the whole point is that this value does not depend on city at all.
+    expect(geoSortGlobalNeedsUpdate({...RESTAURANT, city: "Nellore"}, current)).toBe(false);
+  });
+
+  it("leaves an unplaceable restaurant out, same as the city-scoped index", () => {
+    expect(geoSortGlobalValue({id: "r1", city: "Naidupeta"})).toBe("");
+    expect(geoSortGlobalValue({...RESTAURANT, id: ""})).toBe("");
+  });
+
+  it("does not rewrite an unplaceable restaurant forever", () => {
+    const restaurant = {id: "r1", city: "Naidupeta"};
+    expect(geoSortGlobalNeedsUpdate(restaurant, undefined)).toBe(false);
+    expect(geoSortGlobalNeedsUpdate(restaurant, "")).toBe(false);
   });
 });
