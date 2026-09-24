@@ -1,12 +1,12 @@
 import {createHash, randomUUID} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {z} from "zod";
-import {db, storage} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb, storage} from "../admin";
 import {
   inspectRasterImage,
   KYC_MEDIA_DAILY_LIMIT,
   PUBLIC_MEDIA_DAILY_LIMIT,
+  privateObjectUrl,
   publicObjectUrl,
   reserveUploadQuota,
   type SupportedImageType,
@@ -19,6 +19,25 @@ import {
   type RestaurantMembershipSource,
 } from "../domain/restaurantAccess";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike, WriteBatchLike} from "../firestoreTypes";
+import {legacyStaffRef, menuItemRef, restaurantMemberRef, restaurantRef, riderRef} from "../firestorePaths";
+import {checkRiderFaceUniqueness, compareRiderLoginFace, indexRiderFaceDirectly} from "./faceVerification";
+
+function uploadQuotaRef(database: FirestoreLike, uid: string, dayKey: string, category: "public" | "kyc"): DocumentReferenceLike {
+  return database.collection("uploadQuotas").doc(`${uid}_${dayKey}_${category}`);
+}
+function mediaUploadLockRef(database: FirestoreLike, key: string): DocumentReferenceLike {
+  return database.collection("mediaUploadLocks").doc(key);
+}
+function riderKycObjectRef(database: FirestoreLike, uid: string, documentKind: string): DocumentReferenceLike {
+  return database.collection("riderKycObjects").doc(`${uid}_${documentKind}`);
+}
+function riderDocumentsRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
+  return database.collection("riderDocuments").doc(uid);
+}
+function riderFaceObjectRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
+  return database.collection("riderFaceObjects").doc(uid);
+}
 
 const identifier = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
 const contentType = z.enum(["image/jpeg", "image/png", "image/webp"]);
@@ -54,10 +73,22 @@ export const riderKycReviewSchema = z.object({
   documentKind: z.enum(["aadhaarFront", "aadhaarBack", "panCopy"]),
 }).strict();
 
+export const riderFaceImageSchema = z.object({
+  contentType,
+  dataBase64: z.string().min(4).max(2_100_000),
+  sha256: hash,
+}).strict();
+
+export const resolveRiderFaceReviewSchema = z.object({
+  riderUid: z.string().trim().min(20).max(128).regex(/^[A-Za-z0-9_-]+$/),
+}).strict();
+
 export type RestaurantMediaUploadInput = z.infer<typeof restaurantMediaUploadSchema>;
 export type PlatformMediaUploadInput = z.infer<typeof platformMediaUploadSchema>;
 export type RiderKycUploadInput = z.infer<typeof riderKycUploadSchema>;
 export type RiderKycReviewInput = z.infer<typeof riderKycReviewSchema>;
+export type RiderFaceImageInput = z.infer<typeof riderFaceImageSchema>;
+export type ResolveRiderFaceReviewInput = z.infer<typeof resolveRiderFaceReviewSchema>;
 
 interface KycObjectRecord {
   objectPath?: string;
@@ -96,23 +127,22 @@ export async function requireRestaurantMediaAccess(
   token: DecodedIdToken,
   input: RestaurantMediaUploadInput,
 ): Promise<void> {
-  const restaurantRef = db.ref(`${ROOT}/catalog/restaurants/${input.restaurantId}`);
-  const restaurantSnapshot = await restaurantRef.get();
-  if (!restaurantSnapshot.exists()) throw new DomainError("not-found", "Restaurant not found.");
+  const restaurantSnapshot = await restaurantRef(firestoreDb, input.restaurantId).get();
+  if (!restaurantSnapshot.exists) throw new DomainError("not-found", "Restaurant not found.");
 
   if (!privileged(token)) {
     const [normalized, legacy] = await Promise.all([
-      db.ref(`${ROOT}/restaurantMembers/${input.restaurantId}/${uid}`).get(),
-      db.ref(`${ROOT}/staff/${uid}`).get(),
+      restaurantMemberRef(firestoreDb, input.restaurantId, uid).get(),
+      legacyStaffRef(firestoreDb, uid).get(),
     ]);
     const permission = input.kind === "menu" ? "menu" : "profile";
     if (!membershipAllows(
-      normalized.val() as RestaurantMembership | null,
+      (normalized.exists ? normalized.data() : null) as RestaurantMembership | null,
       input.restaurantId,
       permission,
       "path-scoped",
     ) && !membershipAllows(
-      legacy.val() as RestaurantMembership | null,
+      (legacy.exists ? legacy.data() : null) as RestaurantMembership | null,
       input.restaurantId,
       permission,
       "legacy-global",
@@ -123,9 +153,9 @@ export async function requireRestaurantMediaAccess(
 
   if (input.kind === "menu") {
     if (!input.entityId) throw new DomainError("invalid-argument", "A menu item ID is required.");
-    const normalizedItem = await db.ref(`${ROOT}/menus/${input.restaurantId}/${input.entityId}`).get();
-    const embeddedMenu = restaurantSnapshot.child("menu").val();
-    if (!normalizedItem.exists() && !hasEmbeddedMenuItem(embeddedMenu, input.entityId)) {
+    const normalizedItem = await menuItemRef(firestoreDb, input.restaurantId, input.entityId).get();
+    const embeddedMenu = (restaurantSnapshot.data() as {menu?: unknown} | null)?.menu;
+    if (!normalizedItem.exists && !hasEmbeddedMenuItem(embeddedMenu, input.entityId)) {
       throw new DomainError("failed-precondition", "Create the menu item before uploading its image.");
     }
   } else if (input.entityId) {
@@ -135,17 +165,22 @@ export async function requireRestaurantMediaAccess(
 
 async function reserveQuota(uid: string, category: "public" | "kyc", bytes: number): Promise<void> {
   const now = Date.now();
-  const ref = db.ref(`${ROOT}/private/uploadQuotas/${uid}/${utcDayKey(now)}/${category}`);
+  const ref = uploadQuotaRef(firestoreDb, uid, utcDayKey(now), category);
   let exceeded = false;
-  const result = await ref.transaction((current: UploadQuota | null) => {
+  const committed = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as UploadQuota : null;
+    let next: UploadQuota;
     try {
-      return reserveUploadQuota(current, bytes, category === "kyc" ? KYC_MEDIA_DAILY_LIMIT : PUBLIC_MEDIA_DAILY_LIMIT, now);
+      next = reserveUploadQuota(current, bytes, category === "kyc" ? KYC_MEDIA_DAILY_LIMIT : PUBLIC_MEDIA_DAILY_LIMIT, now);
     } catch (error) {
       if (error instanceof Error && error.message === "UPLOAD_QUOTA_EXCEEDED") exceeded = true;
-      return undefined;
+      return false;
     }
-  }, undefined, false);
-  if (!result.committed) {
+    transaction.set(ref, next);
+    return true;
+  });
+  if (!committed) {
     if (exceeded) throw new DomainError("resource-exhausted", "Daily image upload allowance reached. Try again tomorrow or contact support.");
     throw new DomainError("aborted", "Upload allowance changed; try again.");
   }
@@ -154,17 +189,24 @@ async function reserveQuota(uid: string, category: "public" | "kyc", bytes: numb
 async function withObjectLease<T>(objectPath: string, work: () => Promise<T>): Promise<T> {
   const key = createHash("sha256").update(objectPath).digest("hex");
   const holder = randomUUID();
-  const ref = db.ref(`${ROOT}/private/mediaUploadLocks/${key}`);
+  const ref = mediaUploadLockRef(firestoreDb, key);
   const now = Date.now();
-  const lock = await ref.transaction((current: {leaseUntil?: number} | null) => {
-    if (Number(current?.leaseUntil ?? 0) > now) return undefined;
-    return {holder, objectPathHash: key, acquiredAt: now, leaseUntil: now + 90_000};
-  }, undefined, false);
-  if (!lock.committed) throw new DomainError("aborted", "Another upload is finishing for this image. Try again shortly.");
+  const acquired = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as {leaseUntil?: number} : null;
+    if (Number(current?.leaseUntil ?? 0) > now) return false;
+    transaction.set(ref, {holder, objectPathHash: key, acquiredAt: now, leaseUntil: now + 90_000});
+    return true;
+  });
+  if (!acquired) throw new DomainError("aborted", "Another upload is finishing for this image. Try again shortly.");
   try {
     return await work();
   } finally {
-    await ref.transaction((current: {holder?: string} | null) => current?.holder === holder ? null : undefined, undefined, false);
+    await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as {holder?: string} : null;
+      if (current?.holder === holder) transaction.delete(ref);
+    });
   }
 }
 
@@ -174,8 +216,13 @@ async function saveObject(
   ownerUid: string,
   visibility: "public" | "private",
   fields: Record<string, string>,
-): Promise<{generation: string; objectPath: string}> {
+): Promise<{generation: string; objectPath: string; downloadToken?: string}> {
   const file = storage.bucket().file(objectPath);
+  // A private object has no public-read Storage rule, so a downstream
+  // caller wanting a plain <img src> URL for it (no Authorization header
+  // possible) needs Firebase's own download-token mechanism, stamped into
+  // the object's metadata here.
+  const downloadToken = visibility === "private" ? randomUUID() : undefined;
   await file.save(image.buffer, {
     resumable: false,
     validation: "crc32c",
@@ -189,6 +236,7 @@ async function saveObject(
         savrivoSha256: image.sha256,
         savrivoWidth: String(image.width),
         savrivoHeight: String(image.height),
+        ...(downloadToken ? {firebaseStorageDownloadTokens: downloadToken} : {}),
         ...fields,
       },
     },
@@ -196,7 +244,7 @@ async function saveObject(
   const [metadata] = await file.getMetadata();
   const generation = String(metadata.generation ?? "");
   if (!generation) throw new DomainError("internal", "Storage did not return an object generation.");
-  return {generation, objectPath};
+  return {generation, objectPath, downloadToken};
 }
 
 function inspect(input: {dataBase64: string; contentType: SupportedImageType; sha256?: string}, purpose: "public" | "kyc") {
@@ -262,7 +310,8 @@ export async function uploadRiderKycObject(
   uid: string,
   input: RiderKycUploadInput,
 ): Promise<{documentKind: RiderKycUploadInput["documentKind"]; uploadedAt: number; sha256: string}> {
-  const rider = (await db.ref(`${ROOT}/riders/${uid}`).get()).val() as {status?: string} | null;
+  const riderSnapshot = await riderRef(firestoreDb, uid).get();
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as {status?: string} | null;
   if (rider && ["approved", "suspended"].includes(String(rider.status ?? ""))) {
     throw new DomainError("failed-precondition", "Approved or suspended identity documents require an administrator-led re-verification.");
   }
@@ -275,21 +324,25 @@ export async function uploadRiderKycObject(
       savrivoDocumentKind: input.documentKind,
     });
     const uploadedAt = Date.now();
-    const tokenlessUrl = publicObjectUrl(storage.bucket().name, objectPath, saved.generation);
-    await db.ref(ROOT).update({
-      [`riderDocuments/${uid}/${input.documentKind}`]: tokenlessUrl,
-      [`riderDocuments/${uid}/updatedAt`]: uploadedAt,
-      [`private/riderKycObjects/${uid}/${input.documentKind}`]: {
-        objectPath,
-        generation: saved.generation,
-        contentType: image.contentType,
-        size: image.buffer.length,
-        width: image.width,
-        height: image.height,
-        sha256: image.sha256,
-        uploadedAt,
-      },
+    const downloadUrl = saved.downloadToken
+      ? privateObjectUrl(storage.bucket().name, objectPath, saved.downloadToken)
+      : publicObjectUrl(storage.bucket().name, objectPath, saved.generation);
+    const batch: WriteBatchLike = firestoreDb.batch();
+    batch.set(riderDocumentsRef(firestoreDb, uid), {
+      [input.documentKind]: downloadUrl,
+      updatedAt: uploadedAt,
+    }, {merge: true});
+    batch.set(riderKycObjectRef(firestoreDb, uid, input.documentKind), {
+      objectPath,
+      generation: saved.generation,
+      contentType: image.contentType,
+      size: image.buffer.length,
+      width: image.width,
+      height: image.height,
+      sha256: image.sha256,
+      uploadedAt,
     });
+    await batch.commit();
     return {documentKind: input.documentKind, uploadedAt, sha256: image.sha256};
   });
 }
@@ -300,13 +353,14 @@ export async function createRiderKycReviewUrl(
   input: RiderKycReviewInput,
 ): Promise<{url: string; expiresAt: number; contentType: string; size: number; sha256: string}> {
   if (!privileged(token)) throw new DomainError("permission-denied", "An owner or operations-admin role is required.");
-  const record = (await db.ref(`${ROOT}/private/riderKycObjects/${input.riderUid}/${input.documentKind}`).get()).val() as KycObjectRecord | null;
+  const recordSnapshot = await riderKycObjectRef(firestoreDb, input.riderUid, input.documentKind).get();
+  const record = (recordSnapshot.exists ? recordSnapshot.data() : null) as KycObjectRecord | null;
   const expectedPrefix = `private/rider-kyc/${input.riderUid}/${input.documentKind}`;
   if (!record?.objectPath || record.objectPath !== expectedPrefix) throw new DomainError("not-found", "Identity document not found.");
   const file = storage.bucket().file(record.objectPath);
   const expiresAt = Date.now() + 5 * 60_000;
   const [url] = await file.getSignedUrl({version: "v4", action: "read", expires: expiresAt});
-  await db.ref(`${ROOT}/private/kycAccessAudit`).push({
+  await firestoreDb.collection("private").doc("kycAccessAudit").collection("entries").doc().set({
     reviewerUid,
     riderUid: input.riderUid,
     documentKind: input.documentKind,
@@ -321,4 +375,136 @@ export async function createRiderKycReviewUrl(
     size: Number(record.size ?? 0),
     sha256: String(record.sha256 ?? ""),
   };
+}
+
+interface RiderFaceState {
+  status?: string;
+  faceMatchStatus?: "unique" | "needs_review";
+}
+
+/**
+ * Signup-time face check: one rider, one account, no matter how many emails
+ * or documents someone cycles through - searches every previously indexed
+ * rider's face, and only indexes this one as new if nothing matched. A match
+ * never blocks the application outright; it parks it as "needs_review" for
+ * an Admin to confirm before anyone is refused on a false positive.
+ */
+export async function submitRiderFaceCheck(
+  uid: string,
+  input: RiderFaceImageInput,
+  awsAccessKeyId: string,
+  awsSecretAccessKey: string,
+): Promise<{status: "unique" | "needs_review"}> {
+  const riderSnapshot = await riderRef(firestoreDb, uid).get();
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as RiderFaceState | null;
+  if (rider?.faceMatchStatus === "unique") {
+    throw new DomainError("failed-precondition", "Identity already verified for this account.");
+  }
+  // Deliberately no status==="approved"/"suspended" block here (unlike the
+  // KYC document upload above): this same function doubles as the one-time
+  // enrollment path for riders approved before face verification existed -
+  // their first post-rollout login has no reference photo to compare yet,
+  // so it calls this (search-and-index), not the 1:1 login compare. The
+  // faceMatchStatus==="unique" check above already closes the real risk
+  // (silently swapping a verified account's face after the fact); nothing
+  // about an approved rider having no face record yet should stay blocked.
+  const image = inspect(input, "kyc");
+  const objectPath = `private/rider-face/${uid}/reference`;
+  return withObjectLease(objectPath, async () => {
+    await reserveQuota(uid, "kyc", image.buffer.length);
+    const result = await checkRiderFaceUniqueness(awsAccessKeyId, awsSecretAccessKey, uid, image.buffer);
+    const saved = await saveObject(objectPath, image, uid, "private", {savrivoPurpose: "rider-face-reference"});
+    const now = Date.now();
+    // Same download-token URL pattern used for riderDocuments (KYC
+    // photos): lets the Admin app show this face photo with a plain
+    // <img src>, no signed-URL round trip, so a reviewer comparing a
+    // flagged match can see both faces without any native app change.
+    const faceReferenceUrl = saved.downloadToken
+      ? privateObjectUrl(storage.bucket().name, objectPath, saved.downloadToken)
+      : publicObjectUrl(storage.bucket().name, objectPath, saved.generation);
+    const batch: WriteBatchLike = firestoreDb.batch();
+    batch.set(riderFaceObjectRef(firestoreDb, uid), {
+      objectPath,
+      generation: saved.generation,
+      contentType: image.contentType,
+      size: image.buffer.length,
+      sha256: image.sha256,
+      uploadedAt: now,
+    });
+    batch.set(riderRef(firestoreDb, uid), result.status === "unique" ? {
+      faceMatchStatus: "unique",
+      rekognitionFaceId: result.rekognitionFaceId,
+      faceMatchCandidates: [],
+      faceReferenceObjectPath: objectPath,
+      faceReferenceUrl,
+      faceIndexedAt: now,
+    } : {
+      faceMatchStatus: "needs_review",
+      faceMatchCandidates: result.status === "needs_review" ? result.candidates : [],
+      faceReferenceObjectPath: objectPath,
+      faceReferenceUrl,
+      faceCheckedAt: now,
+    }, {merge: true});
+    await batch.commit();
+    return {status: result.status};
+  });
+}
+
+/**
+ * Login-time face check: a plain 1:1 compare against the one reference photo
+ * captured at signup - not a database search, so a routine login never has
+ * to scan every other rider's face.
+ */
+export async function verifyRiderLoginFace(
+  uid: string,
+  input: RiderFaceImageInput,
+  awsAccessKeyId: string,
+  awsSecretAccessKey: string,
+): Promise<{verified: boolean}> {
+  const riderSnapshot = await riderRef(firestoreDb, uid).get();
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as
+    {faceReferenceObjectPath?: string; faceMatchStatus?: string} | null;
+  if (!rider?.faceReferenceObjectPath || rider.faceMatchStatus !== "unique") {
+    throw new DomainError("failed-precondition", "Complete identity verification before signing in.");
+  }
+  const image = inspect(input, "kyc");
+  const [referenceBuffer] = await storage.bucket().file(rider.faceReferenceObjectPath).download();
+  const result = await compareRiderLoginFace(awsAccessKeyId, awsSecretAccessKey, uid, referenceBuffer, image.buffer);
+  return {verified: result.verified};
+}
+
+/**
+ * An owner/ops_admin clears a signup-time face match they've confirmed is a
+ * false positive (two genuinely different people) - the rider's reference
+ * photo is indexed for real at this point, same as an unmatched signup
+ * would have been, so a genuine future duplicate of THIS rider is still
+ * caught. Does nothing to the application's own approve/reject status;
+ * that stays a separate, already-existing admin action.
+ */
+export async function resolveRiderFaceReview(
+  reviewerUid: string,
+  token: DecodedIdToken,
+  input: ResolveRiderFaceReviewInput,
+  awsAccessKeyId: string,
+  awsSecretAccessKey: string,
+): Promise<{status: "unique"}> {
+  if (!privileged(token)) throw new DomainError("permission-denied", "An owner or operations-admin role is required.");
+  const riderSnapshot = await riderRef(firestoreDb, input.riderUid).get();
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as
+    {faceMatchStatus?: string; faceReferenceObjectPath?: string} | null;
+  if (!rider || rider.faceMatchStatus !== "needs_review" || !rider.faceReferenceObjectPath) {
+    throw new DomainError("failed-precondition", "This rider has no pending face match to resolve.");
+  }
+  const [referenceBuffer] = await storage.bucket().file(rider.faceReferenceObjectPath).download();
+  const result = await indexRiderFaceDirectly(awsAccessKeyId, awsSecretAccessKey, input.riderUid, referenceBuffer);
+  const now = Date.now();
+  await riderRef(firestoreDb, input.riderUid).set({
+    faceMatchStatus: "unique",
+    rekognitionFaceId: result.rekognitionFaceId,
+    faceMatchCandidates: [],
+    faceIndexedAt: now,
+    faceReviewedAt: now,
+    faceReviewedBy: reviewerUid,
+  }, {merge: true});
+  return {status: "unique"};
 }

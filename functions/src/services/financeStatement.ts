@@ -1,27 +1,14 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ADMIN_LEDGER_ROOT} from "./adminDashboard";
+import {firestoreDb} from "../admin";
 import {validateLedgerJournal, type LedgerEventType, type LedgerJournal} from "../domain/ledger";
+import type {FirestoreLike} from "../firestoreTypes";
+import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
 import {requirePlatformConfigAdminClaim} from "./authz";
 
 export const FINANCE_STATEMENT_MAX_PAGE = 3000;
 
-interface QuerySnapshot {
-  val(): unknown;
-}
-
-interface QueryReference {
-  orderByChild(child: string): QueryReference;
-  startAt(value: number): QueryReference;
-  endAt(value: number): QueryReference;
-  limitToFirst(limit: number): QueryReference;
-  get(): Promise<QuerySnapshot>;
-}
-
-export interface FinanceStatementDatabase {
-  ref(path: string): QueryReference;
-}
+export type FinanceStatementDatabase = FirestoreLike;
 
 export interface FinanceStatementEntryLeg {
   readonly accountId: string;
@@ -220,22 +207,20 @@ function addAllocation(a: FinanceStatementAllocation, b: FinanceStatementAllocat
 export async function readFinanceStatement(
   token: DecodedIdToken,
   input: {startAt: number; endAt: number; limit?: number},
-  database: FinanceStatementDatabase = db as unknown as FinanceStatementDatabase,
+  database: FinanceStatementDatabase = firestoreDb,
 ): Promise<FinanceStatement> {
   requirePlatformConfigAdminClaim(token);
   const limit = bounded(input.limit);
   // Fetch one extra row so `truncated` is authoritative without a separate count query.
-  const snapshot = await database.ref(ADMIN_LEDGER_ROOT)
-    .orderByChild("occurredAt")
-    .startAt(input.startAt)
-    .endAt(input.endAt - 1)
-    .limitToFirst(limit + 1)
+  const snapshot = await database.collection(LEDGER_JOURNALS_COLLECTION)
+    .where("occurredAt", ">=", input.startAt)
+    .where("occurredAt", "<=", input.endAt - 1)
+    .orderBy("occurredAt", "asc")
+    .limit(limit + 1)
     .get();
-  const raw = snapshot.val();
-  const containerInvalid = raw !== null && raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw));
-  const candidates = !containerInvalid && raw && typeof raw === "object" ? Object.values(raw as Record<string, unknown>) : [];
+  const candidates = snapshot.docs.map((doc) => doc.data());
   const journals: LedgerJournal[] = [];
-  let invalidJournalCount = containerInvalid ? 1 : 0;
+  let invalidJournalCount = 0;
   for (const candidate of candidates) {
     try {
       validateLedgerJournal(candidate as LedgerJournal);

@@ -345,13 +345,51 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  private void applyStatusBarStyle(final String hex, final boolean darkIcons) {
+    runOnUiThread(new Runnable() {
+      @Override public void run() {
+        try { getWindow().setStatusBarColor(Color.parseColor(hex)); } catch (Exception ignored) { }
+        android.view.View decor = getWindow().getDecorView();
+        new androidx.core.view.WindowInsetsControllerCompat(getWindow(), decor)
+            .setAppearanceLightStatusBars(darkIcons);
+      }
+    });
+  }
+
   private class NativeBridge {
+    @JavascriptInterface public void setStatusBarStyle(String hex, boolean darkIcons) {
+      if (isTrustedPageLoaded() && hex != null && hex.matches("#[0-9a-fA-F]{6}")) {
+        applyStatusBarStyle(hex, darkIcons);
+      }
+    }
     @JavascriptInterface public void requestCurrentLocation() {
       runOnUiThread(new Runnable() {
         @Override public void run() {
           if (isTrustedPageLoaded()) fetchCurrentLocation();
         }
       });
+    }
+
+    /**
+     * Synchronous so the home screen can show a "location is off" banner on
+     * first paint, before the user taps anything - requestCurrentLocation()
+     * only reports state after the OS permission dialog has already run.
+     * True only when a location fix could actually be read right now:
+     * permission granted AND the device's Location toggle is on. Either one
+     * missing is indistinguishable to the customer ("my location isn't
+     * working"), so this collapses both into the one signal the UI needs.
+     */
+    @JavascriptInterface public boolean isLocationReady() {
+      boolean permissionGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+          || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+      if (!permissionGranted) return false;
+      LocationManager manager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+      try {
+        return manager != null && (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER));
+      } catch (SecurityException ignored) {
+        return false;
+      }
     }
 
     @JavascriptInterface public void signInWithGoogle() {

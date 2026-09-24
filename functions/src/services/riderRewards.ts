@@ -1,8 +1,7 @@
 import {createHash} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {financePayoutAutomationSummary} from "../domain/financePolicy";
 import {createLedgerJournal, validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {DomainError} from "../errors";
@@ -13,12 +12,19 @@ import type {
   UpsertRiderRewardCampaignInput,
 } from "../schemas";
 import type {SavrivoOrder} from "../types";
+import type {
+  CollectionReferenceLike,
+  DocumentReferenceLike,
+  FirestoreLike,
+  TransactionLike,
+} from "../firestoreTypes";
+import {campaignsCollectionRef} from "../firestorePaths";
 import {
   requireApprovedRider,
   requirePlatformConfigAdminClaim,
   type PlatformConfigAdminRole,
 } from "./authz";
-import {LEDGER_JOURNALS_ROOT, persistLedgerJournal, type LedgerTransactionDatabase} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "./ledger";
 import {notifyRiderRewardUpdate} from "./notifications";
 import {loadFinancePolicy} from "./platformConfig";
 import {readRiderFinancialSummary, type RiderFinancialSummary} from "./riderFinance";
@@ -27,42 +33,56 @@ const IST_OFFSET_MS = 330 * 60 * 1_000;
 const DEFAULT_REWARD_TIMEZONE = "Asia/Kolkata";
 const PRESENCE_HEARTBEAT_TIMEOUT_MS = 90_000;
 
-export const RIDER_REWARDS_ROOT = `${ROOT}/private/riderRewards`;
-export const RIDER_REWARD_CAMPAIGNS_ROOT = `${RIDER_REWARDS_ROOT}/campaigns`;
-export const RIDER_REWARD_SETTINGS_ROOT = `${RIDER_REWARDS_ROOT}/settings`;
-export const RIDER_REWARD_SESSION_DAYS_ROOT = `${RIDER_REWARDS_ROOT}/sessionDays`;
-export const RIDER_REWARD_ACTIVITY_EVENTS_ROOT = `${RIDER_REWARDS_ROOT}/activityEvents`;
-export const RIDER_REWARD_PROGRESS_ROOT = `${RIDER_REWARDS_ROOT}/progress`;
-export const RIDER_REWARD_CAMPAIGN_PROGRESS_ROOT = `${RIDER_REWARDS_ROOT}/campaignProgress`;
-export const RIDER_REWARD_REFERRAL_IDENTITIES_ROOT = `${RIDER_REWARDS_ROOT}/referralIdentities`;
-export const RIDER_REWARD_REFERRAL_CODES_ROOT = `${RIDER_REWARDS_ROOT}/referralCodes`;
+export type RiderRewardsDatabase = FirestoreLike;
 
-interface ValueSnapshot {
-  val(): unknown;
+// Nested collection/document paths mirror the RTDB tree this replaces
+// (private/riderRewards/campaigns/{id}, .../sessionDays/{riderId}/{dayKey},
+// etc). The one deliberate schema change is progress snapshots: RTDB fanned
+// each snapshot out to two paths (by rider, by campaign) to get two query
+// orders; Firestore's `where` makes that fan-out unnecessary; one
+// `riderRewardProgress/{progressId}` collection (progressId is already a
+// global hash of campaignId+riderId+periodKey) is queried both ways.
+function riderRewardsDoc(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("riderRewards");
 }
-
-interface TransactionResult {
-  committed: boolean;
-  snapshot: ValueSnapshot;
+function campaignRef(database: FirestoreLike, campaignId: string): DocumentReferenceLike {
+  return campaignsCollectionRef(database).doc(campaignId);
 }
-
-interface RewardReference {
-  orderByChild(child: string): RewardReference;
-  startAt(value: string | number): RewardReference;
-  endAt(value: string | number): RewardReference;
-  limitToLast(limit: number): RewardReference;
-  limitToFirst(limit: number): RewardReference;
-  get(): Promise<ValueSnapshot>;
-  set(value: unknown): Promise<void>;
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<TransactionResult>;
+export function riderRewardSettingsRef(database: FirestoreLike): DocumentReferenceLike {
+  return riderRewardsDoc(database).collection("meta").doc("settings");
 }
-
-export interface RiderRewardsDatabase extends LedgerTransactionDatabase {
-  ref(path: string): RewardReference;
+function sessionDaysRiderDoc(database: FirestoreLike, riderId: string): DocumentReferenceLike {
+  return riderRewardsDoc(database).collection("sessionDays").doc(riderId);
+}
+function sessionDaysCollectionRef(database: FirestoreLike, riderId: string): CollectionReferenceLike {
+  return sessionDaysRiderDoc(database, riderId).collection("days");
+}
+function sessionDayRef(database: FirestoreLike, riderId: string, dayKey: string): DocumentReferenceLike {
+  return sessionDaysCollectionRef(database, riderId).doc(dayKey);
+}
+function activityEventsRiderDoc(database: FirestoreLike, riderId: string): DocumentReferenceLike {
+  return riderRewardsDoc(database).collection("activityEvents").doc(riderId);
+}
+function activityEventsCollectionRef(database: FirestoreLike, riderId: string): CollectionReferenceLike {
+  return activityEventsRiderDoc(database, riderId).collection("events");
+}
+function activityEventRef(database: FirestoreLike, riderId: string, eventId: string): DocumentReferenceLike {
+  return activityEventsCollectionRef(database, riderId).doc(eventId);
+}
+function referralIdentityRef(database: FirestoreLike, riderId: string): DocumentReferenceLike {
+  return riderRewardsDoc(database).collection("referralIdentities").doc(riderId);
+}
+function referralCodeRef(database: FirestoreLike, referralCode: string): DocumentReferenceLike {
+  return riderRewardsDoc(database).collection("referralCodes").doc(referralCode);
+}
+function progressCollectionRef(database: FirestoreLike): CollectionReferenceLike {
+  return riderRewardsDoc(database).collection("progress");
+}
+function progressRef(database: FirestoreLike, progressId: string): DocumentReferenceLike {
+  return progressCollectionRef(database).doc(progressId);
+}
+function auditDocRef(database: FirestoreLike, id: string): DocumentReferenceLike {
+  return database.collection("audit").doc(id);
 }
 
 type RewardSection = "breakfast" | "lunch" | "snacks" | "dinner" | "late_night" | "special";
@@ -523,7 +543,7 @@ const DEFAULT_RIDER_REWARD_SETTINGS: RiderRewardSettings = Object.freeze({
 });
 
 function defaultDatabase(): RiderRewardsDatabase {
-  return db as unknown as RiderRewardsDatabase;
+  return firestoreDb as unknown as RiderRewardsDatabase;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -603,14 +623,6 @@ function normalizeReferralIdentity(riderId: string, value: unknown): RiderReferr
   };
 }
 
-function referralIdentityPath(riderId: string): string {
-  return `${RIDER_REWARD_REFERRAL_IDENTITIES_ROOT}/${riderId}`;
-}
-
-function referralCodePath(referralCode: string): string {
-  return `${RIDER_REWARD_REFERRAL_CODES_ROOT}/${referralCode}`;
-}
-
 function referralCodeCandidateForRider(riderId: string, attempt: number): string {
   const seed = createHash("sha256")
     .update(`rider-referral:v2:${riderId}:${attempt}`)
@@ -626,18 +638,20 @@ async function reserveReferralCode(
   riderId: string,
   assignedAt: number,
 ): Promise<boolean> {
-  const result = await database.ref(referralCodePath(referralCode)).transaction((current) => {
-    const existing = record(current);
+  const ref = referralCodeRef(database, referralCode);
+  return database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const existing = record(snapshot.exists ? snapshot.data() : null);
     const existingRiderId = identifier(existing.riderId);
-    if (existingRiderId && existingRiderId !== riderId) return undefined;
-    return {
+    if (existingRiderId && existingRiderId !== riderId) return false;
+    transaction.set(ref, {
       schemaVersion: 1,
       riderId,
       referralCode,
       assignedAt: integer(existing.assignedAt, assignedAt, 1),
-    };
-  }, undefined, false);
-  return result.committed;
+    });
+    return true;
+  });
 }
 
 async function ensureRiderReferralIdentity(
@@ -645,8 +659,8 @@ async function ensureRiderReferralIdentity(
   database: RiderRewardsDatabase,
   now: () => number = Date.now,
 ): Promise<RiderReferralIdentity> {
-  const existingSnapshot = await database.ref(referralIdentityPath(riderId)).get();
-  const existing = normalizeReferralIdentity(riderId, existingSnapshot.val());
+  const existingSnapshot = await referralIdentityRef(database, riderId).get();
+  const existing = normalizeReferralIdentity(riderId, existingSnapshot.exists ? existingSnapshot.data() : null);
   if (existing && await reserveReferralCode(database, existing.referralCode, riderId, existing.assignedAt)) {
     return existing;
   }
@@ -654,18 +668,21 @@ async function ensureRiderReferralIdentity(
   for (let attempt = 0; attempt < 5_000; attempt += 1) {
     const referralCode = referralCodeCandidateForRider(riderId, attempt);
     if (!await reserveReferralCode(database, referralCode, riderId, assignedAt)) continue;
-    const result = await database.ref(referralIdentityPath(riderId)).transaction((current) => {
-      const currentIdentity = normalizeReferralIdentity(riderId, current);
+    const ref = referralIdentityRef(database, riderId);
+    const identity = await database.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const currentIdentity = normalizeReferralIdentity(riderId, snapshot.exists ? snapshot.data() : null);
       if (currentIdentity && currentIdentity.referralCode === referralCode) return currentIdentity;
-      return {
+      const next: RiderReferralIdentity = {
         schemaVersion: 1,
         riderId,
         referralCode,
         assignedAt,
       };
-    }, undefined, false);
-    const identity = normalizeReferralIdentity(riderId, result.snapshot.val());
-    if (result.committed && identity) return identity;
+      transaction.set(ref, next);
+      return next;
+    });
+    if (identity) return identity;
   }
   throw new DomainError("resource-exhausted", "Referral code could not be assigned safely.");
 }
@@ -678,8 +695,8 @@ async function inviterIdFromReferralInput(
   if (!normalized) return null;
   const sixDigitCode = normalizeSixDigitReferralCode(normalized);
   if (sixDigitCode) {
-    const snapshot = await database.ref(referralCodePath(sixDigitCode)).get();
-    const riderId = identifier(record(snapshot.val()).riderId);
+    const snapshot = await referralCodeRef(database, sixDigitCode).get();
+    const riderId = identifier(record(snapshot.exists ? snapshot.data() : null).riderId);
     if (riderId) return riderId;
   }
   return legacyRiderIdFromReferralCode(normalized);
@@ -1184,8 +1201,10 @@ function sessionDayKeys(value: unknown, riderId: string): ReadonlySet<string> {
 }
 
 async function readSessionDayKeys(database: RiderRewardsDatabase, riderId: string): Promise<ReadonlySet<string>> {
-  const snapshot = await database.ref(`${RIDER_REWARD_SESSION_DAYS_ROOT}/${riderId}`).get();
-  return sessionDayKeys(snapshot.val(), riderId);
+  const snapshot = await sessionDaysCollectionRef(database, riderId).get();
+  const source: Record<string, unknown> = {};
+  for (const doc of snapshot.docs) source[doc.id] = doc.data();
+  return sessionDayKeys(source, riderId);
 }
 
 function formatRewardDayKey(dayKey: string): string {
@@ -1728,7 +1747,6 @@ async function recordRiderRewardActivityEvent(
   const riderId = identifier(riderIdInput);
   const eventId = text(event.eventId, 180);
   if (!riderId || !eventId) return;
-  const path = `${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/${riderId}/${eventId}`;
   const candidate = {
     schemaVersion: 1,
     riderId,
@@ -1738,7 +1756,11 @@ async function recordRiderRewardActivityEvent(
     orderId: text(event.orderId, 120),
     metadata: event.metadata ?? {},
   } satisfies RiderRewardActivityEvent;
-  await database.ref(path).transaction((current) => current ?? candidate, undefined, false);
+  const ref = activityEventRef(database, riderId, eventId);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) transaction.set(ref, candidate);
+  });
 }
 
 async function readActivityEvents(
@@ -1749,15 +1771,14 @@ async function readActivityEvents(
   limit = 5_000,
 ): Promise<readonly RiderRewardActivityEvent[]> {
   if (endAt < startAt) return [];
-  const snapshot = await database.ref(`${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/${riderId}`)
-    .orderByChild("occurredAt")
-    .startAt(startAt)
-    .endAt(endAt)
-    .limitToLast(limit)
+  const snapshot = await activityEventsCollectionRef(database, riderId)
+    .where("occurredAt", ">=", startAt)
+    .where("occurredAt", "<=", endAt)
+    .orderBy("occurredAt", "desc")
+    .limit(limit)
     .get();
-  const source = record(snapshot.val());
-  return Object.entries(source)
-    .map(([eventId, value]) => activityEvent(value, riderId, eventId))
+  return snapshot.docs
+    .map((doc) => activityEvent(doc.data(), riderId, doc.id))
     .filter((entry): entry is RiderRewardActivityEvent => entry !== null)
     .sort((left, right) => left.occurredAt - right.occurredAt || left.eventId.localeCompare(right.eventId));
 }
@@ -2640,22 +2661,11 @@ function riderCampaignNeedsProgressTracking(campaign: RiderRewardCampaign): bool
     campaign.requireDailyLoginSession;
 }
 
-function campaignProgressPath(snapshot: RiderRewardProgressSnapshot): string {
-  return `${RIDER_REWARD_CAMPAIGN_PROGRESS_ROOT}/${snapshot.campaignId}/${snapshot.progressId}`;
-}
-
-function riderProgressPath(snapshot: RiderRewardProgressSnapshot): string {
-  return `${RIDER_REWARD_PROGRESS_ROOT}/${snapshot.riderId}/${snapshot.campaignId}/${snapshot.progressId}`;
-}
-
 async function persistRewardProgressSnapshot(
   snapshot: RiderRewardProgressSnapshot,
   database: RiderRewardsDatabase,
 ): Promise<void> {
-  await Promise.all([
-    database.ref(riderProgressPath(snapshot)).set(snapshot),
-    database.ref(campaignProgressPath(snapshot)).set(snapshot),
-  ]);
+  await progressRef(database, snapshot.progressId).set(snapshot);
 }
 
 async function persistCompletedSessionDays(
@@ -2677,9 +2687,11 @@ async function persistCompletedSessionDays(
     }
   }
   await Promise.all([...perDayCounts.entries()].map(async ([dayKey, completedSessions]) => {
-    await database.ref(`${RIDER_REWARD_SESSION_DAYS_ROOT}/${riderId}/${dayKey}`).transaction((current) => {
-      const existing = sessionDay(current, riderId, dayKey);
-      return {
+    const ref = sessionDayRef(database, riderId, dayKey);
+    await database.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const existing = sessionDay(snapshot.exists ? snapshot.data() : null, riderId, dayKey);
+      transaction.set(ref, {
         schemaVersion: 1,
         riderId,
         dayKey,
@@ -2687,8 +2699,8 @@ async function persistCompletedSessionDays(
         lastSeenAt: existing?.lastSeenAt ?? 0,
         completedSessions: Math.max(existing?.completedSessions ?? 0, completedSessions),
         updatedAt: Math.max(existing?.updatedAt ?? 0, recordedAt),
-      };
-    }, undefined, false);
+      });
+    });
   }));
 }
 
@@ -2697,13 +2709,13 @@ async function readCampaignProgressSnapshots(
   campaignId: string,
   limit: number,
 ): Promise<readonly RiderRewardProgressSnapshot[]> {
-  const snapshot = await database.ref(`${RIDER_REWARD_CAMPAIGN_PROGRESS_ROOT}/${campaignId}`)
-    .orderByChild("generatedAt")
-    .limitToLast(limit)
+  const snapshot = await progressCollectionRef(database)
+    .where("campaignId", "==", campaignId)
+    .orderBy("generatedAt", "desc")
+    .limit(limit)
     .get();
-  const source = record(snapshot.val());
-  return Object.values(source)
-    .map((entry) => rewardProgressSnapshot(entry))
+  return snapshot.docs
+    .map((doc) => rewardProgressSnapshot(doc.data()))
     .filter((entry): entry is RiderRewardProgressSnapshot => entry !== null)
     .sort((left, right) => right.generatedAt - left.generatedAt || left.progressId.localeCompare(right.progressId));
 }
@@ -2875,8 +2887,13 @@ async function readRecentLedgerJournals(
   limit: number,
   database: RiderRewardsDatabase,
 ): Promise<readonly LedgerJournal[]> {
-  const page = await database.ref(LEDGER_JOURNALS_ROOT).orderByChild("occurredAt").limitToLast(limit).get();
-  return validJournalPage(page.val());
+  const page = await database.collection(LEDGER_JOURNALS_COLLECTION)
+    .orderBy("occurredAt", "desc")
+    .limit(limit)
+    .get();
+  const source: Record<string, unknown> = {};
+  for (const doc of page.docs) source[doc.id] = doc.data();
+  return validJournalPage(source);
 }
 
 function relevantRiderJournal(journal: LedgerJournal, riderId: string): boolean {
@@ -3160,17 +3177,14 @@ function amountForMilestone(campaign: RiderRewardCampaign, currentCount: number)
 }
 
 async function readRiderProfile(database: RiderRewardsDatabase, riderId: string): Promise<Record<string, unknown>> {
-  const snapshot = await database.ref(`${ROOT}/riders/${riderId}`).get();
-  return record(snapshot.val());
+  const snapshot = await database.collection("riders").doc(riderId).get();
+  return record(snapshot.exists ? snapshot.data() : null);
 }
 
 async function readAllRiders(database: RiderRewardsDatabase): Promise<Record<string, Record<string, unknown>>> {
-  const snapshot = await database.ref(`${ROOT}/riders`).get();
+  const snapshot = await database.collection("riders").get();
   const out: Record<string, Record<string, unknown>> = {};
-  const source = record(snapshot.val());
-  for (const [riderId, value] of Object.entries(source)) {
-    out[riderId] = record(value);
-  }
+  for (const doc of snapshot.docs) out[doc.id] = record(doc.data());
   return out;
 }
 
@@ -3178,10 +3192,9 @@ async function readCampaigns(
   database: RiderRewardsDatabase,
   limit: number,
 ): Promise<readonly RiderRewardCampaign[]> {
-  const snapshot = await database.ref(RIDER_REWARD_CAMPAIGNS_ROOT).get();
-  const source = record(snapshot.val());
-  const campaigns = Object.entries(source)
-    .map(([campaignId, value]) => normalizeRewardCampaign(campaignId, value))
+  const snapshot = await campaignsCollectionRef(database).get();
+  const campaigns = snapshot.docs
+    .map((doc) => normalizeRewardCampaign(doc.id, doc.data()))
     .filter((campaign): campaign is RiderRewardCampaign => campaign !== null)
     .sort((left, right) => right.updatedAt - left.updatedAt || left.campaignId.localeCompare(right.campaignId));
   return campaigns.slice(0, limit);
@@ -3532,14 +3545,14 @@ export async function readRiderRewardsAdminDashboard(
 ): Promise<RiderRewardsAdminDashboard> {
   requirePlatformConfigAdminClaim(token);
   const [settingsSnapshot, campaigns, riders, journals] = await Promise.all([
-    database.ref(RIDER_REWARD_SETTINGS_ROOT).get(),
+    riderRewardSettingsRef(database).get(),
     readCampaigns(database, input.campaignLimit),
     readAllRiders(database),
     readRecentLedgerJournals(input.ledgerLimit, database),
   ]);
   return {
     generatedAt: now(),
-    settings: normalizeRewardSettings(settingsSnapshot.val()),
+    settings: normalizeRewardSettings(settingsSnapshot.exists ? settingsSnapshot.data() : null),
     campaigns: await Promise.all(campaigns.map(async (campaign) => {
       const accrual = campaignAccrualSummary(campaign, journals);
       const snapshots = latestSnapshotPerRider(await readCampaignProgressSnapshots(
@@ -3604,34 +3617,31 @@ export async function upsertRiderRewardCampaign(
   now: () => number = Date.now,
 ): Promise<{campaign: RiderRewardCampaign; idempotent: boolean}> {
   const actorRole = requirePlatformConfigAdminClaim(token);
-  const path = `${RIDER_REWARD_CAMPAIGNS_ROOT}/${input.campaignId}`;
+  const ref = campaignRef(database, input.campaignId);
   const requestHash = rewardSettingsHash(input);
-  let abort: DomainError | null = null;
-  const result = await database.ref(path).transaction((current) => {
-    abort = null;
+  const campaign = await database.runTransaction(async (transaction: TransactionLike) => {
+    const currentSnapshot = await transaction.get(ref);
+    const current = currentSnapshot.exists ? currentSnapshot.data() : null;
     const existing = record(current);
     const existingUpdatedAt = integer(existing.updatedAt, 0, 0);
     const existingOperationId = text(existing.lastOperationId, 128);
     const existingRequestHash = text(existing.lastRequestHash, 128);
     if (existingOperationId && existingOperationId === input.operationId) {
       if (existingRequestHash !== requestHash) {
-        abort = new DomainError("already-exists", "Operation id was already used for a different reward campaign change.");
-        return undefined;
+        throw new DomainError("already-exists", "Operation id was already used for a different reward campaign change.");
       }
-      return existing;
+      const unchanged = normalizeRewardCampaign(input.campaignId, existing);
+      if (!unchanged) throw new DomainError("data-loss", "The reward campaign could not be verified after save.");
+      return unchanged;
     }
-    // current can be null on the transaction's first pass even when the path
-    // has real data - the RTDB client hasn't synced this location locally
-    // yet, not a signal that the record is genuinely empty. Only compare
-    // against expectedUpdatedAt once we have data to compare against;
-    // otherwise the SDK's own optimistic-concurrency retry (which re-invokes
-    // this callback with the real committed value) would be short-circuited
-    // by an abort based on a value we never actually confirmed.
+    // Firestore transactions always read the real committed value (unlike
+    // RTDB, which could hand a transaction callback a stale/unsynced local
+    // cache on its first pass), so the optimistic-concurrency check below can
+    // safely run on every read that finds existing data.
     if (current !== null && input.expectedUpdatedAt !== undefined && existingUpdatedAt !== input.expectedUpdatedAt) {
-      abort = new DomainError("aborted", "Reward campaign changed; refresh and retry.");
-      return undefined;
+      throw new DomainError("aborted", "Reward campaign changed; refresh and retry.");
     }
-    return {
+    const next = {
       ...input.campaign,
       schemaVersion: 1,
       updatedAt: now(),
@@ -3640,11 +3650,17 @@ export async function upsertRiderRewardCampaign(
       lastOperationId: input.operationId,
       lastRequestHash: requestHash,
     };
-  }, undefined, false);
-  if (!result.committed) throw abort ?? new DomainError("aborted", "Reward campaign could not be updated safely.");
-  const campaign = normalizeRewardCampaign(input.campaignId, result.snapshot.val());
-  if (!campaign) throw new DomainError("data-loss", "The reward campaign could not be verified after save.");
-  await database.ref(`${ROOT}/audit/rider-reward-${campaign.campaignId}-${input.operationId.slice(0, 24)}`).set({
+    transaction.set(ref, next);
+    const normalized = normalizeRewardCampaign(input.campaignId, next);
+    if (!normalized) throw new DomainError("data-loss", "The reward campaign could not be verified after save.");
+    return normalized;
+  });
+  // Post-hoc, like `updateRiderRewardSettings`: true whenever the committed
+  // record's operation id matches what was just requested (the request hash
+  // was already checked above, in the transaction, before either return
+  // path), which holds for both a fresh write and a detected-duplicate retry.
+  const idempotent = campaign.lastOperationId === input.operationId;
+  await auditDocRef(database, `rider-reward-${campaign.campaignId}-${input.operationId.slice(0, 24)}`).set({
     id: `rider-reward-${campaign.campaignId}-${input.operationId.slice(0, 24)}`,
     action: "rider_reward_campaign.upsert",
     target: campaign.campaignId,
@@ -3654,7 +3670,7 @@ export async function upsertRiderRewardCampaign(
     actorRole,
     at: campaign.updatedAt,
   });
-  return {campaign, idempotent: campaign.lastOperationId === input.operationId && text(record(result.snapshot.val()).lastRequestHash, 128) === requestHash};
+  return {campaign, idempotent};
 }
 
 export async function updateRiderRewardSettings(
@@ -3666,28 +3682,26 @@ export async function updateRiderRewardSettings(
 ): Promise<RiderRewardSettings> {
   const actorRole = requirePlatformConfigAdminClaim(token);
   const requestHash = rewardSettingsHash(input);
-  let abort: DomainError | null = null;
-  const result = await database.ref(RIDER_REWARD_SETTINGS_ROOT).transaction((current) => {
-    abort = null;
+  const ref = riderRewardSettingsRef(database);
+  return database.runTransaction(async (transaction: TransactionLike) => {
+    const currentSnapshot = await transaction.get(ref);
+    const current = currentSnapshot.exists ? currentSnapshot.data() : null;
     const existing = normalizeRewardSettings(current);
     const raw = record(current);
     const existingRequestHash = text(raw.lastRequestHash, 128);
     if (existing.lastOperationId && existing.lastOperationId === input.operationId) {
       if (existingRequestHash !== requestHash) {
-        abort = new DomainError("already-exists", "Operation id was already used for a different reward settings change.");
-        return undefined;
+        throw new DomainError("already-exists", "Operation id was already used for a different reward settings change.");
       }
-      return raw;
+      return existing;
     }
-    // See the matching comment in upsertRiderRewardCampaign above: current
-    // can be null on the transaction's first pass even when real data
-    // exists at this path, so only enforce the optimistic-concurrency check
-    // once we actually have data to compare expectedUpdatedAt against.
+    // Firestore transactions always read the real committed value, so this
+    // optimistic-concurrency check can safely run on every read that finds
+    // existing data (see the matching comment in upsertRiderRewardCampaign).
     if (current !== null && input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
-      abort = new DomainError("aborted", "Reward settings changed; refresh and retry.");
-      return undefined;
+      throw new DomainError("aborted", "Reward settings changed; refresh and retry.");
     }
-    return {
+    const next = {
       schemaVersion: 1,
       payoutMinimumPaise: input.payoutMinimumPaise ?? existing.payoutMinimumPaise,
       referralProgramActive: input.referralProgramActive ?? existing.referralProgramActive,
@@ -3701,9 +3715,9 @@ export async function updateRiderRewardSettings(
       lastOperationId: input.operationId,
       lastRequestHash: requestHash,
     };
-  }, undefined, false);
-  if (!result.committed) throw abort ?? new DomainError("aborted", "Reward settings could not be updated safely.");
-  return normalizeRewardSettings(result.snapshot.val());
+    transaction.set(ref, next);
+    return normalizeRewardSettings(next);
+  });
 }
 
 function rewardJournalEarnedInPeriod(
@@ -3775,11 +3789,11 @@ export async function readRiderRewardsDashboard(
       riderId,
       ledgerLimit: Math.min(input.ledgerLimit, 250),
       historyLimit: Math.min(input.historyLimit, 100),
-    }, database as Parameters<typeof readRiderFinancialSummary>[3], {
+    }, database as unknown as Parameters<typeof readRiderFinancialSummary>[3], {
       requireRider: requireApprovedRider,
       requireAdmin: requirePlatformConfigAdminClaim,
     }, now),
-    database.ref(RIDER_REWARD_SETTINGS_ROOT).get(),
+    riderRewardSettingsRef(database).get(),
     readCampaigns(database, input.campaignLimit),
     readRiderProfile(database, riderId),
     readAllRiders(database),
@@ -3788,7 +3802,7 @@ export async function readRiderRewardsDashboard(
     loadFinancePolicy(referenceAt),
     ensureRiderReferralIdentity(riderId, database, now),
   ]);
-  const settings = normalizeRewardSettings(settingsSnapshot.val());
+  const settings = normalizeRewardSettings(settingsSnapshot.exists ? settingsSnapshot.data() : null);
   const rewardJournals = journalMetadataMap(recentJournals.filter((journal) => relevantRiderJournal(journal, riderId)));
   const riderJournals = Array.from(rewardJournals.values());
   const completedTripsAfter = completedTripsLifetimeForRider(riderProfile, riderJournals, riderId);
@@ -3957,12 +3971,12 @@ export async function evaluateRiderRewardsForDeliveredOrder(
   }, database);
   const [campaigns, settingsSnapshot, riderProfile, journals, riderSessionKeys] = await Promise.all([
     readCampaigns(database, 250),
-    database.ref(RIDER_REWARD_SETTINGS_ROOT).get(),
+    riderRewardSettingsRef(database).get(),
     readRiderProfile(database, riderId),
     readRecentLedgerJournals(1_000, database),
     readSessionDayKeys(database, riderId),
   ]);
-  const settings = normalizeRewardSettings(settingsSnapshot.val());
+  const settings = normalizeRewardSettings(settingsSnapshot.exists ? settingsSnapshot.data() : null);
   const riderJournals = journals.filter((journal) => relevantRiderJournal(journal, riderId));
   const completedTripsAfter = completedDeliveriesInWindow(riderJournals, riderId, 0, Number.MAX_SAFE_INTEGER);
   const rewardCandidates: Array<{journal: LedgerJournal; amountPaise: number; stacking: RewardStacking; priority: number}> = [];
@@ -4054,10 +4068,11 @@ export async function recordRiderRewardSessionDay(
   if (!riderId) return;
   const occurredAt = integer(recordedAt, Date.now(), 1);
   const dayKey = referenceDayKey(occurredAt);
-  const path = `${RIDER_REWARD_SESSION_DAYS_ROOT}/${riderId}/${dayKey}`;
-  await database.ref(path).transaction((current) => {
-    const existing = sessionDay(current, riderId, dayKey);
-    return {
+  const ref = sessionDayRef(database, riderId, dayKey);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const existing = sessionDay(snapshot.exists ? snapshot.data() : null, riderId, dayKey);
+    transaction.set(ref, {
       schemaVersion: 1,
       riderId,
       dayKey,
@@ -4065,8 +4080,8 @@ export async function recordRiderRewardSessionDay(
       lastSeenAt: existing?.lastSeenAt ? Math.max(existing.lastSeenAt, occurredAt) : occurredAt,
       completedSessions: existing?.completedSessions ?? 0,
       updatedAt: Math.max(existing?.updatedAt ?? 0, occurredAt),
-    };
-  }, undefined, false);
+    });
+  });
 }
 
 export const __test = {

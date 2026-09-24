@@ -1,10 +1,11 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import type {OperationalOrderProjection} from "../domain/operationalOrders";
+import type {FirestoreLike} from "../firestoreTypes";
 import {requirePlatformConfigAdminClaim} from "./authz";
+import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
 import {
   listActiveOperationalOrders,
   listRecentOperationalOrders,
@@ -12,24 +13,9 @@ import {
 import type {AdminDashboardQueryInput} from "../schemas";
 
 export const ADMIN_LEDGER_MAX_PAGE = 250;
-export const ADMIN_LEDGER_ROOT = `${ROOT}/private/financialLedger/journals`;
 export const ADMIN_COD_EXPOSURE_MAX_PAGE = 100;
-export const ADMIN_COD_EXPOSURE_ROOT = `${ROOT}/riderWallets`;
 
-interface QuerySnapshot {
-  val(): unknown;
-}
-
-interface QueryReference {
-  orderByChild(child: string): QueryReference;
-  startAt(value: string | number): QueryReference;
-  limitToLast(limit: number): QueryReference;
-  get(): Promise<QuerySnapshot>;
-}
-
-export interface AdminDashboardDatabase {
-  ref(path: string): QueryReference;
-}
+export type AdminDashboardDatabase = FirestoreLike;
 
 export interface AdminFinanceSummary {
   readonly scope: "bounded_recent_journals";
@@ -140,24 +126,28 @@ function journalValues(value: unknown): RecentJournalPage {
 
 export async function listRecentLedgerJournals(
   limit: number,
-  database: AdminDashboardDatabase = db as unknown as AdminDashboardDatabase,
+  database: AdminDashboardDatabase = firestoreDb,
 ): Promise<LedgerJournal[]> {
-  const snapshot = await database.ref(ADMIN_LEDGER_ROOT)
-    .orderByChild("occurredAt")
-    .limitToLast(bounded(limit))
+  const snapshot = await database.collection(LEDGER_JOURNALS_COLLECTION)
+    .orderBy("occurredAt", "desc")
+    .limit(bounded(limit))
     .get();
-  return journalValues(snapshot.val()).journals;
+  const source: Record<string, unknown> = {};
+  for (const doc of snapshot.docs) source[doc.id] = doc.data();
+  return journalValues(source).journals;
 }
 
 async function readRecentLedgerPage(
   limit: number,
   database: AdminDashboardDatabase,
 ): Promise<RecentJournalPage> {
-  const snapshot = await database.ref(ADMIN_LEDGER_ROOT)
-    .orderByChild("occurredAt")
-    .limitToLast(bounded(limit))
+  const snapshot = await database.collection(LEDGER_JOURNALS_COLLECTION)
+    .orderBy("occurredAt", "desc")
+    .limit(bounded(limit))
     .get();
-  const page = journalValues(snapshot.val());
+  const source: Record<string, unknown> = {};
+  for (const doc of snapshot.docs) source[doc.id] = doc.data();
+  const page = journalValues(source);
   if (page.invalidJournalCount > 0) {
     logger.error("ADMIN_FINANCE_JOURNAL_VALIDATION_FAILED", {
       invalidJournalCount: page.invalidJournalCount,
@@ -173,20 +163,15 @@ async function readCodExposure(
 ): Promise<AdminCodExposureSummary> {
   const limit = boundedCod(requestedLimit);
   // Fetch one extra row so `truncated` is authoritative without an unbounded count query.
-  const snapshot = await database.ref(ADMIN_COD_EXPOSURE_ROOT)
-    .orderByChild("codOutstanding")
-    .startAt(0.01)
-    .limitToLast(limit + 1)
+  const snapshot = await database.collection("riderWallets")
+    .where("codOutstanding", ">=", 0.01)
+    .orderBy("codOutstanding", "desc")
+    .limit(limit + 1)
     .get();
-  const raw = snapshot.val();
-  const containerInvalid = raw !== null && raw !== undefined &&
-    (!raw || typeof raw !== "object" || Array.isArray(raw));
-  const entries = !containerInvalid && raw && typeof raw === "object"
-    ? Object.entries(raw as Record<string, unknown>)
-    : [];
+  const entries = snapshot.docs.map((doc) => [doc.id, doc.data()] as const);
   const truncated = entries.length > limit;
   const riders: AdminRiderCodExposure[] = [];
-  let invalidWalletCount = containerInvalid ? 1 : 0;
+  let invalidWalletCount = 0;
   for (const [riderId, value] of entries) {
     const parsed = parseRiderCodExposure(riderId, value);
     if (parsed) riders.push(parsed);
@@ -250,7 +235,7 @@ function statusCounts(orders: readonly OperationalOrderProjection[]): Readonly<R
 export async function readAdminDashboard(
   token: DecodedIdToken,
   input: AdminDashboardQueryInput,
-  database: AdminDashboardDatabase = db as unknown as AdminDashboardDatabase,
+  database: AdminDashboardDatabase = firestoreDb,
 ): Promise<{
   generatedAt: number;
   scope: "bounded_operational_snapshot";

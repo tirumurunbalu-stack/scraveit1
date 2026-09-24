@@ -40,7 +40,7 @@ function advance(
 
 describe("server tracking evidence", () => {
   it("rejects malformed, inaccurate, stale, replayed, and future fixes", () => {
-    expect(normalizeTrackingFix({...fix(1_000_000), accuracy: 51}, "SV-TRACK")).toBeNull();
+    expect(normalizeTrackingFix({...fix(1_000_000), accuracy: 81}, "SV-TRACK")).toBeNull();
     expect(normalizeTrackingFix({...fix(1_000_000), riderId: ""}, "SV-TRACK")).toBeNull();
     const valid = normalizeTrackingFix(fix(1_000_000), "SV-TRACK")!;
     expect(isFreshMonotonicFix(valid, 999_999, 1_010_000)).toBe(true);

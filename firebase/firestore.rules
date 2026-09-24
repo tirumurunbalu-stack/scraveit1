@@ -1,0 +1,413 @@
+rules_version = '2';
+
+// Firestore rules matched against the ACTUAL schema `functions/src` reads and
+// writes (see firestorePaths.ts and each service file) - not the earlier,
+// more aspirational schema the migration plan first sketched. Two schema
+// decisions from that original sketch never actually happened during the
+// Cloud Functions conversion, and this file was drifting from reality until
+// this pass fixed it:
+//
+//   - 'staff/{uid}' and 'restaurantMembers/{restaurantId}_{uid}' were meant
+//     to collapse into one 'staffMembers' collection, but the real code kept
+//     them separate (collapsing depends on the Phase 4 data migration having
+//     run first - doing it in rules alone would make every membership check
+//     here silently pass against an empty collection while the real server
+//     code kept reading the two real ones).
+//   - 'restaurants/{id}/menuItems/{itemId}' was meant to replace both menu
+//     sources, but the real code kept the top-level 'menus/{restaurantId}'
+//     document with an 'items' subcollection instead (same reasoning as
+//     above - the embedded restaurant.menu field still has its own callers).
+//
+// Everything below matches what the server (and, from here, direct client
+// reads under Phase 3) actually reads and writes today.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------
+    // Reusable authorization helpers.
+    // ---------------------------------------------------------------
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isPrivileged() {
+      return signedIn() &&
+        (request.auth.token.savrivoRole == 'owner' || request.auth.token.savrivoRole == 'ops_admin');
+    }
+
+    function isOwnUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Mirrors authz.ts's membershipAllows(): an active membership grants
+    // 'orders'/'handover' style access only via owner/manager role or the
+    // named permission flag being explicitly true.
+    function memberGrants(member, permission) {
+      return member.active == true &&
+        (member.role in ['restaurant_owner', 'restaurant_manager'] ||
+         (member.permissions != null && member.permissions[permission] == true));
+    }
+
+    // restaurantMembers/{restaurantId}_{uid} - composite id, so this is a
+    // point lookup, not a query. A record's own 'restaurantId' field is
+    // optional here (domain/restaurantAccess.ts trusts the composite id's
+    // own scoping when the field is absent); a legacy staff/{uid} record has
+    // no such path scoping, so its 'restaurantId' field is required instead.
+    function normalizedMemberGrants(restaurantId, permission) {
+      let path = /databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid);
+      return exists(path) &&
+        (!('restaurantId' in get(path).data) || get(path).data.restaurantId == restaurantId) &&
+        memberGrants(get(path).data, permission);
+    }
+
+    function legacyStaffGrants(restaurantId, permission) {
+      let path = /databases/$(database)/documents/staff/$(request.auth.uid);
+      return exists(path) && get(path).data.restaurantId == restaurantId &&
+        memberGrants(get(path).data, permission);
+    }
+
+    function isRestaurantStaff(restaurantId, permission) {
+      return signedIn() && restaurantId != null &&
+        (normalizedMemberGrants(restaurantId, permission) || legacyStaffGrants(restaurantId, permission));
+    }
+
+    function isRestaurantOwnerStaff(restaurantId) {
+      return isRestaurantStaff(restaurantId, 'ownership') ||
+        (signedIn() && restaurantId != null && (
+          (exists(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)) &&
+            get(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)).data.active == true &&
+            get(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)).data.role == 'restaurant_owner') ||
+          (exists(/databases/$(database)/documents/staff/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.restaurantId == restaurantId &&
+            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.active == true &&
+            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role == 'restaurant_owner')
+        ));
+    }
+
+    function canManageRestaurant(restaurantId, permission) {
+      return isPrivileged() || isRestaurantStaff(restaurantId, permission);
+    }
+
+    function riderDoc(riderId) {
+      return get(/databases/$(database)/documents/riders/$(riderId));
+    }
+
+    function isApprovedRider() {
+      return signedIn() && riderDoc(request.auth.uid).data.status == 'approved';
+    }
+
+    // ---------------------------------------------------------------
+    // Catalog: restaurants + their menu items (public read, browse-only)
+    // ---------------------------------------------------------------
+    match /restaurants/{restaurantId} {
+      allow read: if true; // Restaurant listings are public browsing, same as any food-delivery app's menu pages.
+      allow create, delete: if isPrivileged();
+      allow update: if isPrivileged()
+        || canManageRestaurant(restaurantId, 'profile')
+        || canManageRestaurant(restaurantId, 'availability');
+    }
+
+    // menus/{restaurantId} is a document (not itself readable content - the
+    // real items live in its 'items' subcollection); catalog.ts also falls
+    // back to an embedded restaurant.menu array when this is empty, so this
+    // stays public-read like the restaurant doc itself.
+    match /menus/{restaurantId} {
+      allow read: if true;
+      allow write: if canManageRestaurant(restaurantId, 'menu');
+
+      match /items/{itemId} {
+        allow read: if true;
+        allow write: if canManageRestaurant(restaurantId, 'menu');
+      }
+    }
+
+    // Search-token inverted index. Each token is its own document in a
+    // per-city subcollection (not a field on the city document) - a client's
+    // type-ahead needs to range over the key space itself, which Firestore
+    // only supports via document-id range queries, never over field names
+    // inside one document. Same public-read reasoning as catalog itself.
+    match /catalogSearchTokens/{cityKey}/tokens/{entry} {
+      allow read: if true;
+      allow write: if isPrivileged(); // Cloud Functions only in practice (Admin SDK bypasses rules).
+    }
+
+    // ---------------------------------------------------------------
+    // Restaurant staff - two real sources, not a collapsed one (see the
+    // header comment). A membership record's own uid is its document id
+    // suffix, not a stored field, so ownership reads compare on the id.
+    // ---------------------------------------------------------------
+    match /restaurantMembers/{memberKey} {
+      allow read: if isPrivileged() ||
+        memberKey == resource.data.restaurantId + '_' + request.auth.uid ||
+        isRestaurantOwnerStaff(resource.data.restaurantId);
+      allow write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+    }
+
+    match /staff/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid) || isRestaurantOwnerStaff(resource.data.restaurantId);
+      allow write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+    }
+
+    match /restaurantStaffInvites/{inviteId} {
+      allow read, write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+    }
+
+    // Doc id is the applicant's own uid - a direct 1:1 port of the RTDB path.
+    match /restaurantApplications/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      allow create: if isOwnUser(uid) && request.resource.data.uid == uid;
+      allow update, delete: if isPrivileged();
+    }
+
+    // ---------------------------------------------------------------
+    // Customer profile
+    // ---------------------------------------------------------------
+    match /users/{uid} {
+      allow read, write: if isPrivileged() || isOwnUser(uid);
+
+      match /addresses/{addressId} {
+        allow read, write: if isPrivileged() || isOwnUser(uid);
+      }
+    }
+
+    // One document per user holding a map of restaurantId -> true, not a
+    // subcollection (deviceTokens.ts reads the whole map in one get()).
+    match /userRestaurants/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      allow write: if isPrivileged();
+    }
+
+    // ---------------------------------------------------------------
+    // Orders - single flat collection. restaurantOrders is a separate,
+    // permanent privacy-scoped projection (customerPhone/address stripped),
+    // not a query convenience over this collection - Firestore has no
+    // field-level security, so restaurant staff read that one instead of
+    // this one directly.
+    // ---------------------------------------------------------------
+    match /orders/{orderId} {
+      allow read: if isPrivileged()
+        || isOwnUser(resource.data.customerId)
+        || (isApprovedRider() && resource.data.riderId == request.auth.uid)
+        || canManageRestaurant(resource.data.restaurantId, 'orders')
+        || canManageRestaurant(resource.data.restaurantId, 'handover')
+        || canManageRestaurant(resource.data.restaurantId, 'tracking');
+
+      // Only the server (Cloud Functions, Admin SDK) transitions order status
+      // after creation. Client creation stays allowed for the initial
+      // "Order placed" write, matching the RTDB rule's create-only path.
+      allow create: if isOwnUser(request.resource.data.customerId)
+        && request.resource.data.status == 'Order placed';
+      allow update, delete: if isPrivileged();
+    }
+
+    // Doc id is `${restaurantId}_${customerId}_${orderId}` (restaurantOrderProjectionRef).
+    match /restaurantOrders/{projectionId} {
+      allow read: if isPrivileged()
+        || isOwnUser(resource.data.customerId)
+        || (isApprovedRider() && resource.data.riderId == request.auth.uid)
+        || canManageRestaurant(resource.data.restaurantId, 'orders')
+        || canManageRestaurant(resource.data.restaurantId, 'handover')
+        || canManageRestaurant(resource.data.restaurantId, 'tracking');
+      allow write: if isPrivileged(); // Cloud Functions only (orderProjection.ts).
+    }
+
+    match /dispatchQueue/{orderId} {
+      allow read: if isPrivileged() || isApprovedRider()
+        || canManageRestaurant(resource.data.restaurantId, 'dispatch');
+      allow write: if isPrivileged(); // Server-owned dispatch state machine.
+    }
+
+    // Doc id is `${riderId}_${orderId}` (dispatch.ts's riderOfferRef).
+    match /riderOffers/{offerId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.riderId);
+      allow write: if isPrivileged(); // Cloud Functions only.
+    }
+
+    // Doc id is `${riderId}_${orderId}` (firestorePaths.ts's riderJobRef).
+    match /riderJobs/{jobId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.riderId)
+        || canManageRestaurant(resource.data.restaurantId, 'tracking');
+      // The one client-writable field in the RTDB version was the restaurant-arrival
+      // marker; preserve that as the sole rider-writable case, everything else server-only.
+      allow update: if isPrivileged() ||
+        (isOwnUser(resource.data.riderId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phase', 'arrivedRestaurantAt']) &&
+         resource.data.phase == 'pickup' && request.resource.data.phase == 'at_restaurant');
+      allow create, delete: if isPrivileged();
+    }
+
+    // Doc id is `${customerId}_${orderId}` (reviews.ts's reviewRef). The
+    // client creates it directly (no Cloud Function does), so it must set
+    // customerId itself for the ownership check below to work.
+    match /reviews/{reviewId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.customerId);
+      allow create: if isOwnUser(request.resource.data.customerId);
+      allow update, delete: if isPrivileged();
+    }
+
+    // Not yet touched by any Cloud Function (a client-direct feature, same as
+    // it was in RTDB) - flattened here with denormalized owner-identifying
+    // fields instead of the old {customerId}/{orderId}/{channel} nesting,
+    // consistent with every other collection this migration flattened. Every
+    // writer (customer, restaurant, rider) sets all three id fields on every
+    // message, not just its own, so any participant can read the whole
+    // thread regardless of who sent a given message.
+    // Doc id: `${orderId}_${channel}_${messageId}`.
+    match /orderChats/{messageId} {
+      // A read checks the EXISTING document (resource.data); a create checks
+      // the INCOMING one (request.resource.data) - request.resource is only
+      // defined for writes, so using it in the read branch would error here.
+      allow read: if isPrivileged()
+        || isOwnUser(resource.data.customerId)
+        || (isApprovedRider() && resource.data.riderId == request.auth.uid)
+        || canManageRestaurant(resource.data.restaurantId, 'orders');
+      allow create: if isPrivileged()
+        || isOwnUser(request.resource.data.customerId)
+        || (isApprovedRider() && request.resource.data.riderId == request.auth.uid)
+        || canManageRestaurant(request.resource.data.restaurantId, 'orders');
+      allow update, delete: if isPrivileged();
+    }
+
+    // ---------------------------------------------------------------
+    // Riders
+    // ---------------------------------------------------------------
+    match /riders/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      // Only the face-check Cloud Function (Admin SDK, bypasses rules) may
+      // create this document - see submitRiderFaceCheck in
+      // functions/src/services/mediaUploads.ts. That keeps the very first
+      // write always stamped with a real faceMatchStatus, so the rider's own
+      // update below always has something genuine to check against instead
+      // of a value the rider could have set themselves.
+      allow create: if isPrivileged();
+      // A rider may only submit their own application once a prior face
+      // check already marked this document faceMatchStatus == 'unique', and
+      // may not rewrite that verdict (or the indexed face id) while doing so
+      // - closing the one path that would otherwise let a duplicate account
+      // skip the check entirely by writing straight to Firestore.
+      allow update: if isPrivileged() || (
+        isOwnUser(uid)
+        && request.resource.data.status == 'submitted'
+        && resource.data.faceMatchStatus == 'unique'
+        && request.resource.data.faceMatchStatus == resource.data.faceMatchStatus
+        && request.resource.data.rekognitionFaceId == resource.data.rekognitionFaceId
+      );
+      allow delete: if isPrivileged();
+    }
+
+    match /riderDocuments/{uid} {
+      allow read, write: if isPrivileged() || isOwnUser(uid);
+    }
+
+    // Still RTDB-authoritative (native apps write raw GPS presence directly
+    // there; Phase 3 client work has not migrated that write path yet). Rules
+    // kept here as an inert placeholder for whenever it does.
+    match /riderPresence/{riderId} {
+      allow read: if isPrivileged() || isOwnUser(riderId);
+      allow write: if isPrivileged() || isOwnUser(riderId);
+    }
+
+    // Same as riderPresence - still RTDB-authoritative today.
+    match /tracking/{orderId} {
+      allow read: if isPrivileged()
+        || isOwnUser(get(/databases/$(database)/documents/orders/$(orderId)).data.customerId)
+        || (isApprovedRider() && resource.data.riderId == request.auth.uid)
+        || canManageRestaurant(get(/databases/$(database)/documents/orders/$(orderId)).data.restaurantId, 'tracking');
+      allow write: if isPrivileged() ||
+        (isApprovedRider() && request.resource.data.riderId == request.auth.uid);
+    }
+
+    match /riderWallets/{riderId} {
+      allow read: if isPrivileged() || isOwnUser(riderId);
+      allow write: if isPrivileged(); // Server-owned COD ledger balance.
+    }
+
+    // Flat, auto-id docs with a riderId field - same shape the rider app
+    // already wrote in RTDB (partnerSupport/{riderId}/{ticketId}), just
+    // without the nesting.
+    match /partnerSupport/{ticketId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.riderId);
+      allow create: if isOwnUser(request.resource.data.riderId);
+      allow update, delete: if isPrivileged();
+    }
+
+    // ---------------------------------------------------------------
+    // Customer-facing content
+    // ---------------------------------------------------------------
+    match /promotions/{promoId} {
+      allow read: if true;
+      allow write: if isPrivileged();
+    }
+
+    match /localAds/{adId} {
+      allow read: if true;
+      allow write: if isPrivileged();
+    }
+
+    match /customerBroadcasts/{id} {
+      allow read: if signedIn();
+      allow write: if isPrivileged();
+    }
+
+    match /settings/{doc} {
+      allow read: if true; // Pricing config the client needs to render fee previews.
+      allow write: if isPrivileged();
+    }
+
+    match /support/{ticketId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.uid);
+      allow create: if isOwnUser(request.resource.data.uid);
+      allow update: if isPrivileged();
+      allow delete: if isPrivileged();
+    }
+
+    match /privacyRequests/{requestId} {
+      allow read: if isPrivileged() || isOwnUser(resource.data.uid);
+      allow create: if isOwnUser(request.resource.data.uid);
+      allow update, delete: if isPrivileged();
+    }
+
+    // ---------------------------------------------------------------
+    // Admin-only / server-only collections (Cloud Functions' Admin SDK
+    // bypasses these rules entirely; this just denies direct client access,
+    // matching RTDB's 'private/*' owner/ops_admin-only gate).
+    // ---------------------------------------------------------------
+    match /private/{document=**} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
+
+    match /audit/{eventId} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
+
+    match /notifications/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      allow write: if false;
+    }
+
+    match /admin/{document=**} {
+      allow read, write: if isPrivileged();
+    }
+
+    match /restaurantLoad/{restaurantId} {
+      allow read: if isPrivileged() || canManageRestaurant(restaurantId, 'orders');
+      allow write: if false; // Server-computed only.
+    }
+
+    // Everything else server-owned with no client read path at all today
+    // (backendEvents, orderIdempotency, platformConfig, pricingSignals,
+    // riderAvailability, deviceTokens, catalogSearchTokens excluded above,
+    // riderRestaurantArrivals, riderKycObjects, uploadQuotas,
+    // mediaUploadLocks, restaurantSettlements*, riderPayouts*, and every
+    // other 'private/*' collection's own name) falls through to the deny-all
+    // catch-all below - the Firestore equivalent of RTDB's root-level
+    // '$other': { '.validate': false }.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

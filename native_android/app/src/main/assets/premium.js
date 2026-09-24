@@ -2,10 +2,26 @@
   "use strict";
 
   const BRAND = "Scraveit";
-  const DB_ROOT = "feastly"; // Legacy server namespace retained for Firebase compatibility.
+  // DB_ROOT/dbUrl stay: tracking/{orderId} (live rider GPS during delivery) is
+  // still RTDB-authoritative until the rider app's presence-write path itself
+  // moves (a later phase) - everything else here moved to Firestore.
+  const DB_ROOT = "feastly";
   const CONFIG = window.FEASTLY_FIREBASE || {};
-  const AUTH_BASE = "https://identitytoolkit.googleapis.com/v1/";
-  const TOKEN_BASE = "https://securetoken.googleapis.com/v1/token";
+  firebase.initializeApp(CONFIG);
+  const fbAuth = firebase.auth(), fs = firebase.firestore();
+  function userDoc(uidValue){return fs.collection("users").doc(uidValue)}
+  function restaurantsCollectionRef(){return fs.collection("restaurants")}
+  function restaurantDocRef(restaurantId){return restaurantsCollectionRef().doc(restaurantId)}
+  function menuItemsCollectionRef(restaurantId){return fs.collection("menus").doc(restaurantId).collection("items")}
+  function searchTokensCollectionRef(cityKey){return fs.collection("catalogSearchTokens").doc(cityKey).collection("tokens")}
+  function ordersQuery(customerId){return fs.collection("orders").where("customerId","==",customerId)}
+  function orderDocRef(orderId){return fs.collection("orders").doc(orderId)}
+  function reviewsQuery(customerId){return fs.collection("reviews").where("customerId","==",customerId)}
+  function reviewDocRef(customerId,orderId){return fs.collection("reviews").doc(customerId+"_"+orderId)}
+  function orderChatQuery(orderId,channel){return fs.collection("orderChats").where("orderId","==",orderId).where("channel","==",channel)}
+  function orderChatMessageDoc(orderId,channel,messageId){return fs.collection("orderChats").doc(orderId+"_"+channel+"_"+messageId)}
+  function supportDoc(id){return fs.collection("support").doc(id)}
+  function privacyRequestDoc(id){return fs.collection("privacyRequests").doc(id)}
   // Emergency rollback only. Production orders use createCodOrder and this remains false.
   const LEGACY_ORDER_WRITE_COMPATIBILITY = false;
   const ORDER_FLOW = [
@@ -18,6 +34,8 @@
   const ICONS = {
     home: '<path d="M3 10.8 12 3l9 7.8v9.7a.5.5 0 0 1-.5.5h-5.2v-6.4H8.7V21H3.5a.5.5 0 0 1-.5-.5z"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+    expand: '<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>',
+    minimize: '<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>',
     orders: '<path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/>',
     offers: '<path d="M20 13 13 20 4 11V4h7z"/><circle cx="8.5" cy="8.5" r="1"/>',
     account: '<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
@@ -50,7 +68,7 @@
     receipt: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/>',
     trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
     chat: '<path d="M21 12a8 8 0 0 1-8 8H4l2.1-3.2A8 8 0 1 1 21 12Z"/>',
-    scooter: '<circle cx="5.5" cy="14.9" r="3"/><circle cx="18.5" cy="14.9" r="3"/><path d="M8.5 14.9h6.6"/><path d="M15.1 14.9 17.4 7"/><path d="M15.2 6.4h4.2"/><path d="M4.6 8.4h4.2l2.4 6.5"/>',
+    bike: '<circle cx="5.5" cy="14.9" r="3"/><circle cx="18.5" cy="14.9" r="3"/><circle cx="12" cy="14.9" r=".9"/><path d="M9 7.5 12 14.9M9 7.5 15.5 7.5M15.5 7.5 12 14.9M15.5 7.5 18.5 14.9M5.5 14.9 12 14.9M7.6 6.8 10.4 6.8M14.3 5.8 16.8 6.6"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
   };
 
@@ -104,10 +122,19 @@
       return ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char];
     });
   }
+  // Empty until the Cloudflare edge cache in front of Firebase Storage is live
+  // (see cloudflare/image-cdn/). Once set (e.g. "img.scraveit.in"), every
+  // Storage image URL is served from the nearest edge instead of round-tripping
+  // to the database's us-central1 origin on every load.
+  const IMAGE_CDN_HOST = "savrivo-image-cdn.tirumurunbalu.workers.dev";
+  function cdnUrl(url) {
+    if (!IMAGE_CDN_HOST) return url;
+    return url.replace(/^https:\/\/firebasestorage\.googleapis\.com\//i, "https://" + IMAGE_CDN_HOST + "/");
+  }
   function safeUrl(value, fallback) {
     const url = String(value || "").trim();
     if (/^(?:[a-z0-9._-]+\.(?:jpg|jpeg|png|webp|svg)|data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+)$/i.test(url)) return url;
-    if (/^https:\/\/firebasestorage\.googleapis\.com\//i.test(url)) return url;
+    if (/^https:\/\/firebasestorage\.googleapis\.com\//i.test(url)) return cdnUrl(url);
     return fallback || "restaurant-placeholder.svg";
   }
   function icon(name, extra) { return '<svg class="icon '+h(extra || "")+'" viewBox="0 0 24 24" aria-hidden="true">'+(ICONS[name] || ICONS.info)+"</svg>"; }
@@ -176,10 +203,10 @@
     couponAuto: false, couponDismissedFor: "",
     query: "", recentSearches:normalizedRecentSearches(loadJSON(searchHistoryKey(cachedSession&&cachedSession.uid),[])), searchDebounceTimer:null, cuisine: "All", diet: "all", sort: "recommended", homeFilter: "all",
     menuPrice: "all", menuSort: "recommended", ratingView: loadJSON("savrivo.customer.ratingView", "overall"),
-    selectedRestaurantId: "the-waffle-spot-naidupeta", selectedOrderId: "", selectedMenuCategory: "All",
+    selectedRestaurantId: "the-waffle-spot-naidupeta", selectedOrderId: "", selectedMenuCategory: "All", timelineExpanded: false,
     online: navigator.onLine, loading: false, syncError: "", lastSync: 0,
-    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, trackingSeenAt:{}, trackingMap:null, trackingRoutes:{}, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
-    addressMapDraft: null, addressMapZoom: 16, locationMode: "general", menuLoading:{}, menuRequests:{}, menuErrors:{}, homeBootStartedAt:perfNow(), homeVisibleLogged:false,
+    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, trackingSeenAt:{}, trackingMap:null, trackingRoutes:{}, trackingMapCollapsed:false, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
+    addressMapDraft: null, addressMapZoom: 16, locationMode: "general", menuLoading:{}, menuRequests:{}, menuErrors:{}, homeBootStartedAt:perfNow(), homeVisibleLogged:false, locationPromptShown:false,
     checkout: Object.assign({deliveryMode:"asap", payment:"cod", instructions:"", contactless:false, pendingOrderId:"", pendingIdempotencyKey:""},loadJSON("savrivo.customer.checkout",{}))
   };
 
@@ -265,7 +292,7 @@
 
   function homeSummary(restaurant){
     const summary={};
-    ["id","name","image","imageUrl","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","updatedAt"].forEach(key=>{
+    ["id","name","image","imageUrl","imageThumb","imageThumbUrl","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","updatedAt"].forEach(key=>{
       if(restaurant[key]!==undefined)summary[key]=restaurant[key];
     });
     summary.menuIndex=discoveryIndex((restaurant.menu&&restaurant.menu.length)?restaurant.menu:restaurant.menuIndex);
@@ -416,41 +443,28 @@
     } catch (_) { }
   }
 
-  async function authRequest(method, payload) {
-    if (!CONFIG.apiKey) throw new Error("CONFIGURATION_MISSING");
-    return request(AUTH_BASE + method + "?key=" + encodeURIComponent(CONFIG.apiKey), {
-      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload || {})
-    });
-  }
-
-  function saveAuth(data, email) {
-    state.session = {
-      uid: data.localId || state.session && state.session.uid || "",
-      email: data.email || email || "",
-      idToken: data.idToken,
-      refreshToken: data.refreshToken || state.session && state.session.refreshToken || "",
-      expiresAt: Date.now() + Math.max(300, Number(data.expiresIn || 3600)) * 1000
-    };
+  // Firebase Auth SDK owns session persistence/refresh now - applyAuthUser
+  // mirrors the signed-in user into state.session (still read pervasively
+  // throughout this file) instead of the old raw-REST saveAuth().
+  function applyAuthUser(user) {
+    if (!user) { state.session = null; return null; }
+    state.session = Object.assign({}, state.session, {uid: user.uid, email: user.email || ""});
     persistSession();
     state.profile.email = state.session.email;
     persistProfile();
-  }
-
-  async function refreshSession() {
-    if (!state.session || !state.session.refreshToken) throw new Error("AUTH_REQUIRED");
-    const data = await request(TOKEN_BASE + "?key=" + encodeURIComponent(CONFIG.apiKey), {
-      method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"},
-      body:"grant_type=refresh_token&refresh_token=" + encodeURIComponent(state.session.refreshToken)
-    });
-    saveAuth({localId:data.user_id,email:state.session.email,idToken:data.id_token,refreshToken:data.refresh_token,expiresIn:data.expires_in}, state.session.email);
     return state.session;
   }
   async function ensureSession() {
-    if (!state.session || !state.session.refreshToken) throw new Error("AUTH_REQUIRED");
-    if (state.session.idToken && state.session.expiresAt > Date.now() + 120000) return state.session;
-    return refreshSession();
+    const user = fbAuth.currentUser;
+    if (!user) throw new Error("AUTH_REQUIRED");
+    const idToken = await user.getIdToken();
+    state.session = Object.assign({}, state.session, {uid: user.uid, email: user.email || (state.session && state.session.email) || "", idToken});
+    return state.session;
   }
 
+  // tracking/{orderId} is still RTDB-authoritative (see header comment) -
+  // kept as its own small helper now that every other collection moved to
+  // Firestore.
   function dbUrl(path, token) {
     const base = String(CONFIG.databaseUrl || "").replace(/\/$/, "");
     if (!base) throw new Error("CONFIGURATION_MISSING");
@@ -465,18 +479,12 @@
     return base+(pairs.length?"?"+pairs.join("&"):"");
   }
 
-  async function db(method, path, body, unauthenticated) {
-    const session = unauthenticated ? state.session : await ensureSession();
+  async function rtdb(method, path, body) {
+    const session = await ensureSession();
     const token = session && session.idToken;
     const options = {method:method, headers:{"Content-Type":"application/json"}};
     if (body !== undefined) options.body = JSON.stringify(body);
     return request(dbUrl(path, token), options, 18000);
-  }
-
-  async function dbGetQuery(path,parameters,timeoutMs){
-    const session=await ensureSession(),started=perfNow();
-    try{return await request(dbQueryUrl(path,session.idToken,parameters),{method:"GET",headers:{"Content-Type":"application/json"}},timeoutMs||10000)}
-    finally{perfLog("FIREBASE_QUERY_FINISHED",started,{path:String(path).replace(/\/[^/]+$/,"/:scope")})}
   }
 
   function friendlyError(error) {
@@ -504,7 +512,8 @@
   async function syncProfile(remoteOnly) {
     if (!state.session) return;
     const previousScope=homeScope(currentAddress());
-    const remote = await db("GET", DB_ROOT + "/users/" + encodeURIComponent(state.session.uid));
+    const remoteSnap = await userDoc(state.session.uid).get();
+    const remote = remoteSnap.exists ? remoteSnap.data() : null;
     if (remote && typeof remote === "object") {
       const prefs = Object.assign({}, state.profile.preferences || {}, remote.preferences || {});
       state.profile = Object.assign({}, state.profile, remote, {preferences:prefs});
@@ -533,7 +542,7 @@
       addresses:state.profile.addresses || [], selectedAddressId:state.profile.selectedAddressId || "",
       favourites:state.profile.favourites || [], preferences:state.profile.preferences || {}, updatedAt:Date.now()
     };
-    await db("PUT", DB_ROOT + "/users/" + encodeURIComponent(state.session.uid), payload);
+    await userDoc(state.session.uid).set(payload);
   }
 
   function normalizeRestaurant(id, record) {
@@ -545,6 +554,15 @@
     // licensed photos. Keep the locally licensed cover for the matching restaurant
     // so customers never fall back to a blank/cheap-looking card in that interval.
     data.image = data.imageUrl || data.image || packaged.image;
+    // Firebase Storage serves exactly the bytes it was given - there is no
+    // resize-on-request URL parameter, unlike a CDN. So a small list card
+    // showing this at ~120-150px was downloading the same file a full-width
+    // hero needs at ~900-1300px, which for a detailed food photo is 300-400KB+
+    // just to shrink it back down in CSS. imageThumb is a dedicated small
+    // copy generated at upload time; falling back to the full image keeps
+    // every restaurant displaying correctly before it has one (existing
+    // uploads, or an upload path that hasn't started producing one yet).
+    data.imageThumb = data.imageThumbUrl || data.imageThumb || data.image;
     data.cuisines = Array.isArray(data.cuisines) ? data.cuisines : String(data.type || "Food").split(/[·,]/).map(x=>x.trim()).filter(Boolean);
     data.menu = Array.isArray(data.menu) ? data.menu : data.items && typeof data.items === "object" ? Object.keys(data.items).map(key => Object.assign({id:key}, data.items[key])) : [];
     data.menu = data.menu
@@ -557,7 +575,7 @@
   function warmCatalogImages() {
     const urls=[];
     Object.values(state.catalog||{}).forEach(restaurant=>{
-      const cover=safeUrl(restaurant.image,"");if(cover)urls.push(cover);
+      const cover=safeUrl(restaurant.imageThumb||restaurant.image,"");if(cover)urls.push(cover);
     });
     [...new Set(urls)].slice(0,8).forEach((url,index)=>setTimeout(()=>{const image=new Image();image.decoding="async";image.src=url;},index*35));
   }
@@ -717,22 +735,30 @@
   }
 
   /** One page of the customer's own city, ordered by name. `cursor` is the
-   *  citySort value of the last restaurant already shown; Firebase returns
-   *  that row again, so one extra is requested and the caller drops it. */
-  function restaurantSummaryQuery(cursor){
+   *  citySort value of the last restaurant already shown; Firestore returns
+   *  that row again, so one extra is requested and the caller drops it.
+   *  Returns null (no range) when there is no city to scope to at all. */
+  function restaurantSummaryRange(cursor){
     const city=catalogCity();
-    if(!city)return {orderBy:JSON.stringify("$key"),limitToFirst:String(CATALOG_PAGE_SIZE)};
-    const range=cursor?cityListingRangeAfter(city,cursor):cityListingRange(city);
-    return {
-      orderBy:JSON.stringify("citySort"),
-      startAt:JSON.stringify(range.startAt),
-      endAt:JSON.stringify(range.endAt),
-      limitToFirst:String(CATALOG_PAGE_SIZE+(cursor?1:0)),
-    };
+    if(!city)return null;
+    return cursor?cityListingRangeAfter(city,cursor):cityListingRange(city);
+  }
+  /** citySort's stored value is itself a city-prefixed compound key (e.g.
+   *  "naidupeta|waffle-spot" - see citySortValue() in
+   *  functions/src/domain/catalogIndex.ts), so ranging over that one field
+   *  already scopes to the city; no separate where("city",...) filter or
+   *  composite index is needed. */
+  function restaurantSummaryFirestoreQuery(cursor){
+    const range=restaurantSummaryRange(cursor);
+    if(!range)return restaurantsCollectionRef().orderBy(firebase.firestore.FieldPath.documentId()).limit(CATALOG_PAGE_SIZE);
+    return restaurantsCollectionRef().orderBy("citySort").startAt(range.startAt).endAt(range.endAt).limit(CATALOG_PAGE_SIZE+(cursor?1:0));
   }
 
   async function fetchRestaurantSummaries(cursor){
-    return dbGetQuery(DB_ROOT+"/catalog/restaurants",restaurantSummaryQuery(cursor),10000);
+    const snap=await restaurantSummaryFirestoreQuery(cursor).get();
+    const records={};
+    snap.forEach(doc=>{records[doc.id]=doc.data()});
+    return records;
   }
 
   /** Walks the customer's city from the top for `pages` pages.
@@ -764,16 +790,20 @@
     return {records:merged,cursor,hasMore,pages:loaded};
   }
 
-  /** Every restaurant in one geohash cell of one city, capped per cell. */
+  function recordsFromSnapshot(snap){
+    const records={};
+    snap.forEach(doc=>{records[doc.id]=doc.data()});
+    return records;
+  }
+  /** Every restaurant in one geohash cell of one city, capped per cell.
+   *  geoSort's stored value is itself a city-prefixed compound key (see
+   *  restaurantSummaryFirestoreQuery's comment), so this needs no
+   *  where("city",...) filter or composite index either. */
   async function fetchGeoCell(city,cell,limit){
     const range=geoCellRange(city,cell);
     try{
-      return await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
-        orderBy:JSON.stringify("geoSort"),
-        startAt:JSON.stringify(range.startAt),
-        endAt:JSON.stringify(range.endAt),
-        limitToFirst:String(limit),
-      },10000);
+      const snap=await restaurantsCollectionRef().orderBy("geoSort").startAt(range.startAt).endAt(range.endAt).limit(limit).get();
+      return recordsFromSnapshot(snap);
     }catch(error){return null}
   }
 
@@ -781,12 +811,8 @@
   async function fetchGeoCellGlobal(cell,limit){
     const range=geoGlobalCellRange(cell);
     try{
-      return await dbGetQuery(DB_ROOT+"/catalog/restaurants",{
-        orderBy:JSON.stringify("geoSortGlobal"),
-        startAt:JSON.stringify(range.startAt),
-        endAt:JSON.stringify(range.endAt),
-        limitToFirst:String(limit),
-      },10000);
+      const snap=await restaurantsCollectionRef().orderBy("geoSortGlobal").startAt(range.startAt).endAt(range.endAt).limit(limit).get();
+      return recordsFromSnapshot(snap);
     }catch(error){return null}
   }
 
@@ -873,11 +899,15 @@
     return fetchCatalogPages(pages);
   }
 
+  async function fetchCollectionMap(collectionName){
+    const snap=await fs.collection(collectionName).get();
+    return recordsFromSnapshot(snap);
+  }
   async function syncSecondaryHomeData(){
     const started=perfNow();
     const result=await Promise.allSettled([
-      db("GET",DB_ROOT+"/promotions"),db("GET",DB_ROOT+"/settings/customer"),
-      db("GET",DB_ROOT+"/localAds"),db("GET",DB_ROOT+"/customerBroadcasts"),
+      fetchCollectionMap("promotions"),fs.collection("settings").doc("customer").get().then(snap=>snap.exists?snap.data():null),
+      fetchCollectionMap("localAds"),fetchCollectionMap("customerBroadcasts"),
       state.session&&nativeAvailable("getCheckoutConfiguration")?nativeInvoke("getCheckoutConfiguration",{},{
         idToken:state.session.idToken,timeoutMs:15000
       }):Promise.resolve(null)
@@ -907,8 +937,9 @@
       state.menuLoading[restaurantId]=true;delete state.menuErrors[restaurantId];
       const started=perfNow();
       try {
-        const map=await db("GET",DB_ROOT+"/menus/"+encodeURIComponent(restaurantId));
-        const items=Object.keys(map||{}).map(itemId=>{const item=Object.assign({id:itemId},map[itemId]||{});item.image=item.imageUrl||item.image;return item}).filter(item=>item.archived!==true);
+        const menuSnap=await menuItemsCollectionRef(restaurantId).get();
+        const map=recordsFromSnapshot(menuSnap);
+        const items=Object.keys(map||{}).map(itemId=>{const item=Object.assign({id:itemId},map[itemId]||{});item.image=item.imageUrl||item.image;item.imageThumb=item.imageThumbUrl||item.imageThumb||item.image;return item}).filter(item=>item.archived!==true);
         restaurant.menu=items;restaurant.menuIndex=discoveryIndex(items);restaurant.menuLoaded=true;saveMenuCache(restaurantId,items);
         perfLog("RESTAURANT_MENU_LOADED",started,{restaurantId,items:items.length,forced:force});
         return items;
@@ -972,13 +1003,14 @@
     if(!range||!range.cityKey)return [];
     let keys=[];
     try{
-      const hits=await dbGetQuery(DB_ROOT+"/catalog/searchTokens/"+encodeURIComponent(range.cityKey),{
-        orderBy:JSON.stringify("$key"),
-        startAt:JSON.stringify(range.startAt),
-        endAt:JSON.stringify(range.endAt),
-        limitToFirst:String(SEARCH_TOKEN_LIMIT),
-      },10000)||{};
-      keys=Object.keys(hits);
+      // Each token entry is its own document (id: "token|restaurantId") in a
+      // per-city subcollection, not a field on one shared document - a
+      // prefix range needs to run over the key space itself, which Firestore
+      // only supports via document-id range queries.
+      const snap=await searchTokensCollectionRef(range.cityKey)
+        .orderBy(firebase.firestore.FieldPath.documentId())
+        .startAt(range.startAt).endAt(range.endAt).limit(SEARCH_TOKEN_LIMIT).get();
+      keys=snap.docs.map(doc=>doc.id);
     }catch(error){return []}
     const ids=[];
     keys.forEach(key=>{
@@ -989,7 +1021,7 @@
     });
     const wanted=ids.slice(0,SEARCH_TOKEN_FETCH_LIMIT);
     const loaded=await Promise.all(wanted.map(async id=>{
-      try{return {id,record:await db("GET",DB_ROOT+"/catalog/restaurants/"+encodeURIComponent(id))}}
+      try{const snap=await restaurantDocRef(id).get();if(!snap.exists)throw new Error("NOT_FOUND");return {id,record:snap.data()}}
       catch(error){return {id,record:null}}
     }));
     return loaded.filter(entry=>entry.record);
@@ -1010,18 +1042,13 @@
     state.searchLoading=true;
     try{
       const range=citySearchRange(city,query);
-      const [byName,byWord]=await Promise.all([
-        dbGetQuery(DB_ROOT+"/catalog/restaurants",{
-          orderBy:JSON.stringify("citySort"),
-          startAt:JSON.stringify(range.startAt),
-          endAt:JSON.stringify(range.endAt),
-          limitToFirst:String(CATALOG_PAGE_SIZE),
-        },10000),
+      const [byNameSnap,byWord]=await Promise.all([
+        restaurantsCollectionRef().orderBy("citySort").startAt(range.startAt).endAt(range.endAt).limit(CATALOG_PAGE_SIZE).get(),
         // The name range only matches the start of a name, so "waffle" would
         // miss "The Waffle Spot". The word index covers the rest.
         searchCityTokens(city,query),
       ]);
-      const records=byName||{};
+      const records=recordsFromSnapshot(byNameSnap);
       if(sequence!==state.searchSequence)return;
       // Typing walks through many prefixes; without a ceiling a long session
       // would accumulate every restaurant the customer ever half-typed.
@@ -1072,9 +1099,18 @@
     }
   }
 
+  function catalogFingerprint(map){
+    return Object.keys(map).sort().map(id=>id+":"+(map[id]&&map[id].updatedAt||0)).join("|");
+  }
   async function syncCatalog() {
     if (!state.session) return;
     const sequence=++state.catalogRequestSequence,started=perfNow(),hadCache=state.catalogLoaded&&Object.keys(state.catalog).length>0;
+    // A realtime watcher reconnect (common on a flaky mobile connection)
+    // always resends a full snapshot, so this fires far more often than the
+    // data actually changes. Skipping the repaint when nothing did is what
+    // stops that from reading as the whole home screen blinking.
+    const previousFingerprint=catalogFingerprint(state.catalog),hadSyncError=!!state.syncError,previousHasMore=state.catalogHasMore;
+    let skipRender=false;
     state.homeStatus=hadCache?"refreshing":"loadingWithoutCache";
     // Moving to another city invalidates the pages and the searches held for
     // the old one. Checking it here rather than in each place an address can
@@ -1089,20 +1125,21 @@
       if(sequence<state.catalogRequestSequence){perfLog("STALE_CATALOG_IGNORED",started,{sequence,latest:state.catalogRequestSequence});return}
       const next={};
       Object.keys(records).forEach(id=>{const restaurant=normalizeRestaurantSummary(id,records[id]);if(restaurant.archived!==true)next[id]=restaurant});
+      skipRender=hadCache&&!hadSyncError&&previousHasMore===page.hasMore&&previousFingerprint===catalogFingerprint(next);
       state.catalogHasMore=page.hasMore;
       state.catalogCursor=page.cursor;
       state.catalogPages=page.pages;
       state.catalog=next;state.catalogMode="live";state.catalogLoaded=true;state.homeStatus=Object.keys(next).length?"success":"empty";
       state.appliedCatalogSequence=sequence;state.lastSync=Date.now();state.syncError="";saveHomeCache();warmCatalogImages();
       const payloadBytes=(()=>{try{return JSON.stringify(records).length}catch(_){return 0}})();
-      perfLog("REMOTE_CATALOG_APPLIED",started,{sequence,downloaded:Object.keys(records).length,displayable:Object.keys(next).length,payloadBytes});
+      perfLog("REMOTE_CATALOG_APPLIED",started,{sequence,downloaded:Object.keys(records).length,displayable:Object.keys(next).length,payloadBytes,skipRender});
     } catch (error) {
       if(sequence<state.catalogRequestSequence)return;
       state.catalogLoaded=true;state.homeStatus=Object.keys(state.catalog).length?"errorWithCache":"errorWithoutCache";
       state.syncError=Object.keys(state.catalog).length?"Live catalogue refresh failed. Showing saved restaurants.":"Restaurants could not be loaded. Check your connection and retry.";
       perfLog("REMOTE_CATALOG_FAILED",started,{sequence,cacheRetained:Object.keys(state.catalog).length>0,code:String(error&&error.message||"unknown")});
     } finally {
-      if(sequence===state.catalogRequestSequence&&["home","search","restaurant"].includes(state.route))render({preserveScroll:true});
+      if(sequence===state.catalogRequestSequence&&["home","search","restaurant"].includes(state.route)&&!skipRender)render({preserveScroll:true});
     }
   }
 
@@ -1110,11 +1147,21 @@
     return Object.keys(map || {}).map(id=>Object.assign({id:id},map[id]||{})).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
   }
 
+  function ordersFingerprint(list){
+    return list.map(order=>order.id+":"+order.status+":"+(order.updatedAt||order.createdAt||0)).sort().join("|");
+  }
   async function syncOrders(silent) {
-    if (!state.session) return;
-    const sessionUid=String(state.session.uid||""),reviewSequence=++state.reviewSyncSequence;
+    if (!state.session) return false;
+    const sessionUid=String(state.session.uid||""),reviewSequence=++state.reviewSyncSequence,previousFingerprint=ordersFingerprint(state.orders);
     try {
-      const pair = await Promise.all([db("GET", DB_ROOT + "/orders/" + encodeURIComponent(sessionUid)),db("GET",DB_ROOT+"/reviews/"+encodeURIComponent(sessionUid)).then(value=>({ok:true,value:value})).catch(()=>({ok:false,value:null}))]);
+      const pair = await Promise.all([
+        ordersQuery(sessionUid).get().then(snap=>recordsFromSnapshot(snap)),
+        reviewsQuery(sessionUid).get().then(snap=>{
+          const byOrderId={};
+          snap.forEach(doc=>{const data=doc.data();byOrderId[data.orderId||doc.id]=data});
+          return {ok:true,value:byOrderId};
+        }).catch(()=>({ok:false,value:null})),
+      ]);
       if(!state.session||String(state.session.uid||"")!==sessionUid||reviewSequence!==state.reviewSyncSequence)return;
       const map = pair[0];
       // Keep the per-account local review cache when the review request is
@@ -1150,11 +1197,14 @@
       // every active order's tracking record on each order/status refresh.
       await hydrateInitialTracking(active);
       state.lastSync = Date.now(); state.syncError = "";
-      if(deliveredForReview){go("review",{orderId:deliveredForReview.id});return;}
+      if(deliveredForReview){go("review",{orderId:deliveredForReview.id});return true;}
+      const changed=previousFingerprint!==ordersFingerprint(state.orders);
       if (!silent && ["home","orders","order","tracking"].includes(state.route)) render({preserveScroll:true});
+      return changed;
     } catch (error) {
       state.syncError = "Live order updates are temporarily unavailable.";
       if (!silent) render({preserveScroll:true});
+      return true;
     }
   }
 
@@ -1176,7 +1226,9 @@
 
   function hashCode(text) { let hash=0; for(let i=0;i<text.length;i++) hash=((hash<<5)-hash)+text.charCodeAt(i)|0; return hash; }
 
-  function closeWatcher(watcher) { try { if (watcher) watcher.close(); } catch (_) {} }
+  // A watcher is either a Firestore onSnapshot() unsubscribe function
+  // (catalog/orders) or an RTDB EventSource (tracking, still RTDB-authoritative).
+  function closeWatcher(watcher) { try { if (typeof watcher === "function") watcher(); else if (watcher) watcher.close(); } catch (_) {} }
   function parseStreamEvent(event) {
     try { return event && event.data ? JSON.parse(event.data) : null; } catch (_) { return null; }
   }
@@ -1204,9 +1256,15 @@
     state.syncTimers[kind] = setTimeout(async () => {
       state.syncTimers[kind]=null;
       try {
-        if (kind === "catalog") await syncCatalog();
-        else await syncOrders(true);
-        if (["home","search","restaurant","orders","order","tracking"].includes(state.route)) render({preserveScroll:true});
+        // syncCatalog() already renders itself when its result actually
+        // changes (see catalogFingerprint) - rendering again here regardless
+        // was the second unconditional repaint on every watcher event, on
+        // top of syncCatalog()'s own. For orders, syncOrders(true) never
+        // renders (silent), so this still owns that decision - but only when
+        // something changed, for the same reason.
+        if (kind === "catalog") { await syncCatalog(); return; }
+        const changed = await syncOrders(true);
+        if (changed && ["home","orders","order","tracking"].includes(state.route)) render({preserveScroll:true});
       } catch (_) {}
     }, 180);
   }
@@ -1219,25 +1277,24 @@
       ensureRealtimeWatcher(kind).catch(()=>scheduleRealtimeReconnect(kind));
     },5000);
   }
+  function firestoreWatchQuery(kind){
+    return kind==="catalog"?restaurantSummaryFirestoreQuery():ordersQuery(state.session.uid);
+  }
   async function ensureRealtimeWatcher(kind) {
-    if(!state.session||!state.online||!window.EventSource||!["catalog","orders"].includes(kind))return null;
-    const parameters=kind==="catalog"?restaurantSummaryQuery():null;
-    const scope=kind==="catalog"?JSON.stringify(parameters||{}):String(state.session.uid||"");
+    if(!state.session||!state.online||!["catalog","orders"].includes(kind))return null;
+    const scope=kind==="catalog"?JSON.stringify(restaurantSummaryRange()||{}):String(state.session.uid||"");
     if(state.watchers[kind]&&state.watcherScopes[kind]===scope)return state.watchers[kind];
     if(state.watchers[kind]){closeWatcher(state.watchers[kind]);state.watchers[kind]=null;state.watcherScopes[kind]="";}
     if(state.watcherStarts[kind])return state.watcherStarts[kind];
     const started=(async()=>{
-      let source=null;
-      const path=kind==="catalog"?DB_ROOT+"/catalog/restaurants":DB_ROOT+"/orders/"+encodeURIComponent(state.session.uid);
-      source=await watchPath(path,()=>scheduleScopedSync(kind),parameters,failed=>{
-        if(state.watchers[kind]===failed){state.watchers[kind]=null;state.watcherScopes[kind]="";}
+      const unsubscribe=firestoreWatchQuery(kind).onSnapshot(()=>scheduleScopedSync(kind),()=>{
+        if(state.watchers[kind]===unsubscribe){state.watchers[kind]=null;state.watcherScopes[kind]="";}
         scheduleRealtimeReconnect(kind);
       });
-      const currentParameters=kind==="catalog"?restaurantSummaryQuery():null;
-      const currentScope=kind==="catalog"?JSON.stringify(currentParameters||{}):String(state.session&&state.session.uid||"");
-      if(!state.session||!state.online||currentScope!==scope||source&&source.__savrivoDisconnected){closeWatcher(source);if(state.session&&state.online)scheduleRealtimeReconnect(kind);return null;}
-      state.watchers[kind]=source;state.watcherScopes[kind]=scope;
-      return source;
+      const currentScope=kind==="catalog"?JSON.stringify(restaurantSummaryRange()||{}):String(state.session&&state.session.uid||"");
+      if(!state.session||!state.online||currentScope!==scope){closeWatcher(unsubscribe);if(state.session&&state.online)scheduleRealtimeReconnect(kind);return null;}
+      state.watchers[kind]=unsubscribe;state.watcherScopes[kind]=scope;
+      return unsubscribe;
     })();
     state.watcherStarts[kind]=started;
     try{return await started;}catch(error){scheduleRealtimeReconnect(kind);throw error;}finally{state.watcherStarts[kind]=null;}
@@ -1273,14 +1330,14 @@
     }
     state.lastSync = Date.now();
     state.trackingSeenAt[orderId] = Date.now();
-    if (state.route === "tracking" && state.selectedOrderId === orderId) {
+    if (liveOrderRoute() && state.selectedOrderId === orderId) {
       if (!patchTrackingMap(orderId)) render({preserveScroll:true});
     }
   }
   async function hydrateInitialTracking(activeOrders){
     const missing=(activeOrders||[]).filter(order=>!state.trackingHydrated[order.id]);
     const results=await Promise.all(missing.map(async order=>{
-      try{return {id:order.id,ok:true,value:await db("GET",DB_ROOT+"/tracking/"+encodeURIComponent(order.id))};}
+      try{return {id:order.id,ok:true,value:await rtdb("GET",DB_ROOT+"/tracking/"+encodeURIComponent(order.id))};}
       catch(_){return {id:order.id,ok:false,value:null};}
     }));
     results.forEach(result=>{
@@ -1332,7 +1389,10 @@
     Object.keys(state.syncTimers).forEach(key=>clearTimeout(state.syncTimers[key]));state.syncTimers={catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null};
   }
   async function startRealtime() {
-    if (!state.session || !state.online || !window.EventSource) return;
+    // catalog/orders use Firestore's onSnapshot(), not EventSource - only the
+    // tracking stream (still RTDB) needs that check, and it makes its own
+    // (see ensureTrackingWatcher).
+    if (!state.session || !state.online) return;
     // Each stream owns its own reconnect lifecycle. A temporary catalogue
     // failure must never tear down healthy order or live-tracking streams.
     await Promise.allSettled([ensureRealtimeWatcher("catalog"),ensureRealtimeWatcher("orders")]);
@@ -1352,13 +1412,29 @@
     state.loading = false; render({preserveScroll:true});
     try {
       const authStarted=perfNow();
+      // The Firebase Auth SDK restores a persisted session asynchronously
+      // (from IndexedDB) - fbAuth.currentUser can still be null for a moment
+      // after script load even for an already-signed-in user. Waiting for
+      // onAuthStateChanged's first callback avoids treating that startup gap
+      // as a real sign-out.
+      const authUser=await new Promise(resolve=>{const unsubscribe=fbAuth.onAuthStateChanged(user=>{unsubscribe();resolve(user)})});
+      if(!authUser)throw new Error("AUTH_REQUIRED");
+      applyAuthUser(authUser);
       await ensureSession();
       perfLog("AUTH_SESSION_READY",authStarted,{});
       const profilePromise=syncProfile(false).then(()=>{migrateSavedAddresses();return true});
       const results=await Promise.allSettled([profilePromise,syncCatalog(),syncOrders(true),syncEmailVerification(),syncSecondaryHomeData()]);
       const failed=results.filter(result=>result.status==="rejected").length;
       if(failed)perfLog("NON_BLOCKING_STARTUP_FAILURES",started,{failed});
-      state.route="home";
+      // Not `state.route="home"` here: the only way this line is reached is
+      // a signed-in session, which already set state.route to "home" back at
+      // line ~1406 before any of the awaits above. If the person tapped into
+      // another screen (an order, tracking, a restaurant) while this
+      // background sync was still running, forcing "home" here overwrote
+      // their navigation the instant this promise settled - the app looked
+      // like it "bounced back to home" on the first thing they opened after
+      // launch, every time, because that tap almost always landed inside
+      // this exact window.
       startPolling();
       registerPushTokenIfAllowed().catch(()=>{});
     } catch (error) {
@@ -1387,6 +1463,13 @@
   }
   function setSheet(sheet) { state.sheet = sheet; renderSheet(); }
   function closeSheet() { state.sheet = null; renderSheet(); }
+  // Without this, an uncaught exception inside an event handler (a form
+  // submit, a tap action) is swallowed by the browser with no on-screen
+  // trace at all - the WebView's console isn't wired to logcat, so it looks
+  // to the user like the tap did nothing. Surfacing it as a toast turns a
+  // silent freeze into a diagnosable error message.
+  window.addEventListener("error", event=>{toast("App error: "+String(event&&event.message||event),"danger")});
+  window.addEventListener("unhandledrejection", event=>{toast("App error: "+String(event&&event.reason&&(event.reason.message||event.reason)||event.reason),"danger")});
 
   function pageScroller() {
     return document.querySelector("#app > main");
@@ -1422,17 +1505,33 @@
   }
   function resetPageScroll(){setPageScrollTop(0);}
 
+  // The live map and the order detail are one screen now, reachable as either
+  // route, so everything that used to be gated on "tracking" has to accept
+  // both - otherwise the map stops receiving tile/pin updates on the route
+  // it actually renders on.
+  function liveOrderRoute() { return state.route === "order" || state.route === "tracking"; }
   function go(route, data, replace) {
+    const wasLive = liveOrderRoute();
     if (!replace && state.route !== route) state.history.push({route:state.route,data:state.routeData});
     state.route = route; state.routeData = data || {};
     if (data && data.restaurantId) state.selectedRestaurantId = data.restaurantId;
     if (data && data.orderId) state.selectedOrderId = data.orderId;
+    if (route === "order") state.timelineExpanded = false;
+    if (wasLive && !liveOrderRoute()) stopTrackingCollapseCycle();
+    if (liveOrderRoute()) startTrackingCollapseCycle();
     closeSheet();
     render(); resetPageScroll();
   }
   function goBack() {
+    const wasLive = liveOrderRoute();
     const previous = state.history.pop();
-    if (previous) { state.route = previous.route; state.routeData = previous.data || {}; closeSheet(); render(); resetPageScroll(); return true; }
+    if (previous) {
+      state.route = previous.route; state.routeData = previous.data || {};
+      if (wasLive && !liveOrderRoute()) stopTrackingCollapseCycle();
+      if (liveOrderRoute()) startTrackingCollapseCycle();
+      closeSheet(); render(); resetPageScroll(); return true;
+    }
+    if (wasLive) stopTrackingCollapseCycle();
     if (["home","orders","offers","account"].includes(state.route)) return false;
     state.route = state.session ? "home" : "login"; state.routeData={}; closeSheet(); render(); return true;
   }
@@ -1441,6 +1540,10 @@
     return goBack() ? "handled" : "root";
   };
 
+  function locationReady(){
+    try{ return !!(window.FeastlyNative && typeof FeastlyNative.isLocationReady==="function" && FeastlyNative.isLocationReady()); }
+    catch(_){ return false; }
+  }
   function currentAddress() {
     const addresses = state.profile.addresses || [];
     return addresses.find(x=>x.id===state.profile.selectedAddressId) || addresses[0] || null;
@@ -1653,9 +1756,8 @@
     }
   }
   function maskPhoneNumbers(value){return String(value||"").replace(/(?:\+?91[\s.()-]*)?[6-9](?:[\s.()-]*\d){9}/g,"[phone number hidden]")}
-  function chatPath(o,channel){return DB_ROOT+"/orderChats/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(o.id)+"/"+channel}
-  async function openOrderChat(o,channel,title){if(!o)return;try{const raw=await db("GET",chatPath(o,channel));state.chat={orderId:o.id,channel,messages:Object.keys(raw||{}).map(id=>Object.assign({id},raw[id]||{})).sort((a,b)=>Number(a.at||0)-Number(b.at||0)),title:title||"Order chat"};go("chat",{orderId:o.id,channel})}catch(e){toast("Chat could not open. "+friendlyError(e),"danger")}}
-  async function sendOrderChat(form){const o=state.orders.find(x=>x.id===state.chat.orderId),original=String(new FormData(form).get("message")||"").trim();if(!o||!original)return;const body=maskPhoneNumbers(original).slice(0,800),id=uid("m_").replace(/-/g,""),record={id,senderId:state.session.uid,senderRole:"customer",body,masked:body!==original,at:Date.now()};try{await db("PUT",chatPath(o,state.chat.channel)+"/"+id,record);state.chat.messages.push(record);form.reset();render({preserveScroll:true});if(record.masked)toast("A phone number was hidden for privacy.","success")}catch(e){toast("Message could not be sent. "+friendlyError(e),"danger")}}
+  async function openOrderChat(o,channel,title){if(!o)return;try{const snap=await orderChatQuery(o.id,channel).orderBy("at","asc").get();state.chat={orderId:o.id,channel,messages:snap.docs.map(doc=>doc.data()),title:title||"Order chat"};go("chat",{orderId:o.id,channel})}catch(e){toast("Chat could not open. "+friendlyError(e),"danger")}}
+  async function sendOrderChat(form){const o=state.orders.find(x=>x.id===state.chat.orderId),original=String(new FormData(form).get("message")||"").trim();if(!o||!original)return;const body=maskPhoneNumbers(original).slice(0,800),id=uid("m_").replace(/-/g,""),record={id,orderId:o.id,customerId:state.session.uid,restaurantId:o.restaurantId||"",riderId:o.riderId||"",channel:state.chat.channel,senderId:state.session.uid,senderRole:"customer",body,masked:body!==original,at:Date.now()};try{await orderChatMessageDoc(o.id,state.chat.channel,id).set(record);state.chat.messages.push(record);form.reset();render({preserveScroll:true});if(record.masked)toast("A phone number was hidden for privacy.","success")}catch(e){toast("Message could not be sent. "+friendlyError(e),"danger")}}
 
 
   function addCartItem(rid, iid, custom) {
@@ -1671,7 +1773,7 @@
     if (existing) existing.quantity += 1;
     else state.cart.push({
       key:key, restaurantId:rid, restaurantName:r.name, itemId:iid, name:item.name, price:Number(item.price||0),
-      image:safeUrl(item.image,r.image), diet:item.diet||"veg", quantity:1,
+      image:safeUrl(item.imageThumb||item.image,r.imageThumb||r.image), diet:item.diet||"veg", quantity:1,
       variant:variant&&variant.name||"", variantId:variant&&String(variant.id||variant.name)||"",
       variantPrice:Number(variant&&(variant.priceDelta!=null?variant.priceDelta:variant.price)||0), addOns:addOns,
       addOnIds:addOns.map(x=>String(x.id||x.name||"")).filter(Boolean),
@@ -1757,8 +1859,9 @@
   }
   async function completeGoogleSignIn(tokenType, token){
     try{
-      const data=await authRequest("accounts:signInWithIdp",{postBody:tokenType+"="+encodeURIComponent(token)+"&providerId=google.com",requestUri:"http://localhost",returnIdpCredential:true,returnSecureToken:true});
-      saveAuth(data,data.email);state.profile.name=data.displayName||state.profile.name;state.profile.email=data.email||state.profile.email;await afterAuth();
+      const credential=tokenType==="id_token"?firebase.auth.GoogleAuthProvider.credential(token):firebase.auth.GoogleAuthProvider.credential(null,token);
+      const result=await fbAuth.signInWithCredential(credential),authUser=result.user;
+      applyAuthUser(authUser);state.profile.name=authUser.displayName||state.profile.name;state.profile.email=authUser.email||state.profile.email;await afterAuth();
     }catch(error){toast(friendlyError(error),"danger");}finally{state.loading=false;render();}
   }
   window.googleIdTokenReceived = function(idToken){return completeGoogleSignIn("id_token",idToken);};
@@ -1779,13 +1882,14 @@
 
   async function syncEmailVerification() {
     if (!state.session) return false;
-    const result = await authRequest("accounts:lookup", {idToken:state.session.idToken});
-    const user = result && result.users && result.users[0];
-    const verified = !!(user && user.emailVerified);
-    if(verified)await refreshSession();
+    const authUser = fbAuth.currentUser;
+    if (!authUser) return false;
+    await authUser.reload();
+    const verified = !!authUser.emailVerified;
+    if(verified)await ensureSession();
     state.profile.emailVerified = verified;
     persistProfile();
-    try { await db("PATCH", DB_ROOT + "/users/" + encodeURIComponent(state.session.uid), {emailVerified:verified,updatedAt:Date.now()}); } catch (_) {}
+    try { await userDoc(state.session.uid).set({emailVerified:verified,updatedAt:Date.now()},{merge:true}); } catch (_) {}
     return verified;
   }
 
@@ -1811,6 +1915,7 @@
   function signOut(showMessage) {
     unregisterPushTokenBestEffort();
     if(nativeAvailable("clearDeliveryOtps")){try{FeastlyNative.clearDeliveryOtps()}catch(_){}}
+    fbAuth.signOut().catch(()=>{});
     stopPolling();state.session=null;persistSession();
     state.profile={name:"",email:"",phone:"",addresses:[],selectedAddressId:"",favourites:[],preferences:{theme:"system",vegetarian:false,notifications:true}};
     state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial";
@@ -1885,7 +1990,7 @@
   // tiles/markers/transforms, and the search screen's #search-results panel)
   // are rebuilt wholesale exactly as before - reconciling them would fight
   // those hand-written updates.
-  const MORPH_BLOCKED_ROUTES = {tracking:true, search:true};
+  const MORPH_BLOCKED_ROUTES = {order:true, tracking:true, search:true};
   const LIVE_VALUE_TAGS = {INPUT:true, TEXTAREA:true, SELECT:true};
 
   function sameNodeShape(oldNode, newNode) {
@@ -1976,6 +2081,22 @@
       app.innerHTML = html;
     }
     app.setAttribute("aria-busy", state.loading ? "true" : "false");
+    // trackingTileMarkup() intentionally renders no tiles (see its comment) so
+    // that every tile - including the very first batch - is created the same
+    // way, starting hidden and fading in on its own "load" event. "tracking"
+    // is in MORPH_BLOCKED_ROUTES, so the branch above just replaced the whole
+    // subtree - any <img> elements a previous refreshTrackingTiles() call had
+    // built are gone now, even if the map's own pan/zoom didn't change. Force
+    // the key stale so refreshTrackingTiles() always rebuilds them against
+    // the DOM that actually exists post-write, instead of comparing against
+    // a state.trackingMap.tileKey left over from before this rewrite and
+    // concluding (wrongly) that nothing needs to be done.
+    syncStatusBar();
+    if (liveOrderRoute()) {
+      if (state.trackingMap) state.trackingMap.tileKey = "";
+      refreshTrackingTiles();
+      refreshTrackingCarousel();
+    }
     renderSheet();
     // After a reconcile the scroller survived untouched, so there is no
     // position to restore - only an explicit non-preserving render still has
@@ -1984,6 +2105,20 @@
     else setPageScrollTop(scrollY);
   }
 
+  // The window is fitted to the system insets (SOFT_INPUT_ADJUST_RESIZE, which
+  // the keyboard handling depends on), so web content cannot be drawn under
+  // the status bar. Colour the bar to match the screen instead: the seam
+  // disappears without touching the keyboard behaviour.
+  const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#F6F9FD";
+  let statusBarApplied="";
+  function syncStatusBar(){
+    const order=liveOrderRoute()?orderById():null;
+    const hero=!!(order&&["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status));
+    const next=hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS;
+    if(next===statusBarApplied)return;
+    statusBarApplied=next;
+    try{ if(window.FeastlyNative&&FeastlyNative.setStatusBarStyle)FeastlyNative.setStatusBarStyle(next,!hero); }catch(_){}
+  }
   function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
 
   function screenWelcome() {
@@ -2027,7 +2162,7 @@
 
   function homeHeader() {
     const address=currentAddress();
-    return '<header class="cluster between home-header"><button class="location-pill" data-action="go" data-route="addresses" aria-label="Change delivery location"><span class="location-dot">'+icon("target")+'</span><span class="location-copy"><span>Deliver to</span><strong>'+(address?h(address.label||address.area):"Choose a location")+'</strong><small>'+h(address&&(address.city||address.area)||(address?"Add a location pin":"Select a saved address"))+'</small></span>'+icon("chevron","small")+'</button><div class="home-header-actions">'+(cartCount()?'<button class="cart-shortcut" data-action="go" data-route="cart" aria-label="Open cart with '+cartCount()+' items">'+icon("cart")+'<span>'+cartCount()+'</span></button>':'')+'<button class="avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></header>';
+    return '<header class="cluster between home-header"><button class="location-pill" data-action="open-address-picker" aria-label="Change delivery location"><span class="location-dot">'+icon("target")+'</span><span class="location-copy"><span>Deliver to</span><strong>'+(address?h(address.label||address.area):"Choose a location")+'</strong><small>'+h(address&&(address.city||address.area)||(address?"Add a location pin":"Select a saved address"))+'</small></span>'+icon("chevron","small")+'</button><div class="home-header-actions">'+(cartCount()?'<button class="cart-shortcut" data-action="go" data-route="cart" aria-label="Open cart with '+cartCount()+' items">'+icon("cart")+'<span>'+cartCount()+'</span></button>':'')+'<button class="avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></header>';
   }
   function orderProgress(order) { const progress=Math.min(100,Math.max(6,(statusIndex(order.status)+1)/ORDER_FLOW.length*100)); return progress; }
   function audienceMatch(record){
@@ -2050,11 +2185,12 @@
       if(window.FeastlyNative&&FeastlyNative.notifyOrder){try{FeastlyNative.notifyOrder(String(n.title||"Scraveit"),String(n.message||""),Math.abs(hashCode("broadcast-"+n.id)))}catch(_){}}
     });
   }
-  function activeLocalAd(){
+  function activeLocalAds(){
     const now=Date.now(), a=currentAddress()||{}, city=keyName(a.city||a.area), area=keyName(a.area);
     return (state.localAds||[]).filter(ad=>ad&&ad.active!==false&&Number(ad.startAt||0)<=now&&(!ad.endAt||Number(ad.endAt)>=now))
-      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0))[0]||null;
+      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0)).slice(0,8);
   }
+  function activeLocalAd(){ return activeLocalAds()[0]||null; }
   function localAdMarkup(){const ad=activeLocalAd();if(!ad)return'<section class="card brand-card promo-card"><div><p class="eyebrow" style="color:#bfe9ff">SCRAVEIT STANDARD</p><h2 class="section-title" style="font-size:25px;margin-top:7px">Clear pricing. Careful delivery.</h2><p class="supporting" style="margin-top:8px">Every charge is shown before you place an order.</p></div><span class="promo-code">NO SURPRISES</span></section>';return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
   function latestDeliveredNeedingReview(){if(!reviewStateReady())return null;return state.orders.find(o=>o.status==="Delivered"&&!state.reviews[o.id])||null}
   function postDeliveryCard(){const o=latestDeliveredNeedingReview();if(!o)return"";return'<section class="post-order-card"><p class="eyebrow">Delivered</p><h2 class="section-title">How was '+h(o.restaurant||"your order")+'?</h2><p class="supporting">Your rating helps customers, restaurants and delivery partners improve.</p><div class="star-row">'+[1,2,3,4,5].map(n=>'<button class="star-choice" data-action="quick-rate" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' stars">'+icon("star","large")+'</button>').join("")+'</div><button class="button tonal full" data-action="go" data-route="review" data-order-id="'+h(o.id)+'">Rate restaurant & delivery partner</button></section>'}
@@ -2103,13 +2239,23 @@
   function restaurantsAtAddress() {
     let list=Object.values(state.catalog).filter(r=>r.archived!==true);
     const address=currentAddress();
-    const customerCity=keyName(address&&address.city||"");
-    if(customerCity){
-      const cityTagged=list.some(r=>keyName(r.city||""));
-      if(cityTagged)list=list.filter(r=>!keyName(r.city||"")||keyName(r.city)===customerCity);
+    const pinned=!!(address&&Number.isFinite(Number(address.lat))&&Number.isFinite(Number(address.lng)));
+    // Once pinned, restaurantServiceable() below is the real, distance-based
+    // answer to "can this reach the customer" - a restaurant's own city field
+    // and the customer's own address city field are two independently typed
+    // strings for the same real place (a GPS geocoder and a restaurant owner
+    // rarely spell a town identically - "Naidupet" vs "Naidupeta" is a real
+    // one this app hit) and requiring them to match exactly hid a restaurant
+    // that was genuinely next door. Without a pin there is no distance to
+    // check yet, so the city string is the only scoping available.
+    if(!pinned){
+      const customerCity=keyName(address&&address.city||"");
+      if(customerCity){
+        const cityTagged=list.some(r=>keyName(r.city||""));
+        if(cityTagged)list=list.filter(r=>!keyName(r.city||"")||keyName(r.city)===customerCity);
+      }
     }
-    if(address&&Number.isFinite(Number(address.lat))&&Number.isFinite(Number(address.lng)))
-      list=list.filter(restaurantServiceable);
+    if(pinned)list=list.filter(restaurantServiceable);
     return list;
   }
 
@@ -2216,14 +2362,22 @@
       list=list.filter(r=>searchMatches([r.name,(r.cuisines||[]).join(" "),...discoveryItems(r).map(i=>i.name+" "+(i.description||""))].join(" "),q));
 
     const address=currentAddress();
-    const customerCity=keyName(address&&address.city||"");
-    if(customerCity){
-      const cityTagged=list.some(r=>keyName(r.city||""));
-      if(cityTagged)list=list.filter(r=>!keyName(r.city||"")||keyName(r.city)===customerCity);
-    }
-    const pinned=address
+    const pinned=!!(address
       &&Number.isFinite(Number(address.lat))
-      &&Number.isFinite(Number(address.lng));
+      &&Number.isFinite(Number(address.lng)));
+
+    // Once pinned, restaurantServiceable() below is the real, distance-based
+    // gate - see the matching comment in restaurantsAtAddress() for why a
+    // customer's and a restaurant's independently-typed city strings must
+    // not be required to match exactly once there is a real distance to
+    // check instead.
+    if(!pinned){
+      const customerCity=keyName(address&&address.city||"");
+      if(customerCity){
+        const cityTagged=list.some(r=>keyName(r.city||""));
+        if(cityTagged)list=list.filter(r=>!keyName(r.city||"")||keyName(r.city)===customerCity);
+      }
+    }
 
     if(pinned)
       list=list.filter(restaurantServiceable);
@@ -2270,7 +2424,7 @@
 
     return list;
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),distance=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),distanceText=distance==null?"":distance.toFixed(distance<10?1:0)+" km",rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New";return'<article class="restaurant-card '+(horizontal?'horizontal':'')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="restaurant-media"><img src="'+h(safeUrl(r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="media-badge">'+(r.open?'Open':'Closed')+'</span><button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-copy"><div class="restaurant-title-row"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rating compact">'+icon("star","small")+'<strong>'+h(ratingText)+'</strong></span></div><div class="cluster wrap restaurant-badges">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span>':'')+(restaurantOfferLabel(r)?'<span class="offer-badge">'+h(restaurantOfferLabel(r))+'</span>':'')+'<span class="rating-caption">'+h(rating.label)+'</span></div><p class="supporting restaurant-cuisines">'+h((r.cuisines||[]).join(" · "))+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</span>'+(distanceText?'<span>'+icon("pin","small")+' '+h(distanceText)+'</span>':'')+'<span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></div></div></article>'}
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),distance=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),distanceText=distance==null?"":distance.toFixed(distance<10?1:0)+" km",rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New";return'<article class="restaurant-card '+(horizontal?'horizontal':'')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="restaurant-media"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="media-badge">'+(r.open?'Open':'Closed')+'</span><button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-copy"><div class="restaurant-title-row"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rating compact">'+icon("star","small")+'<strong>'+h(ratingText)+'</strong></span></div><div class="cluster wrap restaurant-badges">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span>':'')+(restaurantOfferLabel(r)?'<span class="offer-badge">'+h(restaurantOfferLabel(r))+'</span>':'')+'<span class="rating-caption">'+h(rating.label)+'</span></div><p class="supporting restaurant-cuisines">'+h((r.cuisines||[]).join(" · "))+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</span>'+(distanceText?'<span>'+icon("pin","small")+' '+h(distanceText)+'</span>':'')+'<span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></div></div></article>'}
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenHome() {
@@ -2278,7 +2432,8 @@
     if(state.homeStatus==="errorWithoutCache")return'<main class="screen"><div class="screen-content page-stack">'+homeHeader()+emptyState("warning","Restaurants could not be loaded","Check your connection and try again. Your saved address is still selected.","refresh","Retry")+'</div>'+nav()+'</main>';
     const active=activeOrders()[0], restaurants=restaurantsFiltered(),recommended=restaurants.slice(0,3),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
-    return '<main class="screen '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()
+    if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
+    return '<main class="screen '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +'<section class="home-lead"><p class="eyebrow">'+(new Date().getHours()<12?'Good morning':new Date().getHours()<17?'Good afternoon':'Good evening')+'</p><h1 class="display">What tastes good, '+h(firstName())+'?</h1><p class="supporting">Showing restaurants in '+h(address&&address.city||"your selected city")+'</p></section>'
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
       +(active?activeOrderCard(active):postDeliveryCard())
@@ -2349,7 +2504,7 @@
     const grouped={};items.forEach(item=>(grouped[item.category||"Menu"]||(grouped[item.category||"Menu"]=[])).push(item));
     return Object.keys(grouped).map(category=>'<section class="stack"><div><h2 class="section-title">'+h(category)+'</h2><p class="supporting">'+grouped[category].length+' item'+(grouped[category].length===1?'':'s')+'</p></div><div class="menu-list">'+grouped[category].map(item=>{
       const inCart=state.cart.filter(x=>x.restaurantId===r.id&&x.itemId===item.id).reduce((n,x)=>n+x.quantity,0);
-      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'" aria-label="'+(item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong><p class="supporting">'+h(item.description||"")+'</p>'+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageUrl||item.image,r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
+      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'" aria-label="'+(item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong><p class="supporting">'+h(item.description||"")+'</p>'+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
     }).join("")+'</div></section>').join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
   }
   function screenRestaurant() {
@@ -2480,12 +2635,22 @@
 
   function statusTimeline(order) {
     const current=statusIndex(order.status);const cancelled=order.status==="Cancelled";
-    const visible=ORDER_FLOW.filter((status,index)=>index<=Math.max(current+1,3)||index===ORDER_FLOW.length-1);
+    const full=ORDER_FLOW.filter((status,index)=>index<=Math.max(current+1,3)||index===ORDER_FLOW.length-1);
+    // Every stage keeps its own full-height, timestamped row, so once an
+    // order has moved through several of them this card gets very long.
+    // Collapse everything before the most recent few stages behind a toggle
+    // by default - the page opens short, and the complete history (still
+    // useful for support disputes etc.) is one tap away, not lost.
+    const RECENT_STEPS=3;
+    const hiddenCount=Math.max(0,full.length-RECENT_STEPS);
+    const expanded=!!state.timelineExpanded;
+    const visible=(!cancelled&&hiddenCount>0&&!expanded)?full.slice(full.length-RECENT_STEPS):full;
+    const toggle=(!cancelled&&hiddenCount>0)?'<button type="button" class="text-button timeline-toggle" data-action="toggle-order-timeline">'+(expanded?'Show recent steps only':'Show earlier steps')+icon("chevron","small "+(expanded?"chevron-up":"chevron-down"))+'</button>':'';
     return '<div class="timeline">'+visible.map((status,index)=>{
       const fullIndex=ORDER_FLOW.indexOf(status),done=!cancelled&&fullIndex<current,active=!cancelled&&fullIndex===current;
       const event=order.statusHistory&&Object.values(order.statusHistory).find(x=>x.status===status);
       return '<div class="timeline-step '+(done?'done':active?'active':'')+'"><span class="timeline-dot"></span><div class="timeline-copy"><strong>'+h(status)+'</strong><span>'+(event?h(dateTime(event.at||event.createdAt)):active?'Current status':'')+'</span></div></div>';
-    }).join("")+(cancelled?'<div class="timeline-step active"><span class="timeline-dot" style="border-color:var(--danger)"></span><div class="timeline-copy"><strong class="danger-text">Cancelled</strong><span>'+h(order.cancelReason||"Order was cancelled")+'</span></div></div>':'')+'</div>';
+    }).join("")+(cancelled?'<div class="timeline-step active"><span class="timeline-dot" style="border-color:var(--danger)"></span><div class="timeline-copy"><strong class="danger-text">Cancelled</strong><span>'+h(order.cancelReason||"Order was cancelled")+'</span></div></div>':'')+'</div>'+toggle;
   }
   function onlinePaymentNotice(order){
     if(!order||!isOnlinePaymentMethod(order.paymentMethod)||order.paymentState==="paid"||order.paymentState==="refunded")return"";
@@ -2493,32 +2658,91 @@
     const statusCopy=retry?"The previous payment attempt did not complete.":"Pay this order securely before the restaurant can accept it.";
     return '<section class="card stack"><div class="notice '+(retry?'warning':'info')+'">'+icon(retry?"warning":"shield","small")+'<div><strong>'+(retry?'Retry payment':'Payment pending')+'</strong><div class="caption">'+h(statusCopy)+'</div></div></div><button class="button primary full" data-action="pay-order" data-order-id="'+h(order.id)+'">'+(retry?'Retry payment':'Complete payment')+'</button></section>';
   }
+  /** Only used when there is no hero to float the controls over (a
+   *  delivered or cancelled order), so back is never unreachable. */
+  function orderTopbar(order){
+    return '<header class="order-topbar"><button class="back-button" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +'<div class="order-topbar-title"><strong>'+h(order.restaurant||"Your order")+'</strong><span>'+h(order.id)+'</span></div>'
+      +'<button class="icon-button flat" data-action="refresh" aria-label="Refresh order">'+icon("refresh")+'</button></header>';
+  }
+  /**
+   * Map (or, once it has idled down, the sponsored carousel) and the status
+   * band as one attached block rather than two floating cards - the map's
+   * bottom edge runs straight into the status it belongs to, which is both
+   * tighter and reads as a single live thing.
+   */
+  function orderLiveModule(order,live,canTrack){
+    const collapsed=!!state.trackingMapCollapsed;
+    const headline=order.status==="Arrived"?'Your partner is at your door.'
+      :order.status==="Near you"?'Your partner is nearby.'
+      :order.status==="Delivered"?'Delivered with care.'
+      :order.status==="Cancelled"?'This order was cancelled.'
+      :canTrack?'Your meal is on the way.':'Your order is being prepared.';
+    const hero=!canTrack?"":(collapsed?trackingAdCarouselMarkup():trackingMapMarkup(order,live,false));
+    const meta=canTrack&&live.updatedAt?'Location updated '+timeAgo(live.updatedAt)
+      :'Last updated '+timeAgo(order.updatedAt||order.createdAt);
+    // With a hero to sit on, back and refresh float over it instead of
+    // occupying a bar of their own above the fold, and the restaurant this
+    // order came from moves down to head the status it belongs to.
+    const heroBlock=hero?'<div class="live-hero">'+hero
+      +'<button type="button" class="hero-float back" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +'<button type="button" class="hero-float refresh" data-action="refresh" aria-label="Refresh order">'+icon("refresh")+'</button>'
+      +'</div>':"";
+    return '<section class="live-module'+(hero?'':' no-hero')+'">'+heroBlock
+      +'<div class="live-status"><div class="grow">'
+      +'<p class="live-place">'+h(order.restaurant||order.id)+'</p>'
+      +'<h1 class="live-headline">'+headline+'</h1>'
+      +'<div class="live-chips"><span class="live-chip">'+h(order.status)+'</span><span class="live-chip eta">'+h(etaText(order))+'</span></div>'
+      +'<p class="live-meta">'+h(meta)+'</p></div>'
+      +(canTrack&&collapsed?trackingMapThumbMarkup(order,live):'')
+      +'</div></section>';
+  }
+  /** One row builder for both people. The restaurant's row is rendered with
+   *  its own order content further down, not beside the delivery partner. */
+  function orderContactRow(order,who){
+    if(TERMINAL_STATES.has(order.status))return"";
+    const rider=who==="rider";
+    if(rider&&!order.riderId)return"";
+    const name=rider?(order.riderName||"Delivery partner"):(order.restaurant||"Restaurant");
+    const phone=rider?order.riderPhone:order.restaurantPhone;
+    return '<div class="contact-row"><span class="avatar">'+h(String(name).slice(0,1).toUpperCase())+'</span>'
+      +'<div class="grow"><strong>'+h(name)+'</strong><span class="caption">'+(rider?'Your delivery partner':'Restaurant')+'</span></div>'
+      +(phone?'<a class="icon-button" href="tel:'+h(phone)+'" aria-label="Call '+h(name)+'">'+icon("phone")+'</a>':'')
+      +'<button class="icon-button" data-action="open-order-chat" data-channel="'+(rider?'customerRider':'customerRestaurant')+'" data-order-id="'+h(order.id)+'" aria-label="Chat with '+h(name)+'">'+icon("chat")+'</button></div>';
+  }
   function screenOrder() {
     const order=orderById();if(!order)return'<main class="screen"><div class="screen-content">'+topbar("Order unavailable","This order is not in your account cache.")+emptyState("orders","Order not found","Refresh your orders and try again.","refresh","Refresh orders")+'</div>'+nav()+'</main>';
-    const tracking=state.tracking[order.id];const canTrack=["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status);
+    const canTrack=["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status);
     const showDeliveryOtp=["Out for delivery","Near you","Arrived"].includes(order.status),deliveryOtp=state.deliveryOtps[order.id];
     const savedReview=state.reviews[order.id]||null,restaurantReviewRating=Number(savedReview&&savedReview.rating||0),riderReviewRating=Number(savedReview&&savedReview.riderRating||0);
     const submittedReviewMarkup=savedReview?'<section class="card stack"><div><p class="eyebrow">Your feedback</p><h2 class="section-title">Ratings submitted</h2></div><div class="price-row"><span>Restaurant & food</span><strong>'+h(restaurantReviewRating.toFixed(1))+' / 5</strong></div>'+(riderReviewRating>0?'<div class="price-row"><span>Delivery partner</span><strong>'+h(riderReviewRating.toFixed(1))+' / 5</strong></div>':'')+'<p class="caption">Saved to this delivered order.</p></section>':'';
     const reviewAction=order.status!=="Delivered"?'':savedReview?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' View your rating</button>':reviewStateReady()?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' Rate order</button>':'<button class="button tonal grow" disabled><span class="spinner"></span> Checking feedback…</button>';
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Order "+order.id,order.restaurant||"Order details")+networkBanner()
-      +'<section class="card brand-card stack"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><h2 class="section-title" style="font-size:25px">'+(order.status==="Delivered"?'Delivered with care.':order.status==="Cancelled"?'This order was cancelled.':'Your order is moving forward.')+'</h2><p class="supporting">Last updated '+h(timeAgo(order.updatedAt||order.createdAt))+'</p>'+(canTrack?'<button class="button" style="background:white;color:#155eef" data-action="open-tracking" data-order-id="'+h(order.id)+'">'+icon("pin")+' Open live tracking</button>':'')+'</section>'
+    const live=state.tracking[order.id]||{};
+    if(canTrack)ensureTrackingRoute(order,live);
+    return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
+      +orderLiveModule(order,live,canTrack)
+      +(orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
       +(showDeliveryOtp?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
-      +'<section class="card stack"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
+      +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
       +onlinePaymentNotice(order)
-      +(order.riderName?'<section class="card cluster"><span class="avatar">'+h(String(order.riderName).slice(0,1).toUpperCase())+'</span><div class="grow"><h2 class="card-title">'+h(order.riderName)+'</h2><p class="supporting">Your assigned Scraveit Partner'+(order.riderPhone?' · '+h(order.riderPhone):'')+'</p></div><span class="status-pill '+(tracking&&tracking.status==="live"?'success':'')+'">'+(tracking&&tracking.status==="live"?'Tracking live':'Assigned')+'</span></section>':'')
-      +'<section class="card stack"><h2 class="section-title">Communication</h2><p class="supporting">Call or chat while this order is active.</p><div class="cluster wrap"><button class="button tonal grow" data-action="open-order-chat" data-channel="customerRestaurant" data-order-id="'+h(order.id)+'">Chat restaurant</button>'+(order.restaurantPhone&&!TERMINAL_STATES.has(order.status)?'<a class="button secondary grow" href="tel:'+h(order.restaurantPhone)+'">Call restaurant</a>':'')+(order.riderId?'<button class="button tonal grow" data-action="open-order-chat" data-channel="customerRider" data-order-id="'+h(order.id)+'">Chat rider</button>':'')+(order.riderId&&order.riderPhone&&!TERMINAL_STATES.has(order.status)?'<a class="button secondary grow" href="tel:'+h(order.riderPhone)+'">Call rider</a>':'')+'</div></section>'+'<section class="card stack"><div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<div class="price-row total"><span>Paid / due</span><span>'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod||"Payment")+'</span></div></section>'
+      +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
+      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<div class="price-row total"><span>Paid / due</span><span>'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod||"Payment")+'</span></div></section>'
       +'<section class="card stack"><h2 class="section-title">Delivery details</h2>'+addressSummary(order.address||{})+(order.instructions?'<div class="notice info">'+icon("info","small")+'<span>'+h(order.instructions)+'</span></div>':'')+'</section>'+submittedReviewMarkup
       +(order.status!=="Cancelled"?adminContactMarkup():'')
       +'<div class="cluster wrap">'+(order.status==="Delivered"?'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>'+reviewAction:'')+(["Order placed","Accepted"].includes(order.status)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Request cancellation</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>'
       +'</div>'+nav()+'</main>';
   }
 
-  const TRACKING_MAP_MIN_ZOOM=12, TRACKING_MAP_MAX_ZOOM=18, TRACKING_MAP_FIT_PX=240, TRACKING_TILE_PX=256, TRACKING_MAX_TILES=80;
+  // The map is a fixed-height hero card, not the whole screen, so both the
+  // fit margin and the "fit all points" box shrink proportionally from the
+  // old full-screen tuning - unchanged values would zoom out far more than a
+  // card this size needs to stay legible.
+  const TRACKING_MAP_MIN_ZOOM=12, TRACKING_MAP_MAX_ZOOM=16, TRACKING_MAP_FIT_PX=140, TRACKING_TILE_PX=256, TRACKING_MAX_TILES=80;
   const TRACKING_POLL_MS=5000, TRACKING_STREAM_GRACE_MS=8000;
-  // The bottom sheet covers the lower part of the map, so the camera anchor sits
-  // at 27% from the top - the middle of the strip that stays visible. This must
-  // stay in sync with `.map-world { top: 27% }` in premium.css.
-  const TRACKING_MAP_VERTICAL_ANCHOR_PCT=27;
+  // The map card has nothing overlapping it now (no floating bottom sheet),
+  // so the camera anchor is just the card's vertical centre. This must stay
+  // in sync with `.map-world { top: 50% }` in premium.css.
+  const TRACKING_MAP_VERTICAL_ANCHOR_PCT=50;
   // One duration for the marker and the camera so they travel in lockstep; a
   // linear curve matches the steady cadence the partner app uploads fixes at.
   const TRACKING_GLIDE_MS=2600;
@@ -2548,10 +2772,24 @@
     if(String(live&&live.phase||"")==="pickup")return points.restaurantPoint||points.customerPoint||null;
     return points.customerPoint||points.restaurantPoint||null;
   }
+  // The camera's job is to follow the partner, not to keep the destination
+  // centred too - on a long "Out for delivery" leg the midpoint between rider
+  // and door sits nowhere near either of them, which read as the map not
+  // following the rider at all even though it was panning correctly toward
+  // that midpoint on every update.
   function trackingCameraFocus(points,live){
-    const rider=points.riderPoint,destination=trackingDestination(points,live);
-    if(rider&&destination)return {lat:(rider.lat+destination.lat)/2,lng:(rider.lng+destination.lng)/2};
-    return rider||destination||null;
+    return points.riderPoint||trackingDestination(points,live)||null;
+  }
+  /** Re-aim the camera when the map changes size, so the switch does not
+   *  leave the partner parked outside the frame it moved into. */
+  function recentreTrackingForMode(){
+    const ms=state.trackingMap,order=orderById();
+    if(!ms||!order)return;
+    const live=state.tracking[order.id]||{};
+    const focus=trackingCameraFocus(trackingGeoPoints(order,live),live);
+    if(!focus)return;
+    const local=trackingLocalPoint(ms,focus);
+    ms.panX=-local.x;ms.panY=-local.y;ms.userPanned=false;ms.userZoomed=false;ms.tileKey="";
   }
   function trackingMapState(order,points){
     const current=state.trackingMap;
@@ -2608,13 +2846,25 @@
       (Math.hypot(a.left+TRACKING_TILE_PX/2-focusX,a.top+TRACKING_TILE_PX/2-focusY))
       -(Math.hypot(b.left+TRACKING_TILE_PX/2-focusX,b.top+TRACKING_TILE_PX/2-focusY)));
   }
+  // Deliberately empty: baking `class="ready"` into this string (the old
+  // behaviour) put every tile at its final opacity before the browser had
+  // fetched a single one, so images just popped in one at a time as they
+  // finished loading - the "patchy" look on first open. refreshTrackingTiles()
+  // (called right after this screen mounts, see render()) creates every tile
+  // the same way it already does for tiles revealed by panning: starting
+  // hidden, then adding .ready on the image's own "load" event, so the CSS
+  // opacity transition actually has something to animate.
   function trackingTileMarkup(ms){
-    return trackingTileList(ms).map(tile=>'<img alt="" aria-hidden="true" class="ready" data-tile="'+tile.key+'" src="'+tile.src+'" style="left:'+tile.left.toFixed(0)+'px;top:'+tile.top.toFixed(0)+'px">').join("");
+    return "";
   }
   function trackingPinMarkup(ms,variant,point,label,iconName,isLive){
-    if(!point)return '<span class="map-pin '+variant+'" style="display:none" aria-label="'+h(label)+'">'+icon(iconName)+'</span>';
+    // The rider marker is a full illustration (its own colors/shadow), not a
+    // small glyph on a solid badge like the restaurant/home pins - it gets an
+    // <img> instead of the shared icon-in-circle treatment.
+    const content=variant==="rider"?'<img src="rider-marker.png" alt="" draggable="false">':icon(iconName);
+    if(!point)return '<span class="map-pin '+variant+'" style="display:none" aria-label="'+h(label)+'">'+content+'</span>';
     const local=trackingLocalPoint(ms,point);
-    return '<span class="map-pin '+variant+(isLive?' live':'')+'" style="transform:translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)" aria-label="'+h(label)+'">'+icon(iconName)+'</span>';
+    return '<span class="map-pin '+variant+(isLive?' live':'')+'" style="transform:translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)" aria-label="'+h(label)+'">'+content+'</span>';
   }
   // The delivery route (restaurant -> door) is a fixed path for an order, so it
   // is fetched once from OSRM's free routing service and cached. It is drawn
@@ -2642,6 +2892,19 @@
   function trackingRouteKey(from,to){
     return from.lat.toFixed(5)+","+from.lng.toFixed(5)+">"+to.lat.toFixed(5)+","+to.lng.toFixed(5);
   }
+  // The route line runs from the partner's live position to the delivery
+  // leg's destination, not a leg baked in once from the restaurant - so it
+  // actually reflects where the partner is right now. Re-fetching on every
+  // GPS fix would hammer the free OSRM router for no visible benefit, so the
+  // rider side of the key is snapped to a coarse grid: the route only
+  // refetches once the partner has moved roughly a city block, and
+  // trackingProjectOnRoute/trackingRemainingRoute already smooth out
+  // everything smaller than that between refetches.
+  const TRACKING_ROUTE_RIDER_GRID_DEG=0.003;
+  function trackingRouteRiderAnchor(point){
+    const g=TRACKING_ROUTE_RIDER_GRID_DEG;
+    return {lat:Math.round(point.lat/g)*g,lng:Math.round(point.lng/g)*g};
+  }
   function readTrackingRouteCache(){
     const raw=loadJSON(TRACKING_ROUTE_CACHE_KEY,{});
     return raw&&typeof raw==="object"?raw:{};
@@ -2659,12 +2922,13 @@
     if(!entry||!entry.polyline||Date.now()-Number(entry.at||0)>TRACKING_ROUTE_TTL_MS)return null;
     return entry.polyline;
   }
-  function trackingRoutePoints(order){
-    const points=trackingGeoPoints(order,{});
-    if(!points.restaurantPoint||!points.customerPoint)return null;
-    const key=trackingRouteKey(points.restaurantPoint,points.customerPoint);
-    const live=state.trackingRoutes[key];
-    if(live&&live.points)return live;
+  function trackingRoutePoints(order,live){
+    const points=trackingGeoPoints(order,live);
+    const destination=trackingDestination(points,live);
+    if(!points.riderPoint||!destination)return null;
+    const key=trackingRouteKey(trackingRouteRiderAnchor(points.riderPoint),destination);
+    const cached=state.trackingRoutes[key];
+    if(cached&&cached.points)return cached;
     const polyline=cachedTrackingRoute(key);
     if(polyline){
       const decoded=decodePolyline(polyline);
@@ -2680,19 +2944,20 @@
     // cached, so it is transparently replaced by the real road-following polyline
     // the moment ensureTrackingRoute succeeds (state.trackingRoutes[key] then has
     // .points and the check above returns it directly).
-    return trackingRouteMetrics([points.restaurantPoint,points.customerPoint]);
+    return trackingRouteMetrics([points.riderPoint,destination]);
   }
-  async function ensureTrackingRoute(order){
-    const points=trackingGeoPoints(order,{});
-    if(!points.restaurantPoint||!points.customerPoint||!state.online)return;
-    const key=trackingRouteKey(points.restaurantPoint,points.customerPoint);
+  async function ensureTrackingRoute(order,live){
+    const points=trackingGeoPoints(order,live);
+    const destination=trackingDestination(points,live);
+    if(!points.riderPoint||!destination||!state.online)return;
+    const key=trackingRouteKey(trackingRouteRiderAnchor(points.riderPoint),destination);
     const existing=state.trackingRoutes[key];
     if(existing&&(existing.points||existing.pending))return;
     if(existing&&existing.failedAt&&Date.now()-existing.failedAt<TRACKING_ROUTE_RETRY_MS)return;
     if(cachedTrackingRoute(key))return;
     state.trackingRoutes[key]={pending:true};
     try{
-      const from=points.restaurantPoint,to=points.customerPoint;
+      const from=points.riderPoint,to=destination;
       const url=TRACKING_ROUTE_ENDPOINT
         +from.lng.toFixed(6)+","+from.lat.toFixed(6)+";"+to.lng.toFixed(6)+","+to.lat.toFixed(6)
         +"?overview=full&geometries=polyline";
@@ -2704,7 +2969,7 @@
       if(decoded.length<2)throw new Error("route had no usable geometry");
       state.trackingRoutes[key]=trackingRouteMetrics(decoded);
       writeTrackingRouteCache(key,{polyline:polyline,at:Date.now()});
-      if(state.route==="tracking")render({preserveScroll:true});
+      if(liveOrderRoute())render({preserveScroll:true});
     }catch(_){
       state.trackingRoutes[key]={failedAt:Date.now()};
     }
@@ -2768,7 +3033,7 @@
     return ["Out for delivery","Near you","Arrived"].indexOf(String(order&&order.status||""))!==-1;
   }
   function trackingRouteView(order,live){
-    const route=trackingRoutePoints(order);
+    const route=trackingRoutePoints(order,live);
     if(!route||route.points.length<2)return null;
     if(!trackingDeliveryLegActive(order,live))return null;
     const ms=state.trackingMap;
@@ -2834,24 +3099,55 @@
       rider.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
     }
   }
-  function startTrackingRouteGlide(target){
+  // A fixed-duration ease per GPS fix looked like "glide, then hold still for
+  // a second or two, then glide again" whenever fixes arrived slower than
+  // that duration - which is most of the time at realistic GPS/network
+  // cadence. Every documented source for this exact problem (Uber's own
+  // description of their client, Google's reference Android implementation,
+  // general tutorials) converges on the same fix, and it's simpler than a
+  // speed-estimate-and-coast model: animate between the last confirmed
+  // position and the new one over a duration equal to how long that gap
+  // actually took, eased rather than linear. Since both endpoints are always
+  // real, already-confirmed fixes, this can never overshoot and needs no
+  // separate correction term - the animation just finishes exactly when the
+  // next fix's duration begins.
+  const TRACKING_ROUTE_MIN_DURATION_MS=450, TRACKING_ROUTE_MAX_DURATION_MS=6000;
+  function easeInOutQuad(t){ return t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+  function startTrackingRouteGlide(target,fixAt){
     const ms=state.trackingMap;
     if(!ms)return;
-    ms.routeFrom=Number.isFinite(ms.routeProgress)?ms.routeProgress:target;
+    const now=Number.isFinite(fixAt)?fixAt:Date.now();
+    const prevProgress=Number.isFinite(ms.routeProgress)?ms.routeProgress:target;
+    const prevFixAt=Number.isFinite(ms.routeLastFixAt)?ms.routeLastFixAt:now;
+    // The animation window is the real gap between this fix and the last one
+    // - not a fixed constant - clamped so a near-simultaneous pair of fixes
+    // doesn't snap instantly and a long stationary gap doesn't crawl for
+    // minutes once movement resumes.
+    const gapMs=Math.max(TRACKING_ROUTE_MIN_DURATION_MS,Math.min(TRACKING_ROUTE_MAX_DURATION_MS,now-prevFixAt));
+    ms.routeFrom=prevProgress;
     ms.routeTarget=target;
+    ms.routeDurationMs=gapMs;
     ms.routeGlideStart=Date.now();
-    if(ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
-    ms.routeAnim=typeof requestAnimationFrame==="function"?requestAnimationFrame(stepTrackingRouteGlide):null;
-    if(!ms.routeAnim){ms.routeProgress=target;paintTrackingRoute();}
+    ms.routeLastFixAt=now;
+    if(!ms.routeAnim&&typeof requestAnimationFrame==="function"){
+      ms.routeAnim=requestAnimationFrame(stepTrackingRouteGlide);
+    }else if(!ms.routeAnim){
+      ms.routeProgress=target;paintTrackingRoute();
+    }
   }
   function stepTrackingRouteGlide(){
     const ms=state.trackingMap;
     if(!ms)return;
-    if(state.route!=="tracking"){ms.routeAnim=null;return;}
+    if(!liveOrderRoute()){ms.routeAnim=null;return;}
     const elapsed=Date.now()-ms.routeGlideStart;
-    const t=TRACKING_GLIDE_MS>0?Math.min(1,elapsed/TRACKING_GLIDE_MS):1;
-    ms.routeProgress=ms.routeFrom+(ms.routeTarget-ms.routeFrom)*t;
+    const t=Math.min(1,elapsed/(ms.routeDurationMs||TRACKING_ROUTE_MIN_DURATION_MS));
+    const eased=easeInOutQuad(t);
+    ms.routeProgress=ms.routeFrom+(ms.routeTarget-ms.routeFrom)*eased;
     paintTrackingRoute();
+    // Stop once this segment is actually finished rather than idling the
+    // loop at 60fps doing no-op repaints - the next fix cold-starts a fresh
+    // one via startTrackingRouteGlide()'s own !ms.routeAnim check, which
+    // costs nothing extra.
     ms.routeAnim=t<1&&typeof requestAnimationFrame==="function"?requestAnimationFrame(stepTrackingRouteGlide):null;
   }
   function stopTrackingRouteGlide(){
@@ -2859,29 +3155,50 @@
     if(ms&&ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
     if(ms)ms.routeAnim=null;
   }
-  function trackingMapMarkup(order,live,full){
+  function trackingMapMarkup(order,live,compact){
     const points=trackingGeoPoints(order,live);
     const ms=trackingMapState(order,points);
     if(!ms){
-      return '<section class="card map-card map-card-empty'+(full?' map-card-full':'')+'"><div class="map-placeholder">'+icon("pin")+'<p class="supporting">The live map will appear once delivery locations are available.</p></div></section>';
+      // Idle-collapse only ever fires once tracking data already exists (see
+      // startTrackingCollapseCycle/armTrackingIdleTimer), so a compact card
+      // with nothing to show yet is not a real path today - skip it rather
+      // than build and maintain an untested placeholder for it.
+      if(compact)return"";
+      return '<section class="card map-card map-card-empty"><div class="map-placeholder">'+icon("pin")+'<p class="supporting">The live map will appear once delivery locations are available.</p></div></section>';
     }
-    ms.tileKey=trackingTileKey(ms);
-    ms.tilePanX=ms.panX;ms.tilePanY=ms.panY;
+    // Do NOT stamp ms.tileKey/tilePanX/tilePanY here: trackingTileMarkup(ms)
+    // below returns no <img> tags (see its comment), so the real tile layer
+    // is built afterwards by refreshTrackingTiles(), which is what should own
+    // this stamp - once it has actually created the images that match it.
+    // Stamping it here made refreshTrackingTiles() see a key that already
+    // "matched" and skip building anything, leaving the map blank on first
+    // load and after every zoom/pan that forces a full re-render.
     const fresh=!!(live.updatedAt&&Date.now()-Number(live.updatedAt)<45000);
-    return '<section class="card map-card'+(full?' map-card-full':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'">'
+    // Same #tracking-map-card id and inner structure whether compact or not,
+    // so patchTrackingMap()/refreshTrackingTiles() (which locate it by that
+    // id) keep patching pins and tiles in place while it is shrunk down -
+    // tapping it back open shows the map already current, not stale.
+    // In compact mode the tap target is the .map-thumb wrapper around this,
+    // not the card itself - see trackingMapThumbMarkup().
+    return '<section class="card map-card'+(compact?' compact':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'">'
       +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
       +'<div class="map-tiles">'+trackingTileMarkup(ms)+'</div>'
       +trackingRouteMarkup(ms,order,live)
       +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
-      +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","scooter",fresh)
+      +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","bike",fresh)
       +'</div>'
+      // Zoom/recentre controls and the LIVE/STALE badge only make sense at
+      // full size - omitting them in compact mode (rather than hiding with
+      // CSS) also means a tap anywhere on the thumbnail always resolves to
+      // the section's own tracking-expand-map action, never a stray control.
+      +(compact?"":'<button type="button" class="map-control map-minimize" data-action="tracking-collapse-map" aria-label="Minimise map">'+icon("minimize")+'</button>'
       +'<div class="map-overlay"><span class="status-pill map-status-pill '+(fresh?'success':'warning')+'">'+(fresh?'LIVE':'STALE')+'</span><span class="map-attribution">© OpenStreetMap</span></div>'
       +'<div class="map-controls">'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="1" aria-label="Zoom in">+</button>'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="-1" aria-label="Zoom out">&#8722;</button>'
       +'<button type="button" class="map-control'+(ms.userPanned||ms.userZoomed?'':' hidden')+'" id="tracking-recenter" data-action="tracking-recenter" aria-label="Recentre the map">'+icon("target")+'</button>'
-      +'</div>'
+      +'</div>')
       +'</section>';
   }
   function applyTrackingCamera(animate){
@@ -2950,16 +3267,34 @@
     const points=trackingGeoPoints(order,live);
     const all=trackingAllPoints(points);
     if(!all.length)return false;
-    // Only ever widen the view, and only when the points genuinely no longer
-    // fit: auto-zooming back in would undo a manual zoom a couple of seconds
-    // after the partner makes it, and would keep nudging the scale around.
-    // A zoom change rescales every local coordinate, so that one case still
-    // needs a full re-render; everything else is animated in place.
-    const fitted=fitTrackingMapView(all);
-    if(!ms.userPanned&&!ms.userZoomed&&fitted.zoom<ms.zoom){
-      ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
-      ms.panX=0;ms.panY=0;ms.tileKey="";
-      return false;
+    // Only re-fit when the rider has actually moved outside the visible
+    // card, not on every tick. fitTrackingMapView(all) fits the restaurant,
+    // the door AND the rider into a fixed pixel budget - on a long "Out for
+    // delivery" leg the restaurant-to-door span is static, but the rider's
+    // own movement keeps nudging that same box past the threshold, so this
+    // used to re-fit (a full, unanimated re-render - the "jump") on nearly
+    // every GPS update. The camera now follows the rider (see
+    // trackingCameraFocus), so what actually matters is only whether the
+    // rider is still on screen at the current zoom - a genuinely rare event,
+    // not a per-tick one.
+    if(!ms.userPanned&&!ms.userZoomed&&points.riderPoint){
+      const size=trackingViewportSize(),margin=48;
+      const above=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100),below=size.height-above;
+      const local=trackingLocalPoint(ms,points.riderPoint);
+      // trackingLocalPoint() is anchor-relative; the camera pan (ms.panX/Y)
+      // is what actually places the rider on screen, so that has to be added
+      // back in before comparing against the viewport edges.
+      const screenX=local.x+ms.panX,screenY=local.y+ms.panY;
+      const riderOffScreen=Math.abs(screenX)>size.width/2-margin
+        ||screenY<-(above-margin)||screenY>below-margin;
+      if(riderOffScreen){
+        const fitted=fitTrackingMapView(all);
+        if(fitted.zoom<ms.zoom){
+          ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
+          ms.panX=0;ms.panY=0;ms.tileKey="";
+          return false;
+        }
+      }
     }
     const fresh=!!(live.updatedAt&&Date.now()-Number(live.updatedAt)<45000);
     setTrackingPin(card,".map-pin.restaurant",ms,points.restaurantPoint,null);
@@ -2973,7 +3308,7 @@
       if(Number.isFinite(ms.routeProgress)&&target<ms.routeProgress-TRACKING_MAX_REWIND_M)target=ms.routeProgress;
       const rider=card.querySelector(".map-pin.rider");
       if(rider)rider.classList.toggle("live",fresh);
-      startTrackingRouteGlide(target);
+      startTrackingRouteGlide(target,Number(live.updatedAt)||Date.now());
     }else{
       stopTrackingRouteGlide();
       setTrackingPin(card,".map-pin.rider",ms,points.riderPoint,fresh);
@@ -3032,7 +3367,7 @@
     return target&&target.closest?target.closest("#tracking-map-card"):null;
   }
   function trackingMapPointerDown(event){
-    if(state.route!=="tracking")return;
+    if(!liveOrderRoute())return;
     const card=trackingMapCard(event.target);
     if(!card)return;
     if(event.target.closest(".map-controls")||event.target.closest(".map-overlay"))return;
@@ -3137,31 +3472,117 @@
     if(steps)trackingZoomAround(steps,point.x,point.y);
   }
   function screenChat(){const o=state.orders.find(x=>x.id===state.chat.orderId),messages=state.chat.messages||[];if(!o)return screenOrders();return'<main class="screen"><div class="screen-content page-stack">'+topbar(state.chat.title||"Order chat","Order "+o.id)+'<div class="notice info">'+icon("shield","small")+'<span>Real phone numbers are not displayed. Phone numbers typed in chat are automatically hidden.</span></div><section class="card chat-thread">'+(messages.length?messages.map(m=>'<div class="chat-message '+(m.senderId===state.session.uid?'mine':'')+'"><strong>'+h(m.senderRole||"user")+'</strong><p>'+h(m.body||"")+'</p><span class="caption">'+h(dateTime(m.at))+'</span></div>').join(""):emptyState("help","No messages yet","Use chat to coordinate this order."))+'</section><form id="chat-form" class="card cluster"><input class="input grow" name="message" maxlength="800" placeholder="Type a message" required><button class="button primary" type="submit">Send</button></form></div>'+nav()+'</main>'}
-  function trackingPartnerCard(order,live){
-    if(!order.riderId)return "";
-    const name=order.riderName||live.riderName||"Delivery partner";
-    const reachable=!TERMINAL_STATES.has(order.status);
-    return '<section class="card cluster between tracking-partner">'
-      +'<div class="cluster"><span class="avatar">'+h(String(name).slice(0,1).toUpperCase())+'</span>'
-      +'<div><strong>'+h(name)+'</strong><p class="caption">Your delivery partner</p></div></div>'
-      +'<div class="cluster">'
-      +(order.riderPhone&&reachable?'<a class="icon-button" href="tel:'+h(order.riderPhone)+'" aria-label="Call '+h(name)+'">'+icon("phone")+'</a>':'')
-      +'<button class="icon-button" data-action="open-order-chat" data-channel="customerRider" data-order-id="'+h(order.id)+'" aria-label="Chat with '+h(name)+'">'+icon("chat")+'</button>'
-      +'</div></section>';
+  // ---- tracking map auto-collapse + ad carousel -----------------------------
+  // The ad carousel is the default view, not a fallback the map decays into:
+  // the screen opens straight into it. Each time the customer taps the
+  // thumbnail to bring the map back, it earns a longer stay before it
+  // auto-collapses again - 6s the first time, 16s the second time, and from
+  // the third expand on it stays open until they minimise it themselves.
+  // Manually minimising never resets that progression; only leaving the
+  // screen and coming back (startTrackingCollapseCycle) does. These handles
+  // live outside `state` on purpose: they are timer ids / counters, not data
+  // that should ever be persisted, diffed, or trigger a render by themselves.
+  let trackingIdleTimer=null, trackingCarouselTimer=null, trackingCarouselIndex=0, trackingExpandCount=0;
+  const TRACKING_IDLE_SCHEDULE_MS=[6000,16000], TRACKING_CAROUSEL_INTERVAL_MS=4500;
+  function stopTrackingCollapseCycle(){
+    clearTimeout(trackingIdleTimer);trackingIdleTimer=null;
+    clearInterval(trackingCarouselTimer);trackingCarouselTimer=null;
   }
-  function screenTracking() {
-    const order=orderById();if(!order)return screenOrder();
-    const live=state.tracking[order.id]||{};
-    ensureTrackingRoute(order);
-    return '<main class="screen no-nav tracking-screen">'
-      +trackingMapMarkup(order,live,true)
-      +'<button class="back-button floating-back" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
-      +'<div class="tracking-sheet-scroll">'
-      +networkBanner()
-      +'<section class="card brand-card stack"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><h1 class="page-title">'+(order.status==="Arrived"?'Your partner is at the delivery location.':order.status==="Near you"?'Your partner is nearby.':'Your meal is on the way.')+'</h1><p class="supporting">'+h(order.restaurant||order.id)+(live.riderName?' · '+h(live.riderName)+' is sharing location for this active order.':' · Tracking begins after a partner is assigned and starts delivery.')+'</p></section>'
-      +trackingPartnerCard(order,live)
-      +'<section class="card stack"><h2 class="section-title">Tracking health</h2><div class="price-row"><span>Last location</span><strong id="tracking-last-location">'+h(live.updatedAt?dateTime(live.updatedAt):"Not received")+'</strong></div><div class="price-row"><span>Accuracy</span><strong id="tracking-accuracy">'+h(live.accuracy?Math.round(live.accuracy)+" m":"Not available")+'</strong></div><div class="price-row"><span>Sharing state</span><strong id="tracking-sharing-state">'+h(live.status||"Waiting")+'</strong></div></section><div class="notice info">'+icon("shield","small")+'<span>Location is visible only for this active order and must be removed by the production retention service after completion.</span></div><button class="button tonal full" data-action="refresh">'+icon("refresh")+' Refresh tracking</button>'
-      +'</div></main>';
+  function armTrackingIdleTimer(delayMs){
+    clearTimeout(trackingIdleTimer);
+    trackingIdleTimer=setTimeout(()=>{
+      if(!liveOrderRoute()||state.trackingMapCollapsed)return;
+      state.trackingMapCollapsed=true;
+      recentreTrackingForMode();
+      render({preserveScroll:true});
+    },delayMs);
+  }
+  // Called once, from go()/goBack(), on the transition into the tracking
+  // route - never from inside screenOrder() itself, which renders on every
+  // collapse/expand and must not restart the progression each time. Opens
+  // straight into the ad carousel: nothing to idle out of, so no timer here.
+  function startTrackingCollapseCycle(){
+    state.trackingMapCollapsed=true;
+    trackingCarouselIndex=0;
+    trackingExpandCount=0;
+    stopTrackingCollapseCycle();
+  }
+  function collapseTrackingMap(){
+    if(state.trackingMapCollapsed)return;
+    state.trackingMapCollapsed=true;
+    recentreTrackingForMode();
+    stopTrackingCollapseCycle();
+    render({preserveScroll:true});
+  }
+  function expandTrackingMap(){
+    if(!state.trackingMapCollapsed)return;
+    state.trackingMapCollapsed=false;
+    recentreTrackingForMode();
+    trackingExpandCount++;
+    stopTrackingCollapseCycle();
+    // Past the scheduled expands, undefined -> no timer armed -> stays open
+    // until the customer minimises it themselves.
+    const delay=TRACKING_IDLE_SCHEDULE_MS[trackingExpandCount-1];
+    if(delay!=null)armTrackingIdleTimer(delay);
+    render({preserveScroll:true});
+  }
+  function trackingAdCarouselMarkup(){
+    const ads=activeLocalAds();
+    if(trackingCarouselIndex>=ads.length)trackingCarouselIndex=0;
+    // No campaign published yet: keep the identical full-bleed hero shape so
+    // the page composition doesn't change the moment the first ad goes live.
+    const slides=ads.length?ads:[null];
+    return '<section class="tracking-ad-hero'+(ads.length?'':' is-fallback')+'"><div class="tracking-ad-track" id="tracking-ad-track">'
+      +slides.map(ad=>ad
+        ?'<button type="button" class="tracking-ad-slide" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'
+          +((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')
+          +'<div class="tracking-ad-copy"><span class="sponsored-label">Sponsored'+(ad.area||ad.city?' · '+h(ad.area||ad.city):'')+'</span><h2 class="tracking-ad-title">'+h(ad.title||"Nearby offer")+'</h2>'+(ad.message?'<p>'+h(ad.message)+'</p>':'')+'<span class="tracking-ad-cta">'+h(ad.cta||"Explore")+'</span></div></button>'
+        :'<div class="tracking-ad-slide is-brand"><div class="tracking-ad-copy"><span class="sponsored-label">Scraveit standard</span><h2 class="tracking-ad-title">Clear pricing.<br>Careful delivery.</h2><p>Every charge is shown before you place an order.</p></div></div>').join("")
+      +'</div>'
+      +(slides.length>1?'<div class="tracking-ad-dots" id="tracking-ad-dots">'+slides.map((_,i)=>'<button type="button" class="ad-dot'+(i===trackingCarouselIndex?' active':'')+'" data-action="tracking-ad-dot" data-index="'+i+'" aria-label="Show ad '+(i+1)+'"></button>').join("")+'</div>':'')
+      +'</section>';
+  }
+  /**
+   * The map at thumbnail size, scaled rather than merely shrunk: at 84px the
+   * card cropped so tight that the rider pin alone filled it and it read as a
+   * photo of a scooter, not a map. trackingViewportSize() already clamps tile
+   * loading to a 280x420 minimum, so the surrounding tiles are loaded either
+   * way - rendering the card at full thumbnail scale and transforming it down
+   * just makes them visible.
+   */
+  function trackingMapThumbMarkup(order,live){
+    const map=trackingMapMarkup(order,live,true);
+    if(!map)return"";
+    return '<div class="map-thumb" data-action="tracking-expand-map" role="button" tabindex="0" aria-label="Expand live map">'
+      +map
+      +'<span class="map-thumb-expand">'+icon("expand")+'</span>'
+      +'</div>';
+  }
+  // Advances the carousel by direct DOM writes rather than a full render() -
+  // this ticks every few seconds purely for ambient rotation, and a full
+  // re-render on that cadence is exactly the kind of self-inflicted "page
+  // glitching" this app has already been burned by elsewhere.
+  function applyTrackingCarouselFrame(track){
+    track.style.transform="translateX(-"+(trackingCarouselIndex*100)+"%)";
+    document.querySelectorAll("#tracking-ad-dots .ad-dot").forEach((dot,i)=>dot.classList.toggle("active",i===trackingCarouselIndex));
+  }
+  // Called after every render() while on the tracking route (mirrors
+  // refreshTrackingTiles() immediately below it) - idempotent, so it is safe
+  // to call whether or not the carousel is even in the DOM right now.
+  function refreshTrackingCarousel(){
+    clearInterval(trackingCarouselTimer);trackingCarouselTimer=null;
+    const track=document.getElementById("tracking-ad-track");
+    if(!track)return;
+    const slides=track.children.length;
+    if(trackingCarouselIndex>=slides)trackingCarouselIndex=0;
+    applyTrackingCarouselFrame(track);
+    if(slides<=1)return;
+    trackingCarouselTimer=setInterval(()=>{
+      const liveTrack=document.getElementById("tracking-ad-track");
+      if(!liveTrack){clearInterval(trackingCarouselTimer);trackingCarouselTimer=null;return;}
+      trackingCarouselIndex=(trackingCarouselIndex+1)%liveTrack.children.length;
+      applyTrackingCarouselFrame(liveTrack);
+    },TRACKING_CAROUSEL_INTERVAL_MS);
   }
 
   function promoCard(promo) {
@@ -3267,9 +3688,38 @@
     const current=cartRestaurant(),next=restaurant(sheet.restaurantId);
     return sheetShell("Start a new cart?","A delivery order can contain items from only one restaurant.",'<div class="stack-lg"><div class="notice warning">'+icon("warning","small")+'<span>Your '+h(current&&current.name||"current")+' items will be removed before adding '+h(next&&next.name||"the new item")+'.</span></div><button class="button danger full" data-action="confirm-replace-cart">Clear cart and continue</button><button class="button tonal full" data-action="close-sheet">Keep current cart</button></div>');
   }
+  // "Home"/"Work" need no free text at all; anything else is "Other" with
+  // its own label typed in. Defaulting a brand-new address to "Home" (instead
+  // of an empty required text field, which is what silently blocked saving
+  // before - the input just sat empty until entering the mobile number then
+  // tapping save re-triggered the same unnoticed validation toast) means the
+  // label can never be blank, so this class of stuck-on-save is gone by
+  // construction, not by a stronger validation message.
+  function addressLabelIsOther(label){return !!label&&label!=="Home"&&label!=="Work"}
   function addressFormSheet(sheet) {
-    const address=sheet.address||{},point=state.addressMapDraft||{};
-    return sheetShell(address.id?"Edit address":"Add address","Place the delivery pin, then add the door/flat details a rider needs.",'<form id="address-form" class="form-grid"><input type="hidden" name="id" value="'+h(address.id||"")+'"><input type="hidden" name="lat" value="'+h(point.lat==null?"":point.lat)+'"><input type="hidden" name="lng" value="'+h(point.lng==null?"":point.lng)+'">'+addressMapMarkup()+'<div class="field"><label for="address-label">Address label</label><input id="address-label" class="input" name="label" value="'+h(address.label||"")+'" placeholder="Home, Work or Other" required></div><div class="field"><label for="address-area">Area</label><input id="address-area" class="input" name="area" value="'+h(address.area||"")+'" placeholder="Neighbourhood or locality" required></div><div class="field"><label for="address-city">City</label><input id="address-city" class="input" name="city" value="'+h(address.city||"")+'" placeholder="Nellore" required></div><div class="field"><label for="address-full">Full delivery address</label><textarea id="address-full" class="textarea" name="address" placeholder="Flat, building, street, landmark and city" required>'+h(address.address||address.details||"")+'</textarea></div><div class="field"><label for="address-phone">Mobile number</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" value="'+h(address.phone||state.profile.phone||"")+'" placeholder="10-digit mobile number" required></div><div class="notice success">'+icon("check","small")+'<span>A map pin will be saved with this address.</span></div><button class="button primary full" type="submit">Save delivery address</button></form>');
+    const address=sheet.address||{},point=state.addressMapDraft||{},label=address.label||"Home",isOther=addressLabelIsOther(label);
+    // No `required` attributes here (deliberately) - submitAddress() already
+    // re-validates every one of these fields itself and shows a toast naming
+    // exactly what's missing. Relying on the browser's own constraint
+    // validation instead is what caused the real bug: this WebView blocks
+    // the submit before any JS runs when a required field fails, with no
+    // bubble, no console output, nothing - "tap Save, nothing happens at
+    // all" for both the person testing it and any code trying to observe
+    // what went wrong.
+    return sheetShell(address.id?"Edit address":"Add address","Place the delivery pin, then add the door/flat details a rider needs.",'<form id="address-form" class="form-grid"><input type="hidden" name="id" value="'+h(address.id||"")+'"><input type="hidden" name="lat" value="'+h(point.lat==null?"":point.lat)+'"><input type="hidden" name="lng" value="'+h(point.lng==null?"":point.lng)+'">'+addressMapMarkup()+'<div class="field"><label>Save address as</label><div class="segmented three">'+["Home","Work","Other"].map(opt=>'<button type="button" class="segment '+((opt==="Other"?isOther:label===opt)?'active':'')+'" data-action="address-label-chip" data-value="'+opt+'">'+opt+'</button>').join("")+'</div></div>'+(isOther?'<div class="field"><label for="address-label-custom">Label</label><input id="address-label-custom" class="input" name="label" value="'+h(label)+'" placeholder="e.g. Friend\'s place"></div>':'<input type="hidden" name="label" value="'+h(label)+'">')+'<div class="field"><label for="address-area">Area</label><input id="address-area" class="input" name="area" value="'+h(address.area||"")+'" placeholder="Neighbourhood or locality"></div><div class="field"><label for="address-city">City</label><input id="address-city" class="input" name="city" value="'+h(address.city||"")+'" placeholder="Nellore"></div><div class="field"><label for="address-full">Full delivery address</label><textarea id="address-full" class="textarea" name="address" placeholder="Flat, building, street, landmark and city">'+h(address.address||address.details||"")+'</textarea></div><div class="field"><label for="address-phone">Mobile number</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" value="'+h(address.phone||state.profile.phone||"")+'" placeholder="10-digit mobile number"></div><div class="notice success">'+icon("check","small")+'<span>A map pin will be saved with this address.</span></div><button class="button primary full" type="button" data-action="submit-address">Save delivery address</button></form>');
+  }
+  function addressPickerCard(address){
+    const selected=address.id===state.profile.selectedAddressId;
+    return '<button class="settings-row" data-action="select-address-and-close" data-address-id="'+h(address.id)+'"><span class="settings-icon">'+icon(address.source==="gps"?"target":"address")+'</span><span class="grow"><strong>'+h(address.label||"Address")+'</strong><span class="supporting">'+h(address.address||address.details||"")+'</span></span>'+(selected?icon("check","small"):'')+'</button>';
+  }
+  function addressPickerSheet(){
+    const addresses=state.profile.addresses||[],shown=addresses.slice(0,4);
+    const permissionNotice=locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Device location is off</strong><div class="caption">Enable it for accurate address detection.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>';
+    const list=shown.length?'<div class="stack">'+shown.map(addressPickerCard).join("")+'</div>':emptyState("address","No saved addresses yet","Add a delivery address to get started.");
+    return sheetShell("Select delivery address","",permissionNotice
+      +'<div class="cluster between" style="margin-top:16px"><h2 class="section-title" style="font-size:16px">Select a saved address</h2>'+(addresses.length?'<button class="text-button" data-action="go" data-route="addresses">'+(addresses.length>4?'See all':'Manage')+'</button>':'')+'</div>'
+      +list
+      +'<button class="button tonal full" data-action="add-address" style="margin-top:16px">'+icon("search","small")+' Enter location manually</button>');
   }
   function deleteAddressSheet(sheet){
     const address=(state.profile.addresses||[]).find(value=>value.id===sheet.addressId);
@@ -3302,6 +3752,7 @@
     else if(sheet.type==="item")html=itemSheet(sheet);
     else if(sheet.type==="replaceCart")html=replaceCartSheet(sheet);
     else if(sheet.type==="address")html=addressFormSheet(sheet);
+    else if(sheet.type==="addressPicker")html=addressPickerSheet();
     else if(sheet.type==="deleteAddress")html=deleteAddressSheet(sheet);
     else if(sheet.type==="profile")html=profileSheet();
     else if(sheet.type==="forgot")html=forgotSheet();
@@ -3410,10 +3861,15 @@
     }finally{state.loading=false;render({preserveScroll:true});}
   }
 
+  // Unreachable (LEGACY_ORDER_WRITE_COMPATIBILITY is permanently false) - kept
+  // only as a disabled emergency-rollback path, so its RTDB-shaped internals
+  // were left as rtdb() calls rather than converted to Firestore. If this is
+  // ever re-enabled, it needs the same conversion every other order-writing
+  // path here already got.
   async function submitLegacyCodOrder(address,r,idempotencyKey){
     if(LEGACY_ORDER_WRITE_COMPATIBILITY!==true)throw new Error("ORDER_SERVICE_UNAVAILABLE");
     const now=Date.now(),orderId=state.checkout.pendingOrderId||("SV-"+uid("").replace(/-/g,"").slice(0,12).toUpperCase());state.checkout.pendingOrderId=orderId;persistCheckout();
-    try{const existing=await db("GET",DB_ROOT+"/orders/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(orderId));if(existing){finishOrderPlacement(existing,orderId,state.deliveryOtps[orderId]||"",true);return;}}catch(_){}
+    try{const existing=await rtdb("GET",DB_ROOT+"/orders/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(orderId));if(existing){finishOrderPlacement(existing,orderId,state.deliveryOtps[orderId]||"",true);return;}}catch(_){}
     const deliveryOtp=state.deliveryOtps[orderId]||String(Math.floor(1000+Math.random()*9000)),deliveryOtpSalt=uid("salt_").replace(/-/g,"").slice(0,24),deliveryOtpHash=await sha256(deliveryOtp+deliveryOtpSalt);
     state.deliveryOtps[orderId]=deliveryOtp;
     const eventId="e_"+now+"_customer";
@@ -3431,9 +3887,9 @@
     };
     const changes={};changes["orders/"+state.session.uid+"/"+orderId]=order;changes["restaurantOrders/"+r.id+"/"+state.session.uid+"/"+orderId]=order;
     try{
-      await db("PATCH",DB_ROOT,changes);finishOrderPlacement(order,orderId,deliveryOtp,false);
+      await rtdb("PATCH",DB_ROOT,changes);finishOrderPlacement(order,orderId,deliveryOtp,false);
     }catch(error){
-      try{const existing=await db("GET",DB_ROOT+"/orders/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(orderId));if(existing){finishOrderPlacement(existing,orderId,deliveryOtp,true);return;}}catch(_){}
+      try{const existing=await rtdb("GET",DB_ROOT+"/orders/"+encodeURIComponent(state.session.uid)+"/"+encodeURIComponent(orderId));if(existing){finishOrderPlacement(existing,orderId,deliveryOtp,true);return;}}catch(_){}
       throw error;
     }
   }
@@ -3501,7 +3957,7 @@
   Object.assign(SCREENS, {
     launch:screenLaunch, welcome:screenWelcome, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
-    order:screenOrder, chat:screenChat, tracking:screenTracking, offers:screenOffers, account:screenAccount,
+    order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
     support:screenSupport, legal:screenLegal, review:screenReview
   });
@@ -3552,6 +4008,30 @@
     if(action==="back"){goBack();return;}
     if(action==="tracking-zoom"){trackingZoomBy(Number(control.dataset.delta||0));return;}
     if(action==="tracking-recenter"){trackingRecenter();return;}
+    if(action==="tracking-expand-map"){expandTrackingMap();return;}
+    if(action==="tracking-collapse-map"){collapseTrackingMap();return;}
+    if(action==="tracking-ad-dot"){
+      trackingCarouselIndex=Number(control.dataset.index||0);
+      const track=document.getElementById("tracking-ad-track");
+      if(track)applyTrackingCarouselFrame(track);
+      // A manual jump shouldn't be immediately undone by the auto-advance
+      // tick mid-look - restart the rotation from here instead.
+      refreshTrackingCarousel();
+      return;
+    }
+    if(action==="toggle-order-timeline"){
+      state.timelineExpanded=!state.timelineExpanded;
+      render({preserveScroll:true});
+      // Collapsing/expanding changes the card's height a lot, so keeping the
+      // previous raw scrollY leaves the viewport pointed at whatever content
+      // now happens to sit at that pixel offset - not the card the person
+      // just tapped. Re-anchor on the card itself instead.
+      requestAnimationFrame(()=>{
+        const card=document.getElementById("order-journey-card");
+        if(card&&card.scrollIntoView)card.scrollIntoView({block:"start"});
+      });
+      return;
+    }
     if(action==="welcome-signup"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("signup");return;}
     if(action==="welcome-login"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("login");return;}
     if(action==="google-signin"){openGoogleSignIn();return;}
@@ -3564,7 +4044,7 @@
       return;
     }
     if(action==="resend-verification"){
-      try{await ensureSession();await authRequest("accounts:sendOobCode",{requestType:"VERIFY_EMAIL",idToken:state.session.idToken});toast("A new verification email was requested. Use the newest message.","success");}
+      try{const authUser=fbAuth.currentUser;if(!authUser)throw new Error("AUTH_REQUIRED");await authUser.sendEmailVerification();toast("A new verification email was requested. Use the newest message.","success");}
       catch(error){toast(friendlyError(error),"danger");}
       return;
     }
@@ -3632,7 +4112,7 @@
     if(action==="place-order"){submitOrder();return;}
     if(action==="open-order"){go("order",{orderId:control.dataset.orderId});return;}if(action==="open-order-chat"){const o=state.orders.find(x=>x.id===control.dataset.orderId);if(o)openOrderChat(o,control.dataset.channel,control.dataset.channel==="customerRider"?"Chat with delivery partner":"Chat with restaurant");return;}
     if(action==="pay-order"){const o=orderById(control.dataset.orderId);if(o)startOnlinePayment(o);return;}
-    if(action==="open-tracking"){go("tracking",{orderId:control.dataset.orderId});return;}
+    if(action==="open-tracking"){go("order",{orderId:control.dataset.orderId});return;}
     if(action==="reorder"){const order=orderById(control.dataset.orderId);if(order)reorder(order);return;}
     if(action==="review-order"){go("review",{orderId:control.dataset.orderId});return;}
     if(action==="support-order"){go("support",{orderId:control.dataset.orderId});return;}
@@ -3648,10 +4128,24 @@
     if(action==="edit-address"){const address=(state.profile.addresses||[]).find(x=>x.id===control.dataset.addressId);if(address)openAddressSheet(clone(address));return;}
     if(action==="delete-address"){const address=(state.profile.addresses||[]).find(x=>x.id===control.dataset.addressId);if(address)setSheet({type:"deleteAddress",addressId:address.id});return;}
     if(action==="confirm-delete-address"){await deleteAddress(control.dataset.addressId);return;}
+    if(action==="address-label-chip"){const value=control.dataset.value,address=state.sheet&&state.sheet.address;if(address)address.label=value==="Other"?(addressLabelIsOther(address.label)?address.label:""):value;renderSheet();return;}
+    // Routed through the same data-action click dispatcher every other
+    // control in this sheet already uses (X, chips, map zoom, "Use phone
+    // location") instead of a native <button type="submit"> - this WebView
+    // silently drops the form's "submit" event for reasons never fully
+    // pinned down (not a required-field block: removing every `required`
+    // attribute on this form did not fix it either), so nothing downstream
+    // - not even a global window "error"/"unhandledrejection" listener -
+    // ever saw a failure to report. Every other control here works reliably
+    // with this exact dispatcher, so this sidesteps the broken mechanism
+    // rather than chasing it further.
+    if(action==="submit-address"){const form=document.getElementById("address-form");if(form)await submitAddress(form);return;}
     if(action==="detect-address-location"){requestLocation("address");return;}
     if(action==="address-map-zoom"){state.addressMapZoom=Math.max(12,Math.min(18,state.addressMapZoom+Number(control.dataset.delta||0)));renderSheet();return;}
     if(action==="address-map-pick"){const rect=control.getBoundingClientRect(),point=state.addressMapDraft||addressMapSeed(null),world=mapWorld(point.lat,point.lng,state.addressMapZoom),next=worldToLatLng(world.x+(event.clientX-rect.left-rect.width/2),world.y+(event.clientY-rect.top-rect.height/2),state.addressMapZoom);state.addressMapDraft=next;if(state.sheet&&state.sheet.address){state.sheet.address.lat=next.lat;state.sheet.address.lng=next.lng;}renderSheet();return;}
     if(action==="select-address"){selectAddress(control.dataset.addressId);return;}
+    if(action==="open-address-picker"){setSheet({type:"addressPicker"});return;}
+    if(action==="select-address-and-close"){await selectAddress(control.dataset.addressId);closeSheet();return;}
     if(action==="toggle-preference"){
       const key=control.dataset.key;state.profile.preferences[key]=!state.profile.preferences[key];persistProfile();applyTheme();render({preserveScroll:true});
       if(key==="notifications"){
@@ -3672,18 +4166,18 @@
   // arrived recently while the tracking screen is open, re-read the record
   // directly. Costs one small request every few seconds, and only then.
   async function pollTrackingFallback(){
-    if(state.route!=="tracking"||!state.session||!state.online)return;
+    if(!liveOrderRoute()||!state.session||!state.online)return;
     const orderId=state.selectedOrderId;
     if(!orderId)return;
     if(Date.now()-Number(state.trackingSeenAt[orderId]||0)<TRACKING_STREAM_GRACE_MS)return;
     try{
-      const value=await db("GET",DB_ROOT+"/tracking/"+encodeURIComponent(orderId));
+      const value=await rtdb("GET",DB_ROOT+"/tracking/"+encodeURIComponent(orderId));
       applyTrackingEvent(orderId,{path:"/",data:value===undefined?null:value},"put");
     }catch(_){}
   }
   setInterval(pollTrackingFallback,TRACKING_POLL_MS);
   document.addEventListener("visibilitychange",function(){
-    if(document.visibilityState==="visible"&&state.route==="tracking")pollTrackingFallback();
+    if(document.visibilityState==="visible"&&liveOrderRoute())pollTrackingFallback();
   });
   app.addEventListener("pointerdown",trackingMapPointerDown);
   document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
@@ -3716,7 +4210,7 @@
     setFieldError("login-email",validEmail(email)?"":"Enter a valid email address.");setFieldError("login-password",password?"":"Enter your password.");
     if(!validEmail(email)||!password)return;
     state.loading=true;render({preserveScroll:true});
-    try{const data=await authRequest("accounts:signInWithPassword",{email:email,password:password,returnSecureToken:true});saveAuth(data,email);await afterAuth();}
+    try{const cred=await fbAuth.signInWithEmailAndPassword(email,password);applyAuthUser(cred.user);await afterAuth();}
     catch(error){toast(friendlyError(error),"danger");state.loading=false;render({preserveScroll:true});}
   }
   async function submitSignup(form) {
@@ -3726,7 +4220,7 @@
     if(name.length<2||!validEmail(email)||!validPhone(phone)||!strong||password!==confirm||!consent){if(!consent)toast("Accept the Terms and Privacy Notice to continue.","danger");return;}
     state.loading=true;render({preserveScroll:true});
     try{
-      const data=await authRequest("accounts:signUp",{email:email,password:password,returnSecureToken:true});saveAuth(data,email);state.profile.name=name;state.profile.email=email;state.profile.phone=phone;state.profile.addresses=[];state.profile.favourites=[];state.profile.emailVerified=false;persistProfile();await saveProfile();
+      const cred=await fbAuth.createUserWithEmailAndPassword(email,password);applyAuthUser(cred.user);state.profile.name=name;state.profile.email=email;state.profile.phone=phone;state.profile.addresses=[];state.profile.favourites=[];state.profile.emailVerified=false;persistProfile();await saveProfile();
       toast("Account created successfully.","success");await afterAuth();
     }catch(error){toast(friendlyError(error),"danger");state.loading=false;render({preserveScroll:true});}
   }
@@ -3734,7 +4228,7 @@
   async function submitReset(form) {
     const email=form.elements["email"].value.trim().toLowerCase();if(!validEmail(email)){toast("Enter the email used for your Scraveit account.","danger");return;}
     const button=form.querySelector("button[type=submit]");button.disabled=true;button.innerHTML='<span class="spinner"></span> Sending…';
-    try{await authRequest("accounts:sendOobCode",{requestType:"PASSWORD_RESET",email:email});closeSheet();toast("If the account exists, the newest reset link has been sent. Check Inbox and Spam.","success");}
+    try{await fbAuth.sendPasswordResetEmail(email);closeSheet();toast("If the account exists, the newest reset link has been sent. Check Inbox and Spam.","success");}
     catch(error){toast(friendlyError(error),"danger");button.disabled=false;button.textContent="Send reset link";}
   }
   function submitItem(form) {
@@ -3759,18 +4253,18 @@
     state.profile.name=name;state.profile.phone=phone;persistProfile();closeSheet();render({preserveScroll:true});try{await saveProfile();toast("Profile updated.","success");}catch(_){toast("Profile saved on this device; cloud sync will retry.");}
   }
   function submitAssistant(form){const message=String(new FormData(form).get("message")||"").trim();if(!message)return;state.supportAssistant=state.supportAssistant||[];state.supportAssistant.push({role:"you",body:message,at:Date.now()});state.supportAssistant.push({role:"assistant",body:assistantAnswer(message),at:Date.now()+1});form.reset();render({preserveScroll:true})}
-  async function escalateSupport(){const transcript=(state.supportAssistant||[]).map(m=>(m.role==='you'?'Customer: ':'Assistant: ')+m.body).join("\n"),o=state.routeData.orderId?orderById(state.routeData.orderId):activeOrders()[0]||null,id=uid("ticket_"),rawMessage=(state.supportAssistant||[]).filter(x=>x.role==='you').map(x=>x.body).join(" | ").slice(0,4000),ticket={id,uid:state.session.uid,customerName:state.profile.name||"",email:state.profile.email||"",orderId:o&&o.id||"",topic:"AI escalation",message:rawMessage.length>=10?rawMessage:"Customer wrote: "+(rawMessage||"needs help"),aiSummary:(supportContext()+" Customer used Scraveit Assistant and requested human help.").slice(0,1000),assistantTranscript:transcript.slice(0,4000),priority:o&&["Arrived","Near you"].includes(o.status)?"high":"normal",seenAt:0,status:"open",createdAt:Date.now(),updatedAt:Date.now()};try{await db("PUT",DB_ROOT+"/support/"+state.session.uid+"/"+id,ticket);state.supportAssistant=[];toast("Admin support has been alerted. Reference "+id.slice(-8).toUpperCase()+".","success");go("home",{},true)}catch(e){toast("Could not alert support. "+friendlyError(e),"danger")}}
+  async function escalateSupport(){const transcript=(state.supportAssistant||[]).map(m=>(m.role==='you'?'Customer: ':'Assistant: ')+m.body).join("\n"),o=state.routeData.orderId?orderById(state.routeData.orderId):activeOrders()[0]||null,id=uid("ticket_"),rawMessage=(state.supportAssistant||[]).filter(x=>x.role==='you').map(x=>x.body).join(" | ").slice(0,4000),ticket={id,uid:state.session.uid,customerName:state.profile.name||"",email:state.profile.email||"",orderId:o&&o.id||"",topic:"AI escalation",message:rawMessage.length>=10?rawMessage:"Customer wrote: "+(rawMessage||"needs help"),aiSummary:(supportContext()+" Customer used Scraveit Assistant and requested human help.").slice(0,1000),assistantTranscript:transcript.slice(0,4000),priority:o&&["Arrived","Near you"].includes(o.status)?"high":"normal",seenAt:0,status:"open",createdAt:Date.now(),updatedAt:Date.now()};try{await supportDoc(id).set(ticket);state.supportAssistant=[];toast("Admin support has been alerted. Reference "+id.slice(-8).toUpperCase()+".","success");go("home",{},true)}catch(e){toast("Could not alert support. "+friendlyError(e),"danger")}}
 
   async function submitSupport(form) {
     const message=form.elements["message"].value.trim();if(message.length<10){setFieldError("support-message","Please add a little more detail.");return;}
     const id=uid("ticket_"),ticket={id:id,uid:state.session.uid,customerName:state.profile.name||"",email:state.profile.email||"",orderId:state.routeData.orderId||"",topic:form.elements["topic"].value,message:message,status:"open",createdAt:Date.now(),updatedAt:Date.now()};
     const button=form.querySelector("button");button.disabled=true;button.innerHTML='<span class="spinner"></span> Submitting…';
-    try{await db("PUT",DB_ROOT+"/support/"+state.session.uid+"/"+id,ticket);form.reset();toast("Support request submitted. Reference "+id.slice(-8).toUpperCase()+".","success");}
+    try{await supportDoc(id).set(ticket);form.reset();toast("Support request submitted. Reference "+id.slice(-8).toUpperCase()+".","success");}
     catch(error){toast("Request could not be saved. "+friendlyError(error),"danger");}
     finally{button.disabled=false;button.textContent="Submit support request";}
   }
   function buildReviewPayload(order,rating,riderRating,comment) {
-    return {orderId:order.id,restaurantId:order.restaurantId,riderId:order.riderId||"",rating,riderRating,comment,postDeliveryTip:0,growthContribution:0,createdAt:Date.now(),status:"published"};
+    return {orderId:order.id,customerId:state.session.uid,restaurantId:order.restaurantId,riderId:order.riderId||"",rating,riderRating,comment,postDeliveryTip:0,growthContribution:0,createdAt:Date.now(),status:"published"};
   }
   async function submitReview(form) {
     if(!reviewStateReady()){toast("Feedback status is still syncing. Please wait a moment.");syncOrders(false);return;}
@@ -3778,18 +4272,18 @@
     const order=orderById();if(!order)return;if(state.reviews[order.id]){toast("Feedback was already submitted for this order.");render({preserveScroll:true});return;}
     const riderRating=Number(data.get("riderRating")||0);
     const review=buildReviewPayload(order,rating,riderRating,String(data.get("comment")||"").trim());
-    try{await db("PUT",DB_ROOT+"/reviews/"+state.session.uid+"/"+order.id,review);state.reviews[order.id]=review;state.reviewsHydrated=true;state.reviewsHydratedUid=String(state.session.uid||"");persistReviews();toast("Thank you for helping Scraveit improve.","success");go("home",{},true);}
+    try{await reviewDocRef(state.session.uid,order.id).set(review);state.reviews[order.id]=review;state.reviewsHydrated=true;state.reviewsHydratedUid=String(state.session.uid||"");persistReviews();toast("Thank you for helping Scraveit improve.","success");go("home",{},true);}
     catch(error){toast("Review could not be saved. "+friendlyError(error),"danger");}
   }
   async function submitCancellation(form) {
-    const orderId=form.dataset.orderId,id=uid("cancel_"),requestData={id:id,type:"cancellation",orderId:orderId,reason:form.elements["reason"].value,status:"requested",createdAt:Date.now(),customerId:state.session.uid};
-    try{await db("PUT",DB_ROOT+"/support/"+state.session.uid+"/"+id,requestData);closeSheet();toast("Cancellation request sent for restaurant review.","success");}
+    const orderId=form.dataset.orderId,id=uid("cancel_"),requestData={id:id,type:"cancellation",orderId:orderId,reason:form.elements["reason"].value,status:"requested",createdAt:Date.now(),uid:state.session.uid,customerId:state.session.uid};
+    try{await supportDoc(id).set(requestData);closeSheet();toast("Cancellation request sent for restaurant review.","success");}
     catch(error){toast("Cancellation request could not be sent. "+friendlyError(error),"danger");}
   }
   async function submitDeletion(form) {
     if(String(new FormData(form).get("confirmation")||"").trim().toUpperCase()!=="DELETE"){toast("Type DELETE exactly to confirm.","danger");return;}
     const id=uid("privacy_"),record={id:id,type:"account_deletion",uid:state.session.uid,email:state.profile.email||state.session.email,status:"requested",createdAt:Date.now()};
-    try{await db("PUT",DB_ROOT+"/privacyRequests/"+state.session.uid+"/"+id,record);closeSheet();toast("Deletion request submitted. Keep reference "+id.slice(-8).toUpperCase()+".","success");}
+    try{await privacyRequestDoc(id).set(record);closeSheet();toast("Deletion request submitted. Keep reference "+id.slice(-8).toUpperCase()+".","success");}
     catch(error){toast("Deletion request could not be saved. "+friendlyError(error),"danger");}
   }
 
@@ -3849,7 +4343,7 @@
 
   window.addEventListener("online",function(){state.online=true;state.syncError="";render({preserveScroll:true});if(state.session)refreshAll();});
   window.addEventListener("offline",function(){state.online=false;render({preserveScroll:true});});
-  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"&&state.session&&state.online)syncOrders(false);});
+  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"&&state.session&&state.online)syncOrders(false);if(document.visibilityState==="visible"&&state.route==="home")render({preserveScroll:true});});
   if(window.matchMedia){const media=matchMedia("(prefers-color-scheme: dark)");if(media.addEventListener)media.addEventListener("change",function(){if((state.profile.preferences||{}).theme==="system"){applyTheme();render({preserveScroll:true});}});}
 
   bootstrap();

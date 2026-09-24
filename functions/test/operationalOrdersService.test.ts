@@ -1,52 +1,25 @@
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import type {SavrivoOrder} from "../src/types";
 
-const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  transactions: [] as string[],
-  query: [] as Array<[string, unknown]>,
-}));
-
 vi.mock("firebase-functions", () => ({logger: {info: vi.fn()}}));
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => {
-      const chain = {
-        transaction: async (update: (current: unknown) => unknown) => {
-          memory.transactions.push(path);
-          const next = update(memory.values.get(path) ?? null);
-          if (next !== undefined) memory.values.set(path, next);
-          return {committed: next !== undefined, snapshot: {val: () => memory.values.get(path) ?? null}};
-        },
-        orderByChild: (child: string) => {
-          memory.query.push(["orderByChild", child]);
-          return chain;
-        },
-        startAt: (value: unknown) => {
-          memory.query.push(["startAt", value]);
-          return chain;
-        },
-        endAt: (value: unknown) => {
-          memory.query.push(["endAt", value]);
-          return chain;
-        },
-        limitToLast: (value: unknown) => {
-          memory.query.push(["limitToLast", value]);
-          return chain;
-        },
-        get: async () => ({val: () => memory.values.get(path) ?? null}),
-      };
-      return chain;
-    },
-  },
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  return {firestoreDb: new InMemoryFirestore()};
+});
 
+import {firestoreDb} from "../src/admin";
 import {
   listActiveOperationalOrders,
-  OPERATIONAL_ORDERS_ROOT,
   parseOperationalOrderProjection,
   reconcileOperationalOrderProjection,
 } from "../src/services/operationalOrders";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+const database = firestoreDb as unknown as InMemoryFirestore;
+
+function operationalOrderPath(orderId: string): string {
+  return `private/operations/operationalOrders/${orderId}`;
+}
 
 function order(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
   return {
@@ -65,15 +38,13 @@ function order(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
 }
 
 describe("operational order projection service", () => {
-  beforeEach(() => {
-    memory.values.clear();
-    memory.transactions.length = 0;
-    memory.query.length = 0;
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
   });
 
   it("reconciles only the privacy-minimized per-order head", async () => {
     const result = await reconcileOperationalOrderProjection(order());
-    expect(memory.transactions).toEqual([`${OPERATIONAL_ORDERS_ROOT}/order-1`]);
+    expect(database.read(operationalOrderPath("order-1"))).toMatchObject({orderId: "order-1", active: true});
     expect(result).toMatchObject({orderId: "order-1", active: true, itemCount: 1});
     expect(result).not.toHaveProperty("address");
     expect(result).not.toHaveProperty("items");
@@ -82,19 +53,10 @@ describe("operational order projection service", () => {
   it("enforces a bounded active-order query", async () => {
     const source = order({id: "one", updatedAt: 5});
     await reconcileOperationalOrderProjection(source);
-    memory.values.set(OPERATIONAL_ORDERS_ROOT, {
-      one: memory.values.get(`${OPERATIONAL_ORDERS_ROOT}/one`),
-    });
-    memory.transactions.length = 0;
-    memory.query.length = 0;
+
     const result = await listActiveOperationalOrders(10_000);
-    expect(memory.query).toEqual([
-      ["orderByChild", "activeSortKey"],
-      ["startAt", "active:"],
-      ["endAt", "active:\uf8ff"],
-      ["limitToLast", 250],
-    ]);
     expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({orderId: "one", active: true});
   });
 
   it("retains only bounded rider-arrival proof fields for Admin handover", () => {

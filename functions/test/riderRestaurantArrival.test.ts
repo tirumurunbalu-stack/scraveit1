@@ -3,58 +3,50 @@ import type {SavrivoOrder} from "../src/types";
 
 const memory = vi.hoisted(() => ({
   values: new Map<string, unknown>(),
-  rootUpdates: [] as Array<Record<string, unknown>>,
 }));
 
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => ({
-      get: async () => ({val: () => clone(memory.values.get(path) ?? null)}),
-      update: async (patch: Record<string, unknown>) => {
-        if (path === "feastly") {
-          memory.rootUpdates.push(clone(patch));
-          for (const [relativePath, value] of Object.entries(patch)) {
-            const absolutePath = `${path}/${relativePath}`;
-            if (value === null) memory.values.delete(absolutePath);
-            else memory.values.set(absolutePath, clone(value));
-          }
-          return;
-        }
-        const current = memory.values.get(path);
-        memory.values.set(path, {
-          ...(current && typeof current === "object" ? clone(current) : {}),
-          ...clone(patch),
-        });
-      },
-      transaction: async (update: (current: unknown) => unknown) => {
-        const current = clone(memory.values.get(path) ?? null);
-        const next = update(current);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => clone(memory.values.get(path) ?? null)}};
-        }
-        if (next === null) memory.values.delete(path);
-        else memory.values.set(path, clone(next));
-        return {committed: true, snapshot: {val: () => clone(next)}};
-      },
-    }),
-  },
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  return {
+    db: {
+      ref: (path: string) => ({
+        get: async () => ({val: () => clone(memory.values.get(path) ?? null)}),
+      }),
+    },
+    firestoreDb: new InMemoryFirestore(),
+  };
+});
 
-import {pathFor, ROOT} from "../src/config";
+import {ROOT} from "../src/config";
+import {firestoreDb} from "../src/admin";
 import {
   markRiderArrivedRestaurant,
-  RIDER_RESTAURANT_ARRIVALS_ROOT,
 } from "../src/services/riderRestaurantArrival";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+const database = firestoreDb as unknown as InMemoryFirestore;
 
 const now = 1_800_000_000_000;
 const riderId = "rider-1";
 const customerId = "customer-1";
 const restaurantId = "restaurant-1";
 const orderId = "SV-ARRIVAL-1";
+
+function arrivalPath(id: string): string {
+  return `riderRestaurantArrivals/${id}`;
+}
+
+function riderJobPath(rider: string, order: string): string {
+  return `riderJobs/${rider}_${order}`;
+}
+
+function operationalOrderPath(id: string): string {
+  return `private/operations/operationalOrders/${id}`;
+}
 
 function order(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
   return {
@@ -83,10 +75,10 @@ function tracking(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function seed(overrides: {order?: Partial<SavrivoOrder>; tracking?: Record<string, unknown>} = {}) {
-  memory.values.set(`${ROOT}/riderJobs/${riderId}/${orderId}`, {customerId, status: "active"});
-  memory.values.set(pathFor.order(customerId, orderId), order(overrides.order));
-  memory.values.set(`${ROOT}/riders/${riderId}`, {status: "approved"});
+async function seed(overrides: {order?: Partial<SavrivoOrder>; tracking?: Record<string, unknown>} = {}) {
+  await database.seed(riderJobPath(riderId, orderId), {customerId, status: "active"});
+  await database.seed(`orders/${orderId}`, order(overrides.order));
+  await database.seed(`riders/${riderId}`, {status: "approved"});
   memory.values.set(`${ROOT}/tracking/${orderId}`, tracking(overrides.tracking));
   memory.values.set(`${ROOT}/riderPresence/${riderId}`, {
     online: true,
@@ -102,19 +94,19 @@ function seed(overrides: {order?: Partial<SavrivoOrder>; tracking?: Record<strin
 }
 
 describe("authoritative rider restaurant arrival", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useRealTimers();
+    for (const path of database.paths()) await database.doc(path).delete();
     memory.values.clear();
-    memory.rootUpdates.length = 0;
-    seed();
+    await seed();
   });
 
-  it("atomically records bounded evidence and reconciles Rider, Restaurant and Admin projections", async () => {
+  it("atomically records bounded evidence and reconciles Rider and Admin projections", async () => {
     const result = await markRiderArrivedRestaurant(riderId, orderId, now);
     expect(result).toMatchObject({orderId, riderId, arrivedAt: now, idempotent: false});
     expect(result.distanceMeters).toBeGreaterThan(0);
 
-    const record = memory.values.get(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`);
+    const record = database.read(arrivalPath(orderId));
     expect(record).toMatchObject({
       status: "verified",
       source: "server_verified_pickup_tracking",
@@ -125,15 +117,11 @@ describe("authoritative rider restaurant arrival", () => {
     });
     expect(record).not.toHaveProperty("lat");
     expect(record).not.toHaveProperty("lng");
-    expect(memory.values.get(`${ROOT}/riderJobs/${riderId}/${orderId}/phase`)).toBe("at_restaurant");
-    expect(memory.values.get(
-      `${ROOT}/restaurantOrders/${restaurantId}/${customerId}/${orderId}/riderArrivedRestaurantAt`,
-    )).toBe(now);
-    expect(memory.values.get(
-      `${ROOT}/restaurantOrders/${restaurantId}/${customerId}/${orderId}/riderArrivalVerified`,
-    )).toBe(true);
-    expect(memory.values.get(`${ROOT}/private/operations/orders/${orderId}/riderArrivalVerified`)).toBe(true);
-    expect(memory.rootUpdates).toHaveLength(1);
+    expect(database.read(riderJobPath(riderId, orderId))).toMatchObject({phase: "at_restaurant"});
+    expect(database.read(operationalOrderPath(orderId))).toMatchObject({
+      riderArrivalVerified: true,
+      riderArrivedRestaurantAt: now,
+    });
   });
 
   it("makes a completed verification retry idempotent without changing its timestamp", async () => {
@@ -141,12 +129,12 @@ describe("authoritative rider restaurant arrival", () => {
     const retry = await markRiderArrivedRestaurant(riderId, orderId, now + 10_000);
     expect(first.idempotent).toBe(false);
     expect(retry).toMatchObject({idempotent: true, arrivedAt: now});
-    expect(memory.values.get(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`)).toMatchObject({arrivedAt: now});
+    expect(database.read(arrivalPath(orderId))).toMatchObject({arrivedAt: now});
   });
 
   it("waits for an in-progress verification to finish and returns the verified result", async () => {
     vi.useFakeTimers();
-    memory.values.set(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`, {
+    await database.seed(arrivalPath(orderId), {
       version: 1,
       source: "server_verified_pickup_tracking",
       status: "verifying",
@@ -173,26 +161,26 @@ describe("authoritative rider restaurant arrival", () => {
 
     const promise = markRiderArrivedRestaurant(riderId, orderId, now);
     setTimeout(() => {
-      memory.values.set(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`, clone(verifiedRecord));
+      void database.seed(arrivalPath(orderId), clone(verifiedRecord));
     }, 600);
 
     await vi.advanceTimersByTimeAsync(1_000);
     const retry = await promise;
 
     expect(retry).toMatchObject({idempotent: true, arrivedAt: now, orderId, riderId});
-    expect(memory.values.get(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`)).toMatchObject(verifiedRecord);
+    expect(database.read(arrivalPath(orderId))).toMatchObject(verifiedRecord);
   });
 
   it("rejects stale, inaccurate, far, delivery-phase, and mismatched tracking", async () => {
     const cases = [
       {updatedAt: now - 30_001},
-      {accuracy: 50.1},
+      {accuracy: 80.1},
       {lat: 13.9100},
       {phase: "delivery"},
       {riderId: "rider-2"},
     ];
     for (const invalid of cases) {
-      memory.values.delete(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`);
+      await database.doc(arrivalPath(orderId)).delete();
       memory.values.set(`${ROOT}/tracking/${orderId}`, tracking(invalid));
       memory.values.set(`${ROOT}/riderPresence/${riderId}`, {
         online: true,
@@ -208,7 +196,7 @@ describe("authoritative rider restaurant arrival", () => {
       await expect(markRiderArrivedRestaurant(riderId, orderId, now)).rejects.toThrow(
         "Restaurant arrival could not be verified.",
       );
-      expect(memory.values.has(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`)).toBe(false);
+      expect(database.read(arrivalPath(orderId))).toBeNull();
     }
   });
 
@@ -228,7 +216,7 @@ describe("authoritative rider restaurant arrival", () => {
     const result = await markRiderArrivedRestaurant(riderId, orderId, now);
 
     expect(result).toMatchObject({orderId, riderId, arrivedAt: now, idempotent: false});
-    expect(memory.values.get(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`)).toMatchObject({
+    expect(database.read(arrivalPath(orderId))).toMatchObject({
       status: "verified",
       source: "server_verified_pickup_presence",
       orderId,
@@ -242,10 +230,10 @@ describe("authoritative rider restaurant arrival", () => {
     await expect(markRiderArrivedRestaurant("rider-2", orderId, now)).rejects.toThrow(
       "Assigned delivery was not found.",
     );
-    memory.values.set(pathFor.order(customerId, orderId), order({status: "Out for delivery"}));
+    await database.seed(`orders/${orderId}`, order({status: "Out for delivery"}));
     await expect(markRiderArrivedRestaurant(riderId, orderId, now)).rejects.toThrow(
       "Restaurant arrival could not be verified.",
     );
-    expect(memory.rootUpdates).toHaveLength(0);
+    expect(database.read(arrivalPath(orderId))).toBeNull();
   });
 });

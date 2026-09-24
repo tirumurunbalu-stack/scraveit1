@@ -1,8 +1,8 @@
 import {randomBytes, randomInt, timingSafeEqual} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {pathFor, ROOT, SCHEMA_VERSION} from "../config";
+import {firestoreDb} from "../admin";
+import {SCHEMA_VERSION} from "../config";
 import {
   buildOrderTransitionCandidate,
   buildPricing,
@@ -25,6 +25,9 @@ import {
 } from "../domain/financePolicy";
 import type {ProximityStatus} from "../domain/tracking";
 import {DomainError} from "../errors";
+import type {TransactionLike} from "../firestoreTypes";
+import {FieldValue} from "../firestoreTypes";
+import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef, riderWalletRef} from "../firestorePaths";
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
 import type {ActorRole, OrderStatus, SavrivoOrder, StatusEvent} from "../types";
 import {authorizeTransition} from "./authz";
@@ -110,7 +113,7 @@ interface PrivateOtpRecord {
 }
 
 async function reserveDeliveryOtp(customerId: string, orderId: string): Promise<PrivateOtpRecord> {
-  const ref = db.ref(`${ROOT}/private/deliveryOtps/${orderId}`);
+  const ref = deliveryOtpRef(firestoreDb, orderId);
   const now = Date.now();
   const otp = String(randomInt(1000, 10_000));
   const salt = randomBytes(16).toString("hex");
@@ -122,25 +125,34 @@ async function reserveDeliveryOtp(customerId: string, orderId: string): Promise<
     createdAt: now,
     updatedAt: now,
   };
-  const result = await ref.transaction((current: PrivateOtpRecord | null) => {
-    if (!current) return candidate;
-    if (current.customerId !== customerId) return undefined;
+  const record = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as PrivateOtpRecord : null;
+    if (!current) {
+      transaction.set(ref, candidate);
+      return candidate;
+    }
+    if (current.customerId !== customerId) {
+      throw new DomainError("already-exists", "Delivery verification reservation conflict.");
+    }
     const currentOtp = String(current.otp ?? "");
     const currentSalt = String(current.salt ?? "");
     if (/^\d{4}$/.test(currentOtp) && /^[a-f0-9]{16,128}$/i.test(currentSalt)) {
-      return {
+      const next: PrivateOtpRecord = {
         ...current,
         otp: currentOtp,
         salt: currentSalt,
         verifier: hashOtp(currentOtp, currentSalt),
         updatedAt: Number(current.updatedAt ?? current.createdAt ?? now),
       };
+      transaction.set(ref, next);
+      return next;
     }
     // A verifier-only legacy migration cannot recover the customer's code.
     // Reissue it atomically and return the replacement to the same customer.
+    transaction.set(ref, candidate);
     return candidate;
-  }, undefined, false);
-  const record = result.snapshot.val() as PrivateOtpRecord | null;
+  });
   if (!record || record.customerId !== customerId || !/^\d{4}$/.test(String(record.otp)) ||
     !/^[a-f0-9]{64}$/i.test(String(record.verifier)) || !record.salt) {
     throw new DomainError("already-exists", "Delivery verification reservation conflict.");
@@ -167,28 +179,35 @@ export async function scrubLegacyPublicOtp(order: SavrivoOrder): Promise<Savrivo
       updatedAt: now,
       migratedFromLegacy: true,
     };
-    const privateRef = db.ref(`${ROOT}/private/deliveryOtps/${order.id}`);
-    const result = await privateRef.transaction((current: PrivateOtpRecord | null) => {
-      if (!current) return migrated;
-      if (current.customerId !== order.customerId) return undefined;
+    const privateRef = deliveryOtpRef(firestoreDb, order.id);
+    const privateRecord = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(privateRef);
+      const current = snapshot.exists ? snapshot.data() as PrivateOtpRecord : null;
+      if (!current) {
+        transaction.set(privateRef, migrated);
+        return migrated;
+      }
+      if (current.customerId !== order.customerId) {
+        throw new DomainError("failed-precondition", "Legacy delivery verification could not be migrated safely.");
+      }
       if (/^[a-f0-9]{64}$/i.test(String(current.verifier ?? "")) && current.salt) return current;
+      transaction.set(privateRef, migrated);
       return migrated;
-    }, undefined, false);
-    const privateRecord = result.snapshot.val() as PrivateOtpRecord | null;
+    });
     if (!privateRecord || privateRecord.customerId !== order.customerId ||
       !/^[a-f0-9]{64}$/i.test(String(privateRecord.verifier ?? "")) || !privateRecord.salt) {
       throw new DomainError("failed-precondition", "Legacy delivery verification could not be migrated safely.");
     }
   }
-  await db.ref(ROOT).update({
-    [`orders/${order.customerId}/${order.id}/deliveryOtp`]: null,
-    [`orders/${order.customerId}/${order.id}/deliveryOtpHash`]: null,
-    [`orders/${order.customerId}/${order.id}/deliveryOtpSalt`]: null,
-    [`orders/${order.customerId}/${order.id}/deliveryOtpVerifier`]: null,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/deliveryOtp`]: null,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/deliveryOtpHash`]: null,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/deliveryOtpSalt`]: null,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/deliveryOtpVerifier`]: null,
+  // `orders` is one flat collection (customerId/restaurantId are indexed
+  // fields, not path segments) - clearing the fields on this single document
+  // replaces what used to be a second fan-out clear on the `restaurantOrders`
+  // denormalized copy.
+  await orderRef(firestoreDb, order.id).update({
+    deliveryOtp: FieldValue.delete(),
+    deliveryOtpHash: FieldValue.delete(),
+    deliveryOtpSalt: FieldValue.delete(),
+    deliveryOtpVerifier: FieldValue.delete(),
   });
   return clean;
 }
@@ -205,7 +224,8 @@ async function otpForExisting(order: SavrivoOrder): Promise<string> {
 
 /** Restores an active delivery code only to the authenticated customer who owns the order. */
 export async function recoverCustomerDeliveryOtp(uid: string, orderId: string): Promise<string> {
-  const order = (await db.ref(pathFor.order(uid, orderId)).get()).val() as SavrivoOrder | null;
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const order = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
   if (!order || order.customerId !== uid) throw new DomainError("not-found", "Order not found.");
   if (!deliveryOtpRecoveryAllowed(order.status)) {
     throw new DomainError("failed-precondition", "Delivery verification is not available at this order stage.");
@@ -224,8 +244,9 @@ function secureVerifierMatch(suppliedOtp: string, record: Pick<PrivateOtpRecord,
 }
 
 async function verifyPrivateDeliveryOtp(order: SavrivoOrder, suppliedOtp: string): Promise<boolean> {
-  const ref = db.ref(`${ROOT}/private/deliveryOtps/${order.id}`);
-  let record = (await ref.get()).val() as PrivateOtpRecord | null;
+  const ref = deliveryOtpRef(firestoreDb, order.id);
+  const snapshot = await ref.get();
+  let record = snapshot.exists ? snapshot.data() as PrivateOtpRecord : null;
   if (record?.customerId === order.customerId && record.salt) {
     const storedVerifier = String(record.verifier ?? "");
     const verifier = /^[a-f0-9]{64}$/i.test(storedVerifier)
@@ -251,8 +272,12 @@ async function verifyPrivateDeliveryOtp(order: SavrivoOrder, suppliedOtp: string
       updatedAt: now,
       migratedFromLegacy: true,
     };
-    const result = await ref.transaction((current: PrivateOtpRecord | null) => current ?? migrated, undefined, false);
-    record = result.snapshot.val() as PrivateOtpRecord | null;
+    record = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const current = await transaction.get(ref);
+      if (current.exists) return current.data() as PrivateOtpRecord;
+      transaction.set(ref, migrated);
+      return migrated;
+    });
   }
 
   if (!record || record.customerId !== order.customerId || !record.salt ||
@@ -278,7 +303,7 @@ interface CommitTransitionOptions {
 
 async function commitAuthoritativeTransition(options: CommitTransitionOptions): Promise<SavrivoOrder> {
   const {before, toStatus, actorId, actorRole} = options;
-  const ref = db.ref(pathFor.order(before.customerId, before.id));
+  const ref = orderRef(firestoreDb, before.id);
   const now = Date.now();
   const id = eventKey(now, actorId);
   const event: StatusEvent = {
@@ -290,7 +315,9 @@ async function commitAuthoritativeTransition(options: CommitTransitionOptions): 
     ...(options.proof ? {proof: options.proof} : {}),
     ...(options.detail ? {detail: options.detail} : {}),
   };
-  const result = await ref.transaction((current: SavrivoOrder | null) => {
+  const order = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
     const candidate = buildOrderTransitionCandidate(current, before, {
       toStatus,
       actorRole,
@@ -300,13 +327,14 @@ async function commitAuthoritativeTransition(options: CommitTransitionOptions): 
       ...(options.reason ? {reason: options.reason} : {}),
       ...(options.expectedRiderId ? {expectedRiderId: options.expectedRiderId} : {}),
     });
-    return candidate ? stripPrivateOrderFields(candidate) : undefined;
-  }, undefined, false);
-  if (!result.committed) throw new DomainError("aborted", "Order changed; refresh and try again.");
-  const order = stripPrivateOrderFields(result.snapshot.val() as SavrivoOrder);
+    if (!candidate) throw new DomainError("aborted", "Order changed; refresh and try again.");
+    const stripped = stripPrivateOrderFields(candidate);
+    transaction.set(ref, stripped);
+    return stripped;
+  });
   await Promise.all([
     reconcileRestaurantOrderProjection(order),
-    db.ref(`${ROOT}/audit/${id}`).set({
+    firestoreDb.collection("audit").doc(id).set({
       id,
       action: "order.transition",
       target: order.id,
@@ -339,9 +367,8 @@ async function promoteReadyOrderToAssigned(before: SavrivoOrder): Promise<Savriv
     // instead of adding a duplicate transition/audit event or surfacing an
     // erroneous failure to the restaurant.
     if (error instanceof DomainError && error.code === "aborted") {
-      const latestValue = (
-        await db.ref(pathFor.order(before.customerId, before.id)).get()
-      ).val() as SavrivoOrder | null;
+      const snapshot = await orderRef(firestoreDb, before.id).get();
+      const latestValue = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
       if (latestValue) {
         const latest = stripPrivateOrderFields(latestValue);
         if (latest.status === "Assigned" && latest.riderId === riderId) return latest;
@@ -357,8 +384,9 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   recovered: boolean;
 }> {
   const orderId = deterministicOrderId(uid, input.idempotencyKey);
-  const orderRef = db.ref(pathFor.order(uid, orderId));
-  const existing = (await orderRef.get()).val() as SavrivoOrder | null;
+  const ref = orderRef(firestoreDb, orderId);
+  const existingSnapshot = await ref.get();
+  const existing = existingSnapshot.exists ? existingSnapshot.data() as SavrivoOrder : null;
   if (existing) {
     if (existing.customerId !== uid || existing.idempotencyKey !== input.idempotencyKey) {
       throw new DomainError("already-exists", "Order idempotency conflict.");
@@ -378,10 +406,13 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     // Rider supply feeds the delivery estimate only. A read failure must never
     // block an order, so it degrades to "unknown" - which the estimator treats
     // as unknown rather than as zero riders.
-    db.ref(`${ROOT}/riderAvailabilityByCity/${availabilityCityKey(restaurant.city)}`)
-      .limitToFirst(500).get()
+    riderAvailabilityCollectionRef(firestoreDb)
+      .where("cityKey", "==", availabilityCityKey(restaurant.city))
+      .limit(500).get()
       .then((snapshot) => countAvailableRiders(
-        snapshot.val(), Date.now(), DEFAULT_DISPATCH_POLICY.presenceFreshMs,
+        Object.fromEntries(snapshot.docs.map((doc) => [doc.id, doc.data()])),
+        Date.now(),
+        DEFAULT_DISPATCH_POLICY.presenceFreshMs,
       ))
       .catch((error) => {
         logger.warn("DELIVERY_ESTIMATE_RIDER_SUPPLY_READ_FAILED", {restaurantId: restaurant.id, error});
@@ -473,9 +504,15 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
 
-  const result = await orderRef.transaction((current) => current == null ? order : undefined, undefined, false);
-  const committedOrder = result.snapshot.val() as SavrivoOrder;
-  if (!result.committed) {
+  let created = false;
+  const committedOrder = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists) return snapshot.data() as SavrivoOrder;
+    transaction.set(ref, order);
+    created = true;
+    return order;
+  });
+  if (!created) {
     if (committedOrder?.customerId !== uid || committedOrder?.idempotencyKey !== input.idempotencyKey) {
       throw new DomainError("aborted", "Another order operation won the transaction.");
     }
@@ -483,10 +520,10 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     return {order: stripPrivateOrderFields(committedOrder), deliveryOtp: recoveredOtp, recovered: true};
   }
 
-  await db.ref(ROOT).update({
-    [`orderIdempotency/${uid}/${input.idempotencyKey}`]: {orderId, createdAt: now},
-    [`private/deliveryOtps/${orderId}`]: otpRecord,
-  });
+  // `reserveDeliveryOtp` already persisted this record durably above; only
+  // the idempotency marker is new state to write here.
+  await firestoreDb.collection("orderIdempotency").doc(`${uid}_${input.idempotencyKey}`)
+    .set({orderId, createdAt: now});
   await Promise.all([
     reconcileRestaurantOrderProjection(order),
     reconcileRestaurantWorkload(order),
@@ -510,9 +547,9 @@ export async function transitionOrder(
   token: DecodedIdToken,
   input: TransitionOrderInput,
 ): Promise<{order: SavrivoOrder; actorRole: ActorRole; idempotent: boolean}> {
-  const ref = db.ref(pathFor.order(input.customerId, input.orderId));
-  const before = (await ref.get()).val() as SavrivoOrder | null;
-  if (!before) throw new DomainError("not-found", "Order not found.");
+  const snapshot = await orderRef(firestoreDb, input.orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!before || before.customerId !== input.customerId) throw new DomainError("not-found", "Order not found.");
   if (input.toStatus === "Assigned") {
     throw new DomainError("failed-precondition", "Rider assignment must use the transactional dispatch claim.");
   }
@@ -591,7 +628,8 @@ export async function transitionOrderFromTracking(
   evidenceEventId: string,
   distanceMeters: number,
 ): Promise<SavrivoOrder> {
-  const before = (await db.ref(pathFor.order(customerId, orderId)).get()).val() as SavrivoOrder | null;
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
   if (!before || before.customerId !== customerId || before.id !== orderId) {
     throw new DomainError("not-found", "Order not found.");
   }
@@ -616,7 +654,8 @@ export async function transitionOrderFromTracking(
  * as before this override existed.
  */
 async function resolveRestaurantCommissionBps(order: SavrivoOrder, financePolicy: FinancePolicy): Promise<number> {
-  const override = (await db.ref(`${pathFor.restaurant(order.restaurantId)}/commissionBps`).get()).val();
+  const snapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
+  const override = snapshot.exists ? (snapshot.data() as Record<string, unknown>).commissionBps : undefined;
   return Number.isFinite(Number(override)) && Number(override) >= 0 && Number(override) <= 5_000
     ? Number(override)
     : financePolicy.restaurantCommissionBps;
@@ -629,15 +668,16 @@ export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
   // The immutable balanced journal is authoritative. The existing mutable
   // rider wallet remains only a backwards-compatible operational projection.
   await persistCodOrderDeliveryLedger(order, commissionBps);
-  const ref = db.ref(`${ROOT}/riderWallets/${order.riderId}`);
-  await ref.transaction((wallet: Record<string, unknown> | null) => {
-    const current = wallet ?? {};
+  const ref = riderWalletRef(firestoreDb, order.riderId);
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = (snapshot.exists ? snapshot.data() : {}) as Record<string, unknown>;
     const entries = (current.codEntries ?? {}) as Record<string, unknown>;
-    if (entries[order.id]) return undefined;
+    if (entries[order.id]) return;
     const nextOutstanding = roundMoney(Number(current.codOutstanding ?? 0) + order.total);
     const nextOutstandingPaise = Math.round(nextOutstanding * 100);
     const limitEnabled = financePolicy.codOutstandingLimitPaise > 0;
-    return {
+    transaction.set(ref, {
       ...current,
       codOutstanding: nextOutstanding,
       codOutstandingLimitPaise: financePolicy.codOutstandingLimitPaise,
@@ -648,8 +688,8 @@ export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
         ...entries,
         [order.id]: {orderId: order.id, amount: order.total, status: "pending_return", collectedAt: order.deliveredAt ?? order.updatedAt},
       },
-    };
-  }, undefined, false);
+    });
+  });
 }
 
 /**

@@ -13,12 +13,20 @@ android {
         applicationId "com.feastly.rider"
         minSdk 23
         targetSdk 36
-        versionCode 64
-        versionName "3.5.0"
+        versionCode 67
+        versionName "3.5.3"
     }
 
     buildTypes {
-        debug { minifyEnabled false }
+        debug {
+            minifyEnabled false
+            // ML Kit's face-detector .so ships once per CPU architecture
+            // (~9MB each); bundling all four is what pushed this debug build
+            // past SendUserFile's size limit. Every phone this gets installed
+            // on for testing is arm64, so debug only packages that one -
+            // release is untouched and still ships every architecture.
+            ndk { abiFilters "arm64-v8a" }
+        }
         release {
             minifyEnabled true
             shrinkResources true
@@ -53,6 +61,11 @@ dependencies {
     implementation "com.google.android.libraries.identity.googleid:googleid:1.2.0"
     implementation "com.google.android.gms:play-services-auth:21.1.1"
     implementation "androidx.activity:activity:1.13.0"
+    implementation "androidx.camera:camera-core:1.4.1"
+    implementation "androidx.camera:camera-camera2:1.4.1"
+    implementation "androidx.camera:camera-lifecycle:1.4.1"
+    implementation "androidx.camera:camera-view:1.4.1"
+    implementation "com.google.mlkit:face-detection:16.1.7"
     implementation platform("com.google.firebase:firebase-bom:34.18.0")
     implementation "com.google.firebase:firebase-messaging"
     releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"

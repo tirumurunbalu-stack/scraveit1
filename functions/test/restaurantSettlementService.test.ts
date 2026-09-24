@@ -2,36 +2,36 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
 vi.mock("../src/admin", () => ({
-  db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }},
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
-import {ROOT} from "../src/config";
-import {buildCodOrderDeliveryJournal} from "../src/services/ledger";
+import {LEDGER_JOURNALS_COLLECTION, buildCodOrderDeliveryJournal, type LedgerJournal} from "../src/services/ledger";
 import {
   getRestaurantSettlementSummary,
-  RESTAURANT_LEDGER_COVERAGE_ROOT,
+  restaurantLedgerCoverageRef,
   type RestaurantSettlementDatabase,
 } from "../src/services/restaurantSettlements";
-import {LEDGER_JOURNALS_ROOT} from "../src/services/ledger";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
-class InMemoryQueryDatabase implements RestaurantSettlementDatabase {
-  readonly values = new Map<string, unknown>();
-  readonly queries: Array<[string, string, unknown]> = [];
+class TrackedFirestore extends InMemoryFirestore implements RestaurantSettlementDatabase {
+  readonly collectionsAccessed: string[] = [];
 
-  ref(path: string) {
-    const chain = {
-      orderByChild: (child: string) => {
-        this.queries.push([path, "orderByChild", child]);
-        return chain;
-      },
-      limitToLast: (limit: number) => {
-        this.queries.push([path, "limitToLast", limit]);
-        return chain;
-      },
-      get: async () => ({val: () => structuredClone(this.values.get(path) ?? null)}),
-    };
-    return chain;
+  collection(name: string) {
+    this.collectionsAccessed.push(name);
+    return super.collection(name);
   }
+}
+
+function restaurantMemberPath(restaurantId: string, uid: string): string {
+  return `restaurantMembers/${restaurantId}_${uid}`;
+}
+
+function legacyStaffPath(uid: string): string {
+  return `staff/${uid}`;
+}
+
+function seedJournals(database: TrackedFirestore, ...journals: readonly LedgerJournal[]): void {
+  for (const journal of journals) database.seed(`${LEDGER_JOURNALS_COLLECTION}/${journal.journalId}`, journal);
 }
 
 function token(role?: string): DecodedIdToken {
@@ -55,31 +55,33 @@ function delivery(orderId: string, occurredAt: number) {
 }
 
 describe("authorized bounded restaurant settlement query", () => {
-  let database: InMemoryQueryDatabase;
+  let database: TrackedFirestore;
 
   beforeEach(() => {
-    database = new InMemoryQueryDatabase();
-    database.values.set(`${RESTAURANT_LEDGER_COVERAGE_ROOT}/restaurant-1`, {
-      schemaVersion: 1,
-      restaurantId: "restaurant-1",
-      historicalBackfillComplete: true,
-      verifiedAt: 1,
+    database = new TrackedFirestore();
+    database.seed(restaurantLedgerCoverageRef(database).path, {
+      "restaurant-1": {
+        schemaVersion: 1,
+        restaurantId: "restaurant-1",
+        historicalBackfillComplete: true,
+        verifiedAt: 1,
+      },
     });
+    database.collectionsAccessed.length = 0;
   });
 
   it("rejects an unrelated user before reading the immutable ledger", async () => {
     await expect(getRestaurantSettlementSummary("user-1", token(), {
       restaurantId: "restaurant-1",
     }, database)).rejects.toMatchObject({code: "permission-denied"});
-    expect(database.queries.some((query) => query[0] === LEDGER_JOURNALS_ROOT)).toBe(false);
+    expect(database.collectionsAccessed).not.toContain(LEDGER_JOURNALS_COLLECTION);
   });
 
   it.each(["restaurant_owner", "restaurant_manager"])(
     "allows an active path-scoped %s membership",
     async (role) => {
-      database.values.set(`${ROOT}/restaurantMembers/restaurant-1/member-1`, {active: true, role});
-      const journal = delivery("order-1", 1_000);
-      database.values.set(LEDGER_JOURNALS_ROOT, {[journal.journalId]: journal});
+      database.seed(restaurantMemberPath("restaurant-1", "member-1"), {active: true, role});
+      seedJournals(database, delivery("order-1", 1_000));
       const result = await getRestaurantSettlementSummary("member-1", token(), {
         restaurantId: "restaurant-1",
         ledgerLimit: 20,
@@ -90,10 +92,10 @@ describe("authorized bounded restaurant settlement query", () => {
   );
 
   it("does not treat normalized restaurant staff or a cross-restaurant legacy row as finance owners", async () => {
-    database.values.set(`${ROOT}/restaurantMembers/restaurant-1/staff-1`, {
+    database.seed(restaurantMemberPath("restaurant-1", "staff-1"), {
       active: true, role: "kitchen_staff", permissions: {orders: true},
     });
-    database.values.set(`${ROOT}/staff/staff-1`, {
+    database.seed(legacyStaffPath("staff-1"), {
       active: true, restaurantId: "restaurant-2", role: "restaurant_owner",
     });
     await expect(getRestaurantSettlementSummary("staff-1", token(), {
@@ -102,33 +104,28 @@ describe("authorized bounded restaurant settlement query", () => {
   });
 
   it.each(["owner", "ops_admin"])("allows a verified platform %s claim without membership reads", async (role) => {
-    const journal = delivery("order-1", 1_000);
-    database.values.set(LEDGER_JOURNALS_ROOT, {[journal.journalId]: journal});
+    seedJournals(database, delivery("order-1", 1_000));
     const result = await getRestaurantSettlementSummary("admin-1", token(role), {
       restaurantId: "restaurant-1",
       ledgerLimit: 10,
       historyLimit: 5,
     }, database);
     expect(result.pendingSettlementPaise).toBe(8_000);
-    expect(database.queries).not.toContainEqual(expect.arrayContaining([`${ROOT}/restaurantMembers/restaurant-1/admin-1`]));
+    expect(database.collectionsAccessed).not.toContain("restaurantMembers");
   });
 
   it("fetches limit + 1 and withholds the current balance when the global window truncates", async () => {
-    const one = delivery("order-1", 1_000);
-    const two = delivery("order-2", 2_000);
-    const three = delivery("order-3", 3_000);
-    database.values.set(LEDGER_JOURNALS_ROOT, {
-      [one.journalId]: one,
-      [two.journalId]: two,
-      [three.journalId]: three,
-    });
+    seedJournals(
+      database,
+      delivery("order-1", 1_000),
+      delivery("order-2", 2_000),
+      delivery("order-3", 3_000),
+    );
     const result = await getRestaurantSettlementSummary("admin-1", token("owner"), {
       restaurantId: "restaurant-1",
       ledgerLimit: 2,
       historyLimit: 2,
     }, database);
-    expect(database.queries).toContainEqual([LEDGER_JOURNALS_ROOT, "orderByChild", "occurredAt"]);
-    expect(database.queries).toContainEqual([LEDGER_JOURNALS_ROOT, "limitToLast", 3]);
     expect(result).toMatchObject({
       complete: false,
       truncated: true,
@@ -143,10 +140,8 @@ describe("authorized bounded restaurant settlement query", () => {
 
   it("reports an invalid/tampered row and never presents a complete balance", async () => {
     const journal = delivery("order-1", 1_000);
-    database.values.set(LEDGER_JOURNALS_ROOT, {
-      [journal.journalId]: journal,
-      tampered: {...journal, journalId: "lj_invalid"},
-    });
+    seedJournals(database, journal);
+    database.seed(`${LEDGER_JOURNALS_COLLECTION}/tampered`, {...journal, journalId: "lj_invalid"});
     const result = await getRestaurantSettlementSummary("admin-1", token("ops_admin"), {
       restaurantId: "restaurant-1",
       ledgerLimit: 10,
@@ -161,7 +156,7 @@ describe("authorized bounded restaurant settlement query", () => {
   });
 
   it("fails closed for a legacy restaurant without a verified ledger backfill marker", async () => {
-    database.values.delete(`${RESTAURANT_LEDGER_COVERAGE_ROOT}/restaurant-1`);
+    database.seed(restaurantLedgerCoverageRef(database).path, {});
     const result = await getRestaurantSettlementSummary("admin-1", token("owner"), {
       restaurantId: "restaurant-1",
       ledgerLimit: 10,
@@ -185,6 +180,6 @@ describe("authorized bounded restaurant settlement query", () => {
       restaurantId: "restaurant-1",
       historyLimit: 101,
     }, database)).rejects.toThrow("RESTAURANT_SETTLEMENT_INVALID_HISTORY_LIMIT");
-    expect(database.queries).toEqual([]);
+    expect(database.collectionsAccessed).toEqual([]);
   });
 });

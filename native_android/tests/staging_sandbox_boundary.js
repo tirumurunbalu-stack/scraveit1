@@ -51,7 +51,7 @@ for (const module of modules) {
   check(projectId === expectedProjectId, `${module.role} google-services project must stay on ${expectedProjectId}`);
   const firebaseUrl = String((googleServices.project_info || {}).firebase_url || "");
   check(
-    firebaseUrl === "https://savrivo-app-default-rtdb.firebaseio.com",
+    firebaseUrl === "https://savrivo-app-sg.asia-southeast1.firebasedatabase.app",
     `${module.role} google-services database URL must stay on staging`,
   );
   const matchingClients = (Array.isArray(googleServices.client) ? googleServices.client : [])
@@ -61,7 +61,7 @@ for (const module of modules) {
   const webConfig = fs.readFileSync(module.webConfig, "utf8");
   check(webConfig.includes('projectId: "savrivo-app"'), `${module.role} WebView config must target staging`);
   check(
-    webConfig.includes('databaseUrl: "https://savrivo-app-default-rtdb.firebaseio.com"'),
+    webConfig.includes('databaseUrl: "https://savrivo-app-sg.asia-southeast1.firebasedatabase.app"'),
     `${module.role} WebView database URL must target staging`,
   );
 }

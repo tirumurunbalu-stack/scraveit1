@@ -1,7 +1,12 @@
 import {haversineKm} from "./order";
 import type {GeoPoint, OrderStatus} from "../types";
 
-export const MAX_GEOFENCE_ACCURACY_METERS = 50;
+// Must stay >= the rider app's own upload cap (MAX_UPLOAD_ACCURACY_METERS in
+// TrackingService.java, currently 80m) - a fix the client already treats as
+// good enough to publish as "live" tracking must not then be rejected here as
+// too inaccurate to trust, or arrival can never verify: the client keeps
+// writing a fix the server has already decided it will never accept.
+export const MAX_GEOFENCE_ACCURACY_METERS = 80;
 export const MAX_TRACKING_AGE_MS = 30_000;
 export const MAX_TRACKING_FUTURE_SKEW_MS = 5_000;
 export const MIN_CONSECUTIVE_FIX_GAP_MS = 2_000;

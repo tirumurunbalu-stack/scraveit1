@@ -288,7 +288,7 @@ test("Firebase Storage rules protect media and KYC paths", () => {
   check(fs.existsSync(storageRulesPath), "firebase/storage.rules must exist");
   const rules = read(storageRulesPath);
   check(rules.includes("match /restaurants/{restaurantId}/users/{uid}/{allPaths=**}"), "restaurant media path missing");
-  check(rules.includes("match /rider-kyc/{uid}/{allPaths=**}"), "private rider KYC path missing");
+  check(rules.includes("match /private/rider-kyc/{uid}/{allPaths=**}"), "private rider KYC path missing");
   check(rules.includes("request.auth.uid == uid || admin()"), "rider KYC read access must be rider/admin scoped");
   check(rules.includes("match /{allPaths=**}"), "storage fallback deny block missing");
   check(rules.includes("allow read, write: if false"), "storage fallback must deny unmatched paths");
@@ -640,7 +640,7 @@ for (const app of apps) {
     check(/\bcompileSdk\s+36\b/.test(gradle), "compileSdk must be 36");
     check(/\bminSdk\s+23\b/.test(gradle), "minSdk must be 23");
     check(/\btargetSdk\s+36\b/.test(gradle), "targetSdk must be 36");
-    const expectedVersionCode = app.name === "control" ? 50 : app.name === "restaurant" ? 45 : app.name === "partner" ? 64 : 52;
+    const expectedVersionCode = app.name === "control" ? 52 : app.name === "restaurant" ? 45 : app.name === "partner" ? 67 : 71;
     check(new RegExp(`\\bversionCode\\s+${expectedVersionCode}\\b`).test(gradle), `versionCode must be ${expectedVersionCode}`);
     check(/\bbuildToolsVersion\s+"36\.0\.0"/.test(gradle), "Build Tools must be pinned to 36.0.0");
     check(manifestAttribute(xml, "allowBackup") === "false", "android:allowBackup must be false");

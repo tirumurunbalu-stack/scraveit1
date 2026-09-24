@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {platformConfigHash, platformConfigOperationKey} from "../domain/platformConfigControl";
 import {DomainError} from "../errors";
 import {
@@ -11,7 +11,6 @@ import {
 import {
   persistCodRemittanceLedger,
   type CodRemittanceJournalInput,
-  type LedgerTransactionDatabase,
   type PersistedLedgerJournalResult,
 } from "./ledger";
 import {
@@ -23,26 +22,7 @@ type UnknownRecord = Record<string, unknown>;
 type CodRemittanceStatus = "reserved" | "completed";
 type CodRemittanceIdentityStatus = "registered" | "completed";
 
-interface ValueSnapshot {
-  val(): unknown;
-}
-
-interface TransactionResult {
-  committed: boolean;
-  snapshot: ValueSnapshot;
-}
-
-interface TransactionReference {
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<TransactionResult>;
-}
-
-export interface CodRemittanceDatabase extends LedgerTransactionDatabase {
-  ref(path: string): TransactionReference;
-}
+export type CodRemittanceDatabase = FirestoreLike;
 
 interface CodRemittanceOperation {
   schemaVersion: 1;
@@ -92,7 +72,7 @@ export interface CodRemittanceResponse {
 
 export type CodRemittanceLedgerWriter = (
   input: CodRemittanceJournalInput,
-  database: LedgerTransactionDatabase,
+  database: FirestoreLike,
 ) => Promise<PersistedLedgerJournalResult>;
 
 function record(value: unknown): UnknownRecord {
@@ -231,15 +211,15 @@ function operationOrConflict(
 }
 
 function defaultDatabase(): CodRemittanceDatabase {
-  return db as unknown as CodRemittanceDatabase;
+  return firestoreDb as unknown as CodRemittanceDatabase;
 }
 
-function operationPath(input: RecordCodRemittanceInput): string {
-  return `${ROOT}/riderWallets/${input.riderId}`;
+function operationRef(database: FirestoreLike, input: RecordCodRemittanceInput): DocumentReferenceLike {
+  return database.collection("riderWallets").doc(input.riderId);
 }
 
-function identityPath(operationKey: string): string {
-  return `${ROOT}/private/financeOperations/codRemittances/${operationKey}`;
+function identityRef(database: FirestoreLike, operationKey: string): DocumentReferenceLike {
+  return database.collection("private").doc("financeOperations").collection("codRemittances").doc(operationKey);
 }
 
 async function registerRemittanceIdentity(
@@ -252,18 +232,17 @@ async function registerRemittanceIdentity(
   requestInstanceId: string,
   now: number,
 ): Promise<CodRemittanceIdentity> {
-  let abort: DomainError | null = null;
-  const result = await database.ref(identityPath(operationKey)).transaction((rawIdentity) => {
-    abort = null;
+  const ref = identityRef(database, operationKey);
+  const identity = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
     let existing: CodRemittanceIdentity | null;
     try {
-      existing = identityOrConflict(rawIdentity, input, hash, actorId);
+      existing = identityOrConflict(snapshot.exists ? snapshot.data() : null, input, hash, actorId);
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance identity could not be verified.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance identity could not be verified.");
     }
     if (existing) return existing;
-    const identity: CodRemittanceIdentity = {
+    const next: CodRemittanceIdentity = {
       schemaVersion: 1,
       operationId: input.operationId,
       requestHash: hash,
@@ -277,13 +256,9 @@ async function registerRemittanceIdentity(
       status: "registered",
       registeredAt: now,
     };
-    return identity;
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "COD remittance identity could not be registered safely.");
-  }
-  const identity = identityOrConflict(result.snapshot.val(), input, hash, actorId);
-  if (!identity) throw new DomainError("internal", "COD remittance identity could not be verified.");
+    transaction.set(ref, next);
+    return next;
+  });
   return identity;
 }
 
@@ -297,34 +272,22 @@ async function completeRemittanceIdentity(
   ledgerJournalId: string,
   completedAt: number,
 ): Promise<void> {
-  let abort: DomainError | null = null;
-  const result = await database.ref(identityPath(operationKey)).transaction((rawIdentity) => {
-    abort = null;
+  const ref = identityRef(database, operationKey);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
     let existing: CodRemittanceIdentity | null;
     try {
-      existing = identityOrConflict(rawIdentity, input, hash, actorId);
+      existing = identityOrConflict(snapshot.exists ? snapshot.data() : null, input, hash, actorId);
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance identity could not be verified.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance identity could not be verified.");
     }
-    if (!existing) {
-      abort = new DomainError("not-found", "COD remittance identity was not found.");
-      return undefined;
-    }
+    if (!existing) throw new DomainError("not-found", "COD remittance identity was not found.");
     if (existing.status === "completed" && existing.ledgerJournalId !== ledgerJournalId) {
-      abort = new DomainError("data-loss", "COD remittance identity has a different immutable ledger journal.");
-      return undefined;
+      throw new DomainError("data-loss", "COD remittance identity has a different immutable ledger journal.");
     }
-    if (existing.status === "completed") return existing;
-    return {...identity, status: "completed", ledgerJournalId, completedAt};
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "COD remittance identity could not be completed safely.");
-  }
-  const completed = identityOrConflict(result.snapshot.val(), input, hash, actorId);
-  if (!completed || completed.status !== "completed" || completed.ledgerJournalId !== ledgerJournalId) {
-    throw new DomainError("internal", "COD remittance identity completion could not be verified.");
-  }
+    if (existing.status === "completed") return;
+    transaction.set(ref, {...identity, status: "completed", ledgerJournalId, completedAt});
+  });
 }
 
 async function reserveRemittance(
@@ -337,19 +300,18 @@ async function reserveRemittance(
   requestInstanceId: string,
   now: number,
 ): Promise<CodRemittanceOperation> {
-  let abort: DomainError | null = null;
-  const result = await database.ref(operationPath(input)).transaction((rawWallet) => {
-    abort = null;
-    const wallet = record(rawWallet);
+  const ref = operationRef(database, input);
+  return database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const wallet = record(snapshot.exists ? snapshot.data() : null);
     const operations = record(wallet.codRemittanceOperations);
     let existing: CodRemittanceOperation | null;
     try {
       existing = operationOrConflict(operations[operationKey], input, hash, actorId);
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be verified.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be verified.");
     }
-    if (existing) return wallet;
+    if (existing) return existing;
 
     let outstandingPaise: number;
     let reservedPaise: number;
@@ -360,29 +322,25 @@ async function reserveRemittance(
         "COD_REMITTANCE_RESERVATION_INVALID",
       );
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be reserved.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be reserved.");
     }
     const availablePaise = outstandingPaise - reservedPaise;
     if (!Number.isSafeInteger(availablePaise) || availablePaise < 0) {
-      abort = new DomainError("failed-precondition", "The rider COD reservation state requires finance review.", {
+      throw new DomainError("failed-precondition", "The rider COD reservation state requires finance review.", {
         reason: "COD_REMITTANCE_RESERVATION_EXCEEDS_BALANCE",
       });
-      return undefined;
     }
     if (input.amountPaise > availablePaise) {
-      abort = new DomainError("failed-precondition", "Remittance exceeds the rider's available COD outstanding balance.", {
+      throw new DomainError("failed-precondition", "Remittance exceeds the rider's available COD outstanding balance.", {
         reason: "COD_REMITTANCE_EXCEEDS_OUTSTANDING",
         outstandingPaise,
         reservedPaise,
         availablePaise,
       });
-      return undefined;
     }
     const nextReservedPaise = reservedPaise + input.amountPaise;
     if (!Number.isSafeInteger(nextReservedPaise)) {
-      abort = new DomainError("out-of-range", "COD remittance reservation is too large.");
-      return undefined;
+      throw new DomainError("out-of-range", "COD remittance reservation is too large.");
     }
     const operation: CodRemittanceOperation = {
       schemaVersion: 1,
@@ -398,26 +356,14 @@ async function reserveRemittance(
       status: "reserved",
       reservedAt: now,
     };
-    return {
+    transaction.set(ref, {
       ...wallet,
       codRemittanceReservedPaise: nextReservedPaise,
       codRemittanceOperations: {...operations, [operationKey]: operation},
       updatedAt: now,
-    };
-  }, undefined, false);
-
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "COD remittance reservation could not be committed safely.");
-  }
-  const wallet = record(result.snapshot.val());
-  const operation = operationOrConflict(
-    record(wallet.codRemittanceOperations)[operationKey],
-    input,
-    hash,
-    actorId,
-  );
-  if (!operation) throw new DomainError("internal", "COD remittance reservation could not be verified.");
-  return operation;
+    });
+    return operation;
+  });
 }
 
 async function finalizeRemittance(
@@ -430,29 +376,23 @@ async function finalizeRemittance(
   now: number,
 ): Promise<{operation: CodRemittanceOperation; remainingOutstandingPaise: number}> {
   let abort: DomainError | null = null;
-  let remainingOutstandingPaise = -1;
-  const result = await database.ref(operationPath(input)).transaction((rawWallet) => {
-    abort = null;
-    const wallet = record(rawWallet);
+  const ref = operationRef(database, input);
+  return database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const wallet = record(snapshot.exists ? snapshot.data() : null);
     const operations = record(wallet.codRemittanceOperations);
     let existing: CodRemittanceOperation | null;
     try {
       existing = operationOrConflict(operations[operationKey], input, hash, actorId);
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be verified.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be verified.");
     }
-    if (!existing) {
-      abort = new DomainError("not-found", "COD remittance reservation was not found.");
-      return undefined;
-    }
+    if (!existing) throw new DomainError("not-found", "COD remittance reservation was not found.");
     if (existing.status === "completed") {
       if (existing.ledgerJournalId !== ledger.journal.journalId) {
-        abort = new DomainError("data-loss", "COD remittance ledger identity does not match the completed operation.");
-        return undefined;
+        throw new DomainError("data-loss", "COD remittance ledger identity does not match the completed operation.");
       }
-      remainingOutstandingPaise = safePaiseFromRupees(wallet.codOutstanding);
-      return wallet;
+      return {operation: existing, remainingOutstandingPaise: safePaiseFromRupees(wallet.codOutstanding)};
     }
 
     let outstandingPaise: number;
@@ -464,16 +404,14 @@ async function finalizeRemittance(
         "COD_REMITTANCE_RESERVATION_INVALID",
       );
     } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be finalized.");
-      return undefined;
+      throw error instanceof DomainError ? error : new DomainError("internal", "COD remittance could not be finalized.");
     }
     if (outstandingPaise < input.amountPaise || reservedPaise < input.amountPaise) {
-      abort = new DomainError("failed-precondition", "The rider COD balance changed incompatibly during settlement.", {
+      throw new DomainError("failed-precondition", "The rider COD balance changed incompatibly during settlement.", {
         reason: "COD_REMITTANCE_FINALIZATION_CONFLICT",
       });
-      return undefined;
     }
-    remainingOutstandingPaise = outstandingPaise - input.amountPaise;
+    const remainingOutstandingPaise = outstandingPaise - input.amountPaise;
     const nextReservedPaise = reservedPaise - input.amountPaise;
     const limitPaise = safeNonNegativePaise(wallet.codOutstandingLimitPaise, "COD_LIMIT_INVALID");
     const completed: CodRemittanceOperation = {
@@ -482,31 +420,16 @@ async function finalizeRemittance(
       completedAt: now,
       ledgerJournalId: ledger.journal.journalId,
     };
-    return {
+    transaction.set(ref, {
       ...wallet,
       codOutstanding: paiseToRupees(remainingOutstandingPaise),
       codRemittanceReservedPaise: nextReservedPaise,
       codBlocked: limitPaise > 0 && remainingOutstandingPaise >= limitPaise,
       codRemittanceOperations: {...operations, [operationKey]: completed},
       updatedAt: now,
-    };
-  }, undefined, false);
-
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "COD remittance finalization could not be committed safely.");
-  }
-  const wallet = record(result.snapshot.val());
-  const operation = operationOrConflict(
-    record(wallet.codRemittanceOperations)[operationKey],
-    input,
-    hash,
-    actorId,
-  );
-  if (!operation || operation.status !== "completed" || operation.ledgerJournalId !== ledger.journal.journalId) {
-    throw new DomainError("internal", "COD remittance completion could not be verified.");
-  }
-  if (remainingOutstandingPaise < 0) remainingOutstandingPaise = safePaiseFromRupees(wallet.codOutstanding);
-  return {operation, remainingOutstandingPaise};
+    });
+    return {operation: completed, remainingOutstandingPaise};
+  });
 }
 
 /**
@@ -611,7 +534,11 @@ export async function recordRiderCodRemittance(
     actorRole,
     at: finalized.operation.completedAt ?? now,
   };
-  await database.ref(`${ROOT}/audit/${auditId}`).transaction((current) => current ?? auditRecord, undefined, false);
+  const auditRef = database.collection("audit").doc(auditId);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(auditRef);
+    if (!snapshot.exists) transaction.set(auditRef, auditRecord);
+  });
 
   return {
     operationId: input.operationId,

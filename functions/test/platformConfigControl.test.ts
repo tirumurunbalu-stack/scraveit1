@@ -1,7 +1,9 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {describe, expect, it, vi} from "vitest";
 
-vi.mock("../src/admin", () => ({db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }}}));
+vi.mock("../src/admin", () => ({
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
+}));
 
 import {DEFAULT_DISPATCH_POLICY} from "../src/domain/dispatchPolicy";
 import {DEFAULT_FINANCE_POLICY} from "../src/domain/financePolicy";
@@ -10,31 +12,15 @@ import {
   platformConfigState,
   updatePlatformConfigSchema,
 } from "../src/domain/platformConfigControl";
+import {platformConfigRef} from "../src/firestorePaths";
 import {
   readPlatformConfiguration,
   updatePlatformConfiguration,
   type PlatformConfigDatabase,
 } from "../src/services/platformConfigControl";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
-class InMemoryDatabase implements PlatformConfigDatabase {
-  readonly values = new Map<string, unknown>();
-  readonly transactions: string[] = [];
-
-  ref(path: string) {
-    return {
-      get: async () => ({val: () => this.values.get(path) ?? null}),
-      transaction: async (update: (current: unknown) => unknown) => {
-        this.transactions.push(path);
-        const next = update(this.values.get(path) ?? null);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => this.values.get(path) ?? null}};
-        }
-        this.values.set(path, next);
-        return {committed: true, snapshot: {val: () => this.values.get(path) ?? null}};
-      },
-    };
-  }
-}
+class InMemoryDatabase extends InMemoryFirestore implements PlatformConfigDatabase {}
 
 function token(role?: string, email = "operator@example.test"): DecodedIdToken {
   return {savrivoRole: role, email} as unknown as DecodedIdToken;
@@ -153,7 +139,7 @@ describe("server-authoritative platform configuration service", () => {
       .rejects.toMatchObject({code: "permission-denied"});
     await expect(updatePlatformConfiguration("legacy-admin-uid", token(undefined), updateInput, database, 1_000))
       .rejects.toMatchObject({code: "permission-denied"});
-    expect(database.transactions).toEqual([]);
+    expect(database.transactionCount).toBe(0);
   });
 
   it.each(["owner", "ops_admin"])("allows a verified %s claim to read configuration", async (role) => {
@@ -178,12 +164,12 @@ describe("server-authoritative platform configuration service", () => {
       dispatch: {mode: "waves", ridersPerWave: 3, offerTimeoutSeconds: 45},
       finance: {restaurantCommissionBps: 1_750, codOutstandingLimitPaise: 250_000},
     });
-    const stored = database.values.get("feastly/platformConfig") as Record<string, unknown>;
+    const stored = database.read(platformConfigRef(database).path) as Record<string, unknown>;
     expect(stored._meta).toMatchObject({revision: 1, updatedBy: "admin-1", lastOperationId: updateInput.operationId});
     expect(Object.keys(stored._operations as Record<string, unknown>)).toHaveLength(1);
-    const auditPath = database.transactions.find((path) => path.startsWith("feastly/audit/platform-config-"));
+    const auditPath = database.paths().find((path) => path.startsWith("audit/platform-config-"));
     expect(auditPath).toBeTruthy();
-    expect(database.values.get(auditPath!)).toMatchObject({
+    expect(database.read(auditPath!)).toMatchObject({
       action: "platform_config.update",
       actorId: "admin-1",
       actorRole: "ops_admin",
@@ -197,7 +183,7 @@ describe("server-authoritative platform configuration service", () => {
     const retry = await updatePlatformConfiguration("admin-1", token("owner"), updateInput, database, 20_000);
     expect(retry.revision).toBe(1);
     expect(retry.idempotent).toBe(true);
-    const stored = database.values.get("feastly/platformConfig") as Record<string, unknown>;
+    const stored = database.read(platformConfigRef(database).path) as Record<string, unknown>;
     expect(Object.keys(stored._operations as Record<string, unknown>)).toHaveLength(1);
   });
 
@@ -234,7 +220,7 @@ describe("server-authoritative platform configuration service", () => {
     }, database, 10_000);
     expect(result.revision).toBe(0);
     expect(result.changedSections).toEqual([]);
-    const auditPath = database.transactions.find((path) => path.startsWith("feastly/audit/platform-config-"));
-    expect(database.values.get(auditPath!)).toMatchObject({action: "platform_config.noop"});
+    const auditPath = database.paths().find((path) => path.startsWith("audit/platform-config-"));
+    expect(database.read(auditPath!)).toMatchObject({action: "platform_config.noop"});
   });
 });

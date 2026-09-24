@@ -28,9 +28,20 @@ service firebase.storage {
       allow delete: if admin();
     }
 
-    // Rider identity documents are private. Only the rider and trusted Savrivo
-    // administrators can read them.
-    match /rider-kyc/{uid}/{allPaths=**} {
+    // Rider identity documents and face-verification reference photos are
+    // private. Only the rider and trusted Savrivo administrators can read
+    // them directly; the Admin app's photo review instead relies on a
+    // Firebase download token stamped onto each object at upload time
+    // (bypasses these rules by design), so this only governs authenticated
+    // SDK access - e.g. a rider viewing their own file.
+    match /private/rider-kyc/{uid}/{allPaths=**} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow write: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    match /private/rider-face/{uid}/{allPaths=**} {
       allow read: if signedIn() && (request.auth.uid == uid || admin());
       allow write: if signedIn() && request.auth.uid == uid
         && request.resource.size < 8 * 1024 * 1024

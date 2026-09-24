@@ -1,53 +1,29 @@
 import {describe, expect, it, vi} from "vitest";
 
 vi.mock("../src/admin", () => ({
-  db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }},
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
 import {hydrateLegacyPayment, type PaymentAggregate, type PaymentTransitionEvent} from "../src/domain/paymentState";
 import {
+  LEDGER_JOURNALS_COLLECTION,
   buildOnlineOrderDeliveryJournal,
   buildOnlinePaymentReceiptJournal,
-  LEDGER_JOURNALS_ROOT,
-  ledgerJournalPath,
   orderDeliveryAmounts,
-  type LedgerTransactionResult,
+  validatedLedgerJournalId,
 } from "../src/services/ledger";
 import {
   persistOnlineOrderDeliveryLedger,
   type OnlineDeliveryLedgerDatabase,
 } from "../src/services/onlineDeliveryLedger";
-import {canonicalPaymentPath} from "../src/services/payments";
+import {canonicalPaymentRef} from "../src/services/payments";
 import type {SavrivoOrder} from "../src/types";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
-class InMemoryOnlineLedgerDatabase implements OnlineDeliveryLedgerDatabase {
-  private readonly values = new Map<string, unknown>();
+class InMemoryOnlineLedgerDatabase extends InMemoryFirestore implements OnlineDeliveryLedgerDatabase {}
 
-  seed(path: string, value: unknown): void {
-    this.values.set(path, structuredClone(value));
-  }
-
-  value<T>(path: string): T | null {
-    return (this.values.get(path) as T | undefined) ?? null;
-  }
-
-  paths(prefix: string): string[] {
-    return [...this.values.keys()].filter((path) => path.startsWith(prefix)).sort();
-  }
-
-  ref(path: string) {
-    return {
-      get: async () => ({val: () => this.values.get(path) ?? null}),
-      transaction: async (update: (current: unknown) => unknown): Promise<LedgerTransactionResult> => {
-        const next = update(this.values.get(path) ?? null);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => this.values.get(path) ?? null}};
-        }
-        this.values.set(path, structuredClone(next));
-        return {committed: true, snapshot: {val: () => this.values.get(path) ?? null}};
-      },
-    };
-  }
+function journalPath(journalId: string): string {
+  return `${LEDGER_JOURNALS_COLLECTION}/${journalId}`;
 }
 
 function deliveredOnlineOrder(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
@@ -169,7 +145,7 @@ function seedVerifiedPayment(
   aggregate: PaymentAggregate = paidAggregate(order),
   event: PaymentTransitionEvent = paidEvent(aggregate),
 ): void {
-  database.seed(canonicalPaymentPath(order.id), {
+  database.seed(canonicalPaymentRef(database, order.id).path, {
     schemaVersion: 1,
     aggregate,
     attempts: {},
@@ -184,7 +160,7 @@ function seedVerifiedPayment(
     amountPaise: aggregate.amountPaise,
     occurredAt: event.occurredAt,
   });
-  database.seed(ledgerJournalPath(receipt), receipt);
+  database.seed(journalPath(validatedLedgerJournalId(receipt)), receipt);
 }
 
 describe("verified online delivery ledger release", () => {
@@ -204,8 +180,8 @@ describe("verified online delivery ledger release", () => {
       providerTransactionId: "phonepe-transaction-1",
     });
 
-    expect(result).toMatchObject({outcome: "insert", path: ledgerJournalPath(expected)});
-    expect(database.value(ledgerJournalPath(expected))).toEqual(expected);
+    expect(result).toMatchObject({outcome: "insert", journalId: expected.journalId});
+    expect(database.read(journalPath(expected.journalId))).toEqual(expected);
     expect(expected.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({
         accountId: `liability:customer-order-funds:${order.id}`,
@@ -229,7 +205,7 @@ describe("verified online delivery ledger release", () => {
     await expect(persistOnlineOrderDeliveryLedger(order, 1_500, database))
       .resolves.toMatchObject({outcome: "idempotent"});
 
-    const journals = database.paths(`${LEDGER_JOURNALS_ROOT}/`);
+    const journals = database.paths().filter((path) => path.startsWith(`${LEDGER_JOURNALS_COLLECTION}/`));
     expect(journals).toHaveLength(2); // one verified receipt plus one delivery release
   });
 
@@ -250,7 +226,7 @@ describe("verified online delivery ledger release", () => {
       currentAttemptId: "attempt-1",
       updatedAt: 2_000,
     });
-    database.seed(canonicalPaymentPath(order.id), {
+    database.seed(canonicalPaymentRef(database, order.id).path, {
       schemaVersion: 1,
       aggregate,
       attempts: {},
@@ -267,7 +243,7 @@ describe("verified online delivery ledger release", () => {
     const order = deliveredOnlineOrder();
     const aggregate = paidAggregate(order);
     const event = paidEvent(aggregate);
-    database.seed(canonicalPaymentPath(order.id), {
+    database.seed(canonicalPaymentRef(database, order.id).path, {
       schemaVersion: 1,
       aggregate,
       attempts: {},
@@ -284,7 +260,7 @@ describe("verified online delivery ledger release", () => {
     const order = deliveredOnlineOrder();
     const mismatched = paidAggregate(order, {customerId: "different-customer"});
     const mismatchEvent = paidEvent(mismatched);
-    wrongCustomerDatabase.seed(canonicalPaymentPath(order.id), {
+    wrongCustomerDatabase.seed(canonicalPaymentRef(wrongCustomerDatabase, order.id).path, {
       schemaVersion: 1,
       aggregate: mismatched,
       attempts: {},
@@ -297,7 +273,7 @@ describe("verified online delivery ledger release", () => {
     const staleEventDatabase = new InMemoryOnlineLedgerDatabase();
     const aggregate = paidAggregate(order);
     const staleEvent = paidEvent(aggregate, {revision: 0});
-    staleEventDatabase.seed(canonicalPaymentPath(order.id), {
+    staleEventDatabase.seed(canonicalPaymentRef(staleEventDatabase, order.id).path, {
       schemaVersion: 1,
       aggregate,
       attempts: {},

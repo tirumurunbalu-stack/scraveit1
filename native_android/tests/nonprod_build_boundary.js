@@ -71,7 +71,7 @@ try {
     check(webConfig.includes('"scraveit-isolated-test"'), `${module.role} generated config must target the isolated project`);
     check(!webConfig.includes("savrivo-app"), `${module.role} generated config must not target production`);
     check(html.includes("https://scraveit-isolated-test-default-rtdb.firebaseio.com"), `${module.role} CSP must allow the isolated database`);
-    check(!html.includes("https://savrivo-app-default-rtdb.firebaseio.com"), `${module.role} CSP must remove the production database`);
+    check(!html.includes("https://savrivo-app-sg.asia-southeast1.firebasedatabase.app"), `${module.role} CSP must remove the production database`);
   }
 
   const productionRoot = path.join(temporaryRoot, "production");
@@ -155,7 +155,7 @@ try {
     "utf8",
   );
   check(tracking.includes("getOptions().getDatabaseUrl()"), "rider tracking must resolve the selected Firebase database URL");
-  check(!tracking.includes("savrivo-app-default-rtdb.firebaseio.com"), "rider tracking must not embed the production RTDB URL");
+  check(!tracking.includes("savrivo-app-sg.asia-southeast1.firebasedatabase.app"), "rider tracking must not embed the production RTDB URL");
 
   process.stdout.write(`Non-production build boundary passed (${assertions} assertions).\n`);
 } finally {

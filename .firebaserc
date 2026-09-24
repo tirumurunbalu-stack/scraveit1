@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "savrivo-app"
-  }
+  },
+  "targets": {
+    "savrivo-app": {
+      "database": {
+        "primary": [
+          "savrivo-app-default-rtdb"
+        ],
+        "singapore": [
+          "savrivo-app-sg"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

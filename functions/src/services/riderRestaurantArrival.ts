@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
-import {db} from "../admin";
-import {pathFor, ROOT} from "../config";
+import {db, firestoreDb} from "../admin";
+import {ROOT} from "../config";
 import {
   RESTAURANT_ARRIVAL_ORDER_STATUSES,
   verifyRiderRestaurantArrival,
@@ -8,9 +8,11 @@ import {
   type RiderRestaurantArrivalEvidenceSource,
 } from "../domain/riderRestaurantArrival";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {orderRef, restaurantOrderProjectionRef, riderJobRef, riderRef} from "../firestorePaths";
 import type {SavrivoOrder} from "../types";
+import {applyRiderArrivalToOperationalProjection} from "./operationalOrders";
 
-export const RIDER_RESTAURANT_ARRIVALS_ROOT = `${ROOT}/riderRestaurantArrivals`;
 const ARRIVAL_VERIFICATION_LEASE_MS = 30_000;
 const ARRIVAL_VERIFICATION_WAIT_MS = 4_000;
 const ARRIVAL_VERIFICATION_POLL_MS = 250;
@@ -48,6 +50,10 @@ export interface MarkRiderArrivedRestaurantResult {
   idempotent: boolean;
 }
 
+function riderArrivalRef(database: FirestoreLike, orderId: string): DocumentReferenceLike {
+  return database.collection("riderRestaurantArrivals").doc(orderId);
+}
+
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -83,10 +89,11 @@ async function waitForPendingArrivalResolution(
   timeoutMs = ARRIVAL_VERIFICATION_WAIT_MS,
 ): Promise<RiderArrivalRecord | null> {
   const deadline = Date.now() + timeoutMs;
-  const ref = db.ref(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`);
+  const ref = riderArrivalRef(firestoreDb, orderId);
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, ARRIVAL_VERIFICATION_POLL_MS));
-    const current = (await ref.get()).val() as StoredRiderArrivalRecord | null;
+    const snapshot = await ref.get();
+    const current = snapshot.exists ? snapshot.data() as StoredRiderArrivalRecord : null;
     if (isVerifiedRecord(current)) {
       if (current.riderId !== riderId || current.restaurantId !== restaurantId) {
         throw new DomainError("failed-precondition", "Arrival was verified for another assignment.");
@@ -109,7 +116,8 @@ async function waitForPendingArrivalResolution(
 export async function requireVerifiedRiderRestaurantArrival(
   order: SavrivoOrder,
 ): Promise<RiderArrivalRecord> {
-  const stored = (await db.ref(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${order.id}`).get()).val();
+  const snapshot = await riderArrivalRef(firestoreDb, order.id).get();
+  const stored = snapshot.exists ? snapshot.data() : null;
   if (!isVerifiedRecord(stored) || stored.orderId !== order.id ||
     stored.restaurantId !== order.restaurantId || !order.riderId || stored.riderId !== order.riderId) {
     throw new DomainError(
@@ -131,10 +139,14 @@ function result(record: RiderArrivalRecord, idempotent: boolean): MarkRiderArriv
   };
 }
 
-function projectionUpdates(
-  order: SavrivoOrder,
-  record: RiderArrivalRecord,
-): Record<string, unknown> {
+/**
+ * Reconciles the Rider job and Admin operational projections once arrival is
+ * verified. The `restaurantOrders` denormalized mirror this used to also
+ * patch is gone - `notifications.ts` is the collection's last reader, and
+ * once it converts the collection itself goes away.
+ */
+async function reconcileArrivalProjections(order: SavrivoOrder, record: RiderArrivalRecord): Promise<void> {
+  if (!RESTAURANT_ARRIVAL_ORDER_STATUSES.has(order.status)) return;
   const boundedVerification = {
     verified: true,
     verifiedAt: record.verifiedAt,
@@ -142,35 +154,45 @@ function projectionUpdates(
     accuracyMeters: record.accuracyMeters,
     source: record.source,
   };
-  return {
-    [`riderRestaurantArrivals/${order.id}`]: record,
-    [`riderJobs/${record.riderId}/${order.id}/phase`]: "at_restaurant",
-    [`riderJobs/${record.riderId}/${order.id}/arrivedRestaurantAt`]: record.arrivedAt,
-    [`riderJobs/${record.riderId}/${order.id}/arrivalVerification`]: boundedVerification,
-    [`riderJobs/${record.riderId}/${order.id}/updatedAt`]: record.verifiedAt,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/riderArrivedRestaurantAt`]: record.arrivedAt,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/riderArrivalVerified`]: true,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/riderArrivalVerification`]: boundedVerification,
-    [`private/operations/orders/${order.id}/riderArrivedRestaurantAt`]: record.arrivedAt,
-    [`private/operations/orders/${order.id}/riderArrivalVerified`]: true,
-  };
+  await Promise.all([
+    riderJobRef(firestoreDb, record.riderId, order.id).update({
+      phase: "at_restaurant",
+      arrivedRestaurantAt: record.arrivedAt,
+      arrivalVerification: boundedVerification,
+      updatedAt: record.verifiedAt,
+    }),
+    applyRiderArrivalToOperationalProjection(order.id, record.arrivedAt),
+    // The restaurant app reads `restaurantOrders`, not the canonical `orders`
+    // doc (see buildRestaurantOrderProjection's comment) - without this write
+    // the restaurant never sees riderArrivalVerified flip to true, so
+    // "Confirm handover to rider" never unlocks no matter how long the rider
+    // actually waits at the restaurant. This was dropped when this file
+    // moved off RTDB; nothing surfaced it because every other read of arrival
+    // state (riderJobs, operationalOrders) still worked.
+    restaurantOrderProjectionRef(firestoreDb, order.restaurantId, order.customerId, order.id).set({
+      riderArrivalVerified: true,
+      riderArrivedRestaurantAt: record.arrivedAt,
+      riderArrivalVerification: boundedVerification,
+    }, {merge: true}),
+  ]);
 }
 
 async function releaseLease(orderId: string, riderId: string, operationId: string): Promise<void> {
-  await db.ref(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`).transaction(
-    (current: StoredRiderArrivalRecord | null) =>
-      current?.status === "verifying" && current.riderId === riderId && current.operationId === operationId ?
-        null : undefined,
-    undefined,
-    false,
-  );
+  const ref = riderArrivalRef(firestoreDb, orderId);
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as StoredRiderArrivalRecord : null;
+    if (current?.status === "verifying" && current.riderId === riderId && current.operationId === operationId) {
+      transaction.delete(ref);
+    }
+  });
 }
 
 /**
  * Verifies pickup arrival from fresh server-visible tracking. The final
- * evidence record, rider projection and privacy-bounded Restaurant/Admin
- * projections are committed in one RTDB multi-location update. A short
- * per-order lease makes concurrent/retried button presses converge safely.
+ * evidence record and the Rider/Admin projections are committed together.
+ * A short per-order lease makes concurrent/retried button presses converge
+ * safely.
  */
 export async function markRiderArrivedRestaurant(
   riderIdValue: unknown,
@@ -181,40 +203,42 @@ export async function markRiderArrivedRestaurant(
   const orderId = text(orderIdValue).slice(0, 128);
   if (!riderId || !orderId) throw new DomainError("invalid-argument", "Rider and order are required.");
 
-  const jobSnapshot = await db.ref(`${ROOT}/riderJobs/${riderId}/${orderId}`).get();
-  const job = jobSnapshot.val() as Record<string, unknown> | null;
+  const jobSnapshot = await riderJobRef(firestoreDb, riderId, orderId).get();
+  const job = jobSnapshot.exists ? jobSnapshot.data() as Record<string, unknown> : null;
   const customerId = text(job?.customerId).slice(0, 128);
   if (!customerId) throw new DomainError("not-found", "Assigned delivery was not found.");
   const [orderSnapshot, riderSnapshot] = await Promise.all([
-    db.ref(pathFor.order(customerId, orderId)).get(),
-    db.ref(`${ROOT}/riders/${riderId}`).get(),
+    orderRef(firestoreDb, orderId).get(),
+    riderRef(firestoreDb, riderId).get(),
   ]);
-  const order = orderSnapshot.val() as SavrivoOrder | null;
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order || order.id !== orderId) throw new DomainError("not-found", "Assigned delivery was not found.");
   if (order.riderId !== riderId) throw new DomainError("permission-denied", "This delivery is assigned to another rider.");
-  if (text((riderSnapshot.val() as Record<string, unknown> | null)?.status).toLowerCase() !== "approved") {
+  if (text((riderSnapshot.exists ? riderSnapshot.data() as Record<string, unknown> : null)?.status).toLowerCase() !== "approved") {
     throw new DomainError("permission-denied", "Your rider account is not approved for delivery actions.");
   }
 
-  const arrivalRef = db.ref(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`);
-  const existing = (await arrivalRef.get()).val() as StoredRiderArrivalRecord | null;
+  const arrivalRef = riderArrivalRef(firestoreDb, orderId);
+  const existingSnapshot = await arrivalRef.get();
+  const existing = existingSnapshot.exists ? existingSnapshot.data() as StoredRiderArrivalRecord : null;
   if (isVerifiedRecord(existing)) {
     if (existing.riderId !== riderId || existing.restaurantId !== order.restaurantId) {
       throw new DomainError("failed-precondition", "Arrival was verified for another assignment.");
     }
     // A retry after pickup/handover is still a successful retry. Do not move a
     // completed rider projection back to at_restaurant.
-    if (RESTAURANT_ARRIVAL_ORDER_STATUSES.has(order.status)) {
-      await db.ref(ROOT).update(projectionUpdates(order, existing));
-    }
+    await reconcileArrivalProjections(order, existing);
     return result(existing, true);
   }
 
   const operationId = `arrival_${randomUUID()}`;
-  const lease = await arrivalRef.transaction((current: StoredRiderArrivalRecord | null) => {
-    if (isVerifiedRecord(current)) return undefined;
-    if (current?.status === "verifying" && Number(current.leaseUntil ?? 0) > now) return undefined;
-    return {
+  let leaseCommitted = false;
+  const lease = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(arrivalRef);
+    const current = snapshot.exists ? snapshot.data() as StoredRiderArrivalRecord : null;
+    if (isVerifiedRecord(current)) return current;
+    if (current?.status === "verifying" && Number(current.leaseUntil ?? 0) > now) return current;
+    const pending: PendingRiderArrivalRecord = {
       version: 1,
       source: "server_verified_pickup_tracking",
       status: "verifying",
@@ -223,14 +247,15 @@ export async function markRiderArrivedRestaurant(
       operationId,
       leaseUntil: now + ARRIVAL_VERIFICATION_LEASE_MS,
       updatedAt: now,
-    } satisfies PendingRiderArrivalRecord;
-  }, undefined, false);
-  if (!lease.committed) {
-    const authoritative = lease.snapshot.val() as StoredRiderArrivalRecord | null;
+    };
+    transaction.set(arrivalRef, pending);
+    leaseCommitted = true;
+    return pending;
+  });
+  if (!leaseCommitted) {
+    const authoritative = lease;
     if (isVerifiedRecord(authoritative) && authoritative.riderId === riderId) {
-      if (RESTAURANT_ARRIVAL_ORDER_STATUSES.has(order.status)) {
-        await db.ref(ROOT).update(projectionUpdates(order, authoritative));
-      }
+      await reconcileArrivalProjections(order, authoritative);
       return result(authoritative, true);
     }
     if (isPendingRecord(authoritative)) {
@@ -239,9 +264,7 @@ export async function markRiderArrivedRestaurant(
       }
       const resolved = await waitForPendingArrivalResolution(orderId, riderId, order.restaurantId);
       if (resolved) {
-        if (RESTAURANT_ARRIVAL_ORDER_STATUSES.has(order.status)) {
-          await db.ref(ROOT).update(projectionUpdates(order, resolved));
-        }
+        await reconcileArrivalProjections(order, resolved);
         return result(resolved, true);
       }
     }
@@ -254,16 +277,20 @@ export async function markRiderArrivedRestaurant(
   try {
     // Re-read all authority after obtaining the lease. No client-supplied
     // coordinates, restaurant ID, customer ID or rider assignment is trusted.
+    // `tracking` and `riderPresence` still read from RTDB - dispatch.ts's
+    // presence-write side has not converted yet.
     const [latestJobSnapshot, latestOrderSnapshot, latestRiderSnapshot, trackingSnapshot, presenceSnapshot] = await Promise.all([
-      db.ref(`${ROOT}/riderJobs/${riderId}/${orderId}`).get(),
-      db.ref(pathFor.order(customerId, orderId)).get(),
-      db.ref(`${ROOT}/riders/${riderId}`).get(),
+      riderJobRef(firestoreDb, riderId, orderId).get(),
+      orderRef(firestoreDb, orderId).get(),
+      riderRef(firestoreDb, riderId).get(),
       db.ref(`${ROOT}/tracking/${orderId}`).get(),
       db.ref(`${ROOT}/riderPresence/${riderId}`).get(),
     ]);
-    const latestJob = latestJobSnapshot.val() as Record<string, unknown> | null;
-    const latestOrder = latestOrderSnapshot.val() as SavrivoOrder | null;
-    const riderStatus = text((latestRiderSnapshot.val() as Record<string, unknown> | null)?.status).toLowerCase();
+    const latestJob = latestJobSnapshot.exists ? latestJobSnapshot.data() as Record<string, unknown> : null;
+    const latestOrder = latestOrderSnapshot.exists ? latestOrderSnapshot.data() as SavrivoOrder : null;
+    const riderStatus = text(
+      (latestRiderSnapshot.exists ? latestRiderSnapshot.data() as Record<string, unknown> : null)?.status,
+    ).toLowerCase();
     if (!latestJob || text(latestJob.customerId) !== customerId || latestJob.status !== "active" ||
       !latestOrder || latestOrder.id !== orderId || latestOrder.riderId !== riderId || riderStatus !== "approved") {
       throw new DomainError("permission-denied", "This rider is not eligible to record arrival for the delivery.");
@@ -290,7 +317,8 @@ export async function markRiderArrivedRestaurant(
       verifiedAt: now,
       ...decision.evidence,
     };
-    await db.ref(ROOT).update(projectionUpdates(latestOrder, record));
+    await arrivalRef.set(record);
+    await reconcileArrivalProjections(latestOrder, record);
     return result(record, false);
   } catch (error) {
     await releaseLease(orderId, riderId, operationId).catch(() => undefined);

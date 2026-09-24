@@ -1,45 +1,43 @@
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
-const memory = vi.hoisted(() => ({
-  promotions: {} as Record<string, unknown>,
-  ordersByCustomer: {} as Record<string, unknown>,
-  reads: [] as string[],
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  class TrackedFirestore extends InMemoryFirestore {
+    collectionsAccessed: string[] = [];
+    collection(name: string) {
+      this.collectionsAccessed.push(name);
+      return super.collection(name);
+    }
+  }
+  return {firestoreDb: new TrackedFirestore()};
+});
 
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => {
-      memory.reads.push(path);
-      const chain = {
-        orderByChild: () => chain,
-        equalTo: () => chain,
-        limitToFirst: () => chain,
-        get: async () => {
-          if (path.endsWith("/promotions")) {
-            return {val: () => memory.promotions, exists: () => Object.keys(memory.promotions).length > 0};
-          }
-          const match = path.match(/\/orders\/([^/]+)$/);
-          const value = match ? memory.ordersByCustomer[match[1]] : null;
-          return {val: () => value ?? null, exists: () => value != null};
-        },
-      };
-      return chain;
-    },
-  },
-}));
-
+import {firestoreDb} from "../src/admin";
 import {calculateDiscount} from "../src/services/catalog";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+type TrackedFirestore = InMemoryFirestore & {collectionsAccessed: string[]};
+
+const database = firestoreDb as unknown as TrackedFirestore;
 
 const OFFER = {
   id: "p1", code: "WELCOME50", title: "Welcome", percent: 50,
   maxDiscount: 100, minimumOrder: 0, active: true, firstOrderOnly: true,
 };
 
+function seedPromotion(overrides: Record<string, unknown> = {}): void {
+  database.seed("promotions/p1", {...OFFER, ...overrides});
+}
+
+function seedOrder(orderId: string, customerId: string, status: string): void {
+  database.seed(`orders/${orderId}`, {customerId, status});
+}
+
 describe("first-order-only offers", () => {
-  beforeEach(() => {
-    memory.promotions = {p1: {...OFFER}};
-    memory.ordersByCustomer = {};
-    memory.reads.length = 0;
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
+    database.collectionsAccessed.length = 0;
+    seedPromotion();
   });
 
   it("gives the discount to a customer who has never ordered", async () => {
@@ -47,13 +45,13 @@ describe("first-order-only offers", () => {
   });
 
   it("refuses a customer who has ordered before", async () => {
-    memory.ordersByCustomer["returning"] = {"SV-1": {status: "Delivered"}};
+    seedOrder("SV-1", "returning", "Delivered");
     await expect(calculateDiscount("WELCOME50", 400, "r1", "returning"))
       .rejects.toMatchObject({code: "failed-precondition"});
   });
 
   it("counts a cancelled order as having ordered, so the offer cannot be farmed", async () => {
-    memory.ordersByCustomer["canceller"] = {"SV-1": {status: "Cancelled"}};
+    seedOrder("SV-1", "canceller", "Cancelled");
     await expect(calculateDiscount("WELCOME50", 400, "r1", "canceller"))
       .rejects.toMatchObject({code: "failed-precondition"});
   });
@@ -64,33 +62,34 @@ describe("first-order-only offers", () => {
   });
 
   it("leaves ordinary offers working for returning customers", async () => {
-    memory.promotions = {p1: {...OFFER, firstOrderOnly: false}};
-    memory.ordersByCustomer["returning"] = {"SV-1": {status: "Delivered"}};
+    seedPromotion({firstOrderOnly: false});
+    seedOrder("SV-1", "returning", "Delivered");
     await expect(calculateDiscount("WELCOME50", 400, "r1", "returning")).resolves.toBe(100);
   });
 
   it("does not read order history for an offer that is not first-order-only", async () => {
-    memory.promotions = {p1: {...OFFER, firstOrderOnly: false}};
+    seedPromotion({firstOrderOnly: false});
+    database.collectionsAccessed.length = 0;
     await calculateDiscount("WELCOME50", 400, "r1", "someone");
-    expect(memory.reads.some((path) => path.includes("/orders/"))).toBe(false);
+    expect(database.collectionsAccessed).not.toContain("orders");
   });
 
   it("still applies every other rule to a first-order offer", async () => {
-    memory.promotions = {p1: {...OFFER, minimumOrder: 500}};
+    seedPromotion({minimumOrder: 500});
     await expect(calculateDiscount("WELCOME50", 400, "r1", "new-customer"))
       .rejects.toMatchObject({code: "failed-precondition"});
 
-    memory.promotions = {p1: {...OFFER, expiresAt: Date.now() - 1000}};
+    seedPromotion({expiresAt: Date.now() - 1000});
     await expect(calculateDiscount("WELCOME50", 400, "r1", "new-customer"))
       .rejects.toMatchObject({code: "failed-precondition"});
 
-    memory.promotions = {p1: {...OFFER, restaurantIds: ["r2"]}};
+    seedPromotion({restaurantIds: ["r2"]});
     await expect(calculateDiscount("WELCOME50", 400, "r1", "new-customer"))
       .rejects.toMatchObject({code: "failed-precondition"});
   });
 
   it("caps the discount the same way for a first-order offer", async () => {
-    memory.promotions = {p1: {...OFFER, maxDiscount: 60}};
+    seedPromotion({maxDiscount: 60});
     await expect(calculateDiscount("WELCOME50", 400, "r1", "new-customer")).resolves.toBe(60);
   });
 });

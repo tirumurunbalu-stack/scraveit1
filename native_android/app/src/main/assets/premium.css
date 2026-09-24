@@ -24,6 +24,7 @@
   --radius-sm: 12px;
   --radius-md: 16px;
   --radius-lg: 24px;
+  --page-gutter: 20px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -112,7 +113,6 @@ a { color: inherit; }
 .stack { display: grid; gap: 12px; }
 .stack-lg { display: grid; gap: 20px; }
 .grow { flex: 1; min-width: 0; }
-
 h1, h2, h3, p { margin: 0; }
 h1, h2, h3, .display, .brand-word {
   font-family: Manrope, Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -189,8 +189,14 @@ h1, h2, h3, .display, .brand-word {
   font-weight: 800;
   cursor: pointer;
   transition: transform .16s ease, opacity .16s ease, background .16s ease;
+  /* Some .button elements are <a href="tel:..."> (Call restaurant/rider),
+     not <button> - without this they keep the browser's default link
+     underline while every sibling <button>.button does not, so a "Call"
+     action next to a "Chat" action reads as an accidental blue hyperlink
+     rather than the same kind of control. */
+  text-decoration: none;
 }
-.button:active, .icon-button:active, .nav-button:active, .restaurant-card:active { transform: scale(.98); }
+.button:active, .icon-button:active, .nav-button:active, .restaurant-card:active, .text-button:active { transform: scale(.98); }
 .button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
 .button.primary { background: var(--brand); color: white; box-shadow: 0 12px 28px rgba(21, 94, 239, .23); }
 .button.secondary { background: var(--brand-soft); color: var(--brand); }
@@ -465,7 +471,14 @@ h1, h2, h3, .display, .brand-word {
 .status-pill.warning { background: var(--warning-soft); color: var(--warning); }
 .status-pill.danger { background: var(--danger-soft); color: var(--danger); }
 .timeline { display: grid; }
-.timeline-step { display: grid; grid-template-columns: 28px 1fr; gap: 12px; min-height: 64px; }
+.timeline-step { display: grid; grid-template-columns: 28px 1fr; gap: 12px; min-height: 56px; }
+/* The last row (often "Delivered", not yet reached, so just a title with no
+   timestamp line) still reserved the full row height above it, which read
+   as a big gap before the "show earlier/recent steps" toggle beneath it. */
+.timeline-step:last-child { min-height: 0; padding-bottom: 4px; }
+.timeline-toggle { justify-self: center; display: inline-flex; align-items: center; gap: 6px; margin-top: -4px; }
+.timeline-toggle .chevron-down { transform: rotate(90deg); }
+.timeline-toggle .chevron-up { transform: rotate(-90deg); }
 .timeline-dot { width: 18px; height: 18px; margin-top: 2px; border: 3px solid var(--border-strong); border-radius: 50%; position: relative; background: var(--surface); }
 .timeline-step:not(:last-child) .timeline-dot::after { content: ""; position: absolute; width: 2px; height: 47px; left: 5px; top: 15px; background: var(--border); }
 .timeline-step.done .timeline-dot { border-color: var(--success); background: var(--success); box-shadow: inset 0 0 0 3px var(--surface); }
@@ -475,11 +488,14 @@ h1, h2, h3, .display, .brand-word {
 .timeline-copy span { font-size: 13px; color: var(--ink-soft); margin-top: 3px; }
 
 .map-card { min-height: 270px; position: relative; overflow: hidden; padding: 0; background: #dcebf3; }
-#tracking-map-card { touch-action: none; user-select: none; -webkit-user-select: none; }
+/* A fixed-height hero banner at the top of the page, not the whole screen -
+   see screenTracking()'s comment for why this is no longer a full-screen map
+   with a floating card over it. */
+#tracking-map-card { height: 300px; touch-action: none; user-select: none; -webkit-user-select: none; }
 /* Zero-sized anchor layer: tiles and pins are placed at pixel offsets from it,
    so panning the whole map is a single GPU transform on this one element.
-   The 27% must stay in sync with TRACKING_MAP_VERTICAL_ANCHOR_PCT in premium.js. */
-.map-world { position: absolute; left: 50%; top: 27%; width: 0; height: 0; will-change: transform; }
+   The 50% must stay in sync with TRACKING_MAP_VERTICAL_ANCHOR_PCT in premium.js. */
+.map-world { position: absolute; left: 50%; top: 50%; width: 0; height: 0; will-change: transform; }
 .map-world .map-tiles { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 .map-world .map-tiles img { position: absolute; width: 256px; height: 256px; max-width: none; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
 .map-world .map-tiles img.ready { opacity: 1; }
@@ -494,22 +510,108 @@ h1, h2, h3, .display, .brand-word {
 .map-pin svg { width: 17px; height: 17px; color: white; }
 .map-pin.restaurant { background: #e07a1f; z-index: 2; }
 .map-pin.home { background: var(--success); z-index: 1; }
-.map-pin.rider { background: var(--brand); width: 40px; height: 40px; margin: -20px 0 0 -20px; z-index: 3; transition: transform 2600ms linear; }
-.map-pin.rider svg { width: 23px; height: 23px; stroke-width: 1.7; }
-.map-pin.rider.live::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; border: 2px solid var(--brand); animation: map-pulse 1.8s ease-out infinite; }
+/* An illustration, not a glyph-on-a-badge like the restaurant/home pins -
+   drop the circular badge chrome entirely and let the artwork's own shape
+   and shadow read directly on the map. */
+.map-pin.rider { background: none; border: 0; border-radius: 0; box-shadow: none; width: 66px; height: 79px; margin: -39.5px 0 0 -33px; z-index: 3; transition: transform 2600ms linear; }
+.map-pin.rider img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0,0,0,.35)); }
+.map-pin.rider.live::after { content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); width: 30px; height: 12px; border-radius: 50%; border: 2px solid var(--brand); animation: map-pulse 1.8s ease-out infinite; }
 @keyframes map-pulse { from { transform: scale(.6); opacity: .6; } to { transform: scale(1.9); opacity: 0; } }
-.map-controls { position: absolute; right: 14px; top: calc(var(--safe-top) + 62px); display: grid; gap: 8px; z-index: 5; }
+.map-minimize { position: absolute; left: 14px; top: 14px; z-index: 5; }
+.map-controls { position: absolute; right: 14px; top: 58px; display: grid; gap: 8px; z-index: 5; }
 .map-control { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); display: grid; place-items: center; font-size: 20px; font-weight: 700; line-height: 1; box-shadow: var(--shadow-soft); }
 .map-control svg { width: 18px; height: 18px; }
 .map-control.hidden { display: none; }
+
+/* Ad carousel hero shown once the live map auto-collapses to a thumbnail -
+   see screenTracking()/refreshTrackingCarousel() in premium.js. Full-bleed
+   on purpose: the negative inline margins cancel the .screen side padding so
+   the image runs to the screen edges and reads as the page's hero, not as
+   one more card in the stack. */
+.tracking-ad-hero { position: relative; overflow: hidden; margin-inline: calc(var(--page-gutter) * -1); }
+.tracking-ad-track { display: flex; transition: transform .45s ease; }
+.tracking-ad-slide { flex: 0 0 100%; min-width: 0; position: relative; overflow: hidden; height: clamp(340px, 48dvh, 480px); background: linear-gradient(135deg,#0b3f96,#155eef 58%,#2aa9f5); color: #fff; border: 0; padding: 20px 20px 34px; display: grid; align-content: end; gap: 10px; text-align: left; cursor: pointer; }
+.tracking-ad-slide.is-brand { cursor: default; }
+.tracking-ad-hero.is-fallback .tracking-ad-slide { align-content: center; padding: 28px 24px; }
+.tracking-ad-hero.is-fallback .tracking-ad-title { font-size: 30px; }
+.tracking-ad-hero.is-fallback .tracking-ad-copy p { font-size: 15px; max-width: 30ch; }
+.tracking-ad-hero.is-fallback .tracking-ad-slide::before { content: ""; position: absolute; width: 300px; height: 300px; border-radius: 50%; right: -110px; top: -120px; border: 44px solid rgba(255,255,255,.09); }
+.tracking-ad-slide img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 1; }
+/* Legibility floor for the copy over an arbitrary campaign image. */
+.tracking-ad-slide:not(.is-brand)::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, rgba(4,16,38,.86) 0%, rgba(4,16,38,.45) 38%, rgba(4,16,38,0) 72%); }
+.tracking-ad-copy { position: relative; z-index: 2; display: grid; gap: 9px; justify-items: start; }
+.tracking-ad-title { font-size: 26px; line-height: 1.16; font-weight: 850; text-wrap: balance; }
+.tracking-ad-copy p { color: rgba(255,255,255,.88); font-size: 14px; line-height: 1.4; }
+.tracking-ad-cta { margin-top: 3px; background: #fff; color: #0d2f6b; font-weight: 850; font-size: 14px; padding: 11px 20px; border-radius: 999px; }
+.tracking-ad-dots { position: absolute; left: 0; right: 0; bottom: 14px; display: flex; justify-content: center; gap: 6px; z-index: 3; }
+.ad-dot { width: 7px; height: 7px; border-radius: 999px; background: rgba(255,255,255,.45); border: 0; padding: 0; transition: background .2s ease, width .2s ease; }
+.ad-dot.active { background: #fff; width: 20px; }
+
+/* Map thumbnail. The card inside is rendered at full thumbnail scale and
+   transformed down rather than just sized down: tiles are loaded for a
+   280x420 viewport minimum (trackingViewportSize()), so scaling is what
+   actually brings the surrounding streets into view instead of cropping to
+   the rider pin alone. */
+.map-thumb { position: relative; flex: 0 0 auto; width: 104px; height: 96px; border-radius: 16px; overflow: hidden; background: #dcebf3; cursor: pointer; }
+.live-module #tracking-map-card.compact, #tracking-map-card.compact { width: 189px; height: 175px; min-height: 0; border-radius: 0; box-shadow: none; transform: scale(.55); transform-origin: top left; pointer-events: none; }
+.map-thumb-expand { position: absolute; right: 6px; top: 6px; width: 25px; height: 25px; border-radius: 50%; background: rgba(8,20,40,.62); display: grid; place-items: center; z-index: 3; }
+.map-thumb-expand svg { width: 13px; height: 13px; color: #fff; }
+
+/* ---- merged order + live screen ---- */
+/* Tighter rhythm than the default page stack: this screen carries a lot of
+   sections, and 22px between every one of them is what made it feel mostly
+   air. */
+.order-screen { gap: 14px; }
+.order-topbar { display: flex; align-items: center; gap: 12px; }
+.order-topbar-title { min-width: 0; flex: 1; display: grid; }
+.order-topbar-title strong { font-size: 18px; font-weight: 850; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.order-topbar-title span { font-size: 12px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Map/carousel and the status it belongs to, joined into one block and run
+   to the screen edges. */
+.order-screen > .live-module:first-child { margin-top: calc((var(--safe-top) + 20px) * -1); }
+/* Meets the status bar colour so the two read as one surface. */
+.live-hero::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 88px; z-index: 4; pointer-events: none; background: linear-gradient(to bottom, rgba(11,63,150,.92) 0%, rgba(11,63,150,.42) 42%, rgba(11,63,150,0) 100%); }
+.live-module { margin-inline: calc(var(--page-gutter) * -1); overflow: hidden; background: linear-gradient(135deg, #0d4fd0 0%, #176ff0 58%, #2eaaff 100%); color: #fff; box-shadow: 0 16px 38px rgba(21,94,239,.22); }
+.live-module .tracking-ad-hero { margin-inline: 0; }
+.live-module #tracking-map-card { border-radius: 0; box-shadow: none; height: 48dvh; min-height: 340px; max-height: 480px; }
+.live-module.no-hero { border-radius: 0; }
+.live-hero { position: relative; }
+/* Back and refresh ride on the hero rather than in a bar above it. */
+.hero-float { position: absolute; top: 14px; z-index: 6; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; background: rgba(8,20,40,.5); color: #fff; backdrop-filter: blur(8px); cursor: pointer; }
+.hero-float.back { left: 14px; }
+.hero-float.refresh { right: 14px; }
+.hero-float svg { width: 20px; height: 20px; }
+/* Map chrome moves clear of the two floating controls. */
+.live-module .map-overlay { top: auto; bottom: 12px; left: 12px; right: auto; }
+.live-module .map-controls { top: auto; bottom: 64px; right: 12px; }
+.live-module .map-minimize { top: auto; left: auto; right: 12px; bottom: 12px; }
+
+.live-status { display: flex; align-items: center; gap: 12px; padding: 13px 20px 15px; }
+.live-status .grow { min-width: 0; display: grid; gap: 6px; justify-items: start; }
+.live-place { font-size: 12px; font-weight: 700; color: rgba(255,255,255,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* Deliberately NOT .chip - that is the filter control, with a 44px tap
+   target and nowrap, which turned these read-only status labels into two
+   full-width slabs. */
+.live-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.live-chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 4px 9px; font-size: 11px; line-height: 1.35; font-weight: 800; background: rgba(255,255,255,.2); color: #fff; }
+.live-chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.live-chip.eta { background: #fff; color: #0d3f9e; }
+.live-headline { font-size: 17px; line-height: 1.25; font-weight: 850; text-wrap: balance; }
+.live-meta { font-size: 11.5px; color: rgba(255,255,255,.78); }
+
+.contact-card { display: grid; gap: 4px; padding: 8px 12px; }
+.contact-row { display: flex; align-items: center; gap: 12px; padding: 8px 4px; }
+.contact-row + .contact-row { border-top: 1px solid var(--border); }
+.contact-row .grow { min-width: 0; display: grid; }
+.contact-row strong { font-size: 15px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.contact-row .icon-button { width: 38px; height: 38px; flex: 0 0 auto; }
+.contact-row .avatar { width: 40px; height: 40px; border-radius: 13px; font-size: 15px; flex: 0 0 auto; }
+.order-items-card .contact-row { padding: 0 0 12px; border-bottom: 1px solid var(--border); }
+
 .tracking-partner { padding: 12px 14px; }
 .tracking-partner .avatar { flex: 0 0 auto; }
 .tracking-partner .icon-button { width: 42px; height: 42px; }
-
-.screen.tracking-screen { padding: 0; position: relative; }
-.tracking-screen .map-card.map-card-full { position: absolute; inset: 0; border-radius: 0; min-height: 0; height: 100%; }
-.tracking-screen .floating-back { position: absolute; top: calc(var(--safe-top) + 16px); left: 16px; z-index: 5; }
-.tracking-sheet-scroll { position: absolute; left: 0; right: 0; bottom: 0; max-height: 46%; overflow-y: auto; z-index: 3; background: var(--surface); border-radius: 24px 24px 0 0; padding: 18px 20px calc(20px + var(--safe-bottom)); box-shadow: 0 -10px 30px rgba(0,0,0,.16); display: grid; gap: 16px; }
 
 .settings-list { overflow: hidden; padding: 0; }
 .settings-row { min-height: 66px; width: 100%; border: 0; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; align-items: center; gap: 13px; padding: 12px 16px; text-align: left; color: var(--ink); }
@@ -535,7 +637,11 @@ h1, h2, h3, .display, .brand-word {
 .home-skeleton-image { width: 100%; height: 100%; min-height: 126px; border-radius: 18px 0 0 18px; }
 .home-skeleton-card .skeleton-line { max-width: 100%; }
 
-.toast-region { position: fixed; z-index: 100; left: 16px; right: 16px; bottom: calc(92px + var(--safe-bottom)); display: grid; justify-items: center; pointer-events: none; }
+/* Above .sheet-backdrop's z-index:140 - a validation toast fired while a
+   sheet (address form, profile form, etc.) is open must outrank the sheet
+   that's still covering the screen, or the message renders invisibly behind
+   it and a rejected save looks like the tap did nothing at all. */
+.toast-region { position: fixed; z-index: 150; left: 16px; right: 16px; bottom: calc(92px + var(--safe-bottom)); display: grid; justify-items: center; pointer-events: none; }
 body:has(.floating-cart) .toast-region{bottom:calc(162px + var(--safe-bottom))}
 .toast { width: min(100%, 520px); background: var(--ink); color: var(--surface); border-radius: 14px; padding: 13px 16px; box-shadow: var(--shadow); animation: toast-in .22s ease both; font-size: 14px; font-weight: 650; }
 .toast.success { background: #0b6447; color: white; }

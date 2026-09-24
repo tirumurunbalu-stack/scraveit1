@@ -1,30 +1,27 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike} from "../firestoreTypes";
+import {riderWalletRef} from "../firestorePaths";
 import type {RiderFinancialSummaryQueryInput} from "../schemas";
 import {requireApprovedRider, requirePlatformConfigAdminClaim} from "./authz";
-import {LEDGER_JOURNALS_ROOT} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
 
 export const RIDER_FINANCE_LEDGER_MAX_PAGE = 250;
 export const RIDER_FINANCE_HISTORY_MAX_PAGE = 100;
-export const RIDER_FINANCE_WALLET_ROOT = `${ROOT}/riderWallets`;
-export const RIDER_LEDGER_COVERAGE_ROOT = `${ROOT}/private/financialLedger/coverage/riders`;
 
-interface ValueSnapshot {
-  val(): unknown;
-}
+export type RiderFinanceDatabase = FirestoreLike;
 
-interface RiderFinanceReference {
-  orderByChild(child: string): RiderFinanceReference;
-  limitToLast(limit: number): RiderFinanceReference;
-  get(): Promise<ValueSnapshot>;
-}
+export {riderWalletRef};
 
-export interface RiderFinanceDatabase {
-  ref(path: string): RiderFinanceReference;
+/** One document holding a map of riderId -> coverage marker (not a per-rider
+ * subcollection) - `financeAutomation.ts` reads the whole map in one go to
+ * build its `coveredRiders` set, so this stays a single shared document
+ * rather than being split into per-rider documents. */
+export function riderLedgerCoverageRef(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("financialLedger").collection("coverage").doc("riders");
 }
 
 export interface RiderCodPosition {
@@ -412,7 +409,7 @@ export async function readRiderFinancialSummary(
   requesterUid: string,
   token: DecodedIdToken,
   input: RiderFinancialSummaryQueryInput,
-  database: RiderFinanceDatabase = db as unknown as RiderFinanceDatabase,
+  database: RiderFinanceDatabase = firestoreDb as unknown as RiderFinanceDatabase,
   authorization: RiderFinanceAuthorization = defaultAuthorization,
   now: () => number = Date.now,
 ): Promise<RiderFinancialSummary> {
@@ -424,16 +421,19 @@ export async function readRiderFinancialSummary(
   const journalLimit = bounded(input.ledgerLimit, RIDER_FINANCE_LEDGER_MAX_PAGE);
   const historyLimit = bounded(input.historyLimit, RIDER_FINANCE_HISTORY_MAX_PAGE);
   const [ledgerSnapshot, walletSnapshot, coverageSnapshot] = await Promise.all([
-    database.ref(LEDGER_JOURNALS_ROOT)
-      .orderByChild("occurredAt")
-      .limitToLast(journalLimit + 1)
+    database.collection(LEDGER_JOURNALS_COLLECTION)
+      .orderBy("occurredAt", "desc")
+      .limit(journalLimit + 1)
       .get(),
-    database.ref(`${RIDER_FINANCE_WALLET_ROOT}/${riderId}`).get(),
-    database.ref(`${RIDER_LEDGER_COVERAGE_ROOT}/${riderId}`).get(),
+    riderWalletRef(database, riderId).get(),
+    riderLedgerCoverageRef(database).get(),
   ]);
-  const page = parseLedgerPage(ledgerSnapshot.val(), journalLimit);
-  const wallet = parseWallet(walletSnapshot.val());
-  const coverageVerified = coverageMarker(coverageSnapshot.val(), riderId) !== null;
+  const ledgerPage: Record<string, unknown> = {};
+  for (const doc of ledgerSnapshot.docs) ledgerPage[doc.id] = doc.data();
+  const page = parseLedgerPage(ledgerPage, journalLimit);
+  const wallet = parseWallet(walletSnapshot.exists ? walletSnapshot.data() : null);
+  const coverageMap = record(coverageSnapshot.exists ? coverageSnapshot.data() : null) ?? {};
+  const coverageVerified = coverageMarker(coverageMap[riderId], riderId) !== null;
   if (page.invalidJournalCount > 0) {
     logger.error("RIDER_FINANCE_JOURNAL_VALIDATION_FAILED", {
       riderId,

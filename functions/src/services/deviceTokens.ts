@@ -1,9 +1,19 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {MAX_DEVICE_TOKENS_PER_USER, ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import {MAX_DEVICE_TOKENS_PER_USER} from "../config";
 import {deviceTokenKey, type DeviceTokenRecord, upsertDeviceToken} from "../domain/deviceTokens";
 import {DomainError} from "../errors";
+import {FieldValue, type DocumentReferenceLike, type FirestoreLike, type TransactionLike} from "../firestoreTypes";
+import {legacyStaffRef, restaurantMemberRef, riderRef} from "../firestorePaths";
 import type {RegisterDeviceTokenInput, UnregisterDeviceTokenInput} from "./serviceTypes";
+
+function userRestaurantsRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
+  return database.collection("userRestaurants").doc(uid);
+}
+
+function deviceTokensRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
+  return database.collection("deviceTokens").doc(uid);
+}
 
 function isPrivileged(token: DecodedIdToken): boolean {
   return token.savrivoRole === "owner" || token.savrivoRole === "ops_admin";
@@ -12,16 +22,19 @@ function isPrivileged(token: DecodedIdToken): boolean {
 async function canUseRestaurantApp(uid: string, token: DecodedIdToken): Promise<boolean> {
   if (isPrivileged(token)) return true;
   const [linksSnapshot, legacySnapshot] = await Promise.all([
-    db.ref(`${ROOT}/userRestaurants/${uid}`).get(),
-    db.ref(`${ROOT}/staff/${uid}`).get(),
+    userRestaurantsRef(firestoreDb, uid).get(),
+    legacyStaffRef(firestoreDb, uid).get(),
   ]);
-  const legacy = legacySnapshot.val() as {active?: boolean} | null;
+  const legacy = (legacySnapshot.exists ? legacySnapshot.data() : null) as {active?: boolean} | null;
   if (legacy?.active === true) return true;
-  const links = linksSnapshot.val() as Record<string, boolean> | null;
+  const links = (linksSnapshot.exists ? linksSnapshot.data() : null) as Record<string, boolean> | null;
   const restaurantIds = Object.entries(links ?? {}).filter(([, active]) => active === true).map(([restaurantId]) => restaurantId);
   const memberships = await Promise.all(restaurantIds.slice(0, 50)
-    .map((restaurantId) => db.ref(`${ROOT}/restaurantMembers/${restaurantId}/${uid}/active`).get()));
-  return memberships.some((snapshot) => snapshot.val() === true);
+    .map(async (restaurantId) => {
+      const snapshot = await restaurantMemberRef(firestoreDb, restaurantId, uid).get();
+      return (snapshot.exists ? snapshot.data() : null) as {active?: boolean} | null;
+    }));
+  return memberships.some((member) => member?.active === true);
 }
 
 async function authorizeDeviceApp(
@@ -38,7 +51,8 @@ async function authorizeDeviceApp(
     if (await canUseRestaurantApp(uid, token)) return;
     throw new DomainError("permission-denied", "Restaurant notification registration requires an active membership.");
   }
-  const rider = (await db.ref(`${ROOT}/riders/${uid}`).get()).val() as {status?: string} | null;
+  const riderSnapshot = await riderRef(firestoreDb, uid).get();
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as {status?: string} | null;
   if (rider && ["submitted", "under_review", "approved", "rejected", "suspended"].includes(String(rider.status))) return;
   throw new DomainError("permission-denied", "Rider notification registration requires a partner profile.");
 }
@@ -49,13 +63,14 @@ export async function registerDeviceToken(
   input: RegisterDeviceTokenInput,
 ): Promise<{tokenId: string; updatedAt: number}> {
   await authorizeDeviceApp(uid, authToken, input.app);
-  const ref = db.ref(`${ROOT}/deviceTokens/${uid}`);
+  const ref = deviceTokensRef(firestoreDb, uid);
   const now = Date.now();
-  let tokenId = deviceTokenKey(input.token);
-  let capReached = false;
-  const result = await ref.transaction((current: Record<string, DeviceTokenRecord> | null) => {
+  const tokenId = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = (snapshot.exists ? snapshot.data() : null) as Record<string, DeviceTokenRecord> | null;
+    let next: ReturnType<typeof upsertDeviceToken>;
     try {
-      const next = upsertDeviceToken(current, {
+      next = upsertDeviceToken(current, {
         token: input.token,
         app: input.app,
         platform: input.platform,
@@ -63,23 +78,24 @@ export async function registerDeviceToken(
         deviceModel: input.deviceModel,
         enabled: true,
       }, now, MAX_DEVICE_TOKENS_PER_USER);
-      tokenId = next.key;
-      return next.tokens;
     } catch (error) {
-      if (error instanceof Error && error.message === "DEVICE_TOKEN_CAP_REACHED") capReached = true;
-      return undefined;
+      if (error instanceof Error && error.message === "DEVICE_TOKEN_CAP_REACHED") {
+        throw new DomainError("resource-exhausted", `This account already has ${MAX_DEVICE_TOKENS_PER_USER} registered devices. Remove an old device first.`);
+      }
+      throw new DomainError("aborted", "Device registration changed; try again.");
     }
-  }, undefined, false);
-  if (!result.committed) {
-    if (capReached) throw new DomainError("resource-exhausted", `This account already has ${MAX_DEVICE_TOKENS_PER_USER} registered devices. Remove an old device first.`);
-    throw new DomainError("aborted", "Device registration changed; try again.");
-  }
+    transaction.set(ref, next.tokens);
+    return next.key;
+  });
   return {tokenId, updatedAt: now};
 }
 
 export async function unregisterDeviceToken(uid: string, input: UnregisterDeviceTokenInput): Promise<{removed: boolean}> {
-  const ref = db.ref(`${ROOT}/deviceTokens/${uid}/${deviceTokenKey(input.token)}`);
-  const existed = (await ref.get()).exists();
-  if (existed) await ref.remove();
+  const ref = deviceTokensRef(firestoreDb, uid);
+  const snapshot = await ref.get();
+  const tokens = (snapshot.exists ? snapshot.data() : {}) as Record<string, DeviceTokenRecord>;
+  const key = deviceTokenKey(input.token);
+  const existed = Object.prototype.hasOwnProperty.call(tokens, key);
+  if (existed) await ref.update({[key]: FieldValue.delete()});
   return {removed: existed};
 }

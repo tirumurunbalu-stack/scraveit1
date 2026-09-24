@@ -411,6 +411,78 @@ public final class SavrivoOperationsBridge {
         }
     }
 
+    @JavascriptInterface public void submitRiderFaceCheck(
+            String requestId, String idToken, String payloadJson) {
+        try {
+            if (!validFaceImagePayload(payloadJson)) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, "NATIVE_FACE_CHECK_UNAVAILABLE", () -> {
+                if (!valid(requestId, idToken) || !"rider".equals(SavrivoFirebase.appRole(activity))) {
+                    respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                SavrivoCallableClient.submitRiderFaceCheck(activity, idToken, payload,
+                        (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "submitRiderFaceCheck bridge failed", error);
+            respond(requestId, false, "{\"error\":{\"message\":\"NATIVE_FACE_CHECK_UNAVAILABLE\"}}");
+        }
+    }
+
+    @JavascriptInterface public void verifyRiderLoginFace(
+            String requestId, String idToken, String payloadJson) {
+        try {
+            if (!validFaceImagePayload(payloadJson)) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, "NATIVE_FACE_VERIFY_UNAVAILABLE", () -> {
+                if (!valid(requestId, idToken) || !"rider".equals(SavrivoFirebase.appRole(activity))) {
+                    respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                SavrivoCallableClient.verifyRiderLoginFace(activity, idToken, payload,
+                        (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "verifyRiderLoginFace bridge failed", error);
+            respond(requestId, false, "{\"error\":{\"message\":\"NATIVE_FACE_VERIFY_UNAVAILABLE\"}}");
+        }
+    }
+
+    @JavascriptInterface public void resolveRiderFaceReview(
+            String requestId, String idToken, String payloadJson) {
+        try {
+            if (payloadJson == null || payloadJson.length() > 64_000) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, "NATIVE_FACE_REVIEW_UNAVAILABLE", () -> {
+                if (!valid(requestId, idToken) || !"admin".equals(SavrivoFirebase.appRole(activity))) {
+                    respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                SavrivoCallableClient.resolveRiderFaceReview(activity, idToken, payload,
+                        (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "resolveRiderFaceReview bridge failed", error);
+            respond(requestId, false, "{\"error\":{\"message\":\"NATIVE_FACE_REVIEW_UNAVAILABLE\"}}");
+        }
+    }
+
+    private static boolean validFaceImagePayload(String payloadJson) {
+        // Wider than the generic 64,000-char JSON payloads this bridge
+        // otherwise carries - a base64-encoded face photo needs the room.
+        return payloadJson != null && payloadJson.length() <= 2_200_000;
+    }
+
     @JavascriptInterface public void claimRiderOrder(
             String requestId, String idToken, String orderId) {
         try {

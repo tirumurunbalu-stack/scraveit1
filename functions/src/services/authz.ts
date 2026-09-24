@@ -1,12 +1,12 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   isActiveMembershipForRestaurant,
   type RestaurantMembership,
   type RestaurantMembershipSource,
 } from "../domain/restaurantAccess";
 import {DomainError} from "../errors";
+import {legacyStaffRef, restaurantMemberRef, riderRef} from "../firestorePaths";
 import type {ActorRole, OrderStatus, SavrivoOrder} from "../types";
 
 function privilegedRole(token: DecodedIdToken): ActorRole | undefined {
@@ -70,7 +70,8 @@ export async function authorizeTransition(
   if (order.customerId === uid && target === "Cancelled") return "customer";
 
   if (order.riderId === uid && ["Out for delivery", "Delivered"].includes(target)) {
-    const rider = (await db.ref(`${ROOT}/riders/${uid}/status`).get()).val();
+    const riderSnapshot = await riderRef(firestoreDb, uid).get();
+    const rider = riderSnapshot.exists ? (riderSnapshot.data() as {status?: unknown} | null)?.status : null;
     if (rider === "approved") return "rider";
   }
 
@@ -78,11 +79,11 @@ export async function authorizeTransition(
   if (privileged) return privileged;
 
   const [normalized, legacy] = await Promise.all([
-    db.ref(`${ROOT}/restaurantMembers/${order.restaurantId}/${uid}`).get(),
-    db.ref(`${ROOT}/staff/${uid}`).get(),
+    restaurantMemberRef(firestoreDb, order.restaurantId, uid).get(),
+    legacyStaffRef(firestoreDb, uid).get(),
   ]);
-  const normalizedMember = normalized.val() as RestaurantMembership | null;
-  const legacyMember = legacy.val() as RestaurantMembership | null;
+  const normalizedMember = (normalized.exists ? normalized.data() : null) as RestaurantMembership | null;
+  const legacyMember = (legacy.exists ? legacy.data() : null) as RestaurantMembership | null;
   if (membershipAllows(normalizedMember, order.restaurantId, target, "path-scoped") ||
       membershipAllows(legacyMember, order.restaurantId, target, "legacy-global")) return "staff";
 
@@ -90,8 +91,8 @@ export async function authorizeTransition(
 }
 
 export async function requireApprovedRider(uid: string): Promise<Record<string, unknown>> {
-  const snapshot = await db.ref(`${ROOT}/riders/${uid}`).get();
-  const rider = snapshot.val() as Record<string, unknown> | null;
+  const snapshot = await riderRef(firestoreDb, uid).get();
+  const rider = snapshot.exists ? snapshot.data() as Record<string, unknown> | null : null;
   if (!rider || rider.status !== "approved") {
     throw new DomainError("permission-denied", "An approved delivery-partner account is required.");
   }

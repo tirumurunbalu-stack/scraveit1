@@ -2,57 +2,32 @@ import {createHash} from "node:crypto";
 import {describe, expect, it, vi} from "vitest";
 
 vi.mock("../src/admin", () => ({
-  db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }},
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
-import {ROOT, pathFor} from "../src/config";
-import {LEDGER_JOURNALS_ROOT} from "../src/services/ledger";
+import {orderRef} from "../src/firestorePaths";
+import {LEDGER_JOURNALS_COLLECTION} from "../src/services/ledger";
 import {
   applyVerifiedPayment,
-  canonicalPaymentPath,
+  canonicalPaymentRef,
   initiatePayment,
   type CanonicalPaymentRecord,
   type PaymentDatabase,
   type PaymentGateway,
   type PaymentIntentRequest,
-  type PaymentTransactionResult,
   type VerifiedPaymentEvent,
 } from "../src/services/payments";
 import type {SavrivoOrder} from "../src/types";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
-class InMemoryPaymentDatabase implements PaymentDatabase {
-  private readonly values = new Map<string, unknown>();
+class InMemoryPaymentDatabase extends InMemoryFirestore implements PaymentDatabase {}
 
-  seed(path: string, value: unknown): void {
-    this.values.set(path, structuredClone(value));
-  }
+function paymentAttemptByMerchantOrderPath(merchantOrderId: string): string {
+  return `paymentAttemptsByMerchantOrder/${merchantOrderId}`;
+}
 
-  value<T>(path: string): T | null {
-    return (this.values.get(path) as T | undefined) ?? null;
-  }
-
-  paths(prefix: string): string[] {
-    return [...this.values.keys()].filter((path) => path.startsWith(prefix)).sort();
-  }
-
-  ref(path: string) {
-    return {
-      get: async () => ({val: () => this.values.get(path) ?? null}),
-      update: async (updates: Record<string, unknown>) => {
-        for (const [relativePath, value] of Object.entries(updates)) {
-          this.values.set(`${path}/${relativePath}`, structuredClone(value));
-        }
-      },
-      transaction: async (update: (current: unknown) => unknown): Promise<PaymentTransactionResult> => {
-        const next = update(this.values.get(path) ?? null);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => this.values.get(path) ?? null}};
-        }
-        this.values.set(path, structuredClone(next));
-        return {committed: true, snapshot: {val: () => this.values.get(path) ?? null}};
-      },
-    };
-  }
+function ledgerJournalPaths(database: InMemoryPaymentDatabase): string[] {
+  return database.paths().filter((path) => path.startsWith(`${LEDGER_JOURNALS_COLLECTION}/`));
 }
 
 class DeterministicGateway implements PaymentGateway {
@@ -171,7 +146,7 @@ async function initiated() {
   const database = new InMemoryPaymentDatabase();
   const gateway = new DeterministicGateway();
   const sourceOrder = order();
-  database.seed(pathFor.order(sourceOrder.customerId, sourceOrder.id), sourceOrder);
+  database.seed(orderRef(database, sourceOrder.id).path, sourceOrder);
   const intent = await initiatePayment(
     sourceOrder.customerId,
     {customerId: sourceOrder.customerId, orderId: sourceOrder.id},
@@ -195,8 +170,8 @@ describe("canonical payment service integration", () => {
     expect(retry).toEqual(intent);
     expect(gateway.calls).toHaveLength(1);
     expect(gateway.calls[0]).toMatchObject({merchantOrderId: intent.merchantOrderId});
-    expect(database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id))?.aggregate)
-      .toMatchObject({state: "pending", attemptSequence: 1, currentAttemptId: intent.merchantOrderId});
+    expect(database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null)
+      .toMatchObject({aggregate: {state: "pending", attemptSequence: 1, currentAttemptId: intent.merchantOrderId}});
   });
 
   it("applies a verified paid callback once and writes one immutable receipt journal", async () => {
@@ -205,14 +180,12 @@ describe("canonical payment service integration", () => {
     await applyVerifiedPayment(event, database, () => 3_000);
     await applyVerifiedPayment(event, database, () => 4_000);
 
-    const canonical = database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id));
+    const canonical = database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null;
     expect(canonical?.aggregate).toMatchObject({state: "paid", paidAmountPaise: 12_100});
     expect(Object.values(canonical?.operations ?? {}).filter((entry) => entry.afterState === "paid"))
       .toHaveLength(1);
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(1);
-    expect(database.value(`${ROOT}/orders/${sourceOrder.customerId}/${sourceOrder.id}/paymentState`)).toBe("paid");
-    expect(database.value(`${ROOT}/restaurantOrders/${sourceOrder.restaurantId}/${sourceOrder.customerId}/${sourceOrder.id}/paymentState`))
-      .toBe("paid");
+    expect(ledgerJournalPaths(database)).toHaveLength(1);
+    expect((database.read(orderRef(database, sourceOrder.id).path) as SavrivoOrder | null)?.paymentState).toBe("paid");
   });
 
   it("rejects a conflicting provider transaction for the same payment attempt", async () => {
@@ -227,8 +200,8 @@ describe("canonical payment service integration", () => {
       database,
       () => 4_000,
     )).rejects.toThrow("different verified provider transaction");
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(1);
-    expect(database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id))?.aggregate.state).toBe("paid");
+    expect(ledgerJournalPaths(database)).toHaveLength(1);
+    expect((database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null)?.aggregate.state).toBe("paid");
   });
 
   it("progresses a verified full refund and never duplicates receipt or refund journals", async () => {
@@ -242,14 +215,14 @@ describe("canonical payment service integration", () => {
     await applyVerifiedPayment(refund, database, () => 4_000);
     await applyVerifiedPayment(refund, database, () => 5_000);
 
-    const canonical = database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id));
+    const canonical = database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null;
     expect(canonical?.aggregate).toMatchObject({
       state: "refunded",
       paidAmountPaise: 12_100,
       refundedAmountPaise: 12_100,
     });
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(2);
-    expect(database.value(`${ROOT}/orders/${sourceOrder.customerId}/${sourceOrder.id}/paymentState`)).toBe("refunded");
+    expect(ledgerJournalPaths(database)).toHaveLength(2);
+    expect((database.read(orderRef(database, sourceOrder.id).path) as SavrivoOrder | null)?.paymentState).toBe("refunded");
   });
 
   it("rejects a second provider refund identity without duplicating financial entries", async () => {
@@ -269,16 +242,16 @@ describe("canonical payment service integration", () => {
       database,
       () => 5_000,
     )).rejects.toThrow("different verified provider refund");
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(2);
-    expect(database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id))?.aggregate.state).toBe("refunded");
+    expect(ledgerJournalPaths(database)).toHaveLength(2);
+    expect((database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null)?.aggregate.state).toBe("refunded");
   });
 
   it("fails closed when a legacy paid order has no verified receipt provenance for refund", async () => {
     const database = new InMemoryPaymentDatabase();
     const sourceOrder = order({paymentState: "paid", paymentPhase: "paid"});
     const merchantOrderId = "SVPAY_LEGACY_WITHOUT_RECEIPT";
-    database.seed(pathFor.order(sourceOrder.customerId, sourceOrder.id), sourceOrder);
-    database.seed(`${ROOT}/paymentAttemptsByMerchantOrder/${merchantOrderId}`, {
+    database.seed(orderRef(database, sourceOrder.id).path, sourceOrder);
+    database.seed(paymentAttemptByMerchantOrderPath(merchantOrderId), {
       customerId: sourceOrder.customerId,
       orderId: sourceOrder.id,
     });
@@ -288,8 +261,8 @@ describe("canonical payment service integration", () => {
       database,
       () => 3_000,
     )).rejects.toThrow("requires verified receipt reconciliation");
-    expect(database.value(canonicalPaymentPath(sourceOrder.id))).toBeNull();
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(0);
+    expect(database.read(canonicalPaymentRef(database, sourceOrder.id).path)).toBeNull();
+    expect(ledgerJournalPaths(database)).toHaveLength(0);
   });
 
   it("rejects a verified amount mismatch before mutating canonical state or ledger", async () => {
@@ -299,7 +272,7 @@ describe("canonical payment service integration", () => {
     });
     await expect(applyVerifiedPayment(event, database, () => 3_000))
       .rejects.toThrow("Verified payment amount does not match the order");
-    expect(database.value<CanonicalPaymentRecord>(canonicalPaymentPath(sourceOrder.id))?.aggregate.state).toBe("pending");
-    expect(database.paths(`${LEDGER_JOURNALS_ROOT}/`)).toHaveLength(0);
+    expect((database.read(canonicalPaymentRef(database, sourceOrder.id).path) as CanonicalPaymentRecord | null)?.aggregate.state).toBe("pending");
+    expect(ledgerJournalPaths(database)).toHaveLength(0);
   });
 });

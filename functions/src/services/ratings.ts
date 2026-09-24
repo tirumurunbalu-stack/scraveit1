@@ -1,15 +1,24 @@
 import {createHash} from "node:crypto";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {addRatingContribution, boundedRating, type RatingAggregate} from "../domain/ratings";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {restaurantRef, riderRef} from "../firestorePaths";
+
+function ratingAggregateRef(database: FirestoreLike, kind: "restaurants" | "riders", subjectId: string): DocumentReferenceLike {
+  return database.collection("ratingAggregates").doc(kind).collection("subjects").doc(subjectId);
+}
 
 async function recordAggregate(kind: "restaurants" | "riders", subjectId: string, reviewKey: string, rating: number): Promise<RatingAggregate | null> {
   const contributionId = createHash("sha256").update(reviewKey).digest("hex");
-  const ref = db.ref(`${ROOT}/ratingAggregates/${kind}/${subjectId}`);
-  const result = await ref.transaction((current: RatingAggregate | null) =>
-    addRatingContribution(current, contributionId, rating), undefined, false);
-  if (!result.committed && !result.snapshot.exists()) return null;
-  return result.snapshot.val() as RatingAggregate;
+  const ref = ratingAggregateRef(firestoreDb, kind, subjectId);
+  return firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as RatingAggregate : null;
+    const next = addRatingContribution(current, contributionId, rating);
+    if (next === undefined) return current ?? null;
+    transaction.set(ref, next);
+    return next;
+  });
 }
 
 export async function recordDeliveredOrderRatings(input: {
@@ -23,18 +32,24 @@ export async function recordDeliveredOrderRatings(input: {
   const reviewKey = `${input.customerId}:${input.orderId}`;
   const restaurant = await recordAggregate("restaurants", input.restaurantId, reviewKey, boundedRating(input.restaurantRating));
   if (restaurant) {
-    await db.ref(`${ROOT}/catalog/restaurants/${input.restaurantId}`).transaction((current: Record<string, unknown> | null) => {
-      if (!current || Number(current.ratingCount ?? 0) > restaurant.count) return undefined;
-      return {...current, rating: restaurant.average, ratingCount: restaurant.count};
-    }, undefined, false);
+    const ref = restaurantRef(firestoreDb, input.restaurantId);
+    await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as Record<string, unknown> : null;
+      if (!current || Number(current.ratingCount ?? 0) > restaurant.count) return;
+      transaction.set(ref, {...current, rating: restaurant.average, ratingCount: restaurant.count});
+    });
   }
 
   if (!input.riderId || !boundedRating(input.riderRating)) return;
   const rider = await recordAggregate("riders", input.riderId, reviewKey, boundedRating(input.riderRating));
   if (rider) {
-    await db.ref(`${ROOT}/riders/${input.riderId}`).transaction((current: Record<string, unknown> | null) => {
-      if (!current || Number(current.ratingCount ?? 0) > rider.count) return undefined;
-      return {...current, rating: rider.average, ratingCount: rider.count};
-    }, undefined, false);
+    const ref = riderRef(firestoreDb, input.riderId);
+    await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as Record<string, unknown> : null;
+      if (!current || Number(current.ratingCount ?? 0) > rider.count) return;
+      transaction.set(ref, {...current, rating: rider.average, ratingCount: rider.count});
+    });
   }
 }

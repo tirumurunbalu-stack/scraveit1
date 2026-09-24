@@ -1,6 +1,5 @@
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   deriveRiderDispatchEligibilityFromWorkload,
   type RiderDispatchEligibilityProjection,
@@ -11,12 +10,20 @@ import {
   isRiderOperationalWorkloadUsable,
   type RiderOperationalWorkload,
 } from "../domain/riderWorkload";
+import type {CollectionReferenceLike, DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {riderRef} from "../firestorePaths";
 import {
   rebuildRiderOperationalWorkload,
-  RIDER_OPERATIONAL_WORKLOAD_ROOT,
+  riderOperationalWorkloadRef,
 } from "./riderWorkload";
 
-export const RIDER_DISPATCH_ELIGIBILITY_ROOT = `${ROOT}/private/riderDispatchEligibility`;
+export function riderDispatchEligibilityCollectionRef(database: FirestoreLike): CollectionReferenceLike {
+  return database.collection("private").doc("riderDispatchEligibility").collection("riders");
+}
+
+export function riderDispatchEligibilityRef(database: FirestoreLike, riderId: string): DocumentReferenceLike {
+  return riderDispatchEligibilityCollectionRef(database).doc(riderId);
+}
 
 export interface RefreshRiderDispatchEligibilityOptions {
   workload?: RiderOperationalWorkload | null;
@@ -36,10 +43,10 @@ export async function refreshRiderDispatchEligibility(
   const riderId = String(riderIdValue ?? "").trim().slice(0, 128);
   if (!riderId) throw new Error("RIDER_ELIGIBILITY_RIDER_ID_REQUIRED");
   const [profileSnapshot, walletSnapshot, workloadValue] = await Promise.all([
-    db.ref(`${ROOT}/riders/${riderId}`).get(),
-    db.ref(`${ROOT}/riderWallets/${riderId}`).get(),
+    riderRef(firestoreDb, riderId).get(),
+    firestoreDb.collection("riderWallets").doc(riderId).get(),
     options.workload === undefined || options.forceWorkloadRebuild === true
-      ? db.ref(`${RIDER_OPERATIONAL_WORKLOAD_ROOT}/${riderId}`).get().then((snapshot) => snapshot.val())
+      ? riderOperationalWorkloadRef(firestoreDb, riderId).get().then((snapshot) => snapshot.exists ? snapshot.data() : null)
       : Promise.resolve(options.workload),
   ]);
   const usableWorkload = isRiderOperationalWorkloadUsable(workloadValue, riderId) ? workloadValue : null;
@@ -48,18 +55,19 @@ export async function refreshRiderDispatchEligibility(
     : await rebuildRiderOperationalWorkload(riderId, now);
   const projection = deriveRiderDispatchEligibilityFromWorkload(
     riderId,
-    profileSnapshot.val() as RiderEligibilityProfile | null,
-    walletSnapshot.val() as RiderEligibilityWallet | null,
+    (profileSnapshot.exists ? profileSnapshot.data() : null) as RiderEligibilityProfile | null,
+    (walletSnapshot.exists ? walletSnapshot.data() : null) as RiderEligibilityWallet | null,
     workload,
     now,
   );
   try {
-    await db.ref(`${RIDER_DISPATCH_ELIGIBILITY_ROOT}/${riderId}`).transaction(
-      (current: RiderDispatchEligibilityProjection | null) =>
-        Number(current?.updatedAt ?? 0) > projection.updatedAt ? undefined : projection,
-      undefined,
-      false,
-    );
+    const ref = riderDispatchEligibilityRef(firestoreDb, riderId);
+    await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+      const snapshot = await transaction.get(ref);
+      const current = snapshot.exists ? snapshot.data() as RiderDispatchEligibilityProjection : null;
+      if (Number(current?.updatedAt ?? 0) > projection.updatedAt) return;
+      transaction.set(ref, projection);
+    });
   } catch (error) {
     // The authoritative reads are still safe to use for this dispatch. A
     // projection write outage must not prevent an otherwise valid delivery.

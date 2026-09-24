@@ -1,6 +1,5 @@
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   buildOperationalOrderProjection,
   isOperationalOrderActive,
@@ -8,36 +7,58 @@ import {
   type OperationalOrderProjection,
 } from "../domain/operationalOrders";
 import {isLegacyOrderStatus} from "../domain/lifecycle";
+import type {CollectionReferenceLike, TransactionLike} from "../firestoreTypes";
 import type {SavrivoOrder} from "../types";
 
-export const OPERATIONAL_ORDERS_ROOT = `${ROOT}/private/operations/orders`;
 export const OPERATIONAL_ORDERS_MAX_PAGE = 250;
+
+function operationalOrdersCollectionRef(): CollectionReferenceLike {
+  // Named distinctly from the top-level `orders` collection so a collection-
+  // group index/query for one never accidentally matches the other.
+  return firestoreDb.collection("private").doc("operations").collection("operationalOrders");
+}
 
 function pageSize(value: unknown): number {
   const size = Number(value);
   return Number.isInteger(size) ? Math.max(1, Math.min(OPERATIONAL_ORDERS_MAX_PAGE, size)) : 100;
 }
 
+/**
+ * Verified rider restaurant arrival is written directly onto this projection
+ * (never derived from the order itself - `SavrivoOrder` carries no arrival
+ * fields), so `riderRestaurantArrival.ts` calls this the moment the server
+ * verifies arrival rather than waiting for the next status-driven reconcile.
+ */
+export async function applyRiderArrivalToOperationalProjection(
+  orderId: string,
+  arrivedAt: number,
+): Promise<void> {
+  await operationalOrdersCollectionRef().doc(orderId)
+    .set({riderArrivalVerified: true, riderArrivedRestaurantAt: arrivedAt}, {merge: true});
+}
+
 export async function reconcileOperationalOrderProjection(
   order: SavrivoOrder,
 ): Promise<OperationalOrderProjection> {
-  let next: OperationalOrderProjection | undefined;
-  const result = await db.ref(`${OPERATIONAL_ORDERS_ROOT}/${order.id}`).transaction(
-    (current: OperationalOrderProjection | null) => {
-      next = buildOperationalOrderProjection(order, current);
-      return shouldApplyOperationalOrderProjection(current, next) ? next : undefined;
-    },
-    undefined,
-    false,
-  );
-  if (!result.committed) {
+  const ref = operationalOrdersCollectionRef().doc(order.id);
+  let applied = false;
+  const projection = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as OperationalOrderProjection : null;
+    const next = buildOperationalOrderProjection(order, current);
+    if (!shouldApplyOperationalOrderProjection(current, next)) return current ?? next;
+    transaction.set(ref, next);
+    applied = true;
+    return next;
+  });
+  if (!applied) {
     logger.info("STALE_OPERATIONAL_ORDER_PROJECTION_IGNORED", {
       orderId: order.id,
       status: order.status,
       updatedAt: order.updatedAt,
     });
   }
-  return (result.snapshot.val() as OperationalOrderProjection | null) ?? next!;
+  return projection;
 }
 
 function text(value: unknown, maximum: number): string | undefined {
@@ -131,34 +152,34 @@ export function parseOperationalOrderProjection(
   };
 }
 
-function projectionValues(value: unknown): OperationalOrderProjection[] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-  return Object.entries(value as Record<string, unknown>)
-    .map(([orderId, entry]) => parseOperationalOrderProjection(entry, orderId))
+function projectionDocs(docs: readonly {id: string; data(): unknown}[]): OperationalOrderProjection[] {
+  return docs
+    .map((doc) => parseOperationalOrderProjection(doc.data(), doc.id))
     .filter((entry): entry is OperationalOrderProjection => entry !== null);
 }
 
 /**
  * Bounded query foundation for a future callable/admin API. Do not expose the
- * private node directly to clients. Production adoption requires the matching
- * `.indexOn` entries listed in the rollout report.
+ * private collection directly to clients. `active`+`updatedAt` is a real
+ * composite index here (see firestore.indexes.json) - the `activeSortKey`
+ * lexicographic-range trick this replaced is no longer needed for the query,
+ * though the field itself stays in the stored projection since
+ * parseOperationalOrderProjection still validates its presence.
  */
 export async function listActiveOperationalOrders(limit = 100): Promise<OperationalOrderProjection[]> {
-  const snapshot = await db.ref(OPERATIONAL_ORDERS_ROOT)
-    .orderByChild("activeSortKey")
-    .startAt("active:")
-    .endAt("active:\uf8ff")
-    .limitToLast(pageSize(limit))
+  const snapshot = await operationalOrdersCollectionRef()
+    .where("active", "==", true)
+    .orderBy("updatedAt", "desc")
+    .limit(pageSize(limit))
     .get();
-  return projectionValues(snapshot.val()).filter((entry) => entry.active).sort((a, b) => b.updatedAt - a.updatedAt);
+  return projectionDocs(snapshot.docs);
 }
 
 export async function listRecentOperationalOrders(limit = 100): Promise<OperationalOrderProjection[]> {
-  const snapshot = await db.ref(OPERATIONAL_ORDERS_ROOT)
-    .orderByChild("recentSortKey")
-    .startAt("recent:")
-    .endAt("recent:\uf8ff")
-    .limitToLast(pageSize(limit))
+  const snapshot = await operationalOrdersCollectionRef()
+    .where("active", "==", false)
+    .orderBy("updatedAt", "desc")
+    .limit(pageSize(limit))
     .get();
-  return projectionValues(snapshot.val()).filter((entry) => !entry.active).sort((a, b) => b.updatedAt - a.updatedAt);
+  return projectionDocs(snapshot.docs);
 }

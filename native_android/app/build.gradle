@@ -24,8 +24,8 @@ android {
         applicationId "com.feastly.app"
         minSdk 23
         targetSdk 36
-        versionCode 52
-        versionName "3.4.2"
+        versionCode 71
+        versionName "3.6.1"
         manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
         buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
     }
@@ -64,6 +64,7 @@ apply from: rootProject.file("gradle/nonprod-firebase.gradle")
 
 dependencies {
     implementation "androidx.activity:activity:1.13.0"
+    implementation "androidx.core:core:1.18.0"
     implementation "androidx.credentials:credentials:1.6.0"
     implementation "androidx.credentials:credentials-play-services-auth:1.6.0"
     implementation "com.google.android.libraries.identity.googleid:googleid:1.2.0"

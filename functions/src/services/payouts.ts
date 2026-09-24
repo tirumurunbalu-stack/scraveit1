@@ -1,7 +1,6 @@
 import {randomUUID} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {createLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {
   recommendedFinancePayoutMethod,
@@ -10,21 +9,21 @@ import {
 } from "../domain/financePolicy";
 import {platformConfigHash, platformConfigOperationKey} from "../domain/platformConfigControl";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
 import type {
   RecordRestaurantSettlementInput,
   RecordRiderPayoutInput,
 } from "../schemas";
-import {persistLedgerJournal, type LedgerTransactionDatabase} from "./ledger";
+import {riderPayoutLockRef, restaurantSettlementLockRef} from "./financeAutomation";
+import {persistLedgerJournal} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
 import {
   readRiderFinancialSummary,
-  type RiderFinanceDatabase,
   type RiderFinancialSummary,
 } from "./riderFinance";
 import {
   buildRestaurantSettlementJournal,
   getRestaurantSettlementSummary,
-  type RestaurantSettlementDatabase,
   type RestaurantSettlementMethod,
 } from "./restaurantSettlements";
 import {
@@ -35,33 +34,20 @@ import {
 type UnknownRecord = Record<string, unknown>;
 
 const PAYOUT_LOCK_LEASE_MS = 2 * 60_000;
-const RIDER_PAYOUT_OPERATIONS_ROOT = `${ROOT}/private/financeOperations/riderPayouts`;
-const RIDER_PAYOUT_LOCKS_ROOT = `${ROOT}/private/financeOperations/riderPayoutLocks`;
-const RESTAURANT_SETTLEMENT_OPERATIONS_ROOT = `${ROOT}/private/financeOperations/restaurantSettlements`;
-const RESTAURANT_SETTLEMENT_LOCKS_ROOT = `${ROOT}/private/financeOperations/restaurantSettlementLocks`;
 
-interface ValueSnapshot {
-  val(): unknown;
+export type FinancePayoutDatabase = FirestoreLike;
+
+function financeOperationsDoc(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("financeOperations");
 }
-
-interface TransactionResult {
-  committed: boolean;
-  snapshot: ValueSnapshot;
+function riderPayoutOperationRef(database: FirestoreLike, operationKey: string): DocumentReferenceLike {
+  return financeOperationsDoc(database).collection("riderPayouts").doc(operationKey);
 }
-
-interface FinanceReference {
-  orderByChild(child: string): FinanceReference;
-  limitToLast(limit: number): FinanceReference;
-  get(): Promise<ValueSnapshot>;
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<TransactionResult>;
+function restaurantSettlementOperationRef(database: FirestoreLike, operationKey: string): DocumentReferenceLike {
+  return financeOperationsDoc(database).collection("restaurantSettlements").doc(operationKey);
 }
-
-export interface FinancePayoutDatabase extends LedgerTransactionDatabase, RiderFinanceDatabase, RestaurantSettlementDatabase {
-  ref(path: string): FinanceReference;
+function auditRef(database: FirestoreLike, id: string): DocumentReferenceLike {
+  return database.collection("audit").doc(id);
 }
 
 interface FinanceEntityLock {
@@ -203,21 +189,6 @@ function requestHash(value: unknown): string {
   return platformConfigHash(value);
 }
 
-function riderPayoutOperationPath(operationKey: string): string {
-  return `${RIDER_PAYOUT_OPERATIONS_ROOT}/${operationKey}`;
-}
-
-function riderPayoutLockPath(riderId: string): string {
-  return `${RIDER_PAYOUT_LOCKS_ROOT}/${riderId}`;
-}
-
-function restaurantSettlementOperationPath(operationKey: string): string {
-  return `${RESTAURANT_SETTLEMENT_OPERATIONS_ROOT}/${operationKey}`;
-}
-
-function restaurantSettlementLockPath(restaurantId: string): string {
-  return `${RESTAURANT_SETTLEMENT_LOCKS_ROOT}/${restaurantId}`;
-}
 
 function financeLock(raw: unknown, entityId: string): FinanceEntityLock | null {
   const candidate = record(raw);
@@ -331,7 +302,7 @@ function sameRestaurantSettlement(
 
 async function acquireEntityLock(
   database: FinancePayoutDatabase,
-  path: string,
+  ref: DocumentReferenceLike,
   entityId: string,
   operationId: string,
   hash: string,
@@ -341,22 +312,20 @@ async function acquireEntityLock(
   now: number,
   busyMessage: string,
 ): Promise<FinanceEntityLock> {
-  let abort: DomainError | null = null;
-  const result = await database.ref(path).transaction((rawLock) => {
-    abort = null;
+  const lock = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const rawLock = snapshot.exists ? snapshot.data() : null;
     if (rawLock !== null && rawLock !== undefined) {
       const existing = financeLock(rawLock, entityId);
       if (!existing) {
-        abort = new DomainError("data-loss", "An in-flight payout lock is invalid and needs finance review.");
-        return undefined;
+        throw new DomainError("data-loss", "An in-flight payout lock is invalid and needs finance review.");
       }
       const sameOperation = sameEntityOperation(existing, operationId, hash, actorId);
       if (!sameOperation && existing.leaseUntil > now) {
-        abort = new DomainError("aborted", busyMessage, {reason: "FINANCE_PAYOUT_LOCK_BUSY"});
-        return undefined;
+        throw new DomainError("aborted", busyMessage, {reason: "FINANCE_PAYOUT_LOCK_BUSY"});
       }
     }
-    const lock: FinanceEntityLock = {
+    const next: FinanceEntityLock = {
       schemaVersion: 1,
       operationId,
       requestHash: hash,
@@ -367,13 +336,10 @@ async function acquireEntityLock(
       acquiredAt: now,
       leaseUntil: now + PAYOUT_LOCK_LEASE_MS,
     };
-    return lock;
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "The payout lock could not be acquired safely.");
-  }
-  const lock = financeLock(result.snapshot.val(), entityId);
-  if (!lock || !sameEntityOperation(lock, operationId, hash, actorId)) {
+    transaction.set(ref, next);
+    return next;
+  });
+  if (!sameEntityOperation(lock, operationId, hash, actorId)) {
     throw new DomainError("internal", "The payout lock could not be verified.");
   }
   return lock;
@@ -381,18 +347,21 @@ async function acquireEntityLock(
 
 async function releaseEntityLock(
   database: FinancePayoutDatabase,
-  path: string,
+  ref: DocumentReferenceLike,
   entityId: string,
   operationId: string,
   hash: string,
   actorId: string,
 ): Promise<void> {
-  await database.ref(path).transaction((rawLock) => {
-    if (rawLock === null || rawLock === undefined) return rawLock;
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const rawLock = snapshot.exists ? snapshot.data() : null;
+    if (rawLock === null || rawLock === undefined) return;
     const existing = financeLock(rawLock, entityId);
-    if (!existing) return null;
-    return sameEntityOperation(existing, operationId, hash, actorId) ? null : rawLock;
-  }, undefined, false);
+    if (!existing || sameEntityOperation(existing, operationId, hash, actorId)) {
+      transaction.delete(ref);
+    }
+  });
 }
 
 function riderPayoutProfile(value: unknown): RiderPayoutProfile {
@@ -685,27 +654,25 @@ async function registerRiderPayoutOperation(
   requestInstanceId: string,
   now: number,
 ): Promise<RiderPayoutOperationRecord> {
-  let abort: DomainError | null = null;
-  const path = riderPayoutOperationPath(operationKey);
-  const result = await database.ref(path).transaction((rawOperation) => {
-    abort = null;
+  const ref = riderPayoutOperationRef(database, operationKey);
+  const operation = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const rawOperation = snapshot.exists ? snapshot.data() : null;
     if (rawOperation !== null && rawOperation !== undefined) {
       const existing = riderPayoutOperation(rawOperation);
       if (!existing) {
-        abort = new DomainError("data-loss", "The rider payout operation record is invalid.", {
+        throw new DomainError("data-loss", "The rider payout operation record is invalid.", {
           reason: "RIDER_PAYOUT_OPERATION_INVALID",
         });
-        return undefined;
       }
       if (!sameRiderPayout(existing, input, hash, actorId)) {
-        abort = new DomainError("already-exists", "Operation id was already used for a different rider payout.", {
+        throw new DomainError("already-exists", "Operation id was already used for a different rider payout.", {
           reason: "RIDER_PAYOUT_OPERATION_CONFLICT",
         });
-        return undefined;
       }
       return existing;
     }
-    const operation: RiderPayoutOperationRecord = {
+    const next: RiderPayoutOperationRecord = {
       schemaVersion: 1,
       operationId: input.operationId,
       requestHash: hash,
@@ -719,13 +686,10 @@ async function registerRiderPayoutOperation(
       status: "registered",
       registeredAt: now,
     };
-    return operation;
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "The rider payout could not be registered safely.");
-  }
-  const operation = riderPayoutOperation(result.snapshot.val());
-  if (!operation || !sameRiderPayout(operation, input, hash, actorId)) {
+    transaction.set(ref, next);
+    return next;
+  });
+  if (!sameRiderPayout(operation, input, hash, actorId)) {
     throw new DomainError("internal", "The rider payout registration could not be verified.");
   }
   return operation;
@@ -739,21 +703,18 @@ async function completeRiderPayoutOperation(
   operationKey: string,
   completed: Omit<RiderPayoutOperationRecord, "schemaVersion" | "operationId" | "requestHash" | "requestInstanceId" | "actorId" | "actorRole" | "riderId" | "amountPaise" | "method" | "referenceId" | "status" | "registeredAt">,
 ): Promise<RiderPayoutOperationRecord> {
-  let abort: DomainError | null = null;
-  const path = riderPayoutOperationPath(operationKey);
-  const result = await database.ref(path).transaction((rawOperation) => {
-    abort = null;
-    const existing = riderPayoutOperation(rawOperation);
+  const ref = riderPayoutOperationRef(database, operationKey);
+  const operation = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const existing = riderPayoutOperation(snapshot.exists ? snapshot.data() : null);
     if (!existing) {
-      abort = new DomainError("not-found", "The rider payout operation record was not found.");
-      return undefined;
+      throw new DomainError("not-found", "The rider payout operation record was not found.");
     }
     if (!sameRiderPayout(existing, input, hash, actorId)) {
-      abort = new DomainError("already-exists", "Operation id was already used for a different rider payout.");
-      return undefined;
+      throw new DomainError("already-exists", "Operation id was already used for a different rider payout.");
     }
     if (existing.status === "completed") return existing;
-    return {
+    const next: RiderPayoutOperationRecord = {
       ...existing,
       status: "completed" as const,
       completedAt: completed.completedAt,
@@ -764,12 +725,10 @@ async function completeRiderPayoutOperation(
       recommendedMethod: completed.recommendedMethod,
       beneficiaryLabel: completed.beneficiaryLabel,
     };
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "The rider payout completion could not be committed safely.");
-  }
-  const operation = riderPayoutOperation(result.snapshot.val());
-  if (!operation || operation.status !== "completed") {
+    transaction.set(ref, next);
+    return next;
+  });
+  if (operation.status !== "completed") {
     throw new DomainError("internal", "The rider payout completion could not be verified.");
   }
   return operation;
@@ -785,29 +744,27 @@ async function registerRestaurantSettlementOperation(
   requestInstanceId: string,
   now: number,
 ): Promise<RestaurantSettlementOperationRecord> {
-  let abort: DomainError | null = null;
-  const path = restaurantSettlementOperationPath(operationKey);
-  const result = await database.ref(path).transaction((rawOperation) => {
-    abort = null;
+  const ref = restaurantSettlementOperationRef(database, operationKey);
+  const operation = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const rawOperation = snapshot.exists ? snapshot.data() : null;
     if (rawOperation !== null && rawOperation !== undefined) {
       const existing = restaurantSettlementOperation(rawOperation);
       if (!existing) {
-        abort = new DomainError("data-loss", "The restaurant settlement operation record is invalid.", {
+        throw new DomainError("data-loss", "The restaurant settlement operation record is invalid.", {
           reason: "RESTAURANT_SETTLEMENT_OPERATION_INVALID",
         });
-        return undefined;
       }
       if (!sameRestaurantSettlement(existing, input, hash, actorId)) {
-        abort = new DomainError(
+        throw new DomainError(
           "already-exists",
           "Operation id was already used for a different restaurant settlement.",
           {reason: "RESTAURANT_SETTLEMENT_OPERATION_CONFLICT"},
         );
-        return undefined;
       }
       return existing;
     }
-    const operation: RestaurantSettlementOperationRecord = {
+    const next: RestaurantSettlementOperationRecord = {
       schemaVersion: 1,
       operationId: input.operationId,
       requestHash: hash,
@@ -821,13 +778,10 @@ async function registerRestaurantSettlementOperation(
       status: "registered",
       registeredAt: now,
     };
-    return operation;
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "The restaurant settlement could not be registered safely.");
-  }
-  const operation = restaurantSettlementOperation(result.snapshot.val());
-  if (!operation || !sameRestaurantSettlement(operation, input, hash, actorId)) {
+    transaction.set(ref, next);
+    return next;
+  });
+  if (!sameRestaurantSettlement(operation, input, hash, actorId)) {
     throw new DomainError("internal", "The restaurant settlement registration could not be verified.");
   }
   return operation;
@@ -845,24 +799,21 @@ async function completeRestaurantSettlementOperation(
     "actorRole" | "restaurantId" | "amountPaise" | "method" | "referenceId" | "status" | "registeredAt"
   >,
 ): Promise<RestaurantSettlementOperationRecord> {
-  let abort: DomainError | null = null;
-  const path = restaurantSettlementOperationPath(operationKey);
-  const result = await database.ref(path).transaction((rawOperation) => {
-    abort = null;
-    const existing = restaurantSettlementOperation(rawOperation);
+  const ref = restaurantSettlementOperationRef(database, operationKey);
+  const operation = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const existing = restaurantSettlementOperation(snapshot.exists ? snapshot.data() : null);
     if (!existing) {
-      abort = new DomainError("not-found", "The restaurant settlement operation record was not found.");
-      return undefined;
+      throw new DomainError("not-found", "The restaurant settlement operation record was not found.");
     }
     if (!sameRestaurantSettlement(existing, input, hash, actorId)) {
-      abort = new DomainError(
+      throw new DomainError(
         "already-exists",
         "Operation id was already used for a different restaurant settlement.",
       );
-      return undefined;
     }
     if (existing.status === "completed") return existing;
-    return {
+    const next: RestaurantSettlementOperationRecord = {
       ...existing,
       status: "completed" as const,
       completedAt: completed.completedAt,
@@ -871,20 +822,18 @@ async function completeRestaurantSettlementOperation(
       recommendedMethod: completed.recommendedMethod,
       beneficiaryLabel: completed.beneficiaryLabel,
     };
-  }, undefined, false);
-  if (!result.committed) {
-    throw abort ?? new DomainError("aborted", "The restaurant settlement completion could not be committed safely.");
-  }
-  const operation = restaurantSettlementOperation(result.snapshot.val());
-  if (!operation || operation.status !== "completed") {
+    transaction.set(ref, next);
+    return next;
+  });
+  if (operation.status !== "completed") {
     throw new DomainError("internal", "The restaurant settlement completion could not be verified.");
   }
   return operation;
 }
 
 async function loadRiderRecord(database: FinancePayoutDatabase, riderId: string): Promise<UnknownRecord> {
-  const snapshot = await database.ref(`${ROOT}/riders/${riderId}`).get();
-  const rider = record(snapshot.val());
+  const snapshot = await database.collection("riders").doc(riderId).get();
+  const rider = record(snapshot.exists ? snapshot.data() : null);
   if (!Object.keys(rider).length) {
     throw new DomainError("not-found", "The rider account could not be found for payout.");
   }
@@ -892,8 +841,8 @@ async function loadRiderRecord(database: FinancePayoutDatabase, riderId: string)
 }
 
 async function loadRestaurantRecord(database: FinancePayoutDatabase, restaurantId: string): Promise<UnknownRecord> {
-  const snapshot = await database.ref(`${ROOT}/catalog/restaurants/${restaurantId}`).get();
-  const restaurant = record(snapshot.val());
+  const snapshot = await database.collection("restaurants").doc(restaurantId).get();
+  const restaurant = record(snapshot.exists ? snapshot.data() : null);
   if (!Object.keys(restaurant).length) {
     throw new DomainError("not-found", "The restaurant record could not be found for settlement.");
   }
@@ -904,7 +853,7 @@ export async function recordRiderPayout(
   actorId: string,
   token: DecodedIdToken,
   input: RecordRiderPayoutInput,
-  database: FinancePayoutDatabase = db as unknown as FinancePayoutDatabase,
+  database: FinancePayoutDatabase = firestoreDb as unknown as FinancePayoutDatabase,
   now = Date.now(),
   loadPolicy: (nowValue?: number) => Promise<FinancePolicy> = loadFinancePolicy,
 ): Promise<RiderPayoutResponse> {
@@ -930,7 +879,7 @@ export async function recordRiderPayout(
 
   await acquireEntityLock(
     database,
-    riderPayoutLockPath(riderId),
+    riderPayoutLockRef(database, riderId),
     riderId,
     operationId,
     hash,
@@ -1004,13 +953,17 @@ export async function recordRiderPayout(
       actorRole,
       at: completed.completedAt ?? now,
     };
-    await database.ref(`${ROOT}/audit/${auditId}`).transaction((current) => current ?? auditRecord, undefined, false);
+    const auditDocRef = auditRef(database, auditId);
+    await database.runTransaction(async (transaction: TransactionLike) => {
+      const auditSnapshot = await transaction.get(auditDocRef);
+      if (!auditSnapshot.exists) transaction.set(auditDocRef, auditRecord);
+    });
     return riderPayoutResponse(
       completed,
       operation.requestInstanceId !== requestInstanceId || persisted.outcome === "idempotent",
     );
   } finally {
-    await releaseEntityLock(database, riderPayoutLockPath(riderId), riderId, operationId, hash, actorId);
+    await releaseEntityLock(database, riderPayoutLockRef(database, riderId), riderId, operationId, hash, actorId);
   }
 }
 
@@ -1018,7 +971,7 @@ export async function recordRestaurantSettlement(
   actorId: string,
   token: DecodedIdToken,
   input: RecordRestaurantSettlementInput,
-  database: FinancePayoutDatabase = db as unknown as FinancePayoutDatabase,
+  database: FinancePayoutDatabase = firestoreDb as unknown as FinancePayoutDatabase,
   now = Date.now(),
   loadPolicy: (nowValue?: number) => Promise<FinancePolicy> = loadFinancePolicy,
 ): Promise<RestaurantSettlementResponse> {
@@ -1044,7 +997,7 @@ export async function recordRestaurantSettlement(
 
   await acquireEntityLock(
     database,
-    restaurantSettlementLockPath(restaurantId),
+    restaurantSettlementLockRef(database, restaurantId),
     restaurantId,
     operationId,
     hash,
@@ -1117,7 +1070,11 @@ export async function recordRestaurantSettlement(
       actorRole,
       at: completed.completedAt ?? now,
     };
-    await database.ref(`${ROOT}/audit/${auditId}`).transaction((current) => current ?? auditRecord, undefined, false);
+    const auditDocRef = auditRef(database, auditId);
+    await database.runTransaction(async (transaction: TransactionLike) => {
+      const auditSnapshot = await transaction.get(auditDocRef);
+      if (!auditSnapshot.exists) transaction.set(auditDocRef, auditRecord);
+    });
     return restaurantSettlementResponse(
       completed,
       operation.requestInstanceId !== requestInstanceId || persisted.outcome === "idempotent",
@@ -1125,7 +1082,7 @@ export async function recordRestaurantSettlement(
   } finally {
     await releaseEntityLock(
       database,
-      restaurantSettlementLockPath(restaurantId),
+      restaurantSettlementLockRef(database, restaurantId),
       restaurantId,
       operationId,
       hash,

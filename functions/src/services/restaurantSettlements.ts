@@ -1,7 +1,6 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {financePayoutAutomationSummary} from "../domain/financePolicy";
 import {createLedgerJournal, validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {
@@ -13,14 +12,22 @@ import {
   type RestaurantMembership,
 } from "../domain/restaurantAccess";
 import {DomainError} from "../errors";
-import {LEDGER_JOURNALS_ROOT} from "./ledger";
+import type {DocumentReferenceLike, FirestoreLike} from "../firestoreTypes";
+import {legacyStaffRef, restaurantMemberRef} from "../firestorePaths";
+import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
 
 export const RESTAURANT_SETTLEMENT_DEFAULT_LEDGER_LIMIT = 1_000;
 export const RESTAURANT_SETTLEMENT_MAX_LEDGER_LIMIT = 2_000;
 export const RESTAURANT_SETTLEMENT_DEFAULT_HISTORY_LIMIT = 50;
 export const RESTAURANT_SETTLEMENT_MAX_HISTORY_LIMIT = 100;
-export const RESTAURANT_LEDGER_COVERAGE_ROOT = `${ROOT}/private/financialLedger/coverage/restaurants`;
+
+/** One document holding a map of restaurantId -> coverage marker, matching
+ * `riderLedgerCoverageRef` in riderFinance.ts - `financeAutomation.ts` reads
+ * the whole map at once to build its `coveredRestaurants` set. */
+export function restaurantLedgerCoverageRef(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("financialLedger").collection("coverage").doc("restaurants");
+}
 
 export interface RestaurantSettlementQueryInput {
   restaurantId: string;
@@ -28,19 +35,7 @@ export interface RestaurantSettlementQueryInput {
   historyLimit?: number;
 }
 
-interface Snapshot {
-  val(): unknown;
-}
-
-interface SettlementReference {
-  orderByChild(child: string): SettlementReference;
-  limitToLast(limit: number): SettlementReference;
-  get(): Promise<Snapshot>;
-}
-
-export interface RestaurantSettlementDatabase {
-  ref(path: string): SettlementReference;
-}
+export type RestaurantSettlementDatabase = FirestoreLike;
 
 export type RestaurantSettlementMethod = "bank_transfer" | "upi" | "imps" | "neft";
 
@@ -109,11 +104,11 @@ async function authorizeRestaurantFinanceRead(
 ): Promise<void> {
   if (privileged(token)) return;
   const [normalized, legacy] = await Promise.all([
-    database.ref(`${ROOT}/restaurantMembers/${restaurantId}/${uid}`).get(),
-    database.ref(`${ROOT}/staff/${uid}`).get(),
+    restaurantMemberRef(database, restaurantId, uid).get(),
+    legacyStaffRef(database, uid).get(),
   ]);
-  const normalizedMember = normalized.val() as RestaurantMembership | null;
-  const legacyMember = legacy.val() as RestaurantMembership | null;
+  const normalizedMember = (normalized.exists ? normalized.data() : null) as RestaurantMembership | null;
+  const legacyMember = (legacy.exists ? legacy.data() : null) as RestaurantMembership | null;
   if (membershipAllowsFinance(normalizedMember, restaurantId, "path-scoped") ||
       membershipAllowsFinance(legacyMember, restaurantId, "legacy-global")) return;
   throw new DomainError("permission-denied", "Restaurant financial access is not permitted.");
@@ -183,7 +178,7 @@ export async function getRestaurantSettlementSummary(
   uid: string,
   token: DecodedIdToken,
   input: RestaurantSettlementQueryInput,
-  database: RestaurantSettlementDatabase = db as unknown as RestaurantSettlementDatabase,
+  database: RestaurantSettlementDatabase = firestoreDb as unknown as RestaurantSettlementDatabase,
 ): Promise<RestaurantSettlementSummary> {
   const restaurantId = safeId(input.restaurantId, "RESTAURANT_SETTLEMENT_INVALID_RESTAURANT_ID");
   const ledgerLimit = boundedInteger(
@@ -202,15 +197,18 @@ export async function getRestaurantSettlementSummary(
   const referenceAt = Date.now();
 
   const [snapshot, coverageSnapshot, financePolicy] = await Promise.all([
-    database.ref(LEDGER_JOURNALS_ROOT)
-      .orderByChild("occurredAt")
-      .limitToLast(ledgerLimit + 1)
+    database.collection(LEDGER_JOURNALS_COLLECTION)
+      .orderBy("occurredAt", "desc")
+      .limit(ledgerLimit + 1)
       .get(),
-    database.ref(`${RESTAURANT_LEDGER_COVERAGE_ROOT}/${restaurantId}`).get(),
+    restaurantLedgerCoverageRef(database).get(),
     loadFinancePolicy(referenceAt),
   ]);
-  const page = parseJournalPage(snapshot.val(), ledgerLimit);
-  const coverageVerified = coverageMarker(coverageSnapshot.val(), restaurantId) !== null;
+  const ledgerPage: Record<string, unknown> = {};
+  for (const doc of snapshot.docs) ledgerPage[doc.id] = doc.data();
+  const page = parseJournalPage(ledgerPage, ledgerLimit);
+  const coverageMap = (coverageSnapshot.exists ? coverageSnapshot.data() : null) as Record<string, unknown> | null;
+  const coverageVerified = coverageMarker(coverageMap?.[restaurantId] ?? null, restaurantId) !== null;
   if (page.invalidJournalCount > 0) {
     logger.error("RESTAURANT_SETTLEMENT_JOURNAL_VALIDATION_FAILED", {
       restaurantId,

@@ -1,8 +1,9 @@
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
 import type {MulticastMessage} from "firebase-admin/messaging";
-import {db, messaging} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb, messaging} from "../admin";
+import type {DocumentReferenceLike, FirestoreLike} from "../firestoreTypes";
+import {FieldValue} from "../firestoreTypes";
 import {
   buildCustomerBroadcastMessage,
   buildRemoveRiderOfferMessage,
@@ -30,6 +31,10 @@ interface DeviceTokenRecord {
   app?: "customer" | "restaurant" | "rider" | "admin";
 }
 
+function deviceTokensRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
+  return database.collection("deviceTokens").doc(uid);
+}
+
 function tokenRecords(value: unknown): Array<{key: string; value: DeviceTokenRecord}> {
   if (!value || typeof value !== "object") return [];
   return Object.entries(value as Record<string, DeviceTokenRecord>)
@@ -39,27 +44,44 @@ function tokenRecords(value: unknown): Array<{key: string; value: DeviceTokenRec
 
 async function tokensForUsers(uids: string[], app?: DeviceTokenRecord["app"]): Promise<Array<{uid: string; key: string; token: string}>> {
   const unique = [...new Set(uids.filter(Boolean))];
-  const snapshots = await Promise.all(unique.map((uid) => db.ref(`${ROOT}/deviceTokens/${uid}`).get()));
-  return snapshots.flatMap((snapshot, index) => tokenRecords(snapshot.val())
+  const snapshots = await Promise.all(unique.map((uid) => deviceTokensRef(firestoreDb, uid).get()));
+  return snapshots.flatMap((snapshot, index) => tokenRecords(snapshot.exists ? snapshot.data() : null)
     .filter(({value}) => !app || value.app === app)
     .map(({key, value}) => ({uid: unique[index] ?? "", key, token: String(value.token)})));
 }
 
 async function restaurantUserIds(restaurantId: string): Promise<string[]> {
-  const membersSnapshot = await db.ref(`${ROOT}/restaurantMembers/${restaurantId}`).get();
-  let legacy: Record<string, {active?: boolean}> | null = null;
+  let normalized: Array<{uid: string; active?: boolean}> = [];
   try {
-    const legacySnapshot = await db.ref(`${ROOT}/staff`).orderByChild("restaurantId").equalTo(restaurantId).get();
-    legacy = legacySnapshot.val() as Record<string, {active?: boolean}> | null;
+    // Nothing in this codebase provisions restaurantMembers today - it is
+    // managed entirely outside Cloud Functions. Unlike the single-membership
+    // lookups elsewhere (authz.ts, mediaUploads.ts, deviceTokens.ts), which
+    // read one composite-ID document directly, this bulk "every member of
+    // this restaurant" query needs a real `restaurantId` field on each
+    // document - the old nested RTDB path could scope by prefix for free,
+    // but a flat Firestore collection cannot.
+    const membersSnapshot = await firestoreDb.collection("restaurantMembers")
+      .where("restaurantId", "==", restaurantId).get();
+    normalized = membersSnapshot.docs.map((doc) => {
+      const data = doc.data() as {uid?: string; active?: boolean};
+      return {uid: String(data.uid ?? doc.id.split("_").slice(1).join("_")), active: data.active};
+    });
+  } catch (error) {
+    logger.warn("RESTAURANT_MEMBERSHIP_ROUTING_QUERY_FAILED", {restaurantId, error});
+  }
+  let legacy: Array<{uid: string; active?: boolean}> = [];
+  try {
+    const legacySnapshot = await firestoreDb.collection("staff")
+      .where("restaurantId", "==", restaurantId).get();
+    legacy = legacySnapshot.docs.map((doc) => ({uid: doc.id, active: (doc.data() as {active?: boolean}).active}));
   } catch (error) {
     // Normalized memberships are authoritative. A legacy migration lookup
     // must never block alerts to already-normalized restaurant devices.
     logger.warn("LEGACY_RESTAURANT_ROUTING_QUERY_FAILED", {restaurantId, error});
   }
-  const normalized = membersSnapshot.val() as Record<string, {active?: boolean}> | null;
   return [...new Set([
-    ...Object.entries(normalized ?? {}).filter(([, member]) => member.active === true).map(([uid]) => uid),
-    ...Object.entries(legacy ?? {}).filter(([, member]) => member.active === true).map(([uid]) => uid),
+    ...normalized.filter((member) => member.active === true).map((member) => member.uid),
+    ...legacy.filter((member) => member.active === true).map((member) => member.uid),
   ])];
 }
 
@@ -91,24 +113,31 @@ function normalizeAudienceKey(value: unknown): string {
  * this outbox works.
  */
 async function broadcastAudienceUserIds(broadcastId: string): Promise<string[]> {
-  const broadcast = (await db.ref(`${ROOT}/customerBroadcasts/${broadcastId}`).get())
-    .val() as CustomerBroadcastRecord | null;
+  const broadcastSnapshot = await firestoreDb.collection("customerBroadcasts").doc(broadcastId).get();
+  const broadcast = broadcastSnapshot.exists ? broadcastSnapshot.data() as CustomerBroadcastRecord : null;
   if (!broadcast || broadcast.active === false) return [];
   const audience = broadcast.audience || "all";
 
   if (audience === "restaurant") {
     if (!broadcast.restaurantId) return [];
     const [ordersSnapshot, usersSnapshot] = await Promise.all([
-      db.ref(`${ROOT}/restaurantOrders/${broadcast.restaurantId}`).get(),
-      db.ref(`${ROOT}/users`).get(),
+      // The privacy-scoped restaurant order projection (orderProjection.ts)
+      // carries `restaurantId`/`customerId` fields directly - a real query,
+      // not the old RTDB nested-path scan this replaces.
+      firestoreDb.collection("restaurantOrders").where("restaurantId", "==", broadcast.restaurantId).get(),
+      firestoreDb.collection("users").get(),
     ]);
-    const candidateUids = Object.keys(ordersSnapshot.val() ?? {});
-    const users = (usersSnapshot.val() ?? {}) as Record<string, CustomerProfileForBroadcast>;
-    return candidateUids.filter((uid) => users[uid]?.preferences?.notifications !== false);
+    const candidateUids = [...new Set(
+      ordersSnapshot.docs
+        .map((doc) => (doc.data() as {customerId?: string}).customerId)
+        .filter((uid): uid is string => Boolean(uid)),
+    )];
+    const users = new Map(usersSnapshot.docs.map((doc) => [doc.id, doc.data() as CustomerProfileForBroadcast]));
+    return candidateUids.filter((uid) => users.get(uid)?.preferences?.notifications !== false);
   }
 
-  const usersSnapshot = await db.ref(`${ROOT}/users`).get();
-  const users = (usersSnapshot.val() ?? {}) as Record<string, CustomerProfileForBroadcast>;
+  const usersSnapshot = await firestoreDb.collection("users").get();
+  const users = Object.fromEntries(usersSnapshot.docs.map((doc) => [doc.id, doc.data() as CustomerProfileForBroadcast]));
   const targetCity = normalizeAudienceKey(broadcast.city);
   const targetArea = normalizeAudienceKey(broadcast.area);
   return Object.entries(users).filter(([, profile]) => {
@@ -208,7 +237,10 @@ async function sendToUsers(
       continue;
     }
     counts.successCount += response.successCount;
-    const removals: Record<string, null> = {};
+    // One document per uid (a map of token keys), not a flat path fan-out -
+    // group removals by uid so each affected user gets one field-deleting
+    // update() instead of one write per token key.
+    const removalsByUid = new Map<string, Set<string>>();
     response.responses.forEach((result, index) => {
       const code = result.error?.code;
       const record = batch[index];
@@ -221,20 +253,23 @@ async function sendToUsers(
         counts.permanentFailureCount += 1;
         counts.permanentFailureTargetIds.push(record.targetId);
         record.registrations.forEach(({uid, key}) => {
-          removals[`${ROOT}/deviceTokens/${uid}/${key}`] = null;
+          if (!removalsByUid.has(uid)) removalsByUid.set(uid, new Set());
+          removalsByUid.get(uid)!.add(key);
         });
       } else {
         counts.transientFailureCount += 1;
         counts.transientFailureTargetIds.push(record.targetId);
       }
     });
-    if (Object.keys(removals).length) {
+    if (removalsByUid.size) {
       try {
-        await db.ref().update(removals);
+        await Promise.all([...removalsByUid.entries()].map(([uid, keys]) => deviceTokensRef(firestoreDb, uid).update(
+          Object.fromEntries([...keys].map((key) => [key, FieldValue.delete()])),
+        )));
       } catch (error) {
         // The persisted target outcome remains authoritative even when best-
         // effort token cleanup is temporarily unavailable.
-        logger.error("FCM_INVALID_TOKEN_CLEANUP_FAILED", {count: Object.keys(removals).length, error});
+        logger.error("FCM_INVALID_TOKEN_CLEANUP_FAILED", {count: removalsByUid.size, error});
       }
     }
     if (response.failureCount) logger.warn("FCM batch had failures", {failureCount: response.failureCount});

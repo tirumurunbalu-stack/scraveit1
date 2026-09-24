@@ -1,38 +1,28 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
-const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  reads: [] as string[],
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  class TrackedFirestore extends InMemoryFirestore {
+    collectionsAccessed: string[] = [];
+    collection(name: string) {
+      this.collectionsAccessed.push(name);
+      return super.collection(name);
+    }
+  }
+  return {firestoreDb: new TrackedFirestore(), storage: {}};
+});
 
-function nestedValue(value: unknown, key: string): unknown {
-  if (!value || typeof value !== "object") return null;
-  return (value as Record<string, unknown>)[key] ?? null;
-}
-
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => ({
-      get: async () => {
-        memory.reads.push(path);
-        const value = memory.values.get(path) ?? null;
-        return {
-          exists: () => value !== null,
-          val: () => value,
-          child: (key: string) => ({val: () => nestedValue(value, key)}),
-        };
-      },
-    }),
-  },
-  storage: {},
-}));
-
-import {ROOT} from "../src/config";
+import {firestoreDb} from "../src/admin";
 import {
   requireRestaurantMediaAccess,
   type RestaurantMediaUploadInput,
 } from "../src/services/mediaUploads";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+type TrackedFirestore = InMemoryFirestore & {collectionsAccessed: string[]};
+
+const database = firestoreDb as unknown as TrackedFirestore;
 
 const uid = "staff-user";
 const restaurantId = "restaurant-a";
@@ -48,14 +38,14 @@ function token(claims: Record<string, unknown> = {}): DecodedIdToken {
 }
 
 describe("restaurant media authorization", () => {
-  beforeEach(() => {
-    memory.values.clear();
-    memory.reads.length = 0;
-    memory.values.set(`${ROOT}/catalog/restaurants/${restaurantId}`, {id: restaurantId});
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
+    database.collectionsAccessed.length = 0;
+    database.seed(`restaurants/${restaurantId}`, {id: restaurantId});
   });
 
   it("fails closed for a legacy staff record missing restaurantId", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {
+    database.seed(`staff/${uid}`, {
       active: true,
       permissions: {profile: true},
     });
@@ -65,7 +55,7 @@ describe("restaurant media authorization", () => {
   });
 
   it("allows legacy staff media access only for the exact restaurant", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {
+    database.seed(`staff/${uid}`, {
       active: true,
       restaurantId,
       permissions: {profile: true},
@@ -75,7 +65,7 @@ describe("restaurant media authorization", () => {
   });
 
   it("denies media access to legacy staff assigned elsewhere", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {
+    database.seed(`staff/${uid}`, {
       active: true,
       restaurantId: "restaurant-b",
       role: "restaurant_owner",
@@ -86,7 +76,7 @@ describe("restaurant media authorization", () => {
   });
 
   it("preserves normalized path-scoped owner access", async () => {
-    memory.values.set(`${ROOT}/restaurantMembers/${restaurantId}/${uid}`, {
+    database.seed(`restaurantMembers/${restaurantId}_${uid}`, {
       active: true,
       role: "restaurant_owner",
     });
@@ -96,6 +86,6 @@ describe("restaurant media authorization", () => {
 
   it.each(["owner", "ops_admin"])("preserves %s custom-claim access", async (claim) => {
     await expect(requireRestaurantMediaAccess(uid, token({savrivoRole: claim}), input)).resolves.toBeUndefined();
-    expect(memory.reads).toEqual([`${ROOT}/catalog/restaurants/${restaurantId}`]);
+    expect(database.collectionsAccessed).toEqual(["restaurants"]);
   });
 });

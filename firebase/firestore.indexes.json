@@ -1,0 +1,63 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "restaurants",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "city", "order": "ASCENDING"},
+        {"fieldPath": "rating", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "restaurantId", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "updatedAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "customerId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "riderId", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "operationalOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "active", "order": "ASCENDING"},
+        {"fieldPath": "updatedAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "progress",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "campaignId", "order": "ASCENDING"},
+        {"fieldPath": "generatedAt", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "orderChats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "orderId", "order": "ASCENDING"},
+        {"fieldPath": "channel", "order": "ASCENDING"},
+        {"fieldPath": "at", "order": "ASCENDING"}
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

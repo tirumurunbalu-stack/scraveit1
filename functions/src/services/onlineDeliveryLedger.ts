@@ -1,4 +1,4 @@
-import {db} from "../admin";
+import {firestoreDb} from "../admin";
 import {
   resolveImmutableJournalWrite,
   type LedgerJournal,
@@ -8,30 +8,20 @@ import {
   type PaymentAggregate,
   type PaymentTransitionEvent,
 } from "../domain/paymentState";
+import type {FirestoreLike} from "../firestoreTypes";
 import type {SavrivoOrder} from "../types";
 import {
+  LEDGER_JOURNALS_COLLECTION,
   buildOnlineOrderDeliveryJournal,
   buildOnlinePaymentReceiptJournal,
-  ledgerJournalPath,
   orderDeliveryAmounts,
   persistLedgerJournal,
-  type LedgerTransactionResult,
+  validatedLedgerJournalId,
   type PersistedLedgerJournalResult,
 } from "./ledger";
-import {canonicalPaymentPath} from "./payments";
+import {canonicalPaymentRef} from "./payments";
 
-interface OnlineDeliveryLedgerSnapshot {
-  val(): unknown;
-}
-
-interface OnlineDeliveryLedgerReference {
-  get(): Promise<OnlineDeliveryLedgerSnapshot>;
-  transaction(update: (current: unknown) => unknown): Promise<LedgerTransactionResult>;
-}
-
-export interface OnlineDeliveryLedgerDatabase {
-  ref(path: string): OnlineDeliveryLedgerReference;
-}
+export type OnlineDeliveryLedgerDatabase = FirestoreLike;
 
 interface StoredPaymentRecord {
   schemaVersion: 1;
@@ -134,7 +124,7 @@ function storedJournal(value: unknown): LedgerJournal {
 export async function persistOnlineOrderDeliveryLedger(
   order: SavrivoOrder,
   restaurantCommissionBps: number,
-  database: OnlineDeliveryLedgerDatabase = db as unknown as OnlineDeliveryLedgerDatabase,
+  database: OnlineDeliveryLedgerDatabase = firestoreDb as unknown as OnlineDeliveryLedgerDatabase,
 ): Promise<PersistedLedgerJournalResult> {
   if (
     order.status !== "Delivered" ||
@@ -145,10 +135,8 @@ export async function persistOnlineOrderDeliveryLedger(
     fail("LEDGER_ORDER_NOT_DELIVERED_ONLINE");
   }
 
-  const record = storedPaymentRecord(
-    (await database.ref(canonicalPaymentPath(order.id)).get()).val(),
-    order,
-  );
+  const paymentSnapshot = await canonicalPaymentRef(database, order.id).get();
+  const record = storedPaymentRecord(paymentSnapshot.exists ? paymentSnapshot.data() : null, order);
   const paidEvent = verifiedPaidEvent(record);
   const provider = safeReference(record.aggregate.provider, "LEDGER_ONLINE_PAYMENT_PROVIDER_MISSING");
   const providerTransactionId = safeReference(
@@ -167,7 +155,10 @@ export async function persistOnlineOrderDeliveryLedger(
     amountPaise: record.aggregate.amountPaise,
     occurredAt: paidEvent.occurredAt,
   });
-  const receipt = storedJournal((await database.ref(ledgerJournalPath(expectedReceipt)).get()).val());
+  const receiptSnapshot = await database.collection(LEDGER_JOURNALS_COLLECTION)
+    .doc(validatedLedgerJournalId(expectedReceipt))
+    .get();
+  const receipt = storedJournal(receiptSnapshot.exists ? receiptSnapshot.data() : null);
   resolveImmutableJournalWrite(receipt, expectedReceipt);
 
   const amounts = orderDeliveryAmounts(order, restaurantCommissionBps);

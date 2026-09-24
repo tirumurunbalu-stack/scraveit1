@@ -1,8 +1,7 @@
 import {randomUUID} from "crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {auth, db, storage} from "../admin";
-import {ROOT} from "../config";
+import {auth, firestoreDb, storage} from "../admin";
 import {
   adminAccountExportRows,
   buildPlatformDataWorkbookBuffer,
@@ -69,6 +68,10 @@ function fileNameStamp(at: number): string {
   return new Date(at).toISOString().replace(/[:.]/g, "-");
 }
 
+function asMap(docs: readonly {id: string; data(): unknown}[]): Record<string, unknown> {
+  return Object.fromEntries(docs.map((doc) => [doc.id, doc.data()]));
+}
+
 /** Turns "Naidupeta " into "naidupeta" for a filename; empty for no filter. */
 function citySlug(city: string): string {
   return city.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
@@ -83,15 +86,15 @@ export async function exportPlatformDataWorkbook(
   const cityFilter = String(city ?? "").trim().slice(0, 120);
 
   const [usersSnapshot, ridersSnapshot, restaurantsSnapshot, adminAuthAccounts] = await Promise.all([
-    db.ref(`${ROOT}/users`).get(),
-    db.ref(`${ROOT}/riders`).get(),
-    db.ref(`${ROOT}/catalog/restaurants`).get(),
+    firestoreDb.collection("users").get(),
+    firestoreDb.collection("riders").get(),
+    firestoreDb.collection("restaurants").get(),
     listAdminAuthAccounts(),
   ]);
 
-  const customers = filterRowsByCity(customerExportRows(usersSnapshot.val()), cityFilter);
-  const riders = filterRowsByCity(riderExportRows(ridersSnapshot.val()), cityFilter);
-  const restaurants = filterRowsByCity(restaurantExportRows(restaurantsSnapshot.val()), cityFilter);
+  const customers = filterRowsByCity(customerExportRows(asMap(usersSnapshot.docs)), cityFilter);
+  const riders = filterRowsByCity(riderExportRows(asMap(ridersSnapshot.docs)), cityFilter);
+  const restaurants = filterRowsByCity(restaurantExportRows(asMap(restaurantsSnapshot.docs)), cityFilter);
   // Admin/ops-admin accounts are platform-wide, not tied to a city - a city
   // filter narrows the other three sheets only, never this one.
   const adminAccounts = adminAccountExportRows(adminAuthAccounts);
@@ -140,7 +143,7 @@ export async function exportPlatformDataWorkbook(
     actorRole: "owner",
     at: generatedAt,
   };
-  db.ref(`${ROOT}/audit/${auditId}`).set(auditRecord).catch((error) => {
+  firestoreDb.collection("audit").doc(auditId).set(auditRecord).catch((error) => {
     logger.warn("admin data export audit write failed", {uid, error});
   });
 

@@ -1,35 +1,20 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {describe, expect, it, vi} from "vitest";
 
-vi.mock("../src/admin", () => ({db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }}}));
+vi.mock("../src/admin", () => ({
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
+}));
 
-import {ROOT} from "../src/config";
 import {platformConfigOperationKey} from "../src/domain/platformConfigControl";
 import {
   recordRiderCodRemittance,
   type CodRemittanceDatabase,
   type CodRemittanceLedgerWriter,
 } from "../src/services/codRemittance";
-import {persistCodRemittanceLedger, type LedgerTransactionResult} from "../src/services/ledger";
+import {persistCodRemittanceLedger} from "../src/services/ledger";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
-class InMemoryDatabase implements CodRemittanceDatabase {
-  readonly values = new Map<string, unknown>();
-  readonly transactions: string[] = [];
-
-  ref(path: string) {
-    return {
-      transaction: async (update: (current: unknown) => unknown): Promise<LedgerTransactionResult> => {
-        this.transactions.push(path);
-        const next = update(this.values.get(path) ?? null);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => this.values.get(path) ?? null}};
-        }
-        this.values.set(path, structuredClone(next));
-        return {committed: true, snapshot: {val: () => structuredClone(this.values.get(path) ?? null)}};
-      },
-    };
-  }
-}
+class InMemoryDatabase extends InMemoryFirestore implements CodRemittanceDatabase {}
 
 function token(role?: string, email = "operator@example.test"): DecodedIdToken {
   return {savrivoRole: role, email} as unknown as DecodedIdToken;
@@ -44,11 +29,11 @@ const input = {
 };
 
 function wallet(database: InMemoryDatabase): Record<string, unknown> {
-  return database.values.get(`${ROOT}/riderWallets/${input.riderId}`) as Record<string, unknown>;
+  return database.read(`riderWallets/${input.riderId}`) as Record<string, unknown>;
 }
 
 function seedWallet(database: InMemoryDatabase, outstandingRupees = 100): void {
-  database.values.set(`${ROOT}/riderWallets/${input.riderId}`, {
+  database.seed(`riderWallets/${input.riderId}`, {
     codOutstanding: outstandingRupees,
     codOutstandingLimitPaise: 8_000,
     codBlocked: true,
@@ -64,7 +49,7 @@ describe("COD remittance control plane", () => {
       .rejects.toMatchObject({code: "permission-denied"});
     await expect(recordRiderCodRemittance("legacy-admin", token(undefined, "legacy-owner@example.test"), input, database, 1_000))
       .rejects.toMatchObject({code: "permission-denied"});
-    expect(database.transactions).toEqual([]);
+    expect(database.transactionCount).toBe(0);
   });
 
   it.each(["owner", "ops_admin"])("records a balanced remittance for a %s claim", async (role) => {
@@ -110,7 +95,7 @@ describe("COD remittance control plane", () => {
     }, database, 3_000)).rejects.toMatchObject({code: "already-exists"});
     await expect(recordRiderCodRemittance("admin-2", token("ops_admin"), input, database, 3_000))
       .rejects.toMatchObject({code: "already-exists"});
-    database.values.set(`${ROOT}/riderWallets/rider-2`, {codOutstanding: 100});
+    database.seed(`riderWallets/rider-2`, {codOutstanding: 100});
     await expect(recordRiderCodRemittance("admin-1", token("owner"), {
       ...input,
       riderId: "rider-2",
@@ -273,6 +258,6 @@ describe("COD remittance control plane", () => {
       ...input,
       referenceId: undefined,
     }, database)).rejects.toMatchObject({code: "invalid-argument"});
-    expect(database.transactions).toEqual([]);
+    expect(database.transactionCount).toBe(0);
   });
 });

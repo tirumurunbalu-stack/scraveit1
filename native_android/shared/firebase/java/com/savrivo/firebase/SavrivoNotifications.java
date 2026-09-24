@@ -15,6 +15,7 @@ public final class SavrivoNotifications {
     // A new channel is intentional: Android persists the old channel's sound settings across
     // upgrades, so correcting a muted/short-lived legacy channel requires a new stable ID.
     public static final String RIDER_OFFERS = "rider_offers_v4";
+    public static final String ADMIN_SUPPORT = "savrivo_admin_support_v1";
     public static final String ORDER_STATUS = "savrivo_order_status";
 
     private SavrivoNotifications() { }
@@ -53,6 +54,14 @@ public final class SavrivoNotifications {
                 ORDER_STATUS, "Order status", NotificationManager.IMPORTANCE_DEFAULT);
         status.setDescription("Live order progress updates");
         manager.createNotificationChannel(status);
+
+        NotificationChannel adminSupport = new NotificationChannel(
+                ADMIN_SUPPORT, "Support alerts", NotificationManager.IMPORTANCE_HIGH);
+        adminSupport.setDescription("Unresolved customer support requests needing Admin attention");
+        adminSupport.enableVibration(true);
+        // OrderAlarmService owns the repeating sound so STOP_ORDER_ALARM can stop one alarm exactly.
+        adminSupport.setSound(null, null);
+        manager.createNotificationChannel(adminSupport);
     }
 
     public static int notificationIcon(Context context) {

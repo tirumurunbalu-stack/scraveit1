@@ -55,6 +55,8 @@ import java.util.Locale;
 public class MainActivity extends ComponentActivity {
     private static final int LOCATION_PERMISSION_REQUEST = 6201;
     private static final int FILE_CHOOSER_REQUEST = 6202;
+    private static final int FACE_CAPTURE_REQUEST = 6203;
+    private static final int CAMERA_PERMISSION_REQUEST = 6204;
     private static final String TRUSTED_ORIGIN = "https://appassets.androidplatform.net/assets/";
     private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
     private static final int CANVAS = Color.rgb(7, 20, 38);
@@ -65,6 +67,7 @@ public class MainActivity extends ComponentActivity {
     private GoogleCredentialSignIn googleSignIn;
     private ValueCallback<Uri[]> fileChooserCallback;
     private SavrivoWebPushBinder pushBinder;
+    private final java.util.concurrent.ExecutorService faceExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
     private long openedAt;
     private long lastBackPressed;
     private boolean pagePresented;
@@ -358,6 +361,18 @@ public class MainActivity extends ComponentActivity {
             });
         }
 
+        @JavascriptInterface public void capturePartnerFace() {
+            runOnUiThread(() -> {
+                if (!isTrustedPageLoaded()) return;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION_REQUEST);
+                    return;
+                }
+                launchFaceCapture();
+            });
+        }
+
         @JavascriptInterface public void openLocationSettings() {
             runOnUiThread(() -> {
                 if (!isTrustedPageLoaded()) return;
@@ -461,6 +476,43 @@ public class MainActivity extends ComponentActivity {
     private void publishGoogleFailure(String message) {
         if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(
                 "window.googleSignInFailed&&window.googleSignInFailed(" + JSONObject.quote(message) + ")", null);
+    }
+
+    private void launchFaceCapture() {
+        try { startActivityForResult(new Intent(this, FaceCaptureActivity.class), FACE_CAPTURE_REQUEST); }
+        catch (Exception error) { publishFaceCaptureFailure("Camera could not be started."); }
+    }
+
+    // Reading and base64-encoding the captured JPEG happens off the main
+    // thread so a slow cache read never freezes the WebView mid-transition.
+    private void publishFaceCaptured(String path) {
+        faceExecutor.execute(() -> {
+            String encoded;
+            try {
+                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path));
+                if (bytes.length == 0 || bytes.length > 2_000_000) throw new IllegalStateException("FACE_IMAGE_SIZE_INVALID");
+                encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
+            } catch (Exception error) {
+                runOnUiThread(() -> publishFaceCaptureFailure("The photo could not be read. Try again."));
+                return;
+            } finally {
+                try { new java.io.File(path).delete(); } catch (Exception ignored) { }
+            }
+            final String base64 = encoded;
+            runOnUiThread(() -> {
+                if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(
+                        "window.riderFaceCaptured&&window.riderFaceCaptured(" + JSONObject.quote(base64) + ")", null);
+            });
+        });
+    }
+
+    private void publishFaceCaptureFailure(String reason) {
+        if (webView == null || !isTrustedPageLoaded()) return;
+        final String safeReason = reason == null ? "capture_failed" : reason;
+        webView.post(() -> {
+            if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(
+                    "window.riderFaceCaptureFailed&&window.riderFaceCaptureFailed(" + JSONObject.quote(safeReason) + ")", null);
+        });
     }
 
     private void startTracking(String customerId, String orderId, String restaurantId, String riderId, String riderName,
@@ -745,6 +797,13 @@ public class MainActivity extends ComponentActivity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                                      int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+            boolean cameraGranted = false;
+            for (int result : grantResults) if (result == PackageManager.PERMISSION_GRANTED) cameraGranted = true;
+            if (cameraGranted) launchFaceCapture();
+            else publishFaceCaptureFailure("Camera permission is required to verify your identity.");
+            return;
+        }
         if (requestCode != LOCATION_PERMISSION_REQUEST) return;
         boolean granted = false;
         for (int result : grantResults) {
@@ -756,6 +815,13 @@ public class MainActivity extends ComponentActivity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == FACE_CAPTURE_REQUEST) {
+            String path = resultCode == RESULT_OK && data != null
+                    ? data.getStringExtra(FaceCaptureActivity.EXTRA_IMAGE_PATH) : null;
+            if (path != null) publishFaceCaptured(path);
+            else publishFaceCaptureFailure("cancelled");
+            return;
+        }
         if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) return;
         Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
         fileChooserCallback.onReceiveValue(result);
@@ -783,6 +849,7 @@ public class MainActivity extends ComponentActivity {
             pushBinder = null;
         }
         handler.removeCallbacksAndMessages(null);
+        faceExecutor.shutdownNow();
         if (fileChooserCallback != null) {
             fileChooserCallback.onReceiveValue(null);
             fileChooserCallback = null;

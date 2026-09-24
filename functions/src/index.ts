@@ -1,17 +1,36 @@
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
-import {onValueCreated, onValueUpdated, onValueWritten} from "firebase-functions/v2/database";
+import {onValueWritten} from "firebase-functions/v2/database";
+import {onDocumentCreated, onDocumentUpdated, onDocumentWritten} from "firebase-functions/v2/firestore";
 import {onCall, onRequest} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
 import {z} from "zod";
-import {db} from "./admin";
-import {DATABASE_REGION, REGION, ROOT} from "./config";
+import {db, firestoreDb} from "./admin";
+import {DATABASE_INSTANCE, DATABASE_REGION, REGION, ROOT} from "./config";
 import {asHttpsError, DomainError} from "./errors";
+import type {TransactionLike, WriteBatchLike} from "./firestoreTypes";
+import {FieldValue} from "./firestoreTypes";
+import {
+  deliveryOtpRef,
+  dispatchQueueRef,
+  orderRef,
+  restaurantRef,
+  riderJobRef,
+  trackingEvidenceRef,
+} from "./firestorePaths";
 import {buildRiderJobProjection} from "./domain/riderJob";
 import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
 import {priceCart} from "./domain/order";
 import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weather";
+import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
+import {
+  resolveRiderFaceReview,
+  resolveRiderFaceReviewSchema,
+  riderFaceImageSchema,
+  submitRiderFaceCheck,
+  verifyRiderLoginFace,
+} from "./services/mediaUploads";
 import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./services/catalog";
 import {
   claimOrderSchema,
@@ -127,18 +146,26 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
 
 async function sideEffectLease(key: string, work: () => Promise<void>): Promise<void> {
   const safeKey = createHash("sha256").update(key).digest("hex");
-  const ref = db.ref(`${ROOT}/backendEvents/${safeKey}`);
+  const ref = firestoreDb.collection("backendEvents").doc(safeKey);
   const now = Date.now();
-  const lease = await ref.transaction((current: {status?: string; leaseUntil?: number} | null) => {
-    if (current?.status === "done" || Number(current?.leaseUntil ?? 0) > now) return undefined;
-    return {status: "running", startedAt: now, leaseUntil: now + 5 * 60_000};
-  }, undefined, false);
-  if (!lease.committed) return;
+  let leaseCommitted = false;
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as {status?: string; leaseUntil?: number} : null;
+    if (current?.status === "done" || Number(current?.leaseUntil ?? 0) > now) return;
+    transaction.set(ref, {status: "running", startedAt: now, leaseUntil: now + 5 * 60_000});
+    leaseCommitted = true;
+  });
+  if (!leaseCommitted) return;
   try {
     await work();
-    await ref.update({status: "done", completedAt: Date.now(), leaseUntil: 0});
+    await ref.set({status: "done", completedAt: Date.now(), leaseUntil: 0}, {merge: true});
   } catch (error) {
-    await ref.update({status: "retry", lastError: error instanceof Error ? error.message.slice(0, 300) : "unknown", leaseUntil: 0});
+    await ref.set({
+      status: "retry",
+      lastError: error instanceof Error ? error.message.slice(0, 300) : "unknown",
+      leaseUntil: 0,
+    }, {merge: true});
     throw error;
   }
 }
@@ -272,6 +299,58 @@ export const declineRiderOrder = onCall({
     return {orderId: input.orderId, declined: true};
   } catch (error) {
     logger.warn("declineRiderOrder rejected", {uid: request.auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
+export const submitRiderFaceCheckCall = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 45,
+  memory: "256MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to verify your identity."));
+  try {
+    const input = parse(riderFaceImageSchema, request.data);
+    return await submitRiderFaceCheck(request.auth.uid, input, AWS_ACCESS_KEY_ID.value(), AWS_SECRET_ACCESS_KEY.value());
+  } catch (error) {
+    logger.warn("submitRiderFaceCheck rejected", {uid: request.auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
+export const verifyRiderLoginFaceCall = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 45,
+  memory: "256MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to verify your identity."));
+  try {
+    const input = parse(riderFaceImageSchema, request.data);
+    return await verifyRiderLoginFace(request.auth.uid, input, AWS_ACCESS_KEY_ID.value(), AWS_SECRET_ACCESS_KEY.value());
+  } catch (error) {
+    logger.warn("verifyRiderLoginFace rejected", {uid: request.auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
+export const resolveRiderFaceReviewCall = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 45,
+  memory: "256MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to review this application."));
+  try {
+    const input = parse(resolveRiderFaceReviewSchema, request.data);
+    return await resolveRiderFaceReview(
+      request.auth.uid, request.auth.token, input, AWS_ACCESS_KEY_ID.value(), AWS_SECRET_ACCESS_KEY.value());
+  } catch (error) {
+    logger.warn("resolveRiderFaceReview rejected", {uid: request.auth.uid, error});
     throw asHttpsError(error);
   }
 });
@@ -840,8 +919,8 @@ export const dispatchCustomerBroadcasts = onSchedule({
   memory: "256MiB",
 }, async () => {
   const now = Date.now();
-  const snapshot = await db.ref(`${ROOT}/customerBroadcasts`).get();
-  const broadcasts = snapshot.val() as Record<string, {
+  const snapshot = await firestoreDb.collection("customerBroadcasts").get();
+  const broadcasts = snapshot.docs.map((doc) => ({id: doc.id, ...(doc.data() as object)}) as {
     id: string;
     title: string;
     message: string;
@@ -854,9 +933,8 @@ export const dispatchCustomerBroadcasts = onSchedule({
     scheduledAt?: number;
     expiresAt?: number;
     repeat?: CustomerBroadcastRepeat;
-  }> | null;
-  if (!broadcasts) return;
-  const due = Object.values(broadcasts).filter((broadcast) => broadcast && broadcast.active !== false &&
+  });
+  const due = broadcasts.filter((broadcast) => broadcast.active !== false &&
     Number(broadcast.scheduledAt) > 0 && Number(broadcast.scheduledAt) <= now &&
     (!broadcast.expiresAt || Number(broadcast.expiresAt) > now));
   for (const broadcast of due) {
@@ -866,11 +944,11 @@ export const dispatchCustomerBroadcasts = onSchedule({
       // one-time (or exhausted) one so this scan skips it going forward.
       const currentScheduledAt = Number(broadcast.scheduledAt);
       const next = computeNextBroadcastOccurrence(currentScheduledAt, broadcast.repeat);
-      const path = `${ROOT}/customerBroadcasts/${broadcast.id}`;
+      const ref = firestoreDb.collection("customerBroadcasts").doc(broadcast.id);
       if (next !== null && (!broadcast.expiresAt || next < Number(broadcast.expiresAt))) {
-        await db.ref().update({[`${path}/scheduledAt`]: next});
+        await ref.update({scheduledAt: next});
       } else {
-        await db.ref().update({[`${path}/active`]: false});
+        await ref.update({active: false});
       }
     } catch (error) {
       logger.warn("CUSTOMER_BROADCAST_DISPATCH_FAILED", {broadcastId: broadcast.id, error});
@@ -903,7 +981,7 @@ export const checkRainPricingSignals = onSchedule({
  */
 export const reconcileExpiredDispatchClaims = onSchedule({
   schedule: "every 5 minutes",
-  region: DATABASE_REGION,
+  region: REGION,
   timeoutSeconds: 300,
   memory: "256MiB",
 }, async () => {
@@ -913,7 +991,7 @@ export const reconcileExpiredDispatchClaims = onSchedule({
 
 export const settleRiderIncentivePeriods = onSchedule({
   schedule: "every 15 minutes",
-  region: DATABASE_REGION,
+  region: REGION,
   timeoutSeconds: 300,
   memory: "256MiB",
 }, async (event) => {
@@ -929,7 +1007,7 @@ export const settleRiderIncentivePeriods = onSchedule({
 
 export const settleWeeklyFinancePayouts = onSchedule({
   schedule: "every 15 minutes",
-  region: DATABASE_REGION,
+  region: REGION,
   timeoutSeconds: 300,
   memory: "256MiB",
 }, async (event) => {
@@ -946,22 +1024,23 @@ export const settleWeeklyFinancePayouts = onSchedule({
   });
 });
 
-/** Every persisted claim lease gets its own recovery task. RTDB trigger retry
+/** Every persisted claim lease gets its own recovery task. Trigger retry
  * guarantees scheduling even if the rider callable exits after reservation. */
-export const onDispatchClaimWritten = onValueWritten({
-  ref: `/${ROOT}/dispatchQueue/{orderId}/claim`,
-  region: DATABASE_REGION,
+export const onDispatchClaimWritten = onDocumentWritten({
+  document: "dispatchQueue/{orderId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (event) => {
-  if (!event.data.after.exists()) return;
-  const claim = event.data.after.val() as {
-    operationId?: string;
-    leaseUntil?: number;
-    state?: string;
-  } | null;
+  type DispatchClaim = {operationId?: string; leaseUntil?: number; state?: string};
+  const before = event.data?.before.exists ? (event.data.before.data() as {claim?: DispatchClaim}).claim ?? null : null;
+  const claim = event.data?.after.exists ? (event.data.after.data() as {claim?: DispatchClaim}).claim ?? null : null;
   if (!claim || !["reserved", "order_committed"].includes(String(claim.state ?? "reserved"))) return;
+  // Firestore triggers fire on the whole document; the RTDB trigger this
+  // replaces scoped itself to the `claim` child path directly, so only react
+  // here when the claim itself actually changed.
+  if (before && JSON.stringify(before) === JSON.stringify(claim)) return;
   const operationId = String(claim.operationId ?? "").trim();
   const leaseUntil = Number(claim.leaseUntil ?? 0);
   if (!operationId || !Number.isSafeInteger(leaseUntil) || leaseUntil < 0) {
@@ -980,18 +1059,19 @@ export const onDispatchClaimWritten = onValueWritten({
   });
 });
 
-export const onOrderCreated = onValueCreated({
-  ref: `/${ROOT}/orders/{customerId}/{orderId}`,
-  region: DATABASE_REGION,
+export const onOrderCreated = onDocumentCreated({
+  document: "orders/{orderId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 60,
   memory: "256MiB",
 }, async (event) => {
-  const rawOrder = event.data.val() as SavrivoOrder | null;
+  const rawOrder = event.data?.data() as SavrivoOrder | undefined;
   if (!rawOrder) return;
   // A retry can run after the order has already advanced. Always reconcile
   // and notify from the latest canonical value, never from the old event body.
-  const latest = (await db.ref(`${ROOT}/orders/${rawOrder.customerId}/${rawOrder.id}`).get()).val() as SavrivoOrder | null;
+  const latestSnapshot = await orderRef(firestoreDb, rawOrder.id).get();
+  const latest = latestSnapshot.exists ? latestSnapshot.data() as SavrivoOrder : null;
   const order = await scrubLegacyPublicOtp(latest ?? rawOrder);
   await reconcileRestaurantOrderProjection(order);
   await reconcileRestaurantWorkload(order);
@@ -1007,23 +1087,23 @@ export const onOrderCreated = onValueCreated({
   });
 });
 
-export const onOrderUpdated = onValueUpdated({
-  ref: `/${ROOT}/orders/{customerId}/{orderId}`,
-  region: DATABASE_REGION,
+export const onOrderUpdated = onDocumentUpdated({
+  document: "orders/{orderId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 60,
   memory: "256MiB",
 }, async (event) => {
-  const before = event.data.before.val() as SavrivoOrder | null;
-  const rawOrder = event.data.after.val() as SavrivoOrder | null;
+  const before = event.data?.before.data() as SavrivoOrder | undefined;
+  const rawOrder = event.data?.after.data() as SavrivoOrder | undefined;
   if (!before || !rawOrder) return;
   // A retry can fire long after the order has advanced further (this trigger
   // is configured with retry: true). Replaying a superseded status here would
   // rewrite riderJobs/dispatchQueue/riderPresence back to that old status,
   // visibly reverting an in-progress delivery in the rider app. Confirm this
   // event still matches the canonical order before acting on it.
-  const latestForEvent = (await db.ref(`${ROOT}/orders/${rawOrder.customerId}/${rawOrder.id}`).get())
-    .val() as SavrivoOrder | null;
+  const latestSnapshot = await orderRef(firestoreDb, rawOrder.id).get();
+  const latestForEvent = latestSnapshot.exists ? latestSnapshot.data() as SavrivoOrder : null;
   if (!latestForEvent || Number(latestForEvent.updatedAt) !== Number(rawOrder.updatedAt)) {
     logger.info("STALE_ORDER_UPDATE_EVENT_IGNORED", {
       orderId: rawOrder.id,
@@ -1037,7 +1117,8 @@ export const onOrderUpdated = onValueUpdated({
   await reconcileRestaurantWorkload(order);
   await reconcileOperationalOrderProjection(order);
   if (["Accepted", "Preparing", "Ready for pickup"].includes(order.status) && !order.riderId) {
-    const queue = (await db.ref(`${ROOT}/dispatchQueue/${order.id}`).get()).val() as {status?: string} | null;
+    const queueSnapshot = await dispatchQueueRef(firestoreDb, order.id).get();
+    const queue = queueSnapshot.exists ? queueSnapshot.data() as {status?: string} : null;
     if (!queue || queue.status === "exhausted") await beginSequentialDispatch(order);
   }
   if (before.status === order.status) return;
@@ -1048,15 +1129,24 @@ export const onOrderUpdated = onValueUpdated({
   });
 
   if (order.status === "Cancelled") {
-    const updates: Record<string, unknown> = {
-      [`${ROOT}/dispatchQueue/${order.id}/active`]: false,
-      [`${ROOT}/dispatchQueue/${order.id}/status`]: "cancelled",
-      [`${ROOT}/tracking/${order.id}`]: null,
-      [`${ROOT}/private/trackingEvidence/${order.id}`]: null,
-      [`${ROOT}/private/deliveryOtps/${order.id}`]: null,
-    };
-    if (order.riderId) updates[`${ROOT}/riderJobs/${order.riderId}/${order.id}/status`] = "cancelled";
-    await db.ref().update(updates);
+    // `set(..., {merge: true})` throughout: unlike RTDB's forgiving multi-path
+    // update(), Firestore's update()/batch update() throws NOT_FOUND for a
+    // document that was never created (e.g. dispatch never started for this
+    // order), and a batch's atomicity means one such miss would fail every
+    // write in it.
+    const batch: WriteBatchLike = firestoreDb.batch();
+    batch.set(dispatchQueueRef(firestoreDb, order.id), {active: false, status: "cancelled"}, {merge: true});
+    batch.delete(trackingEvidenceRef(firestoreDb, order.id));
+    batch.delete(deliveryOtpRef(firestoreDb, order.id));
+    if (order.riderId) {
+      batch.set(riderJobRef(firestoreDb, order.riderId, order.id), {status: "cancelled"}, {merge: true});
+    }
+    await Promise.all([
+      batch.commit(),
+      // `tracking` still lives in RTDB - the rider app's live-location writes
+      // have not migrated off it yet.
+      db.ref(`${ROOT}/tracking/${order.id}`).remove(),
+    ]);
     await cancelDispatchOffers(order.id, "cancelled");
     if (before.riderId) {
       await recordRiderRewardOrderCancelledAfterAccept(
@@ -1067,27 +1157,31 @@ export const onOrderUpdated = onValueUpdated({
     }
   }
   if (order.riderId) {
+    const jobRef = riderJobRef(firestoreDb, order.riderId, order.id);
+    const existingJobSnapshot = await jobRef.get();
+    const existingJob = existingJobSnapshot.exists ? existingJobSnapshot.data() as Record<string, unknown> : null;
+    // A rider can be pre-assigned and record verified restaurant arrival
+    // (phase "at_restaurant") before the kitchen marks Ready for pickup. That
+    // later transition auto-promotes the order back through the "Assigned"
+    // branch below - passing the existing job here lets
+    // buildRiderJobProjection's phase-rank guard keep the verified arrival
+    // instead of reverting the rider's screen to "I have arrived at the
+    // restaurant" again.
+    const jobProjection = buildRiderJobProjection(order, existingJob);
     if (order.status === "Assigned") {
-      // A rider can be pre-assigned and record verified restaurant arrival
-      // (phase "at_restaurant") before the kitchen marks Ready for pickup.
-      // That later transition auto-promotes the order back through this
-      // same "Assigned" branch — passing the existing job here (as the
-      // sibling branch below already does) lets buildRiderJobProjection's
-      // phase-rank guard keep the verified arrival instead of reverting the
-      // rider's screen to "I have arrived at the restaurant" again.
-      const existingJob = (await db.ref(`${ROOT}/riderJobs/${order.riderId}/${order.id}`).get())
-        .val() as Record<string, unknown> | null;
-      await db.ref(ROOT).update({
-        [`riderJobs/${order.riderId}/${order.id}`]: buildRiderJobProjection(order, existingJob),
-        [`dispatchQueue/${order.id}/status`]: "assigned",
-        [`dispatchQueue/${order.id}/active`]: false,
-        [`dispatchQueue/${order.id}/updatedAt`]: order.updatedAt,
-        [`riderPresence/${order.riderId}/activeOrderId`]: order.id,
-      });
+      const batch: WriteBatchLike = firestoreDb.batch();
+      batch.set(jobRef, jobProjection);
+      batch.set(dispatchQueueRef(firestoreDb, order.id), {
+        status: "assigned",
+        active: false,
+        updatedAt: order.updatedAt,
+      }, {merge: true});
+      await Promise.all([
+        batch.commit(),
+        db.ref(`${ROOT}/riderPresence/${order.riderId}/activeOrderId`).set(order.id),
+      ]);
     } else {
-      const jobRef = db.ref(`${ROOT}/riderJobs/${order.riderId}/${order.id}`);
-      const existingJob = (await jobRef.get()).val() as Record<string, unknown> | null;
-      await jobRef.set(buildRiderJobProjection(order, existingJob));
+      await jobRef.set(jobProjection);
     }
     if (order.status === "Arrived") {
       await recoverExhaustedDispatchesForFinishingRider(order.riderId);
@@ -1106,13 +1200,14 @@ export const onOrderUpdated = onValueUpdated({
     await sideEffectLease(`rider-rewards:${order.id}`, async () => {
       await evaluateRiderRewardsForDeliveredOrder(order);
     });
-    const deliveredUpdates: Record<string, null> = {
-      [`${ROOT}/tracking/${order.id}`]: null,
-      [`${ROOT}/private/trackingEvidence/${order.id}`]: null,
-      [`${ROOT}/private/deliveryOtps/${order.id}`]: null,
-    };
-    if (order.riderId) deliveredUpdates[`${ROOT}/riderPresence/${order.riderId}/activeOrderId`] = null;
-    await db.ref().update(deliveredUpdates);
+    const batch: WriteBatchLike = firestoreDb.batch();
+    batch.delete(trackingEvidenceRef(firestoreDb, order.id));
+    batch.delete(deliveryOtpRef(firestoreDb, order.id));
+    await Promise.all([
+      batch.commit(),
+      db.ref(`${ROOT}/tracking/${order.id}`).remove(),
+      ...(order.riderId ? [db.ref(`${ROOT}/riderPresence/${order.riderId}/activeOrderId`).remove()] : []),
+    ]);
   }
 
   // Rider assignment has one authoritative, order-scoped notification lease.
@@ -1131,7 +1226,8 @@ export const onOrderUpdated = onValueUpdated({
   }
   if (order.status === "Assigned" && order.riderId) {
     notifications.push(sideEffectLease(`stop-rider-offers:${order.id}`, async () => {
-      const queue = (await db.ref(`${ROOT}/dispatchQueue/${order.id}`).get()).val() as {candidates?: Array<{riderId?: string}>} | null;
+      const queueSnapshot = await dispatchQueueRef(firestoreDb, order.id).get();
+      const queue = queueSnapshot.exists ? queueSnapshot.data() as {candidates?: Array<{riderId?: string}>} : null;
       await stopRiderOffers((queue?.candidates ?? []).map((candidate) => String(candidate.riderId ?? "")).filter(Boolean), order.id, order.riderId!);
     }));
   }
@@ -1147,24 +1243,50 @@ export const onOrderUpdated = onValueUpdated({
  * silently unlistable. Writing the value re-fires this trigger, which is why
  * it writes only when the stored value is genuinely stale.
  */
-export const onCatalogRestaurantWritten = onValueWritten({
-  ref: `/${ROOT}/catalog/restaurants/{restaurantId}`,
-  region: DATABASE_REGION,
+/**
+ * The search-token index (`catalogSearchTokens/{cityKey}`) is a client-read
+ * type-ahead structure only - nothing in Cloud Functions queries it. It moves
+ * to Firestore here to stay consistent with `restaurants` (its source data),
+ * rather than leaving it stranded on RTDB as a second database the reindexer
+ * would need to keep in sync across two systems.
+ */
+// Each token entry is its own document, in a subcollection keyed by city -
+// not a field on one shared document. A client's type-ahead needs to range
+// over the key space itself (every entry whose key starts with the typed
+// prefix), and Firestore can only do that kind of prefix range query against
+// document IDs (`orderBy(FieldPath.documentId())` + `startAt`/`endAt`), never
+// against field names inside a single document.
+async function applyCatalogSearchTokenUpdates(tokenUpdates: Record<string, true | null>): Promise<void> {
+  const batch: WriteBatchLike = firestoreDb.batch();
+  for (const [path, value] of Object.entries(tokenUpdates)) {
+    const separatorIndex = path.indexOf("/");
+    const cityKey = path.slice(0, separatorIndex);
+    const key = path.slice(separatorIndex + 1);
+    const ref = firestoreDb.collection("catalogSearchTokens").doc(cityKey).collection("tokens").doc(key);
+    if (value === null) batch.delete(ref);
+    else batch.set(ref, {value: true});
+  }
+  await batch.commit();
+}
+
+export const onCatalogRestaurantWritten = onDocumentWritten({
+  document: "restaurants/{restaurantId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (event) => {
   const restaurantId = String(event.params.restaurantId);
-  const withId = (snapshot: {exists(): boolean; val(): unknown}) =>
-    snapshot.exists() ? {...(snapshot.val() as Record<string, unknown>), id: restaurantId} : null;
-  const before = withId(event.data.before);
-  const after = withId(event.data.after);
+  const before = event.data?.before.exists
+    ? {...(event.data.before.data() as Record<string, unknown>), id: restaurantId} : null;
+  const after = event.data?.after.exists
+    ? {...(event.data.after.data() as Record<string, unknown>), id: restaurantId} : null;
 
   // The word index has to be maintained on deletion too - a restaurant that is
   // gone must stop being findable, and only `before` knows what to remove.
   const tokenUpdates = searchTokenUpdates(before, after);
   if (Object.keys(tokenUpdates).length > 0) {
-    await db.ref(`${ROOT}/catalog/searchTokens`).update(tokenUpdates);
+    await applyCatalogSearchTokenUpdates(tokenUpdates);
     logger.info("CATALOG_SEARCH_TOKENS_REINDEXED", {
       restaurantId,
       added: Object.values(tokenUpdates).filter((value) => value === true).length,
@@ -1184,24 +1306,25 @@ export const onCatalogRestaurantWritten = onValueWritten({
   // trigger re-firing on its own write. All three sort keys go in one update
   // so a restaurant is never indexed by name or position in one but not the
   // others.
-  const fields: Record<string, string | null> = {};
+  const fields: Record<string, unknown> = {};
   if (citySortNeedsUpdate(source, restaurant.citySort)) fields.citySort = citySortValue(source);
   if (geoSortNeedsUpdate(geoSource, restaurant.geoSort)) {
     // A restaurant with no usable coordinates has no place in the proximity
     // index; clearing it is what removes one that used to have them.
-    fields.geoSort = geoSortValue(geoSource) || null;
+    fields.geoSort = geoSortValue(geoSource) || FieldValue.delete();
   }
   if (geoSortGlobalNeedsUpdate(geoSource, restaurant.geoSortGlobal)) {
-    fields.geoSortGlobal = geoSortGlobalValue(geoSource) || null;
+    fields.geoSortGlobal = geoSortGlobalValue(geoSource) || FieldValue.delete();
   }
   if (Object.keys(fields).length === 0) return;
 
-  await db.ref(`${ROOT}/catalog/restaurants/${restaurantId}`).update(fields);
+  await restaurantRef(firestoreDb, restaurantId).update(fields);
   logger.info("CATALOG_SORT_KEYS_REINDEXED", {restaurantId, ...fields});
 });
 
 export const onRiderPresenceUpdated = onValueWritten({
   ref: `/${ROOT}/riderPresence/{riderId}`,
+  instance: DATABASE_INSTANCE,
   region: DATABASE_REGION,
   retry: true,
   timeoutSeconds: 30,
@@ -1224,9 +1347,9 @@ export const onRiderPresenceUpdated = onValueWritten({
 /** Keep dispatch candidate selection bounded to one private projection read.
  * Claiming an offer still revalidates every authoritative source inside the
  * race-safe assignment flow, so projection lag can never grant a delivery. */
-export const onRiderProfileEligibilitySourceWritten = onValueWritten({
-  ref: `/${ROOT}/riders/{riderId}`,
-  region: DATABASE_REGION,
+export const onRiderProfileEligibilitySourceWritten = onDocumentWritten({
+  document: "riders/{riderId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -1238,9 +1361,9 @@ export const onRiderProfileEligibilitySourceWritten = onValueWritten({
   );
 });
 
-export const onRiderWalletEligibilitySourceWritten = onValueWritten({
-  ref: `/${ROOT}/riderWallets/{riderId}`,
-  region: DATABASE_REGION,
+export const onRiderWalletEligibilitySourceWritten = onDocumentWritten({
+  document: "riderWallets/{riderId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -1252,23 +1375,29 @@ export const onRiderWalletEligibilitySourceWritten = onValueWritten({
   );
 });
 
-export const onRiderJobEligibilitySourceWritten = onValueWritten({
-  ref: `/${ROOT}/riderJobs/{riderId}/{orderId}`,
-  region: DATABASE_REGION,
+export const onRiderJobEligibilitySourceWritten = onDocumentWritten({
+  // `riderJobs` is a flat collection (doc id `{riderId}_{orderId}`), not the
+  // nested RTDB path this replaces - both ids are read from the document's
+  // own `riderId`/`orderId` fields (which buildRiderJobProjection always
+  // sets) rather than parsed back out of the id, since a Firebase UID can in
+  // principle itself contain "_".
+  document: "riderJobs/{jobId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (event) => {
   const parsed = Date.parse(String(event.time ?? ""));
   const eventAt = Number.isFinite(parsed) ? parsed : Date.now();
-  const riderId = String(event.params.riderId);
-  const workload = await reconcileRiderOperationalWorkload(
-    riderId,
-    String(event.params.orderId),
-    event.data.before.exists() ? event.data.before.val() : null,
-    event.data.after.exists() ? event.data.after.val() : null,
-    eventAt,
-  );
+  const before = event.data?.before.exists ? event.data.before.data() as Record<string, unknown> : null;
+  const after = event.data?.after.exists ? event.data.after.data() as Record<string, unknown> : null;
+  const riderId = String((after ?? before)?.riderId ?? "");
+  const orderId = String((after ?? before)?.orderId ?? "");
+  if (!riderId || !orderId) {
+    logger.warn("RIDER_JOB_EVENT_MISSING_IDENTIFIERS", {jobId: String(event.params.jobId)});
+    return;
+  }
+  const workload = await reconcileRiderOperationalWorkload(riderId, orderId, before, after, eventAt);
   await refreshRiderDispatchEligibility(
     riderId,
     eventAt,
@@ -1276,19 +1405,33 @@ export const onRiderJobEligibilitySourceWritten = onValueWritten({
   );
 });
 
-export const onReviewCreated = onValueCreated({
-  ref: `/${ROOT}/reviews/{customerId}/{orderId}`,
-  region: DATABASE_REGION,
+export const onReviewCreated = onDocumentCreated({
+  // reviews/{customerId}_{orderId} - a client-written composite id (see
+  // reviews.ts). Prefer the review's own `orderId` field as a known-length
+  // suffix to split the id unambiguously; a Firebase UID can in principle
+  // contain "_", so only the fallback (first "_") assumes customerId itself
+  // never does.
+  document: "reviews/{reviewId}",
+  region: REGION,
   retry: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (event) => {
-  const review = event.data.val() as {orderId?: string; restaurantId?: string; riderId?: string; rating?: number; riderRating?: number; postDeliveryTip?: unknown; growthContribution?: unknown} | null;
+  const review = event.data?.data() as {orderId?: string; restaurantId?: string; riderId?: string; rating?: number; riderRating?: number; postDeliveryTip?: unknown; growthContribution?: unknown} | undefined;
   if (!review) return;
-  const customerId = String(event.params.customerId);
-  const orderId = String(event.params.orderId);
-  const order = (await db.ref(`${ROOT}/orders/${customerId}/${orderId}`).get()).val() as SavrivoOrder | null;
-  if (!order || order.status !== "Delivered") {
+  const reviewId = String(event.params.reviewId);
+  const suffixSeparator = review.orderId && reviewId.endsWith(`_${review.orderId}`)
+    ? reviewId.length - review.orderId.length - 1
+    : reviewId.indexOf("_");
+  const customerId = suffixSeparator > 0 ? reviewId.slice(0, suffixSeparator) : "";
+  const orderId = review.orderId || (suffixSeparator > 0 ? reviewId.slice(suffixSeparator + 1) : "");
+  if (!customerId || !orderId) {
+    logger.warn("REVIEW_TIP_IDENTIFIERS_UNRESOLVED", {reviewId});
+    return;
+  }
+  const orderSnapshot = await orderRef(firestoreDb, orderId).get();
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
+  if (!order || order.status !== "Delivered" || order.customerId !== customerId) {
     logger.warn("REVIEW_TIP_ORDER_NOT_ELIGIBLE", {customerId, orderId});
     return;
   }
@@ -1318,6 +1461,7 @@ export const onReviewCreated = onValueCreated({
 
 export const onTrackingUpdated = onValueWritten({
   ref: `/${ROOT}/tracking/{orderId}`,
+  instance: DATABASE_INSTANCE,
   region: DATABASE_REGION,
   retry: true,
   timeoutSeconds: 30,

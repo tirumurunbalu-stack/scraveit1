@@ -136,3 +136,13 @@ export function utcDayKey(now: number): string {
 export function publicObjectUrl(bucket: string, objectPath: string, generation: string): string {
   return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(objectPath)}?alt=media&generation=${encodeURIComponent(generation)}`;
 }
+
+// A private object has no public-read Storage rule, so a plain <img> tag
+// (no Authorization header) needs Firebase's download-token mechanism
+// instead: this token, once stamped into the object's own metadata at
+// write time, grants read access to whoever holds the URL, bypassing
+// Storage rules entirely - the same mechanism Firebase's own upload SDKs
+// use for "unguessable link" images.
+export function privateObjectUrl(bucket: string, objectPath: string, downloadToken: string): string {
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(objectPath)}?alt=media&token=${encodeURIComponent(downloadToken)}`;
+}

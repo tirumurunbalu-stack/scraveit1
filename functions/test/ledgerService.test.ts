@@ -1,21 +1,23 @@
 import {describe, expect, it, vi} from "vitest";
 
-vi.mock("../src/admin", () => ({db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }}}));
+vi.mock("../src/admin", () => ({
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
+}));
 
 import {
-  LEDGER_JOURNALS_ROOT,
+  LEDGER_JOURNALS_COLLECTION,
   buildCodEarningsOffsetJournal,
   buildCodOrderDeliveryJournal,
   buildCodRemittanceJournal,
   buildOnlineOrderDeliveryJournal,
   buildOnlinePaymentReceiptJournal,
   buildOnlinePaymentRefundJournal,
-  ledgerJournalPath,
+  validatedLedgerJournalId,
   orderDeliveryAmounts,
   persistLedgerJournal,
-  type LedgerTransactionDatabase,
-  type LedgerTransactionResult,
+  type LedgerFirestore,
 } from "../src/services/ledger";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
 const amounts = {
   grossAmountPaise: 14_000,
@@ -34,25 +36,6 @@ const baseInput = {
   riderId: "rider-1",
   occurredAt: 1_700_000_000_000,
 } as const;
-
-class InMemoryTransactionDatabase implements LedgerTransactionDatabase {
-  readonly paths: string[] = [];
-  private readonly values = new Map<string, unknown>();
-
-  ref(path: string) {
-    this.paths.push(path);
-    return {
-      transaction: async (update: (current: unknown) => unknown): Promise<LedgerTransactionResult> => {
-        const next = update(this.values.get(path) ?? null);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => this.values.get(path) ?? null}};
-        }
-        this.values.set(path, next);
-        return {committed: true, snapshot: {val: () => this.values.get(path) ?? null}};
-      },
-    };
-  }
-}
 
 function entryAmount(journal: ReturnType<typeof buildCodOrderDeliveryJournal>, accountId: string): number | undefined {
   return journal.entries.find((entry) => entry.accountId === accountId)?.amountPaise;
@@ -227,30 +210,30 @@ describe("backend ledger persistence", () => {
       .toThrow("LEDGER_DELIVERY_ALLOCATION_MISMATCH");
   });
 
-  it("persists at one deterministic private journal path", async () => {
-    const database = new InMemoryTransactionDatabase();
+  it("persists at one deterministic journal document id", async () => {
+    const database: LedgerFirestore = new InMemoryFirestore();
     const journal = buildCodOrderDeliveryJournal(baseInput);
     const result = await persistLedgerJournal(journal, database);
     expect(result.outcome).toBe("insert");
-    expect(result.path).toBe(`${LEDGER_JOURNALS_ROOT}/${journal.journalId}`);
-    expect(result.path).toBe(ledgerJournalPath(journal));
-    expect(database.paths).toEqual([result.path]);
-    expect(database.paths.every((path) => !path.includes("riderWallets"))).toBe(true);
+    expect(result.journalId).toBe(journal.journalId);
+    expect(result.journalId).toBe(validatedLedgerJournalId(journal));
+    expect((database as InMemoryFirestore).paths()).toEqual([`${LEDGER_JOURNALS_COLLECTION}/${journal.journalId}`]);
+    expect((database as InMemoryFirestore).paths().every((path) => !path.includes("riderWallets"))).toBe(true);
   });
 
   it("returns idempotent for an exact transaction retry", async () => {
-    const database = new InMemoryTransactionDatabase();
+    const database: LedgerFirestore = new InMemoryFirestore();
     const first = buildCodOrderDeliveryJournal(baseInput);
     const retry = buildCodOrderDeliveryJournal(baseInput);
     await expect(persistLedgerJournal(first, database)).resolves.toMatchObject({outcome: "insert"});
     await expect(persistLedgerJournal(retry, database)).resolves.toMatchObject({
       outcome: "idempotent",
-      path: ledgerJournalPath(first),
+      journalId: validatedLedgerJournalId(first),
     });
   });
 
-  it("rejects a changed payload at the same immutable journal path", async () => {
-    const database = new InMemoryTransactionDatabase();
+  it("rejects a changed payload at the same immutable journal id", async () => {
+    const database: LedgerFirestore = new InMemoryFirestore();
     const first = buildCodOrderDeliveryJournal(baseInput);
     const conflict = buildCodOrderDeliveryJournal({
       ...baseInput,

@@ -218,8 +218,8 @@ public final class OrderAlarmService extends Service {
             }
             JSONObject record = new JSONObject();
             try {
-                record.put("title", defaultText(intent.getStringExtra(EXTRA_TITLE), "New Scraveit order"));
-                record.put("body", defaultText(intent.getStringExtra(EXTRA_BODY), "Open the restaurant app to respond."));
+                record.put("title", defaultText(intent.getStringExtra(EXTRA_TITLE), defaultAlarmTitle()));
+                record.put("body", defaultText(intent.getStringExtra(EXTRA_BODY), defaultAlarmBody()));
                 record.put("orderId", defaultText(intent.getStringExtra(EXTRA_ORDER_ID), ""));
                 record.put("startedAt", System.currentTimeMillis());
                 record.put("expiresAt", expiresAt);
@@ -234,7 +234,7 @@ public final class OrderAlarmService extends Service {
         }
         showNotifications(alarms);
         beginSoundAndVibration();
-        if (isRider()) armPlaybackWatchdog();
+        if (isRider() || isAdmin()) armPlaybackWatchdog();
         return START_STICKY;
     }
 
@@ -245,13 +245,10 @@ public final class OrderAlarmService extends Service {
         Iterator<String> ids = alarms.keys();
         String firstId = ids.hasNext() ? ids.next() : "new-order";
         JSONObject first = alarms.optJSONObject(firstId);
-        boolean rider = "rider".equals(SavrivoFirebase.appRole(this));
         Notification foreground = notification(
-                alarms.length() == 1 ? text(first, "title", rider ? "New delivery offer" : "New Scraveit order")
-                        : alarms.length() + (rider ? " delivery offers need action" : " Scraveit orders need action"),
-                alarms.length() == 1 ? text(first, "body", rider ? "Accept or decline this delivery." : "Accept or reject this order.")
-                        : (rider ? "Open Scraveit Partner to accept or decline each offer."
-                                : "Open the restaurant app to accept or reject each order."),
+                alarms.length() == 1 ? text(first, "title", defaultAlarmTitle())
+                        : defaultMultiAlarmTitle(alarms.length()),
+                alarms.length() == 1 ? text(first, "body", defaultAlarmBody()) : defaultMultiAlarmBody(),
                 firstId,
                 true);
         startForeground(FOREGROUND_ID, foreground);
@@ -261,9 +258,33 @@ public final class OrderAlarmService extends Service {
             String alarmId = each.next();
             JSONObject record = alarms.optJSONObject(alarmId);
             manager.notify(SavrivoNotifications.stableId(notificationNamespace(this), alarmId),
-                    notification(text(record, "title", rider ? "New delivery offer" : "New Scraveit order"),
-                            text(record, "body", rider ? "Accept or decline this delivery." : "Accept or reject this order."), alarmId, true));
+                    notification(text(record, "title", defaultAlarmTitle()),
+                            text(record, "body", defaultAlarmBody()), alarmId, true));
         }
+    }
+
+    private String defaultAlarmTitle() {
+        if (isRider()) return "New delivery offer";
+        if (isAdmin()) return "Support requests need attention";
+        return "New Scraveit order";
+    }
+
+    private String defaultAlarmBody() {
+        if (isRider()) return "Accept or decline this delivery.";
+        if (isAdmin()) return "Open the Admin app to respond.";
+        return "Accept or reject this order.";
+    }
+
+    private String defaultMultiAlarmTitle(int count) {
+        if (isRider()) return count + " delivery offers need action";
+        if (isAdmin()) return count + " support requests need attention";
+        return count + " Scraveit orders need action";
+    }
+
+    private String defaultMultiAlarmBody() {
+        if (isRider()) return "Open Scraveit Partner to accept or decline each offer.";
+        if (isAdmin()) return "Open the Admin app to review each request.";
+        return "Open the restaurant app to accept or reject each order.";
     }
 
     private Notification notification(String title, String body, String alarmId, boolean ongoing) {
@@ -275,8 +296,9 @@ public final class OrderAlarmService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pending = PendingIntent.getActivity(
                 this, SavrivoNotifications.stableId(notificationNamespace(this) + "-open", alarmId), launch, flags);
-        String channel = "rider".equals(SavrivoFirebase.appRole(this))
-                ? SavrivoNotifications.RIDER_OFFERS : SavrivoNotifications.RESTAURANT_ORDERS;
+        String channel = isRider() ? SavrivoNotifications.RIDER_OFFERS
+                : isAdmin() ? SavrivoNotifications.ADMIN_SUPPORT
+                : SavrivoNotifications.RESTAURANT_ORDERS;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, channel)
                 : new Notification.Builder(this);
@@ -385,6 +407,10 @@ public final class OrderAlarmService extends Service {
     private void armPlaybackWatchdog() {
         playbackHandler.removeCallbacks(playbackWatchdog);
         playbackHandler.postDelayed(playbackWatchdog, PLAYBACK_WATCHDOG_MS);
+    }
+
+    private boolean isAdmin() {
+        return "admin".equals(SavrivoFirebase.appRole(this));
     }
 
     private boolean isRider() {
@@ -501,7 +527,10 @@ public final class OrderAlarmService extends Service {
     }
 
     private static String notificationNamespace(Context context) {
-        return "rider".equals(SavrivoFirebase.appRole(context)) ? "rider-offer" : "restaurant";
+        String role = SavrivoFirebase.appRole(context);
+        if ("rider".equals(role)) return "rider-offer";
+        if ("admin".equals(role)) return "admin-support";
+        return "restaurant";
     }
 
     private static String trim(String value, int max) {

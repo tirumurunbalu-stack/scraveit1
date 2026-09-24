@@ -1,7 +1,6 @@
 import {logger} from "firebase-functions";
 import {defineSecret} from "firebase-functions/params";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   normalizeCityKey,
   resolveRainFee,
@@ -99,20 +98,22 @@ export async function refreshRainPricingSignals(apiKey: string, now = Date.now()
   written: number;
 }> {
   const [settingsSnapshot, restaurantsSnapshot] = await Promise.all([
-    db.ref(`${ROOT}/settings/customer`).get(),
-    db.ref(`${ROOT}/catalog/restaurants`).get(),
+    firestoreDb.collection("settings").doc("customer").get(),
+    firestoreDb.collection("restaurants").get(),
   ]);
-  const settings = (settingsSnapshot.val() ?? {}) as RainSettings;
+  const settings = (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as RainSettings;
   if (settings.rainFeeEnabled !== true) return {checked: 0, written: 0};
 
-  const restaurants = Object.values((restaurantsSnapshot.val() ?? {}) as Record<string, CatalogRestaurant>)
+  const restaurants = restaurantsSnapshot.docs
+    .map((doc) => doc.data() as CatalogRestaurant)
     .filter((restaurant) => restaurant && restaurant.open === true && restaurant.archived !== true &&
       Number.isFinite(Number(restaurant.lat)) && Number.isFinite(Number(restaurant.lng)));
 
   const minProbability = Number(settings.rainMinProbability ?? 35);
   const thresholds = tierThresholds(settings);
   const validUntil = now + SIGNAL_VALIDITY_MS;
-  const updates: Record<string, unknown> = {};
+  const batch = firestoreDb.batch();
+  let written = 0;
 
   await Promise.all(restaurants.map(async (restaurant) => {
     const reading = await fetchPrecipitation(Number(restaurant.lat), Number(restaurant.lng), apiKey);
@@ -120,7 +121,7 @@ export async function refreshRainPricingSignals(apiKey: string, now = Date.now()
     const cityKey = normalizeCityKey(restaurant.city);
     const fees = feeSchedule(settings, cityKey);
     const rainFee = resolveRainFee(reading, minProbability, thresholds, fees);
-    updates[`${ROOT}/pricingSignals/${restaurant.id}`] = {
+    batch.set(firestoreDb.collection("pricingSignals").doc(restaurant.id), {
       kind: "verified_weather",
       rainFee,
       validUntil,
@@ -128,9 +129,10 @@ export async function refreshRainPricingSignals(apiKey: string, now = Date.now()
       probabilityPercent: reading.probabilityPercent,
       quantityMm: reading.quantityMm,
       ...(reading.conditionType ? {conditionType: reading.conditionType} : {}),
-    };
+    });
+    written += 1;
   }));
 
-  if (Object.keys(updates).length) await db.ref().update(updates);
-  return {checked: restaurants.length, written: Object.keys(updates).length};
+  if (written) await batch.commit();
+  return {checked: restaurants.length, written};
 }

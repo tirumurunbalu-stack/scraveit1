@@ -66,3 +66,7 @@ native_android.zip
 
 # Local Firebase Hosting deploy cache
 .firebase/
+
+# Local tool caches and installed dependencies
+**/node_modules/
+**/.wrangler/

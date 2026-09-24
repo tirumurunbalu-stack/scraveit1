@@ -49,6 +49,7 @@ import androidx.core.content.FileProvider;
 import com.savrivo.firebase.SavrivoOperationsBridge;
 import com.savrivo.firebase.SavrivoWebPushBinder;
 import com.savrivo.firebase.GoogleCredentialSignIn;
+import com.savrivo.firebase.OrderAlarmService;
 
 import java.io.ByteArrayInputStream;
 import java.io.BufferedInputStream;
@@ -79,6 +80,7 @@ public class MainActivity extends ComponentActivity {
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
   private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
   private static final int PREPARED_IMAGE_MAX_EDGE = 1800;
+  private static final int PREPARED_THUMB_MAX_EDGE = 480;
   private static final long MAX_SOURCE_IMAGE_BYTES = 50L * 1024L * 1024L;
   private final Handler handler = new Handler(android.os.Looper.getMainLooper());
   private final ExecutorService imageExecutor = Executors.newSingleThreadExecutor();
@@ -89,9 +91,8 @@ public class MainActivity extends ComponentActivity {
   private SavrivoWebPushBinder pushBinder;
   private ValueCallback<Uri[]> fileChooserCallback;
   private volatile File preparedImageFile;
+  private volatile File preparedThumbFile;
   private boolean awaitingRestaurantLocation;
-  private MediaPlayer persistentAlertPlayer;
-  private int persistentAlertNotificationId = -1;
 
   @Override public void onCreate(Bundle state) {
     super.onCreate(state);
@@ -383,7 +384,14 @@ public class MainActivity extends ComponentActivity {
       // JavascriptInterface calls arrive on WebView's bridge thread. WebView.getUrl()
       // may only be queried on the UI thread; doing it here caused the opaque
       // "Java exception was raised during method invocation" seen on real devices.
-      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath));
+      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath, preparedImageFile));
+    }
+    @JavascriptInterface public void uploadPreparedThumb(String requestId, String idToken,
+                                                          String objectPath) {
+      String safeRequestId = requestId == null ? "" : requestId.trim();
+      String safeToken = idToken == null ? "" : idToken.trim();
+      String safePath = objectPath == null ? "" : objectPath.trim();
+      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath, preparedThumbFile));
     }
   }
 
@@ -398,12 +406,11 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void beginPreparedImageUpload(String safeRequestId, String safeToken,
-                                         String safePath) {
+                                         String safePath, File source) {
       if (!isTrustedPageLoaded()) {
         publishImageUpload(safeRequestId, false, "Image upload is unavailable on this screen.");
         return;
       }
-      File source = preparedImageFile;
       if (!safeRequestId.matches("[A-Za-z0-9_-]{1,80}")
           || safeToken.length() < 20 || safeToken.length() > 8192
           || !safePath.matches("admin-uploads/[A-Za-z0-9_-]{1,128}/[A-Za-z0-9_./-]{1,900}\\.jpg")
@@ -416,6 +423,7 @@ public class MainActivity extends ComponentActivity {
         try {
           String downloadUrl = uploadImageToFirebase(source, safeToken, safePath);
           if (preparedImageFile == source) preparedImageFile = null;
+          if (preparedThumbFile == source) preparedThumbFile = null;
           source.delete();
           publishImageUpload(safeRequestId, true, downloadUrl);
         } catch (Exception error) {
@@ -469,12 +477,42 @@ public class MainActivity extends ComponentActivity {
         String serverToken = new JSONObject(response).optString("downloadTokens", "");
         if (!serverToken.isEmpty()) downloadToken = serverToken.split(",")[0];
       }
+      setImmutableCacheControl(bucket, objectPath, idToken);
       return "https://firebasestorage.googleapis.com/v0/b/" + Uri.encode(bucket)
           + "/o/" + Uri.encode(objectPath) + "?alt=media&token=" + Uri.encode(downloadToken);
     } catch (org.json.JSONException error) {
       throw new IOException("Firebase returned an invalid upload response.", error);
     } finally {
       connection.disconnect();
+    }
+  }
+
+  /**
+   * Every uploaded object path is timestamp-unique (a new save always uploads to a new
+   * name), so it is safe to let clients cache it forever. Best-effort: a failure here
+   * only costs a slower repeat load, never the upload itself.
+   */
+  private void setImmutableCacheControl(String bucket, String objectPath, String idToken) {
+    try {
+      String endpoint = "https://firebasestorage.googleapis.com/v0/b/" + Uri.encode(bucket)
+          + "/o/" + Uri.encode(objectPath);
+      HttpURLConnection connection = (HttpURLConnection)new URL(endpoint).openConnection();
+      connection.setConnectTimeout(10000);
+      connection.setReadTimeout(10000);
+      connection.setRequestMethod("PATCH");
+      connection.setDoOutput(true);
+      connection.setRequestProperty("Authorization", "Bearer " + idToken);
+      connection.setRequestProperty("Content-Type", "application/json");
+      byte[] body = "{\"cacheControl\":\"public, max-age=31536000, immutable\"}"
+          .getBytes(StandardCharsets.UTF_8);
+      connection.setFixedLengthStreamingMode(body.length);
+      try (BufferedOutputStream output = new BufferedOutputStream(connection.getOutputStream())) {
+        output.write(body);
+        output.flush();
+      }
+      connection.getResponseCode();
+      connection.disconnect();
+    } catch (Exception ignored) {
     }
   }
 
@@ -499,57 +537,23 @@ public class MainActivity extends ComponentActivity {
     });
   }
 
+  // A foreground service (OrderAlarmService, shared with the Rider/Restaurant apps' own
+  // accept/decline alerts), not a MediaPlayer/notification owned by this Activity - so the alert
+  // keeps ringing until explicitly acknowledged from the JS side (Open request / Mark resolved),
+  // even if this Activity is destroyed, e.g. the app swiped away from Recents. The previous
+  // Activity-owned MediaPlayer was torn down by onDestroy() the moment that happened, which
+  // silenced a still-unresolved alert - backwards from what an attention alarm should do.
   private void startPersistentAlert(String title, String body, int id) {
     if (Build.VERSION.SDK_INT >= 33
         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
       requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
       return;
     }
-    NotificationManager manager = (NotificationManager)getSystemService(Context.NOTIFICATION_SERVICE);
-    if (manager != null) {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        NotificationChannel channel = new NotificationChannel("savrivo_admin_support",
-            "Support request alerts", NotificationManager.IMPORTANCE_HIGH);
-        channel.setSound(null, null);
-        manager.createNotificationChannel(channel);
-      }
-      Intent open = new Intent(this, MainActivity.class);
-      int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
-      PendingIntent pending = PendingIntent.getActivity(this, id, open, flags);
-      Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-          ? new Notification.Builder(this, "savrivo_admin_support") : new Notification.Builder(this);
-      Notification notification = builder.setSmallIcon(com.feastly.admin.R.drawable.savrivo_notification)
-          .setContentTitle(title == null ? "Scraveit" : title)
-          .setContentText(body == null ? "Action required" : body)
-          .setOngoing(true).setAutoCancel(false).setContentIntent(pending).build();
-      manager.notify(id, notification);
-      persistentAlertNotificationId = id;
-    }
-    if (persistentAlertPlayer == null || !persistentAlertPlayer.isPlaying()) {
-      try {
-        int soundId = getResources().getIdentifier("savrivo_action_alert", "raw", getPackageName());
-        persistentAlertPlayer = soundId == 0 ? null : MediaPlayer.create(this, soundId);
-        if (persistentAlertPlayer != null) {
-          persistentAlertPlayer.setLooping(true);
-          persistentAlertPlayer.start();
-        }
-      } catch (Exception ignored) { }
-    }
+    OrderAlarmService.start(this, "support:" + id, title, body, "");
   }
 
   private void stopPersistentAlert(int id) {
-    if (persistentAlertPlayer != null) {
-      try { persistentAlertPlayer.stop(); } catch (Exception ignored) { }
-      try { persistentAlertPlayer.release(); } catch (Exception ignored) { }
-      persistentAlertPlayer = null;
-    }
-    NotificationManager manager = (NotificationManager)getSystemService(Context.NOTIFICATION_SERVICE);
-    if (manager != null) {
-      if (id > 0) manager.cancel(id);
-      if (persistentAlertNotificationId > 0 && persistentAlertNotificationId != id) manager.cancel(persistentAlertNotificationId);
-    }
-    persistentAlertNotificationId = -1;
+    OrderAlarmService.stop(this, "support:" + id);
   }
 
   private void requestRestaurantLocationInternal() {
@@ -660,10 +664,14 @@ public class MainActivity extends ComponentActivity {
 
   private void prepareSelectedImage(Uri source) {
     File previous = preparedImageFile;
+    File previousThumb = preparedThumbFile;
     preparedImageFile = null;
+    preparedThumbFile = null;
     if (previous != null && previous.isFile()) previous.delete();
+    if (previousThumb != null && previousThumb.isFile()) previousThumb.delete();
     imageExecutor.execute(() -> {
       File output = null;
+      File thumbOutput = null;
       try {
         long sourceLength = sourceLength(source);
         if (sourceLength > MAX_SOURCE_IMAGE_BYTES) {
@@ -674,15 +682,18 @@ public class MainActivity extends ComponentActivity {
           throw new IOException("Image could not be decoded");
         }
         Bitmap prepared = flattenAndResize(decoded, PREPARED_IMAGE_MAX_EDGE);
-        if (prepared != decoded) decoded.recycle();
+        Bitmap thumb = flattenAndResize(decoded, PREPARED_THUMB_MAX_EDGE);
+        decoded.recycle();
 
         File directory = new File(getCacheDir(), "savrivo-images");
         if (!directory.exists() && !directory.mkdirs()) {
           prepared.recycle();
+          thumb.recycle();
           throw new IOException("Could not prepare image cache");
         }
         removeExpiredPreparedImages(directory);
-        output = new File(directory, "admin-upload-" + System.currentTimeMillis() + ".jpg");
+        long stamp = System.currentTimeMillis();
+        output = new File(directory, "admin-upload-" + stamp + ".jpg");
         try (FileOutputStream stream = new FileOutputStream(output)) {
           if (!prepared.compress(Bitmap.CompressFormat.JPEG, 88, stream)) {
             throw new IOException("Image compression failed");
@@ -691,13 +702,24 @@ public class MainActivity extends ComponentActivity {
         } finally {
           prepared.recycle();
         }
+        thumbOutput = new File(directory, "admin-upload-" + stamp + "-thumb.jpg");
+        try (FileOutputStream stream = new FileOutputStream(thumbOutput)) {
+          if (!thumb.compress(Bitmap.CompressFormat.JPEG, 72, stream)) {
+            throw new IOException("Thumbnail compression failed");
+          }
+          stream.flush();
+        } finally {
+          thumb.recycle();
+        }
         Uri preparedUri = FileProvider.getUriForFile(this,
             getPackageName() + ".fileprovider", output);
         preparedImageFile = output;
+        preparedThumbFile = thumbOutput;
         grantUriPermission(getPackageName(), preparedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         runOnUiThread(() -> completeFileChooser(preparedUri));
       } catch (Exception error) {
         if (output != null && output.exists()) output.delete();
+        if (thumbOutput != null && thumbOutput.exists()) thumbOutput.delete();
         runOnUiThread(() -> {
           Toast.makeText(this,
               "This image is damaged or unsupported. Choose another photo or take a new one.",
@@ -786,12 +808,17 @@ public class MainActivity extends ComponentActivity {
       pushBinder.close();
       pushBinder = null;
     }
-    stopPersistentAlert(persistentAlertNotificationId);
+    // Deliberately NOT stopping the support alarm here - see startPersistentAlert()'s comment.
+    // It now lives in OrderAlarmService and should keep ringing through Activity destruction,
+    // stopping only when the JS side explicitly acknowledges the request.
     handler.removeCallbacksAndMessages(null);
     imageExecutor.shutdownNow();
     File prepared = preparedImageFile;
     preparedImageFile = null;
     if (prepared != null && prepared.isFile()) prepared.delete();
+    File preparedThumb = preparedThumbFile;
+    preparedThumbFile = null;
+    if (preparedThumb != null && preparedThumb.isFile()) preparedThumb.delete();
     if (fileChooserCallback != null) {
       fileChooserCallback.onReceiveValue(null);
       fileChooserCallback = null;

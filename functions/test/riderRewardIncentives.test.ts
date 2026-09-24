@@ -4,9 +4,9 @@ const {notifyRiderRewardUpdateMock} = vi.hoisted(() => ({
   notifyRiderRewardUpdateMock: vi.fn(async () => undefined),
 }));
 
-vi.mock("../admin", () => ({
-  db: {
-    ref: () => {
+vi.mock("../src/admin", () => ({
+  firestoreDb: {
+    collection: () => {
       throw new Error("TEST_DB_NOT_AVAILABLE");
     },
   },
@@ -20,169 +20,55 @@ vi.mock("../admin", () => ({
   storage: {},
 }));
 
-vi.mock("./notifications", () => ({
+vi.mock("../src/services/notifications", () => ({
   notifyRiderRewardUpdate: notifyRiderRewardUpdateMock,
 }));
 
-import {ROOT} from "../config";
-import {persistLedgerJournal, LEDGER_JOURNALS_ROOT} from "./ledger";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "../src/services/ledger";
 import {
   __test,
   evaluateRiderRewardsForDeliveredOrder,
   recordRiderRewardPresenceUpdate,
   refreshRiderRewardProgress,
-  RIDER_REWARD_ACTIVITY_EVENTS_ROOT,
-  RIDER_REWARD_CAMPAIGNS_ROOT,
-  RIDER_REWARD_PROGRESS_ROOT,
-  RIDER_REWARD_SESSION_DAYS_ROOT,
   type RiderRewardActivityEvent,
   type RiderRewardCampaign,
   type RiderRewardConditionGroup,
   type RiderRewardConditionSlot,
   type RiderRewardOtherCondition,
   type RiderRewardsDatabase,
-} from "./riderRewards";
+} from "../src/services/riderRewards";
 
-type QueryState = {
-  orderByChild?: string;
-  startAt?: string | number;
-  endAt?: string | number;
-  limitToLast?: number;
-  limitToFirst?: number;
-};
+class MemoryDatabase extends InMemoryFirestore implements RiderRewardsDatabase {}
 
-class MemorySnapshot {
-  constructor(private readonly value: unknown) {}
-
-  val(): unknown {
-    return deepClone(this.value);
-  }
+function campaignPath(campaignId: string): string {
+  return `private/riderRewards/campaigns/${campaignId}`;
 }
 
-class MemoryRef {
-  constructor(
-    private readonly store: Record<string, unknown>,
-    private readonly segments: readonly string[],
-    private readonly query: QueryState = {},
-  ) {}
-
-  orderByChild(child: string): MemoryRef {
-    return new MemoryRef(this.store, this.segments, {...this.query, orderByChild: child});
-  }
-
-  startAt(value: string | number): MemoryRef {
-    return new MemoryRef(this.store, this.segments, {...this.query, startAt: value});
-  }
-
-  endAt(value: string | number): MemoryRef {
-    return new MemoryRef(this.store, this.segments, {...this.query, endAt: value});
-  }
-
-  limitToLast(limit: number): MemoryRef {
-    return new MemoryRef(this.store, this.segments, {...this.query, limitToLast: limit});
-  }
-
-  limitToFirst(limit: number): MemoryRef {
-    return new MemoryRef(this.store, this.segments, {...this.query, limitToFirst: limit});
-  }
-
-  async get(): Promise<{val(): unknown}> {
-    const raw = getAtPath(this.store, this.segments);
-    return new MemorySnapshot(applyQuery(raw, this.query));
-  }
-
-  async set(value: unknown): Promise<void> {
-    setAtPath(this.store, this.segments, deepClone(value));
-  }
-
-  async transaction(
-    update: (current: unknown) => unknown,
-  ): Promise<{committed: boolean; snapshot: {val(): unknown}}> {
-    const current = getAtPath(this.store, this.segments);
-    const next = update(deepClone(current));
-    if (next === undefined) {
-      return {committed: false, snapshot: new MemorySnapshot(current)};
-    }
-    setAtPath(this.store, this.segments, deepClone(next));
-    return {committed: true, snapshot: new MemorySnapshot(next)};
-  }
+function riderPath(riderId: string): string {
+  return `riders/${riderId}`;
 }
 
-class MemoryDatabase implements RiderRewardsDatabase {
-  readonly data: Record<string, unknown>;
-
-  constructor(seed?: Record<string, unknown>) {
-    this.data = deepClone(seed ?? {}) as Record<string, unknown>;
-  }
-
-  seed(path: string, value: unknown): void {
-    setAtPath(this.data, pathSegments(path), deepClone(value));
-  }
-
-  ref(path: string): MemoryRef {
-    return new MemoryRef(this.data, pathSegments(path));
-  }
-
-  read(path: string): unknown {
-    return getAtPath(this.data, pathSegments(path));
-  }
+function activityEventPath(riderId: string, eventId: string): string {
+  return `private/riderRewards/activityEvents/${riderId}/events/${eventId}`;
 }
 
-function deepClone<T>(value: T): T {
-  return value === undefined ? value : structuredClone(value);
+function sessionDayPath(riderId: string, dayKey: string): string {
+  return `private/riderRewards/sessionDays/${riderId}/days/${dayKey}`;
 }
 
-function pathSegments(path: string): string[] {
-  return String(path || "").split("/").filter(Boolean);
+function ledgerJournalIds(db: MemoryDatabase): string[] {
+  return db.paths()
+    .filter((path) => path.startsWith(`${LEDGER_JOURNALS_COLLECTION}/`))
+    .map((path) => path.slice(LEDGER_JOURNALS_COLLECTION.length + 1));
 }
 
-function getAtPath(root: unknown, segments: readonly string[]): unknown {
-  let current: unknown = root;
-  for (const segment of segments) {
-    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return deepClone(current);
-}
-
-function setAtPath(root: Record<string, unknown>, segments: readonly string[], value: unknown): void {
-  if (!segments.length) return;
-  let current: Record<string, unknown> = root;
-  for (let index = 0; index < segments.length - 1; index += 1) {
-    const segment = segments[index] as string;
-    const next = current[segment];
-    if (!next || typeof next !== "object" || Array.isArray(next)) {
-      current[segment] = {};
-    }
-    current = current[segment] as Record<string, unknown>;
-  }
-  current[segments[segments.length - 1] as string] = value as never;
-}
-
-function compareScalar(left: unknown, right: unknown): number {
-  if (typeof left === "number" && typeof right === "number") return left - right;
-  return String(left ?? "").localeCompare(String(right ?? ""));
-}
-
-function applyQuery(value: unknown, query: QueryState): unknown {
-  if (!query.orderByChild || !value || typeof value !== "object" || Array.isArray(value)) {
-    return deepClone(value);
-  }
-  let entries = Object.entries(value as Record<string, Record<string, unknown>>)
-    .filter(([, item]) => {
-      const childValue = item?.[query.orderByChild as string];
-      if (query.startAt !== undefined && compareScalar(childValue, query.startAt) < 0) return false;
-      if (query.endAt !== undefined && compareScalar(childValue, query.endAt) > 0) return false;
-      return true;
-    })
-    .sort((left, right) => {
-      const leftValue = left[1]?.[query.orderByChild as string];
-      const rightValue = right[1]?.[query.orderByChild as string];
-      return compareScalar(leftValue, rightValue) || left[0].localeCompare(right[0]);
-    });
-  if (query.limitToFirst !== undefined) entries = entries.slice(0, query.limitToFirst);
-  if (query.limitToLast !== undefined) entries = entries.slice(Math.max(0, entries.length - query.limitToLast));
-  return Object.fromEntries(entries);
+function progressCampaignIdsForRider(db: MemoryDatabase, riderId: string): string[] {
+  return db.paths()
+    .filter((path) => path.startsWith("private/riderRewards/progress/"))
+    .map((path) => db.read(path) as {riderId: string; campaignId: string})
+    .filter((entry) => entry?.riderId === riderId)
+    .map((entry) => entry.campaignId);
 }
 
 function at(localDateTime: string): number {
@@ -983,11 +869,10 @@ describe("rider reward incentives engine", () => {
 
     const first = await __test.settleSnapshotIfNeeded(offer, snapshot, db, at("2026-08-27T00:05:00"));
     const second = await __test.settleSnapshotIfNeeded(offer, snapshot, db, at("2026-08-27T00:10:00"));
-    const journals = db.read(LEDGER_JOURNALS_ROOT) as Record<string, unknown>;
 
     expect(first?.amountPaise).toBe(30_000);
     expect(second?.journalId).toBe(first?.journalId);
-    expect(Object.keys(journals || {})).toHaveLength(1);
+    expect(ledgerJournalIds(db)).toHaveLength(1);
   });
 
   it("cuts online time at heartbeat timeout and restarts after reconnect", () => {
@@ -1022,10 +907,10 @@ describe("rider reward incentives engine", () => {
       db,
     );
 
-    const event = db.read(`${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/rider_1/presence:${recordedAt}:online`) as Record<string, unknown>;
+    const event = db.read(activityEventPath("rider_1", `presence:${recordedAt}:online`)) as Record<string, unknown>;
     expect(event?.occurredAt).toBe(recordedAt);
     expect(event?.metadata).toEqual({city: "Naidupeta", clientUpdatedAt: 12345});
-    expect(db.read(`${RIDER_REWARD_SESSION_DAYS_ROOT}/rider_1/2026-08-26`)).toBeUndefined();
+    expect(db.read(sessionDayPath("rider_1", "2026-08-26"))).toBeNull();
   });
 
   it("stores a completed session day only after a slot is truly completed", async () => {
@@ -1046,8 +931,8 @@ describe("rider reward incentives engine", () => {
       ],
       milestones: [{target: 1, rewardAmountPaise: 5_000, label: "1 trip"}],
     });
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${offer.campaignId}`, offer);
-    db.seed(`${ROOT}/riders/rider_1`, riderProfile());
+    db.seed(campaignPath(offer.campaignId), offer);
+    db.seed(riderPath("rider_1"), riderProfile());
 
     await recordRiderRewardPresenceUpdate(
       "rider_1",
@@ -1057,19 +942,19 @@ describe("rider reward incentives engine", () => {
       db,
     );
 
-    expect(db.read(`${RIDER_REWARD_SESSION_DAYS_ROOT}/rider_1/2026-08-26`)).toBeUndefined();
+    expect(db.read(sessionDayPath("rider_1", "2026-08-26"))).toBeNull();
 
     for (const event of [
       ...sessionEvents("morning", at("2026-08-26T08:00:00"), at("2026-08-26T11:00:00")),
       ...sessionEvents("night", at("2026-08-26T19:00:00"), at("2026-08-26T23:00:00")),
       ...deliveryEvents([at("2026-08-26T22:30:00")]),
     ]) {
-      db.seed(`${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/rider_1/${event.eventId}`, event);
+      db.seed(activityEventPath("rider_1", event.eventId), event);
     }
 
     await refreshRiderRewardProgress("rider_1", at("2026-08-26T23:10:00"), db);
 
-    expect(db.read(`${RIDER_REWARD_SESSION_DAYS_ROOT}/rider_1/2026-08-26`)).toMatchObject({
+    expect(db.read(sessionDayPath("rider_1", "2026-08-26"))).toMatchObject({
       riderId: "rider_1",
       dayKey: "2026-08-26",
       completedSessions: 2,
@@ -1168,8 +1053,8 @@ describe("rider reward incentives engine", () => {
       zoneNames: ["Magunta Layout"],
     });
     const db = new MemoryDatabase();
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${offer.campaignId}`, offer);
-    db.seed(`${ROOT}/riders/rider_1`, riderProfile());
+    db.seed(campaignPath(offer.campaignId), offer);
+    db.seed(riderPath("rider_1"), riderProfile());
 
     const result = await evaluateRiderRewardsForDeliveredOrder({
       id: "order_1",
@@ -1185,7 +1070,7 @@ describe("rider reward incentives engine", () => {
     } as never, db);
 
     expect(result.awardedJournalIds).toHaveLength(0);
-    expect(Object.keys((db.read(LEDGER_JOURNALS_ROOT) as Record<string, unknown>) || {})).toHaveLength(0);
+    expect(ledgerJournalIds(db)).toHaveLength(0);
   });
 
   it("does not award a per-order bonus outside its configured time slot", async () => {
@@ -1196,8 +1081,8 @@ describe("rider reward incentives engine", () => {
       timeSlots: [{label: "Lunch", startMinute: minute("12:00"), endMinute: minute("15:00")}],
     });
     const db = new MemoryDatabase();
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${offer.campaignId}`, offer);
-    db.seed(`${ROOT}/riders/rider_1`, riderProfile());
+    db.seed(campaignPath(offer.campaignId), offer);
+    db.seed(riderPath("rider_1"), riderProfile());
 
     const result = await evaluateRiderRewardsForDeliveredOrder({
       id: "order_1",
@@ -1213,7 +1098,7 @@ describe("rider reward incentives engine", () => {
     } as never, db);
 
     expect(result.awardedJournalIds).toHaveLength(0);
-    expect(Object.keys((db.read(LEDGER_JOURNALS_ROOT) as Record<string, unknown>) || {})).toHaveLength(0);
+    expect(ledgerJournalIds(db)).toHaveLength(0);
   });
 
   it("awards an overnight per-order bonus only while its slot is active", async () => {
@@ -1226,8 +1111,8 @@ describe("rider reward incentives engine", () => {
       timeSlots: [{label: "Late night", startMinute: minute("23:00"), endMinute: minute("03:00")}],
     });
     const db = new MemoryDatabase();
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${offer.campaignId}`, offer);
-    db.seed(`${ROOT}/riders/rider_1`, riderProfile());
+    db.seed(campaignPath(offer.campaignId), offer);
+    db.seed(riderPath("rider_1"), riderProfile());
 
     const inside = await evaluateRiderRewardsForDeliveredOrder({
       id: "order_inside",
@@ -1338,18 +1223,18 @@ describe("rider reward incentives engine", () => {
       milestones: [{target: 2, rewardAmountPaise: 8_000, label: "2 trips"}],
     });
     const db = new MemoryDatabase();
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${dailyOffer.campaignId}`, dailyOffer);
-    db.seed(`${RIDER_REWARD_CAMPAIGNS_ROOT}/${weeklyOffer.campaignId}`, weeklyOffer);
-    db.seed(`${ROOT}/riders/rider_1`, riderProfile());
-    db.seed(`${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/rider_1`, Object.fromEntries([
-      ...deliveryEvents([at("2026-08-26T12:00:00"), at("2026-08-26T13:00:00")]).map((entry) => [entry.eventId, entry]),
-    ]));
+    db.seed(campaignPath(dailyOffer.campaignId), dailyOffer);
+    db.seed(campaignPath(weeklyOffer.campaignId), weeklyOffer);
+    db.seed(riderPath("rider_1"), riderProfile());
+    for (const event of deliveryEvents([at("2026-08-26T12:00:00"), at("2026-08-26T13:00:00")])) {
+      db.seed(activityEventPath("rider_1", event.eventId), event);
+    }
 
     const snapshots = await refreshRiderRewardProgress("rider_1", at("2026-08-26T23:00:00"), db);
-    const stored = db.read(`${RIDER_REWARD_PROGRESS_ROOT}/rider_1`) as Record<string, unknown>;
+    const storedCampaignIds = progressCampaignIdsForRider(db, "rider_1");
 
     expect(snapshots.map((entry) => entry.campaignId).sort()).toEqual(["daily-offer", "weekly-offer"]);
-    expect(Object.keys(stored || {}).sort()).toEqual(["daily-offer", "weekly-offer"]);
+    expect(storedCampaignIds.sort()).toEqual(["daily-offer", "weekly-offer"]);
   });
 
   it("keeps immutable ledger writes idempotent for the same settlement journal", async () => {
@@ -1368,6 +1253,6 @@ describe("rider reward incentives engine", () => {
 
     expect(first.outcome).toBe("insert");
     expect(second.outcome).toBe("idempotent");
-    expect(Object.keys((db.read(LEDGER_JOURNALS_ROOT) as Record<string, unknown>) || {})).toHaveLength(1);
+    expect(ledgerJournalIds(db)).toHaveLength(1);
   });
 });

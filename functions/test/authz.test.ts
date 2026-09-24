@@ -2,24 +2,23 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import type {SavrivoOrder} from "../src/types";
 
-const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  reads: [] as string[],
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  class TrackedFirestore extends InMemoryFirestore {
+    collectionsAccessed: string[] = [];
+    collection(name: string) {
+      this.collectionsAccessed.push(name);
+      return super.collection(name);
+    }
+  }
+  return {firestoreDb: new TrackedFirestore()};
+});
 
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => ({
-      get: async () => {
-        memory.reads.push(path);
-        return {val: () => memory.values.get(path) ?? null};
-      },
-    }),
-  },
-}));
-
-import {ROOT} from "../src/config";
+import {firestoreDb} from "../src/admin";
 import {authorizeTransition} from "../src/services/authz";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+const database = firestoreDb as unknown as InMemoryFirestore & {collectionsAccessed: string[]};
 
 const uid = "staff-user";
 const riderUid = "rider-user";
@@ -40,20 +39,20 @@ function tokenFor(nextUid: string, claims: Record<string, unknown> = {}): Decode
 }
 
 describe("restaurant order transition authorization", () => {
-  beforeEach(() => {
-    memory.values.clear();
-    memory.reads.length = 0;
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
+    database.collectionsAccessed.length = 0;
   });
 
   it("fails closed for a legacy staff record missing restaurantId", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {active: true, role: "restaurant_manager"});
+    database.seed(`staff/${uid}`, {active: true, role: "restaurant_manager"});
 
     await expect(authorizeTransition(uid, token(), order, "Accepted"))
       .rejects.toMatchObject({code: "permission-denied"});
   });
 
   it("allows legacy staff only for the exact restaurant", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {
+    database.seed(`staff/${uid}`, {
       active: true,
       restaurantId,
       permissions: {orders: true},
@@ -63,7 +62,7 @@ describe("restaurant order transition authorization", () => {
   });
 
   it("denies legacy staff assigned to a different restaurant", async () => {
-    memory.values.set(`${ROOT}/staff/${uid}`, {
+    database.seed(`staff/${uid}`, {
       active: true,
       restaurantId: "restaurant-b",
       role: "restaurant_owner",
@@ -74,7 +73,7 @@ describe("restaurant order transition authorization", () => {
   });
 
   it("preserves path-scoped normalized membership compatibility", async () => {
-    memory.values.set(`${ROOT}/restaurantMembers/${restaurantId}/${uid}`, {
+    database.seed(`restaurantMembers/${restaurantId}_${uid}`, {
       active: true,
       role: "restaurant_manager",
     });
@@ -88,11 +87,11 @@ describe("restaurant order transition authorization", () => {
   ] as const)("preserves %s custom-claim access", async (claim, expected) => {
     await expect(authorizeTransition(uid, token({savrivoRole: claim}), order, "Accepted"))
       .resolves.toBe(expected);
-    expect(memory.reads).toEqual([]);
+    expect(database.collectionsAccessed).toEqual([]);
   });
 
   it("prefers the rider actor for rider-owned delivery transitions even when the account also has an owner claim", async () => {
-    memory.values.set(`${ROOT}/riders/${riderUid}/status`, "approved");
+    database.seed(`riders/${riderUid}`, {status: "approved"});
     const riderOrder = {
       ...order,
       status: "Handed to rider",

@@ -2,41 +2,16 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {createLedgerJournal} from "../src/domain/ledger";
 
-const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  queries: [] as Array<[string, string, unknown]>,
-}));
-
 vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => {
-      const chain = {
-        orderByChild: (child: string) => {
-          memory.queries.push([path, "orderByChild", child]);
-          return chain;
-        },
-        startAt: (value: unknown) => {
-          memory.queries.push([path, "startAt", value]);
-          return chain;
-        },
-        endAt: (value: unknown) => {
-          memory.queries.push([path, "endAt", value]);
-          return chain;
-        },
-        limitToFirst: (value: number) => {
-          memory.queries.push([path, "limitToFirst", value]);
-          return chain;
-        },
-        get: async () => ({val: () => memory.values.get(path) ?? null}),
-      };
-      return chain;
-    },
-  },
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
-import {ADMIN_LEDGER_ROOT} from "../src/services/adminDashboard";
+import {LEDGER_JOURNALS_COLLECTION} from "../src/services/ledger";
 import {readFinanceStatement} from "../src/services/financeStatement";
 import {financeStatementQuerySchema} from "../src/schemas";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+let database: InMemoryFirestore;
 
 function token(role?: string): DecodedIdToken {
   return {savrivoRole: role, email: "operator@example.test"} as unknown as DecodedIdToken;
@@ -54,25 +29,28 @@ function journal(eventId: string, occurredAt: number, grossPaise: number, eventT
   });
 }
 
+function seedJournals(...journals: ReturnType<typeof createLedgerJournal>[]): void {
+  for (const j of journals) database.seed(`${LEDGER_JOURNALS_COLLECTION}/${j.journalId}`, j);
+}
+
 describe("finance statement (bounded window ledger read)", () => {
   beforeEach(() => {
-    memory.values.clear();
-    memory.queries.length = 0;
+    database = new InMemoryFirestore();
   });
 
   it("rejects a caller without a verified owner/ops-admin claim before reading anything", async () => {
-    await expect(readFinanceStatement(token(), {startAt: 0, endAt: 1000}))
+    await expect(readFinanceStatement(token(), {startAt: 0, endAt: 1000}, database))
       .rejects.toMatchObject({code: "permission-denied"});
-    expect(memory.queries).toEqual([]);
+    expect(database.transactionCount).toBe(0);
   });
 
   it("itemizes journals within the window and totals them by event type", async () => {
     const j1 = journal("evt-1", 100, 5_000, "payment");
     const j2 = journal("evt-2", 200, 3_000, "payment");
     const j3 = journal("evt-3", 300, 2_000, "rider_payout");
-    memory.values.set(ADMIN_LEDGER_ROOT, {[j1.journalId]: j1, [j2.journalId]: j2, [j3.journalId]: j3});
+    seedJournals(j1, j2, j3);
 
-    const result = await readFinanceStatement(token("owner"), {startAt: 0, endAt: 1000});
+    const result = await readFinanceStatement(token("owner"), {startAt: 0, endAt: 1000}, database);
 
     expect(result.complete).toBe(true);
     expect(result.truncated).toBe(false);
@@ -84,26 +62,26 @@ describe("finance statement (bounded window ledger read)", () => {
     ]);
   });
 
-  it("queries the ledger with an [startAt, endAt) range and a page bound one past the limit", async () => {
-    memory.values.set(ADMIN_LEDGER_ROOT, {});
-    await readFinanceStatement(token("owner"), {startAt: 100, endAt: 1000, limit: 50});
-    expect(memory.queries).toEqual([
-      [ADMIN_LEDGER_ROOT, "orderByChild", "occurredAt"],
-      [ADMIN_LEDGER_ROOT, "startAt", 100],
-      [ADMIN_LEDGER_ROOT, "endAt", 999],
-      [ADMIN_LEDGER_ROOT, "limitToFirst", 51],
-    ]);
+  it("only includes journals inside the [startAt, endAt) window", async () => {
+    const before = journal("evt-before", 99, 1_000);
+    const atStart = journal("evt-at-start", 100, 1_000);
+    const atEndBoundary = journal("evt-at-end-boundary", 999, 1_000);
+    const atEnd = journal("evt-at-end", 1000, 1_000);
+    seedJournals(before, atStart, atEndBoundary, atEnd);
+
+    const result = await readFinanceStatement(token("owner"), {startAt: 100, endAt: 1000, limit: 50}, database);
+
+    expect(result.entries.map((e) => e.journalId).sort()).toEqual(
+      [atStart.journalId, atEndBoundary.journalId].sort(),
+    );
   });
 
   it("reports truncated and marks the page incomplete when more journals exist than the limit", async () => {
-    const journals: Record<string, unknown> = {};
     for (let i = 0; i < 5; i += 1) {
-      const j = journal("evt-" + i, 100 + i, 1_000);
-      journals[j.journalId] = j;
+      seedJournals(journal("evt-" + i, 100 + i, 1_000));
     }
-    memory.values.set(ADMIN_LEDGER_ROOT, journals);
 
-    const result = await readFinanceStatement(token("ops_admin"), {startAt: 0, endAt: 1000, limit: 3});
+    const result = await readFinanceStatement(token("ops_admin"), {startAt: 0, endAt: 1000, limit: 3}, database);
     expect(result.entryCount).toBe(3);
     expect(result.truncated).toBe(true);
     expect(result.complete).toBe(false);
@@ -118,15 +96,12 @@ describe("finance statement (bounded window ledger read)", () => {
 
 describe("who the period's money belongs to", () => {
   beforeEach(() => {
-    memory.values.clear();
-    memory.queries.length = 0;
+    database = new InMemoryFirestore();
   });
 
   const load = async (journals: ReturnType<typeof createLedgerJournal>[]) => {
-    const map: Record<string, unknown> = {};
-    journals.forEach((j) => { map[j.journalId] = j; });
-    memory.values.set(ADMIN_LEDGER_ROOT, map);
-    return readFinanceStatement(token("owner"), {startAt: 0, endAt: 100_000});
+    seedJournals(...journals);
+    return readFinanceStatement(token("owner"), {startAt: 0, endAt: 100_000}, database);
   };
 
   /** Exactly the postings `allocationCredits` in services/ledger.ts makes on
@@ -238,6 +213,7 @@ describe("who the period's money belongs to", () => {
     // been paid yet - answered elsewhere (Restaurant settlements), not by
     // growing this period's figure past the order's own share of gross.
     const withoutPayout = await load([orderDelivered("o1", 100, "r1", "rd1")]);
+    database = new InMemoryFirestore();
     const withPayout = await load([
       orderDelivered("o1", 100, "r1", "rd1"),
       restaurantSettled("s1", 150, "r1", 24_000),
@@ -248,6 +224,7 @@ describe("who the period's money belongs to", () => {
 
   it("does not let a rider payout run inflate the rider's share either", async () => {
     const withoutPayout = await load([orderDelivered("o1", 100, "r1", "rd1")]);
+    database = new InMemoryFirestore();
     const withPayout = await load([
       orderDelivered("o1", 100, "r1", "rd1"),
       riderPaidOut("p1", 150, "rd1", 6_000, 1_000),
@@ -334,7 +311,7 @@ describe("who the period's money belongs to", () => {
       orderDelivered("o2", 200, "r1", "rd1"),
       orderDelivered("o3", 300, "r1", "rd1"),
     ]);
-    const limited = await readFinanceStatement(token("owner"), {startAt: 0, endAt: 100_000, limit: 2});
+    const limited = await readFinanceStatement(token("owner"), {startAt: 0, endAt: 100_000, limit: 2}, database);
     expect(limited.truncated).toBe(true);
     expect(limited.allocation.restaurantPaise).toBe(24_000 * 2);
     expect(limited.allocation.restaurantPaise).toBeLessThan(result.allocation.restaurantPaise);

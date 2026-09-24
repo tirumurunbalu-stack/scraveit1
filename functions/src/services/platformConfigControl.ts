@@ -1,7 +1,6 @@
 import {randomUUID} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   applyPlatformConfigPatch,
   platformConfigHash,
@@ -12,32 +11,18 @@ import {
   type UpdatePlatformConfigInput,
 } from "../domain/platformConfigControl";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {platformConfigRef} from "../firestorePaths";
 import {
   requirePlatformConfigAdminClaim,
   type PlatformConfigAdminRole,
 } from "./authz";
 import {clearPlatformConfigCache} from "./platformConfig";
 
-interface ValueSnapshot {
-  val(): unknown;
-}
+export type PlatformConfigDatabase = FirestoreLike;
 
-interface TransactionResult {
-  committed: boolean;
-  snapshot: ValueSnapshot;
-}
-
-interface ConfigReference {
-  get(): Promise<ValueSnapshot>;
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<TransactionResult>;
-}
-
-export interface PlatformConfigDatabase {
-  ref(path: string): ConfigReference;
+function auditRef(database: FirestoreLike, id: string): DocumentReferenceLike {
+  return database.collection("audit").doc(id);
 }
 
 interface ConfigOperationRecord {
@@ -96,7 +81,7 @@ function domainPatch(
 }
 
 function defaultDatabase(): PlatformConfigDatabase {
-  return db as unknown as PlatformConfigDatabase;
+  return firestoreDb;
 }
 
 /** Reads normalized public operating policy through a custom-claim guarded
@@ -106,8 +91,8 @@ export async function readPlatformConfiguration(
   database: PlatformConfigDatabase = defaultDatabase(),
 ): Promise<PlatformConfigResponse> {
   requirePlatformConfigAdminClaim(token);
-  const snapshot = await database.ref(`${ROOT}/platformConfig`).get();
-  return platformConfigState(snapshot.val());
+  const snapshot = await platformConfigRef(database).get();
+  return platformConfigState(snapshot.exists ? snapshot.data() : null);
 }
 
 /**
@@ -133,38 +118,29 @@ export async function updatePlatformConfiguration(
     finance: input.finance ?? null,
   });
   const requestInstanceId = randomUUID();
-  const configRef = database.ref(`${ROOT}/platformConfig`);
-  let abort: DomainError | null = null;
+  const configRef = platformConfigRef(database);
 
-  const result = await configRef.transaction((rawCurrent) => {
-    abort = null;
-    const root = record(rawCurrent);
+  const finalRoot = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(configRef);
+    const root = record(snapshot.exists ? snapshot.data() : null);
     const operations = record(root._operations);
     const existing = operation(operations[operationKey]);
     if (existing) {
       if (existing.operationId !== input.operationId || existing.requestHash !== requestHash || existing.actorId !== uid) {
-        abort = new DomainError("already-exists", "Operation id was already used for a different configuration change.");
-        return undefined;
+        throw new DomainError("already-exists", "Operation id was already used for a different configuration change.");
       }
       return root;
     }
 
     const current = platformConfigState(root);
     if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
-      abort = new DomainError("aborted", "Platform configuration changed; refresh and retry with the latest revision.", {
+      throw new DomainError("aborted", "Platform configuration changed; refresh and retry with the latest revision.", {
         expectedRevision: input.expectedRevision,
         actualRevision: current.revision,
       });
-      return undefined;
     }
 
-    let nextPolicies: ReturnType<typeof applyPlatformConfigPatch>;
-    try {
-      nextPolicies = domainPatch(current, input);
-    } catch (error) {
-      abort = error instanceof DomainError ? error : new DomainError("invalid-argument", "Invalid platform configuration.");
-      return undefined;
-    }
+    const nextPolicies = domainPatch(current, input);
 
     const changedSections: Array<"dispatch" | "finance"> = [];
     if (platformConfigHash(current.dispatch) !== platformConfigHash(nextPolicies.dispatch)) changedSections.push("dispatch");
@@ -184,7 +160,7 @@ export async function updatePlatformConfiguration(
       beforeHash,
       afterHash,
     };
-    return {
+    const next = {
       ...root,
       dispatch: nextPolicies.dispatch,
       finance: nextPolicies.finance,
@@ -197,10 +173,9 @@ export async function updatePlatformConfiguration(
       } : record(root._meta),
       _operations: {...operations, [operationKey]: operationRecord},
     };
-  }, undefined, false);
-
-  if (!result.committed) throw abort ?? new DomainError("aborted", "Platform configuration could not be updated safely.");
-  const finalRoot = record(result.snapshot.val());
+    transaction.set(configRef, next);
+    return next;
+  });
   const finalOperation = operation(record(finalRoot._operations)[operationKey]);
   if (!finalOperation || finalOperation.requestHash !== requestHash || finalOperation.actorId !== uid) {
     throw new DomainError("internal", "Platform configuration operation could not be verified.");
@@ -217,7 +192,11 @@ export async function updatePlatformConfiguration(
     actorRole,
     at: finalOperation.at,
   };
-  await database.ref(`${ROOT}/audit/${auditId}`).transaction((current) => current ?? auditRecord, undefined, false);
+  const auditDocRef = auditRef(database, auditId);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const auditSnapshot = await transaction.get(auditDocRef);
+    if (!auditSnapshot.exists) transaction.set(auditDocRef, auditRecord);
+  });
   clearPlatformConfigCache();
 
   return {

@@ -1,16 +1,18 @@
 import {describe, expect, it, vi} from "vitest";
 
-vi.mock("../src/admin", () => ({db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }}}));
+vi.mock("../src/admin", () => ({
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
+}));
 
-import {ROOT} from "../src/config";
 import {
   containsUnverifiedReviewMoney,
   recordDeliveredReviewFeedback,
 } from "../src/services/reviews";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
 describe("delivered review feedback", () => {
   it("preserves restaurant and rider ratings while discarding unverified money", async () => {
-    const writes: Array<{path: string; values: Record<string, unknown>}> = [];
+    const database = new InMemoryFirestore();
     const recordRatings = vi.fn(async () => undefined);
     const result = await recordDeliveredReviewFeedback({
       customerId: "customer-1",
@@ -22,11 +24,7 @@ describe("delivered review feedback", () => {
       postDeliveryTip: 50,
       growthContribution: 20,
     }, {
-      database: {
-        ref: (path: string) => ({
-          update: async (values: Record<string, unknown>) => { writes.push({path, values}); },
-        }),
-      },
+      database,
       recordRatings,
     });
 
@@ -35,15 +33,13 @@ describe("delivered review feedback", () => {
       restaurantRating: 5,
       riderRating: 4,
     }));
-    expect(writes).toEqual([{
-      path: `${ROOT}/reviews/customer-1/order-1`,
-      values: {postDeliveryTip: 0, growthContribution: 0},
-    }]);
-    expect(writes.some(({path}) => /riderJobs|riderWallets|financialLedger|ledger/i.test(path))).toBe(false);
+    expect(database.paths()).toEqual(["reviews/customer-1_order-1"]);
+    expect(database.read("reviews/customer-1_order-1")).toEqual({postDeliveryTip: 0, growthContribution: 0});
+    expect(database.paths().some((path) => /riderJobs|riderWallets|financialLedger|ledger/i.test(path))).toBe(false);
   });
 
   it("does not write money or mutate financial state for ordinary zero-value feedback", async () => {
-    const writes: string[] = [];
+    const database = new InMemoryFirestore();
     const recordRatings = vi.fn(async () => undefined);
     const result = await recordDeliveredReviewFeedback({
       customerId: "customer-1",
@@ -55,12 +51,12 @@ describe("delivered review feedback", () => {
       postDeliveryTip: 0,
       growthContribution: 0,
     }, {
-      database: {ref: (path: string) => ({update: async () => { writes.push(path); }})},
+      database,
       recordRatings,
     });
 
     expect(result).toEqual({unverifiedMoneyDiscarded: false});
-    expect(writes).toEqual([]);
+    expect(database.paths()).toEqual([]);
     expect(recordRatings).toHaveBeenCalledTimes(1);
   });
 

@@ -1,6 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   buildOutboxDeliveryCandidate,
   buildOutboxLeaseCandidate,
@@ -17,12 +16,15 @@ import type {
   NotificationOutboxRecord,
   OutboxDeliveryResult,
 } from "../domain/outbox";
+import type {CollectionReferenceLike, DocumentReferenceLike, TransactionLike} from "../firestoreTypes";
 
-export const NOTIFICATION_OUTBOX_PATH = `${ROOT}/private/notificationOutbox`;
+function outboxCollectionRef(): CollectionReferenceLike {
+  return firestoreDb.collection("private").doc("notificationOutbox").collection("events");
+}
 
-function eventRef(eventId: string) {
+function eventRef(eventId: string): DocumentReferenceLike {
   if (!isOutboxEventId(eventId)) throw new Error("INVALID_OUTBOX_EVENT_ID");
-  return db.ref(`${NOTIFICATION_OUTBOX_PATH}/${eventId}`);
+  return outboxCollectionRef().doc(eventId);
 }
 
 function recordFrom(value: unknown): NotificationOutboxRecord | null {
@@ -35,9 +37,14 @@ export async function enqueueNotification(
   options: CreateOutboxOptions = {},
 ): Promise<NotificationOutboxRecord> {
   const candidate = createNotificationOutboxRecord(input, now, options);
-  const result = await eventRef(candidate.eventId).transaction((current: unknown) => current ?? candidate, undefined, false);
-  const record = recordFrom(result.snapshot.val());
-  if (!result.committed || !record) throw new Error("OUTBOX_ENQUEUE_ABORTED");
+  const ref = eventRef(candidate.eventId);
+  const record = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists) return recordFrom(snapshot.data());
+    transaction.set(ref, candidate);
+    return candidate;
+  });
+  if (!record) throw new Error("OUTBOX_ENQUEUE_ABORTED");
   return record;
 }
 
@@ -54,15 +61,21 @@ export async function claimNotification(
   recordHint: NotificationOutboxRecord | null = null,
 ): Promise<ClaimedOutboxEvent | null> {
   const leaseToken = randomUUID();
-  const result = await eventRef(eventId).transaction((current: unknown) =>
-    buildOutboxLeaseCandidate(recordFrom(current), {
+  const ref = eventRef(eventId);
+  const record = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? recordFrom(snapshot.data()) : null;
+    const next = buildOutboxLeaseCandidate(current, {
       owner: workerId,
       token: leaseToken,
       now,
       leaseMs,
-    }, {fallback: recordHint}), undefined, false);
-  const record = recordFrom(result.snapshot.val());
-  if (!result.committed || record?.status !== "processing" || record.lease?.token !== leaseToken) return null;
+    }, {fallback: recordHint});
+    if (next === undefined) return null;
+    transaction.set(ref, next);
+    return next;
+  });
+  if (record?.status !== "processing" || record.lease?.token !== leaseToken) return null;
   return {record, leaseToken};
 }
 
@@ -71,9 +84,15 @@ export async function completeNotification(
   input: CompleteOutboxAttemptInput,
   recordHint: NotificationOutboxRecord | null = null,
 ): Promise<NotificationOutboxRecord | null> {
-  const result = await eventRef(eventId).transaction((current: unknown) =>
-    buildOutboxDeliveryCandidate(recordFrom(current), input, {fallback: recordHint}), undefined, false);
-  return result.committed ? recordFrom(result.snapshot.val()) : null;
+  const ref = eventRef(eventId);
+  return firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? recordFrom(snapshot.data()) : null;
+    const next = buildOutboxDeliveryCandidate(current, input, {fallback: recordHint});
+    if (next === undefined) return null;
+    transaction.set(ref, next);
+    return next;
+  });
 }
 
 export async function failNotification(
@@ -81,9 +100,15 @@ export async function failNotification(
   input: FailOutboxAttemptInput,
   recordHint: NotificationOutboxRecord | null = null,
 ): Promise<NotificationOutboxRecord | null> {
-  const result = await eventRef(eventId).transaction((current: unknown) =>
-    buildOutboxRetryCandidate(recordFrom(current), input, {fallback: recordHint}), undefined, false);
-  return result.committed ? recordFrom(result.snapshot.val()) : null;
+  const ref = eventRef(eventId);
+  return firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? recordFrom(snapshot.data()) : null;
+    const next = buildOutboxRetryCandidate(current, input, {fallback: recordHint});
+    if (next === undefined) return null;
+    transaction.set(ref, next);
+    return next;
+  });
 }
 
 /** Lists due events; claimNotification() remains the concurrency authority. */
@@ -93,13 +118,13 @@ export async function listDueNotifications(
 ): Promise<NotificationOutboxRecord[]> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("INVALID_OUTBOX_TIMESTAMP");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error("INVALID_OUTBOX_LIMIT");
-  const snapshot = await db.ref(NOTIFICATION_OUTBOX_PATH)
-    .orderByChild("nextAttemptAt")
-    .endAt(now)
-    .limitToFirst(limit)
+  const snapshot = await outboxCollectionRef()
+    .where("nextAttemptAt", "<=", now)
+    .orderBy("nextAttemptAt", "asc")
+    .limit(limit)
     .get();
-  return Object.values(snapshot.val() as Record<string, unknown> | null ?? {})
-    .map(recordFrom)
+  return snapshot.docs
+    .map((doc) => recordFrom(doc.data()))
     .filter((record): record is NotificationOutboxRecord => record !== null)
     .filter((record) => record.status === "pending" ||
       (record.status === "processing" && Number(record.lease?.expiresAt ?? 0) <= now))

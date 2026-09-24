@@ -136,6 +136,9 @@
                 "image": {
                   ".validate": "newData.isString() && newData.val().length <= 850000 && (newData.val().matches(/^data:image\\/(jpeg|png|webp);base64,[A-Za-z0-9+\\/=]+$/) || newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
                 },
+                "imageThumb": {
+                  ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
+                },
                 "variants": {
                   "$variantIndex": {
                     ".validate": "newData.hasChildren(['name','price'])",
@@ -190,6 +193,10 @@
               ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 200)"
             },
             "imageUrl": {
+              ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))",
+              ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
+            },
+            "imageThumbUrl": {
               ".write": "auth != null && (((auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')) || ((root.child('feastly/staff').child(auth.uid).child('active').val() === true && root.child('feastly/staff').child(auth.uid).child('restaurantId').val() === $restaurantId && (root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/staff').child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/staff').child(auth.uid).child('permissions/profile').val() === true)) || (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('active').val() === true && (root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_owner' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('role').val() === 'restaurant_manager' || root.child('feastly/restaurantMembers').child($restaurantId).child(auth.uid).child('permissions/profile').val() === true))))",
               ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
             },
@@ -1825,6 +1832,9 @@
             },
             "imageUrl": {
               ".validate": "newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//)"
+            },
+            "imageThumbUrl": {
+              ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 2048 && newData.val().matches(/^https:\\/\\/firebasestorage\\.googleapis\\.com\\//))"
             },
             "updatedAt": {
               ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"

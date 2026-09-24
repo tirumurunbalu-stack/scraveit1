@@ -1,6 +1,7 @@
 import {createHash, timingSafeEqual} from "node:crypto";
-import {db} from "../admin";
-import {pathFor, ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import type {CollectionReferenceLike, DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {orderRef} from "../firestorePaths";
 import {
   applyPaymentCommand,
   applyVerifiedGatewayPaymentEvent,
@@ -22,7 +23,6 @@ import {
   buildOnlinePaymentReceiptJournal,
   buildOnlinePaymentRefundJournal,
   persistLedgerJournal,
-  type LedgerTransactionDatabase,
 } from "./ledger";
 import type {SavrivoOrder} from "../types";
 import type {InitiatePaymentInput} from "./serviceTypes";
@@ -62,28 +62,7 @@ export interface PaymentGateway {
   verifyWebhook(headers: Record<string, string | undefined>, rawBody: Buffer): Promise<VerificationResult>;
 }
 
-export interface PaymentDataSnapshot {
-  val(): unknown;
-}
-
-export interface PaymentTransactionResult {
-  committed: boolean;
-  snapshot: PaymentDataSnapshot;
-}
-
-export interface PaymentDataReference {
-  get(): Promise<PaymentDataSnapshot>;
-  update(values: Record<string, unknown>): Promise<void>;
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<PaymentTransactionResult>;
-}
-
-export interface PaymentDatabase {
-  ref(path: string): PaymentDataReference;
-}
+export type PaymentDatabase = FirestoreLike;
 
 export interface CanonicalPaymentAttempt {
   schemaVersion: 1;
@@ -108,7 +87,21 @@ export interface CanonicalPaymentRecord {
   events: Record<string, PaymentTransitionEvent>;
 }
 
-export const CANONICAL_PAYMENTS_ROOT = `${ROOT}/private/payments/records`;
+function paymentsCollectionRef(database: FirestoreLike): CollectionReferenceLike {
+  return database.collection("private").doc("payments").collection("records");
+}
+function paymentAttemptsOrderDoc(database: FirestoreLike, orderId: string): DocumentReferenceLike {
+  return database.collection("paymentAttempts").doc(orderId);
+}
+function paymentAttemptRef(database: FirestoreLike, orderId: string, attemptId: string): DocumentReferenceLike {
+  return paymentAttemptsOrderDoc(database, orderId).collection("attempts").doc(attemptId);
+}
+function paymentAttemptByMerchantOrderRef(database: FirestoreLike, merchantOrderId: string): DocumentReferenceLike {
+  return database.collection("paymentAttemptsByMerchantOrder").doc(merchantOrderId);
+}
+function paymentEventRef(database: FirestoreLike, rawEventHash: string): DocumentReferenceLike {
+  return database.collection("paymentEvents").doc(rawEventHash);
+}
 
 /**
  * Fail-closed adapter. Replace only after PhonePe issues production credentials
@@ -152,8 +145,8 @@ function canonicalPaymentId(orderId: string): string {
   return `pay_${hash(`payment:${orderId}`).slice(0, 40)}`;
 }
 
-export function canonicalPaymentPath(orderId: string): string {
-  return `${CANONICAL_PAYMENTS_ROOT}/${canonicalPaymentId(orderId)}`;
+export function canonicalPaymentRef(database: FirestoreLike, orderId: string): DocumentReferenceLike {
+  return paymentsCollectionRef(database).doc(canonicalPaymentId(orderId));
 }
 
 function operationKey(operationId: string): string {
@@ -287,7 +280,8 @@ function currentAttempt(record: CanonicalPaymentRecord): CanonicalPaymentAttempt
 }
 
 async function readCanonicalPayment(orderId: string, database: PaymentDatabase): Promise<CanonicalPaymentRecord | null> {
-  return paymentRecord((await database.ref(canonicalPaymentPath(orderId)).get()).val(), orderId);
+  const snapshot = await canonicalPaymentRef(database, orderId).get();
+  return paymentRecord(snapshot.exists ? snapshot.data() : null, orderId);
 }
 
 async function persistLegacyAttemptProjection(
@@ -297,39 +291,40 @@ async function persistLegacyAttemptProjection(
   database: PaymentDatabase,
 ): Promise<void> {
   const projection = paymentCompatibilityProjection(record.aggregate);
-  await database.ref(ROOT).update({
-    [`paymentAttempts/${order.id}/${attempt.attemptId}`]: {
-      provider: attempt.provider,
-      merchantOrderId: attempt.attemptId,
-      customerId: order.customerId,
-      orderId: order.id,
-      amountPaise: record.aggregate.amountPaise,
-      state: projection.paymentState ?? "pending",
-      redirectUrl: attempt.redirectUrl,
-      createdAt: attempt.createdAt,
-      expiresAt: attempt.expiresAt,
-      updatedAt: attempt.updatedAt,
-      canonicalPaymentId: record.aggregate.paymentId,
-      paymentRevision: record.aggregate.revision,
-    },
-    [`paymentAttemptsByMerchantOrder/${attempt.attemptId}`]: {
-      customerId: order.customerId,
-      orderId: order.id,
-      createdAt: attempt.createdAt,
-      canonicalPaymentId: record.aggregate.paymentId,
-    },
+  const batch = database.batch();
+  batch.set(paymentAttemptRef(database, order.id, attempt.attemptId), {
+    provider: attempt.provider,
+    merchantOrderId: attempt.attemptId,
+    customerId: order.customerId,
+    orderId: order.id,
+    amountPaise: record.aggregate.amountPaise,
+    state: projection.paymentState ?? "pending",
+    redirectUrl: attempt.redirectUrl,
+    createdAt: attempt.createdAt,
+    expiresAt: attempt.expiresAt,
+    updatedAt: attempt.updatedAt,
+    canonicalPaymentId: record.aggregate.paymentId,
+    paymentRevision: record.aggregate.revision,
   });
+  batch.set(paymentAttemptByMerchantOrderRef(database, attempt.attemptId), {
+    customerId: order.customerId,
+    orderId: order.id,
+    createdAt: attempt.createdAt,
+    canonicalPaymentId: record.aggregate.paymentId,
+  });
+  await batch.commit();
 }
 
 export async function initiatePayment(
   uid: string,
   input: InitiatePaymentInput,
   gateway: PaymentGateway,
-  database: PaymentDatabase = db as unknown as PaymentDatabase,
+  database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
   now: () => number = Date.now,
 ): Promise<PaymentIntent> {
   if (uid !== input.customerId) throw new DomainError("permission-denied", "Payment owner mismatch.");
-  const order = (await database.ref(pathFor.order(uid, input.orderId)).get()).val() as SavrivoOrder | null;
+  const orderSnapshot = await orderRef(database, input.orderId).get();
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order) throw new DomainError("not-found", "Order not found.");
   if (order.customerId !== uid || order.status !== "Order placed") {
     throw new DomainError("failed-precondition", "Order cannot start an online payment.");
@@ -379,9 +374,10 @@ export async function initiatePayment(
     throw new DomainError("internal", "Payment gateway returned an invalid or non-idempotent intent.");
   }
 
-  const paymentRef = database.ref(canonicalPaymentPath(order.id));
-  const tx = await paymentRef.transaction((current) => {
-    let record = paymentRecord(current, order.id) ?? createRecord(newPaymentForIntent(order, observedAt));
+  const paymentRef = canonicalPaymentRef(database, order.id);
+  const committed = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(paymentRef);
+    let record = paymentRecord(snapshot.exists ? snapshot.data() : null, order.id) ?? createRecord(newPaymentForIntent(order, observedAt));
     assertPaymentMatchesOrder(record, order);
     const active = currentAttempt(record);
     if (active && ["initiated", "pending"].includes(record.aggregate.state) && active.expiresAt > observedAt) {
@@ -435,11 +431,10 @@ export async function initiatePayment(
       expiresAt: providerIntent.expiresAt,
       updatedAt: observedAt,
     };
-    return serializable(record);
-  }, undefined, false);
-  if (!tx.committed) throw new DomainError("aborted", "Payment attempt was not committed. Retry safely.");
-  const committed = paymentRecord(tx.snapshot.val(), order.id);
-  if (!committed) throw new DomainError("data-loss", "Committed payment record is missing.");
+    const next = serializable(record);
+    transaction.set(paymentRef, next);
+    return next;
+  });
   const committedAttempt = currentAttempt(committed);
   if (!committedAttempt) throw new DomainError("data-loss", "Committed payment attempt is missing.");
   await persistLegacyAttemptProjection(order, committed, committedAttempt, database);
@@ -561,7 +556,7 @@ async function persistCallbackLedger(
       providerTransactionId: paymentProviderReference,
       amountPaise: record.aggregate.amountPaise,
       occurredAt: paid?.occurredAt ?? receivedAt,
-    }), database as unknown as LedgerTransactionDatabase);
+    }), database);
   }
   if (record.aggregate.state === "refunded") {
     const refundProviderReference = providerReferenceForRefund(record);
@@ -577,7 +572,7 @@ async function persistCallbackLedger(
       amountPaise: record.aggregate.amountPaise,
       occurredAt: refunded?.occurredAt ?? receivedAt,
       settlementReleased: order.status === "Delivered",
-    }), database as unknown as LedgerTransactionDatabase);
+    }), database);
   }
 }
 
@@ -600,34 +595,28 @@ async function persistLegacyCallbackProjection(
     paymentUpdatedAt: projection.paymentUpdatedAt,
     updatedAt: projection.paymentUpdatedAt,
   };
-  await database.ref(ROOT).update({
-    [`paymentEvents/${event.rawEventHash}`]: {
-      ...event,
-      receivedAt,
-      canonicalPaymentId: record.aggregate.paymentId,
-      paymentRevision: record.aggregate.revision,
-    },
-    [`paymentAttempts/${order.id}/${event.merchantOrderId}/state`]: projection.paymentState,
-    [`paymentAttempts/${order.id}/${event.merchantOrderId}/updatedAt`]: projection.paymentUpdatedAt,
-    [`paymentAttempts/${order.id}/${event.merchantOrderId}/canonicalPaymentId`]: record.aggregate.paymentId,
-    [`orders/${order.customerId}/${order.id}/paymentState`]: common.paymentState,
-    [`orders/${order.customerId}/${order.id}/paymentPhase`]: common.paymentPhase,
-    [`orders/${order.customerId}/${order.id}/paymentStateVersion`]: common.paymentStateVersion,
-    [`orders/${order.customerId}/${order.id}/paymentRevision`]: common.paymentRevision,
-    [`orders/${order.customerId}/${order.id}/paymentUpdatedAt`]: common.paymentUpdatedAt,
-    [`orders/${order.customerId}/${order.id}/updatedAt`]: common.updatedAt,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/paymentState`]: common.paymentState,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/paymentPhase`]: common.paymentPhase,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/paymentStateVersion`]: common.paymentStateVersion,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/paymentRevision`]: common.paymentRevision,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/paymentUpdatedAt`]: common.paymentUpdatedAt,
-    [`restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}/updatedAt`]: common.updatedAt,
+  const batch = database.batch();
+  batch.set(paymentEventRef(database, event.rawEventHash), {
+    ...event,
+    receivedAt,
+    canonicalPaymentId: record.aggregate.paymentId,
+    paymentRevision: record.aggregate.revision,
   });
+  batch.set(paymentAttemptRef(database, order.id, event.merchantOrderId), {
+    state: projection.paymentState,
+    updatedAt: projection.paymentUpdatedAt,
+    canonicalPaymentId: record.aggregate.paymentId,
+  }, {merge: true});
+  // `orders` is one flat collection (customerId/restaurantId are indexed
+  // fields, not path segments), so this single update replaces what used to
+  // be a fan-out write to a second `restaurantOrders` denormalized copy.
+  batch.set(orderRef(database, order.id), common, {merge: true});
+  await batch.commit();
 }
 
 export async function applyVerifiedPayment(
   event: VerifiedPaymentEvent,
-  database: PaymentDatabase = db as unknown as PaymentDatabase,
+  database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
   now: () => number = Date.now,
 ): Promise<void> {
   if (event.verified !== true) throw new DomainError("permission-denied", "Unverified payment event rejected.");
@@ -636,12 +625,14 @@ export async function applyVerifiedPayment(
     throw new DomainError("invalid-argument", "Invalid verified callback hash.");
   }
   positivePaise(event.amountPaise);
-  const locator = (await database.ref(`${ROOT}/paymentAttemptsByMerchantOrder/${event.merchantOrderId}`).get())
-    .val() as {customerId?: string; orderId?: string} | null;
+  const locatorSnapshot = await paymentAttemptByMerchantOrderRef(database, event.merchantOrderId).get();
+  const locator = locatorSnapshot.exists ?
+    locatorSnapshot.data() as {customerId?: string; orderId?: string} : null;
   if (!locator?.customerId || !locator.orderId) throw new DomainError("not-found", "Payment attempt not found.");
   safeSegment(locator.customerId, "Payment customer locator is invalid.");
   safeSegment(locator.orderId, "Payment order locator is invalid.");
-  const order = (await database.ref(pathFor.order(locator.customerId, locator.orderId)).get()).val() as SavrivoOrder | null;
+  const orderSnapshot = await orderRef(database, locator.orderId).get();
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order) throw new DomainError("not-found", "Payment order not found.");
   if (order.customerId !== locator.customerId || order.id !== locator.orderId ||
     !eligibleOnlinePaymentMethod(order.paymentMethod)) {
@@ -652,9 +643,10 @@ export async function applyVerifiedPayment(
   }
 
   const receivedAt = now();
-  const paymentRef = database.ref(canonicalPaymentPath(order.id));
-  const tx = await paymentRef.transaction((current) => {
-    let record = paymentRecord(current, order.id) ??
+  const paymentRef = canonicalPaymentRef(database, order.id);
+  const committed = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(paymentRef);
+    let record = paymentRecord(snapshot.exists ? snapshot.data() : null, order.id) ??
       createRecord(newPaymentForCallback(order, event.merchantOrderId, receivedAt));
     assertPaymentMatchesOrder(record, order);
     const existingAttemptId = record.aggregate.currentAttemptId ?? event.merchantOrderId;
@@ -700,11 +692,10 @@ export async function applyVerifiedPayment(
         providerRefundId: prior?.providerRefundId ?? event.providerTransactionId,
       } : prior?.providerRefundId ? {providerRefundId: prior.providerRefundId} : {}),
     };
-    return serializable(record);
-  }, undefined, false);
-  if (!tx.committed) throw new DomainError("aborted", "Verified payment transition was not committed.");
-  const committed = paymentRecord(tx.snapshot.val(), order.id);
-  if (!committed) throw new DomainError("data-loss", "Committed payment record is missing.");
+    const next = serializable(record);
+    transaction.set(paymentRef, next);
+    return next;
+  });
 
   // Canonical state commits first. If an immutable journal or legacy projection
   // temporarily fails, provider retry safely resumes here without a second

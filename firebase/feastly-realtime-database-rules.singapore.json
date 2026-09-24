@@ -1,0 +1,125 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "feastly": {
+      ".read": false,
+      ".write": false,
+      "riderPresence": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$riderId": {
+          ".read": "auth != null && (auth.uid === $riderId || auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+          ".write": "auth != null && auth.uid === $riderId",
+          ".validate": "!newData.exists() || (newData.hasChildren(['online','riderId','riderName','updatedAt','city']) && newData.child('riderId').val() === $riderId)",
+          "online": {
+            ".validate": "newData.isBoolean()"
+          },
+          "riderId": {
+            ".validate": "newData.val() === $riderId"
+          },
+          "riderName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "city": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "activeOrderId": {
+            ".validate": "newData.isString() && newData.val().length <= 80"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "tracking": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$orderId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || data.child('customerId').val() === auth.uid || data.child('riderId').val() === auth.uid)",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (!newData.exists() && data.child('riderId').val() === auth.uid) || (newData.exists() && newData.child('riderId').val() === auth.uid))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['customerId','orderId','riderId','riderName','lat','lng','updatedAt','status','phase']) && newData.child('orderId').val() === $orderId && (!data.exists() || (newData.child('customerId').val() === data.child('customerId').val() && newData.child('riderId').val() === data.child('riderId').val())))",
+          "customerId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "orderId": {
+            ".validate": "newData.isString() && newData.val() === $orderId"
+          },
+          "riderId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "riderName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "bearing": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "status": {
+            ".validate": "newData.val() === 'live' || newData.val() === 'location_off' || newData.val() === 'stopped'"
+          },
+          "phase": {
+            ".validate": "newData.val() === 'pickup' || newData.val() === 'delivery'"
+          },
+          "proximityEvidence": {
+            ".validate": "newData.hasChildren(['candidate','distanceMeters','accuracy','consecutiveFixes','detectedAt','riderId','orderId','phase','source']) && (newData.child('candidate').val() === 'Near you' || newData.child('candidate').val() === 'Arrived') && newData.child('distanceMeters').isNumber() && newData.child('distanceMeters').val() >= 0 && newData.child('distanceMeters').val() <= 2000 && newData.child('accuracy').isNumber() && newData.child('accuracy').val() >= 0 && newData.child('accuracy').val() <= 80 && newData.child('consecutiveFixes').isNumber() && newData.child('consecutiveFixes').val() >= (newData.child('candidate').val() === 'Arrived' ? 3 : 2) && newData.child('consecutiveFixes').val() <= 20 && newData.child('detectedAt').isNumber() && newData.child('detectedAt').val() >= now - 60000 && newData.child('detectedAt').val() <= now + 10000 && newData.child('riderId').val() === newData.parent().child('riderId').val() && newData.child('orderId').val() === $orderId && newData.child('phase').val() === 'delivery' && newData.child('source').val() === 'gps'",
+            "candidate": {
+              ".validate": "newData.val() === 'Near you' || newData.val() === 'Arrived'"
+            },
+            "distanceMeters": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 2000"
+            },
+            "accuracy": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 80"
+            },
+            "consecutiveFixes": {
+              ".validate": "newData.isNumber() && newData.val() >= (newData.parent().child('candidate').val() === 'Arrived' ? 3 : 2) && newData.val() <= 20"
+            },
+            "detectedAt": {
+              ".validate": "newData.isNumber() && newData.val() >= now - 60000 && newData.val() <= now + 10000"
+            },
+            "riderId": {
+              ".validate": "newData.isString() && newData.val() === newData.parent().parent().child('riderId').val()"
+            },
+            "orderId": {
+              ".validate": "newData.isString() && newData.val() === $orderId"
+            },
+            "phase": {
+              ".validate": "newData.val() === 'delivery'"
+            },
+            "source": {
+              ".validate": "newData.val() === 'gps'"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    }
+  }
+}

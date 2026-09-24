@@ -2,40 +2,10 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import type {SavrivoOrder} from "../src/types";
 
-const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  transactionCommits: 0,
-}));
-
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => ({
-      get: async () => ({val: () => clone(memory.values.get(path) ?? null)}),
-      set: async (value: unknown) => { memory.values.set(path, clone(value)); },
-      update: async (patch: Record<string, unknown>) => {
-        const current = memory.values.get(path);
-        memory.values.set(path, {
-          ...(current && typeof current === "object" ? clone(current) : {}),
-          ...clone(patch),
-        });
-      },
-      transaction: async (update: (current: unknown) => unknown) => {
-        const current = clone(memory.values.get(path) ?? null);
-        const next = update(current);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => clone(memory.values.get(path) ?? null)}};
-        }
-        memory.transactionCommits += 1;
-        memory.values.set(path, clone(next));
-        return {committed: true, snapshot: {val: () => clone(next)}};
-      },
-    }),
-  },
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  return {firestoreDb: new InMemoryFirestore(), db: {}};
+});
 
 vi.mock("../src/services/authz", () => ({
   authorizeTransition: vi.fn(async () => "staff"),
@@ -49,9 +19,11 @@ vi.mock("../src/services/workload", () => ({
   reconcileRestaurantWorkload: vi.fn(async () => undefined),
 }));
 
-import {pathFor, ROOT} from "../src/config";
+import {firestoreDb} from "../src/admin";
 import {transitionOrder} from "../src/services/orders";
-import {RIDER_RESTAURANT_ARRIVALS_ROOT} from "../src/services/riderRestaurantArrival";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+const database = firestoreDb as unknown as InMemoryFirestore;
 
 const customerId = "customer-1";
 const orderId = "SV-HANDOVER-GATE-1";
@@ -65,6 +37,14 @@ const request = {
   reason: "",
   cashCollected: false,
 };
+
+function orderPath(id: string): string {
+  return `orders/${id}`;
+}
+
+function arrivalPath(id: string): string {
+  return `riderRestaurantArrivals/${id}`;
+}
 
 function assignedOrder(): SavrivoOrder {
   return {
@@ -130,17 +110,16 @@ function verifiedArrival(overrides: Record<string, unknown> = {}) {
 }
 
 describe("server-authoritative restaurant handover arrival gate", () => {
-  beforeEach(() => {
-    memory.values.clear();
-    memory.transactionCommits = 0;
-    memory.values.set(pathFor.order(customerId, orderId), assignedOrder());
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
+    database.seed(orderPath(orderId), assignedOrder());
   });
 
   it("rejects handover without durable server-verified arrival evidence", async () => {
     await expect(transitionOrder("staff-1", token, request)).rejects.toThrow(
       "Confirm the assigned rider's verified restaurant arrival before handover.",
     );
-    expect(memory.transactionCommits).toBe(0);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(0);
   });
 
   it.each([
@@ -149,28 +128,27 @@ describe("server-authoritative restaurant handover arrival gate", () => {
     {orderId: "another-order"},
     {status: "verifying"},
   ])("rejects mismatched or unfinished evidence: %o", async (override) => {
-    memory.values.set(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`, verifiedArrival(override));
+    database.seed(arrivalPath(orderId), verifiedArrival(override));
     await expect(transitionOrder("staff-1", token, request)).rejects.toThrow(
       "Confirm the assigned rider's verified restaurant arrival before handover.",
     );
-    expect(memory.transactionCommits).toBe(0);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(0);
   });
 
   it("allows exactly the current assignment to move Assigned to Handed to rider", async () => {
-    memory.values.set(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`, verifiedArrival());
+    database.seed(arrivalPath(orderId), verifiedArrival());
     const result = await transitionOrder("staff-1", token, request);
     expect(result).toMatchObject({idempotent: false, order: {status: "Handed to rider", riderId}});
-    expect(memory.transactionCommits).toBe(1);
-    expect(memory.values.get(pathFor.order(customerId, orderId))).toMatchObject({status: "Handed to rider"});
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(1);
+    expect(database.read(orderPath(orderId))).toMatchObject({status: "Handed to rider"});
   });
 
   it("keeps a lost-response handover retry idempotent without requiring a second proof write", async () => {
-    memory.values.set(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`, verifiedArrival());
+    database.seed(arrivalPath(orderId), verifiedArrival());
     await transitionOrder("staff-1", token, request);
-    memory.values.delete(`${RIDER_RESTAURANT_ARRIVALS_ROOT}/${orderId}`);
+    await database.doc(arrivalPath(orderId)).delete();
     const retry = await transitionOrder("staff-1", token, request);
     expect(retry).toMatchObject({idempotent: true, order: {status: "Handed to rider", riderId}});
-    expect(memory.transactionCommits).toBe(1);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(1);
   });
 });
-

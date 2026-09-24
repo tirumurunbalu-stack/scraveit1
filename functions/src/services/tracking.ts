@@ -1,5 +1,4 @@
-import {db} from "../admin";
-import {pathFor, ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   advanceTrackingEvidence,
   hasReachedProximityStatus,
@@ -10,6 +9,8 @@ import {
   type TrackingEvidenceRecord,
 } from "../domain/tracking";
 import {DomainError} from "../errors";
+import type {TransactionLike} from "../firestoreTypes";
+import {orderRef, riderRef, trackingEvidenceRef} from "../firestorePaths";
 import type {SavrivoOrder} from "../types";
 import {transitionOrderFromTracking} from "./orders";
 
@@ -34,22 +35,22 @@ async function clearPendingTransition(
   evidenceEventId: string,
   status: "Near you" | "Arrived",
 ): Promise<void> {
-  const ref = db.ref(`${ROOT}/private/trackingEvidence/${orderId}`);
-  const cachedEvidence = (await ref.get()).val() as TrackingEvidenceRecord | null;
-  await ref.transaction((current: TrackingEvidenceRecord | null) => {
-    const evidence = current ?? cachedEvidence;
+  const ref = trackingEvidenceRef(firestoreDb, orderId);
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const evidence = snapshot.exists ? snapshot.data() as TrackingEvidenceRecord : null;
     if (!evidence?.pendingTransition || evidence.pendingTransition.evidenceEventId !== evidenceEventId ||
-      evidence.pendingTransition.status !== status) return undefined;
+      evidence.pendingTransition.status !== status) return;
     const {pendingTransition: _pending, ...rest} = evidence;
-    return {
+    transaction.set(ref, {
       ...rest,
       candidate: "",
       consecutiveFixes: 0,
       lastQualifiedAt: 0,
       lastTransition: {status, at: Date.now(), evidenceEventId},
       updatedAt: Date.now(),
-    };
-  }, undefined, false);
+    });
+  });
 }
 
 export async function processTrackingUpdate(context: TrackingUpdateContext): Promise<TrackingUpdateResult> {
@@ -64,13 +65,14 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
     return {outcome: "ignored", reason: "stale_or_replayed_fix"};
   }
 
-  const [orderSnapshot, riderStatusSnapshot] = await Promise.all([
-    db.ref(pathFor.order(fix.customerId, fix.orderId)).get(),
-    db.ref(`${ROOT}/riders/${fix.riderId}/status`).get(),
+  const [orderSnapshot, riderSnapshot] = await Promise.all([
+    orderRef(firestoreDb, fix.orderId).get(),
+    riderRef(firestoreDb, fix.riderId).get(),
   ]);
-  const order = orderSnapshot.val() as SavrivoOrder | null;
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
+  const riderStatus = riderSnapshot.exists ? (riderSnapshot.data() as Record<string, unknown>).status : undefined;
   if (!order || order.id !== fix.orderId || order.customerId !== fix.customerId ||
-    order.riderId !== fix.riderId || riderStatusSnapshot.val() !== "approved" ||
+    order.riderId !== fix.riderId || riderStatus !== "approved" ||
     !["Out for delivery", "Near you"].includes(order.status) ||
     !Number.isFinite(Number(order.address?.lat)) || !Number.isFinite(Number(order.address?.lng))) {
     return {outcome: "ignored", reason: "unassigned_or_inactive_order"};
@@ -78,8 +80,10 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
 
   const distanceMeters = trackingDistanceMeters(fix, {lat: Number(order.address.lat), lng: Number(order.address.lng)});
   const requirement = proximityRequirement(order.status, distanceMeters);
-  const evidenceRef = db.ref(`${ROOT}/private/trackingEvidence/${fix.orderId}`);
-  const result = await evidenceRef.transaction((current: TrackingEvidenceRecord | null) => {
+  const evidenceRef = trackingEvidenceRef(firestoreDb, fix.orderId);
+  const evidence = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(evidenceRef);
+    const current = snapshot.exists ? snapshot.data() as TrackingEvidenceRecord : null;
     const next = advanceTrackingEvidence(current, {
       eventId: context.eventId,
       fix,
@@ -87,9 +91,10 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
       requirement,
       serverNow: now,
     });
-    return !next || next === current ? undefined : next;
-  }, undefined, false);
-  const evidence = result.snapshot.val() as TrackingEvidenceRecord | null;
+    if (!next || next === current) return current;
+    transaction.set(evidenceRef, next);
+    return next;
+  });
   const pending = evidence?.pendingTransition;
   if (!pending) return {outcome: "evidence_recorded"};
 
@@ -108,7 +113,8 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
     if (!(error instanceof DomainError) || !["aborted", "failed-precondition", "not-found"].includes(error.code)) {
       throw error;
     }
-    const latest = (await db.ref(pathFor.order(fix.customerId, fix.orderId)).get()).val() as SavrivoOrder | null;
+    const latestSnapshot = await orderRef(firestoreDb, fix.orderId).get();
+    const latest = latestSnapshot.exists ? latestSnapshot.data() as SavrivoOrder : null;
     if (!latest || latest.riderId !== fix.riderId || latest.status === "Cancelled" ||
       hasReachedProximityStatus(latest.status, pending.status)) {
       await clearPendingTransition(fix.orderId, pending.evidenceEventId, pending.status);

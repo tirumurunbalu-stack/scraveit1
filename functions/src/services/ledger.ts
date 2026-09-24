@@ -1,5 +1,5 @@
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {
   createLedgerJournal,
   deterministicJournalId,
@@ -12,30 +12,19 @@ import {
 import type {SavrivoOrder} from "../types";
 
 /**
- * Client rules deny this entire subtree. Only trusted backend code may append
- * journals. Existing riderWallets/COD values remain a mutable compatibility
- * projection; this service deliberately never reads from or writes to them.
+ * Client rules deny this whole collection outright (firestore.rules). Only
+ * trusted backend code may append journals. Existing riderWallets/COD values
+ * remain a mutable compatibility projection; this service deliberately never
+ * reads from or writes to them.
  */
-export const LEDGER_JOURNALS_ROOT = `${ROOT}/private/financialLedger/journals`;
+export const LEDGER_JOURNALS_COLLECTION = "ledgerJournals";
 
-export interface LedgerTransactionSnapshot {
-  val(): unknown;
-}
+// Kept as local aliases so every file already written against these names
+// (before firestoreTypes.ts existed) needs no further changes.
+export type LedgerFirestore = FirestoreLike;
+export type LedgerTransaction = TransactionLike;
 
-export interface LedgerTransactionResult {
-  committed: boolean;
-  snapshot: LedgerTransactionSnapshot;
-}
-
-export interface LedgerTransactionReference {
-  transaction(update: (current: unknown) => unknown): Promise<LedgerTransactionResult>;
-}
-
-export interface LedgerTransactionDatabase {
-  ref(path: string): LedgerTransactionReference;
-}
-
-export type PersistedLedgerJournalResult = ImmutableJournalWrite & {readonly path: string};
+export type PersistedLedgerJournalResult = ImmutableJournalWrite & {readonly journalId: string};
 
 export interface OrderDeliveryAmounts {
   /** Total customer consideration allocated by this delivery journal. */
@@ -146,14 +135,13 @@ export async function persistCodOrderDeliveryLedger(
     fail("LEDGER_ORDER_NOT_DELIVERED_COD");
   }
   const existingJournalId = deterministicJournalId("cod_delivery", `order:${order.id}:delivered:cod`);
-  const existingPath = `${LEDGER_JOURNALS_ROOT}/${existingJournalId}`;
-  const existingSnapshot = await db.ref(existingPath).get();
-  if (existingSnapshot.exists()) {
-    const existing = persistedJournal(existingSnapshot.val());
+  const existingSnapshot = await firestoreDb.collection(LEDGER_JOURNALS_COLLECTION).doc(existingJournalId).get();
+  if (existingSnapshot.exists) {
+    const existing = persistedJournal(existingSnapshot.data());
     if (existing.eventType !== "cod_delivery" || existing.orderId !== order.id) {
       fail("LEDGER_IMMUTABLE_CONFLICT");
     }
-    return {outcome: "idempotent", journal: existing, path: existingPath};
+    return {outcome: "idempotent", journal: existing, journalId: existingJournalId};
   }
   const amounts = orderDeliveryAmounts(order, restaurantCommissionBps);
   return persistLedgerJournal(buildCodOrderDeliveryJournal({
@@ -459,21 +447,23 @@ export function buildCodEarningsOffsetJournal(input: CodEarningsOffsetJournalInp
 
 export async function persistCodRemittanceLedger(
   input: CodRemittanceJournalInput,
-  database: LedgerTransactionDatabase = db as unknown as LedgerTransactionDatabase,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
 ): Promise<PersistedLedgerJournalResult> {
   return persistLedgerJournal(buildCodRemittanceJournal(input), database);
 }
 
 export async function persistCodEarningsOffsetLedger(
   input: CodEarningsOffsetJournalInput,
-  database: LedgerTransactionDatabase = db as unknown as LedgerTransactionDatabase,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
 ): Promise<PersistedLedgerJournalResult> {
   return persistLedgerJournal(buildCodEarningsOffsetJournal(input), database);
 }
 
-export function ledgerJournalPath(journal: Pick<LedgerJournal, "journalId">): string {
+/** Validates the deterministic id shape; callers needing a document
+ * reference build it themselves via firestoreDb.collection(LEDGER_JOURNALS_COLLECTION).doc(id). */
+export function validatedLedgerJournalId(journal: Pick<LedgerJournal, "journalId">): string {
   if (!/^lj_[a-f0-9]{40}$/.test(journal.journalId)) fail("LEDGER_INVALID_JOURNAL_ID");
-  return `${LEDGER_JOURNALS_ROOT}/${journal.journalId}`;
+  return journal.journalId;
 }
 
 function persistedJournal(value: unknown): LedgerJournal {
@@ -490,33 +480,31 @@ function serializableJournal(journal: LedgerJournal): LedgerJournal {
 }
 
 /**
- * Appends one immutable journal through an RTDB transaction. Exact retries
- * return the stored value. Any different value at the deterministic path is
- * rejected; an existing journal is never replaced or merged.
+ * Appends one immutable journal through a Firestore transaction, scoped to
+ * the single document keyed by the journal's own deterministic id. Exact
+ * retries return the stored value; any different value at that id is
+ * rejected - an existing journal is never replaced or merged.
  */
 export async function persistLedgerJournal(
   candidate: LedgerJournal,
-  database: LedgerTransactionDatabase = db as unknown as LedgerTransactionDatabase,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
 ): Promise<PersistedLedgerJournalResult> {
   validateLedgerJournal(candidate);
-  const path = ledgerJournalPath(candidate);
+  const journalId = validatedLedgerJournalId(candidate);
   const candidateValue = serializableJournal(candidate);
-  let outcome: ImmutableJournalWrite["outcome"] | undefined;
-  const result = await database.ref(path).transaction((current) => {
-    if (current === null || current === undefined) {
-      outcome = "insert";
-      return candidateValue;
+  const ref = database.collection(LEDGER_JOURNALS_COLLECTION).doc(journalId);
+  const {outcome, stored} = await database.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) {
+      transaction.set(ref, candidateValue);
+      return {outcome: "insert" as const, stored: candidateValue};
     }
-    const existing = persistedJournal(current);
+    const existing = persistedJournal(snapshot.data());
+    // Throws LEDGER_IMMUTABLE_CONFLICT on a genuine mismatch, which propagates
+    // out of runTransaction and rejects this call - exactly the desired
+    // behavior, so there is nothing further to check once this resolves.
     const resolution = resolveImmutableJournalWrite(existing, candidate);
-    outcome = resolution.outcome;
-    // Abort an exact retry rather than issuing a no-op write. The transaction
-    // snapshot still returns the authoritative stored journal for validation.
-    return undefined;
+    return {outcome: resolution.outcome, stored: existing};
   });
-  if (!result.committed && outcome !== "idempotent") fail("LEDGER_TRANSACTION_ABORTED");
-  const stored = persistedJournal(result.snapshot.val());
-  resolveImmutableJournalWrite(stored, candidate);
-  if (outcome !== "insert" && outcome !== "idempotent") fail("LEDGER_TRANSACTION_RESULT_MISMATCH");
-  return {outcome, journal: stored, path};
+  return {outcome, journal: persistedJournal(stored), journalId};
 }

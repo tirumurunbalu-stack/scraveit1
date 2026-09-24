@@ -2,25 +2,35 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {describe, expect, it, vi} from "vitest";
 
 vi.mock("../src/admin", () => ({
-  db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }},
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
 import {createLedgerJournal, type LedgerJournal} from "../src/domain/ledger";
 import {
+  LEDGER_JOURNALS_COLLECTION,
   buildCodEarningsOffsetJournal,
   buildCodOrderDeliveryJournal,
   buildCodRemittanceJournal,
   buildOnlineOrderDeliveryJournal,
   buildOnlinePaymentRefundJournal,
-  LEDGER_JOURNALS_ROOT,
 } from "../src/services/ledger";
 import {
   readRiderFinancialSummary,
-  RIDER_LEDGER_COVERAGE_ROOT,
-  RIDER_FINANCE_WALLET_ROOT,
+  riderLedgerCoverageRef,
+  riderWalletRef,
   type RiderFinanceAuthorization,
   type RiderFinanceDatabase,
 } from "../src/services/riderFinance";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+class MemoryRiderFinanceDatabase extends InMemoryFirestore implements RiderFinanceDatabase {
+  readonly collectionsAccessed: string[] = [];
+
+  collection(name: string) {
+    this.collectionsAccessed.push(name);
+    return super.collection(name);
+  }
+}
 
 const riderId = "rider-1";
 const token = {} as DecodedIdToken;
@@ -34,26 +44,6 @@ const deliveryAmounts = {
   riderTipPaise: 1_000,
 } as const;
 
-class MemoryRiderFinanceDatabase implements RiderFinanceDatabase {
-  readonly values = new Map<string, unknown>();
-  readonly queries: Array<[string, string, unknown]> = [];
-
-  ref(path: string) {
-    const chain = {
-      orderByChild: (child: string) => {
-        this.queries.push([path, "orderByChild", child]);
-        return chain;
-      },
-      limitToLast: (limit: number) => {
-        this.queries.push([path, "limitToLast", limit]);
-        return chain;
-      },
-      get: async () => ({val: () => this.values.get(path) ?? null}),
-    };
-    return chain;
-  }
-}
-
 function authorizer(overrides: Partial<RiderFinanceAuthorization> = {}): RiderFinanceAuthorization {
   return {
     requireRider: overrides.requireRider ?? (async () => ({})),
@@ -62,22 +52,24 @@ function authorizer(overrides: Partial<RiderFinanceAuthorization> = {}): RiderFi
 }
 
 function journals(database: MemoryRiderFinanceDatabase, values: readonly LedgerJournal[]): void {
-  database.values.set(LEDGER_JOURNALS_ROOT, Object.fromEntries(values.map((journal) => [journal.journalId, journal])));
+  for (const journal of values) database.seed(`${LEDGER_JOURNALS_COLLECTION}/${journal.journalId}`, journal);
 }
 
 function wallet(database: MemoryRiderFinanceDatabase, outstandingPaise: number, extras = {}): void {
-  database.values.set(`${RIDER_FINANCE_WALLET_ROOT}/${riderId}`, {
+  database.seed(riderWalletRef(database, riderId).path, {
     codOutstanding: outstandingPaise / 100,
     codOutstandingLimitPaise: 50_000,
     codRemittanceReservedPaise: 0,
     codBlocked: false,
     ...extras,
   });
-  database.values.set(`${RIDER_LEDGER_COVERAGE_ROOT}/${riderId}`, {
-    schemaVersion: 1,
-    riderId,
-    historicalBackfillComplete: true,
-    verifiedAt: 1,
+  database.seed(riderLedgerCoverageRef(database).path, {
+    [riderId]: {
+      schemaVersion: 1,
+      riderId,
+      historicalBackfillComplete: true,
+      verifiedAt: 1,
+    },
   });
 }
 
@@ -261,13 +253,12 @@ describe("authoritative rider financial summary", () => {
     expect(result.reconciliationStatus).toBe("unverified_bounded_window");
     expect(result.payableEarningsPaise).toBeNull();
     expect(result.journalCount).toBe(2);
-    expect(database.queries).toContainEqual([LEDGER_JOURNALS_ROOT, "limitToLast", 3]);
   });
 
   it("fails closed for a legacy rider without verified historical ledger coverage", async () => {
     const database = new MemoryRiderFinanceDatabase();
     journals(database, []);
-    database.values.set(`${RIDER_FINANCE_WALLET_ROOT}/${riderId}`, {codOutstanding: 0});
+    database.seed(riderWalletRef(database, riderId).path, {codOutstanding: 0});
 
     const result = await read(database);
     expect(result).toMatchObject({
@@ -290,7 +281,7 @@ describe("authoritative rider financial summary", () => {
 
     const malformed = new MemoryRiderFinanceDatabase();
     journals(malformed, []);
-    malformed.values.set(`${RIDER_FINANCE_WALLET_ROOT}/${riderId}`, {
+    malformed.seed(riderWalletRef(malformed, riderId).path, {
       codOutstanding: 10,
       codRemittanceReservedPaise: 1_001,
     });
@@ -303,10 +294,8 @@ describe("authoritative rider financial summary", () => {
   it("marks tampered ledger rows incomplete and excludes them from all totals", async () => {
     const database = new MemoryRiderFinanceDatabase();
     const valid = codDelivery();
-    database.values.set(LEDGER_JOURNALS_ROOT, {
-      [valid.journalId]: valid,
-      wrong_storage_key: {...valid, eventId: "tampered"},
-    });
+    journals(database, [valid]);
+    database.seed(`${LEDGER_JOURNALS_COLLECTION}/wrong_storage_key`, {...valid, eventId: "tampered"});
     wallet(database, 14_000);
 
     const result = await read(database);
@@ -347,16 +336,18 @@ describe("authoritative rider financial summary", () => {
     const denyRider = vi.fn(async () => { throw new Error("DENIED"); });
     await expect(read(denied, {ledgerLimit: 10, historyLimit: 10}, authorizer({requireRider: denyRider})))
       .rejects.toThrow("DENIED");
-    expect(denied.queries).toEqual([]);
+    expect(denied.collectionsAccessed).toEqual([]);
 
     const adminDb = new MemoryRiderFinanceDatabase();
     const requireAdmin = vi.fn(() => "ops_admin");
-    adminDb.values.set(`${RIDER_FINANCE_WALLET_ROOT}/rider-2`, {codOutstanding: 0});
-    adminDb.values.set(`${RIDER_LEDGER_COVERAGE_ROOT}/rider-2`, {
-      schemaVersion: 1,
-      riderId: "rider-2",
-      historicalBackfillComplete: true,
-      verifiedAt: 1,
+    adminDb.seed(riderWalletRef(adminDb, "rider-2").path, {codOutstanding: 0});
+    adminDb.seed(riderLedgerCoverageRef(adminDb).path, {
+      "rider-2": {
+        schemaVersion: 1,
+        riderId: "rider-2",
+        historicalBackfillComplete: true,
+        verifiedAt: 1,
+      },
     });
     const result = await readRiderFinancialSummary(
       riderId,

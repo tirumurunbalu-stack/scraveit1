@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {
   createLedgerJournal,
   validateLedgerJournal,
@@ -17,18 +17,40 @@ import {
   type FinancePayoutMethod,
 } from "../domain/financePolicy";
 import {DomainError} from "../errors";
-import {LEDGER_JOURNALS_ROOT, persistLedgerJournal, type LedgerTransactionDatabase} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
-import {RIDER_REWARD_SETTINGS_ROOT, normalizeRewardSettings} from "./riderRewards";
-import {buildRestaurantSettlementJournal} from "./restaurantSettlements";
+import {riderLedgerCoverageRef} from "./riderFinance";
+import {riderRewardSettingsRef, normalizeRewardSettings} from "./riderRewards";
+import {buildRestaurantSettlementJournal, restaurantLedgerCoverageRef} from "./restaurantSettlements";
 
-export const FINANCE_AUTOMATION_ROOT = `${ROOT}/private/financeAutomation`;
-export const FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT = `${FINANCE_AUTOMATION_ROOT}/weeklyRuns`;
-export const FINANCE_AUTOMATION_LOCKS_ROOT = `${FINANCE_AUTOMATION_ROOT}/locks`;
-export const RIDER_PAYOUT_LOCKS_ROOT = `${ROOT}/private/financeOperations/riderPayoutLocks`;
-export const RESTAURANT_SETTLEMENT_LOCKS_ROOT = `${ROOT}/private/financeOperations/restaurantSettlementLocks`;
-export const RIDER_LEDGER_COVERAGE_ROOT = `${ROOT}/private/financialLedger/coverage/riders`;
-export const RESTAURANT_LEDGER_COVERAGE_ROOT = `${ROOT}/private/financialLedger/coverage/restaurants`;
+// Nested collection/document paths mirror the RTDB tree this replaces
+// (private/financeAutomation/weeklyRuns/{periodKey}, etc.) - Firestore allows
+// this exact alternating collection/doc/collection/doc shape, so the only
+// change is how each segment is addressed, not the shape itself.
+function financeAutomationDoc(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("financeAutomation");
+}
+function weeklyRunRef(database: FirestoreLike, periodKey: string): DocumentReferenceLike {
+  return financeAutomationDoc(database).collection("weeklyRuns").doc(periodKey);
+}
+function weeklyRunItemRef(database: FirestoreLike, periodKey: string, itemIdValue: string): DocumentReferenceLike {
+  return weeklyRunRef(database, periodKey).collection("items").doc(itemIdValue);
+}
+function runLockRef(database: FirestoreLike, periodKey: string): DocumentReferenceLike {
+  return financeAutomationDoc(database).collection("locks").doc(periodKey);
+}
+// Shared with payouts.ts's manual/admin-triggered payout endpoint - both
+// acquire the same lock so a manual payout and this weekly automation can
+// never race on the same rider/restaurant.
+export function riderPayoutLockRef(database: FirestoreLike, riderId: string): DocumentReferenceLike {
+  return database.collection("private").doc("financeOperations").collection("riderPayoutLocks").doc(riderId);
+}
+export function restaurantSettlementLockRef(database: FirestoreLike, restaurantId: string): DocumentReferenceLike {
+  return database.collection("private").doc("financeOperations").collection("restaurantSettlementLocks").doc(restaurantId);
+}
+function auditRef(database: FirestoreLike, id: string): DocumentReferenceLike {
+  return database.collection("audit").doc(id);
+}
 
 const RUN_LOCK_LEASE_MS = 5 * 60_000;
 const ENTITY_LOCK_LEASE_MS = 2 * 60_000;
@@ -39,27 +61,7 @@ const SYSTEM_TOKEN = {
   savrivoRole: "owner",
 } as unknown as DecodedIdToken;
 
-interface ValueSnapshot {
-  val(): unknown;
-}
-
-interface TransactionResult {
-  committed: boolean;
-  snapshot: ValueSnapshot;
-}
-
-interface FinanceAutomationReference {
-  get(): Promise<ValueSnapshot>;
-  transaction(
-    update: (current: unknown) => unknown,
-    onComplete?: unknown,
-    applyLocally?: boolean,
-  ): Promise<TransactionResult>;
-}
-
-export interface FinanceAutomationDatabase extends LedgerTransactionDatabase {
-  ref(path: string): FinanceAutomationReference;
-}
+export type FinanceAutomationDatabase = FirestoreLike;
 
 export type FinanceAutomationEntityType = "rider" | "restaurant";
 
@@ -188,7 +190,7 @@ interface AutomationBeneficiaryProfile {
 }
 
 function defaultDatabase(): FinanceAutomationDatabase {
-  return db as unknown as FinanceAutomationDatabase;
+  return firestoreDb as unknown as FinanceAutomationDatabase;
 }
 
 function record(value: unknown): UnknownRecord {
@@ -221,14 +223,14 @@ function payoutReference(seed: string): string {
   return `AUTO-${hashKey(seed).slice(0, 20).toUpperCase()}`;
 }
 
-function entityLockPath(entityType: FinanceAutomationEntityType, entityId: string): string {
+function entityLockRef(
+  database: FirestoreLike,
+  entityType: FinanceAutomationEntityType,
+  entityId: string,
+): DocumentReferenceLike {
   return entityType === "rider" ?
-    `${RIDER_PAYOUT_LOCKS_ROOT}/${entityId}` :
-    `${RESTAURANT_SETTLEMENT_LOCKS_ROOT}/${entityId}`;
-}
-
-function runLockPath(periodKey: string): string {
-  return `${FINANCE_AUTOMATION_LOCKS_ROOT}/${periodKey}`;
+    riderPayoutLockRef(database, entityId) :
+    restaurantSettlementLockRef(database, entityId);
 }
 
 function validUpiId(value: string): boolean {
@@ -363,54 +365,56 @@ function runSummaryRecord(value: unknown, periodKey: string): FinanceAutomationR
 
 async function acquireLock(
   database: FinanceAutomationDatabase,
-  path: string,
+  ref: DocumentReferenceLike,
   entityId: string,
   operationKey: string,
   now: number,
   leaseMs: number,
 ): Promise<void> {
-  let abort: DomainError | null = null;
-  const result = await database.ref(path).transaction((current) => {
-    abort = null;
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() : null;
     const existing = current == null ? null : lockRecord(current, entityId);
     if (current != null && !existing) {
-      abort = new DomainError("data-loss", "A finance automation lock is invalid and needs review.");
-      return undefined;
+      throw new DomainError("data-loss", "A finance automation lock is invalid and needs review.");
     }
     if (existing && existing.operationId !== operationKey && existing.leaseUntil > now) {
-      abort = new DomainError("aborted", "A finance automation lock is busy.", {reason: "FINANCE_AUTOMATION_LOCK_BUSY"});
-      return undefined;
+      throw new DomainError("aborted", "A finance automation lock is busy.", {reason: "FINANCE_AUTOMATION_LOCK_BUSY"});
     }
-    return {
+    transaction.set(ref, {
       schemaVersion: 1,
       operationId: operationKey,
       entityId,
       actorId: SYSTEM_ACTOR_ID,
       acquiredAt: now,
       leaseUntil: now + leaseMs,
-    } satisfies EntityLock;
-  }, undefined, false);
-  if (!result.committed) throw abort ?? new DomainError("aborted", "A finance automation lock could not be acquired.");
+    } satisfies EntityLock);
+  });
 }
 
 async function releaseLock(
   database: FinanceAutomationDatabase,
-  path: string,
+  ref: DocumentReferenceLike,
   entityId: string,
   operationKey: string,
 ): Promise<void> {
-  await database.ref(path).transaction((current) => {
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() : null;
     const existing = current == null ? null : lockRecord(current, entityId);
-    if (!existing) return null;
-    return existing.operationId === operationKey ? null : current;
-  }, undefined, false);
+    if (!existing || existing.operationId === operationKey) {
+      transaction.delete(ref);
+    }
+  });
 }
 
-function parseLedgerSnapshot(raw: unknown): {journals: readonly LedgerJournal[]; invalidJournalCount: number} {
-  const container = record(raw);
+function parseLedgerSnapshot(entries: ReadonlyArray<{id: string; data: unknown}>): {
+  journals: readonly LedgerJournal[];
+  invalidJournalCount: number;
+} {
   const journals: LedgerJournal[] = [];
   let invalidJournalCount = 0;
-  for (const [key, value] of Object.entries(container)) {
+  for (const {id: key, data: value} of entries) {
     try {
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID");
       const journal = value as LedgerJournal;
@@ -470,8 +474,8 @@ async function readAllLedgerBalances(
   restaurants: ReadonlyMap<string, RestaurantOutstandingBalance>;
   invalidJournalCount: number;
 }> {
-  const snapshot = await database.ref(LEDGER_JOURNALS_ROOT).get();
-  const parsed = parseLedgerSnapshot(snapshot.val());
+  const snapshot = await database.collection(LEDGER_JOURNALS_COLLECTION).get();
+  const parsed = parseLedgerSnapshot(snapshot.docs.map((doc) => ({id: doc.id, data: doc.data()})));
   const aggregates = aggregateOutstandingBalances(parsed.journals);
   return {
     ...aggregates,
@@ -647,11 +651,12 @@ async function upsertItemRecord(
   periodKey: string,
   item: FinanceAutomationItemRecord,
 ): Promise<void> {
-  await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/items/${item.itemId}`)
-    .transaction((current) => ({
-      ...(record(current)),
-      ...item,
-    }), undefined, false);
+  const ref = weeklyRunItemRef(database, periodKey, item.itemId);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? record(snapshot.data()) : {};
+    transaction.set(ref, {...current, ...item});
+  });
 }
 
 async function writeAudit(
@@ -672,7 +677,11 @@ async function writeAudit(
     actorRole: "owner",
     at,
   };
-  await database.ref(`${ROOT}/audit/${id}`).transaction((current) => current ?? auditRecord, undefined, false);
+  const ref = auditRef(database, id);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) transaction.set(ref, auditRecord);
+  });
 }
 
 function emptySummary(
@@ -718,8 +727,9 @@ async function processRider(
 ): Promise<FinanceAutomationItemRecord> {
   const itemKey = itemId("rider", riderId);
   const lockKey = operationId("rider", riderId, periodKey);
+  const priorItemSnapshot = await weeklyRunItemRef(database, periodKey, itemKey).get();
   const priorItem = itemRecord(
-    (await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/items/${itemKey}`).get()).val(),
+    priorItemSnapshot.exists ? priorItemSnapshot.data() : null,
     itemKey,
     "rider",
     riderId,
@@ -770,7 +780,7 @@ async function processRider(
     };
   }
 
-  await acquireLock(database, entityLockPath("rider", riderId), riderId, lockKey, attemptedAt, ENTITY_LOCK_LEASE_MS);
+  await acquireLock(database, entityLockRef(database, "rider", riderId), riderId, lockKey, attemptedAt, ENTITY_LOCK_LEASE_MS);
   try {
     const current = await currentRiderOutstanding(database, riderId);
     const profile = riderProfileFromRecord(riderId, rider);
@@ -947,7 +957,7 @@ async function processRider(
       minimumThresholdPaise: minimumPayoutPaise,
     };
   } finally {
-    await releaseLock(database, entityLockPath("rider", riderId), riderId, lockKey);
+    await releaseLock(database, entityLockRef(database, "rider", riderId), riderId, lockKey);
   }
 }
 
@@ -963,8 +973,9 @@ async function processRestaurant(
 ): Promise<FinanceAutomationItemRecord> {
   const itemKey = itemId("restaurant", restaurantId);
   const lockKey = operationId("restaurant", restaurantId, periodKey);
+  const priorItemSnapshot = await weeklyRunItemRef(database, periodKey, itemKey).get();
   const priorItem = itemRecord(
-    (await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/items/${itemKey}`).get()).val(),
+    priorItemSnapshot.exists ? priorItemSnapshot.data() : null,
     itemKey,
     "restaurant",
     restaurantId,
@@ -1018,7 +1029,7 @@ async function processRestaurant(
 
   await acquireLock(
     database,
-    entityLockPath("restaurant", restaurantId),
+    entityLockRef(database, "restaurant", restaurantId),
     restaurantId,
     lockKey,
     attemptedAt,
@@ -1198,7 +1209,7 @@ async function processRestaurant(
       minimumThresholdPaise: minimumSettlementPaise,
     };
   } finally {
-    await releaseLock(database, entityLockPath("restaurant", restaurantId), restaurantId, lockKey);
+    await releaseLock(database, entityLockRef(database, "restaurant", restaurantId), restaurantId, lockKey);
   }
 }
 
@@ -1255,9 +1266,11 @@ export async function runWeeklyFinanceAutomation(
   const attemptedAt = Number.isSafeInteger(referenceAt) && referenceAt > 0 ? referenceAt : Date.now();
   const [policy, settingsSnapshot] = await Promise.all([
     loadPolicy(attemptedAt),
-    database.ref(RIDER_REWARD_SETTINGS_ROOT).get(),
+    riderRewardSettingsRef(database).get(),
   ]);
-  const riderMinimumPayoutPaise = normalizeRewardSettings(settingsSnapshot.val()).payoutMinimumPaise;
+  const riderMinimumPayoutPaise = normalizeRewardSettings(
+    settingsSnapshot.exists ? settingsSnapshot.data() : null,
+  ).payoutMinimumPaise;
   if (!policy.payouts.automation.enabled) {
     return emptySummary(policy, attemptedAt, "disabled", "Weekly payout automation is disabled.", riderMinimumPayoutPaise);
   }
@@ -1265,14 +1278,12 @@ export async function runWeeklyFinanceAutomation(
   if (!periodKey) {
     return emptySummary(policy, attemptedAt, "not_due", "Weekly payout automation is not due yet.", riderMinimumPayoutPaise);
   }
-  const existingSummary = runSummaryRecord(
-    (await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/meta`).get()).val(),
-    periodKey,
-  );
+  const runSnapshot = await weeklyRunRef(database, periodKey).get();
+  const existingSummary = runSummaryRecord(runSnapshot.exists ? runSnapshot.data() : null, periodKey);
   if (existingSummary) return existingSummary;
 
   try {
-    await acquireLock(database, runLockPath(periodKey), periodKey, periodKey, attemptedAt, RUN_LOCK_LEASE_MS);
+    await acquireLock(database, runLockRef(database, periodKey), periodKey, periodKey, attemptedAt, RUN_LOCK_LEASE_MS);
   } catch (error) {
     if (error instanceof DomainError && error.code === "aborted") {
       return emptySummary(policy, attemptedAt, "busy", "Weekly payout automation is already running.", riderMinimumPayoutPaise);
@@ -1284,10 +1295,10 @@ export async function runWeeklyFinanceAutomation(
     const [balances, riderCoverageSnapshot, restaurantCoverageSnapshot, ridersSnapshot, restaurantsSnapshot] =
       await Promise.all([
         readAllLedgerBalances(database),
-        database.ref(RIDER_LEDGER_COVERAGE_ROOT).get(),
-        database.ref(RESTAURANT_LEDGER_COVERAGE_ROOT).get(),
-        database.ref(`${ROOT}/riders`).get(),
-        database.ref(`${ROOT}/catalog/restaurants`).get(),
+        riderLedgerCoverageRef(database).get(),
+        restaurantLedgerCoverageRef(database).get(),
+        database.collection("riders").get(),
+        database.collection("restaurants").get(),
       ]);
 
     if (balances.invalidJournalCount > 0) {
@@ -1298,8 +1309,7 @@ export async function runWeeklyFinanceAutomation(
         "Weekly payout automation stopped because invalid ledger data needs finance review.",
         riderMinimumPayoutPaise,
       );
-      await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/meta`)
-        .transaction(() => summary, undefined, false);
+      await weeklyRunRef(database, periodKey).set(summary);
       await writeAudit(
         database,
         `finance-weekly-run-${hashKey(periodKey).slice(0, 36)}`,
@@ -1311,10 +1321,14 @@ export async function runWeeklyFinanceAutomation(
       return summary;
     }
 
-    const riderRecords = record(ridersSnapshot.val());
-    const restaurantRecords = record(restaurantsSnapshot.val());
-    const coveredRiders = riderCoverageSet(riderCoverageSnapshot.val());
-    const coveredRestaurants = restaurantCoverageSet(restaurantCoverageSnapshot.val());
+    const riderRecords: UnknownRecord = {};
+    for (const doc of ridersSnapshot.docs) riderRecords[doc.id] = doc.data();
+    const restaurantRecords: UnknownRecord = {};
+    for (const doc of restaurantsSnapshot.docs) restaurantRecords[doc.id] = doc.data();
+    const coveredRiders = riderCoverageSet(riderCoverageSnapshot.exists ? riderCoverageSnapshot.data() : null);
+    const coveredRestaurants = restaurantCoverageSet(
+      restaurantCoverageSnapshot.exists ? restaurantCoverageSnapshot.data() : null,
+    );
     const riderIds = policy.payouts.automation.ridersEnabled ?
       [...balances.riders.entries()]
         .filter(([, balance]) => balance.earningsPaise + balance.tipsPaise > 0)
@@ -1358,8 +1372,7 @@ export async function runWeeklyFinanceAutomation(
     }
 
     const summary = summarizeItems(policy, attemptedAt, periodKey, riderMinimumPayoutPaise, items);
-    await database.ref(`${FINANCE_AUTOMATION_WEEKLY_RUNS_ROOT}/${periodKey}/meta`)
-      .transaction(() => summary, undefined, false);
+    await weeklyRunRef(database, periodKey).set(summary);
     await writeAudit(
       database,
       `finance-weekly-run-${hashKey(periodKey).slice(0, 36)}`,
@@ -1370,6 +1383,6 @@ export async function runWeeklyFinanceAutomation(
     );
     return summary;
   } finally {
-    await releaseLock(database, runLockPath(periodKey), periodKey, periodKey);
+    await releaseLock(database, runLockRef(database, periodKey), periodKey, periodKey);
   }
 }

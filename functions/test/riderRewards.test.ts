@@ -2,18 +2,13 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {describe, expect, it, vi} from "vitest";
 
 vi.mock("../src/admin", () => ({
-  db: {ref: () => { throw new Error("UNEXPECTED_DEFAULT_DB"); }},
+  firestoreDb: {collection: () => { throw new Error("UNEXPECTED_DEFAULT_FIRESTORE"); }},
 }));
 
-import {ROOT} from "../src/config";
 import {createLedgerJournal, type LedgerJournal} from "../src/domain/ledger";
-import {LEDGER_JOURNALS_ROOT, buildOnlineOrderDeliveryJournal} from "../src/services/ledger";
+import {LEDGER_JOURNALS_COLLECTION, buildOnlineOrderDeliveryJournal} from "../src/services/ledger";
 import {
   __test,
-  RIDER_REWARD_ACTIVITY_EVENTS_ROOT,
-  RIDER_REWARD_CAMPAIGNS_ROOT,
-  RIDER_REWARD_SETTINGS_ROOT,
-  RIDER_REWARD_SESSION_DAYS_ROOT,
   evaluateRiderRewardsForDeliveredOrder,
   readRiderRewardsAdminDashboard,
   readRiderRewardsDashboard,
@@ -21,7 +16,9 @@ import {
   upsertRiderRewardCampaign,
   type RiderRewardsDatabase,
 } from "../src/services/riderRewards";
+import {riderLedgerCoverageRef, riderWalletRef} from "../src/services/riderFinance";
 import type {SavrivoOrder} from "../src/types";
+import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
 const riderId = "rider-1";
 const inviterId = "rider-mentor";
@@ -30,131 +27,31 @@ const ownerToken = {
   email: "owner@scraveit.test",
 } as DecodedIdToken;
 
-type TreeRecord = Record<string, unknown>;
+class MemoryRiderRewardsDatabase extends InMemoryFirestore implements RiderRewardsDatabase {}
 
-class MemoryRiderRewardsDatabase implements RiderRewardsDatabase {
-  private tree: TreeRecord = {};
-
-  seed(path: string, value: unknown): void {
-    this.write(path, value);
-  }
-
-  read(path: string): unknown {
-    return this.lookup(path);
-  }
-
-  ref(path: string) {
-    const database = this;
-    let orderedByChild: string | null = null;
-    let rangeStart: string | number | null = null;
-    let rangeEnd: string | number | null = null;
-    let limitedToFirst: number | null = null;
-    let limitedToLast: number | null = null;
-    const chain = {
-      orderByChild(child: string) {
-        orderedByChild = child;
-        return chain;
-      },
-      startAt(value: string | number) {
-        rangeStart = value;
-        return chain;
-      },
-      endAt(value: string | number) {
-        rangeEnd = value;
-        return chain;
-      },
-      limitToFirst(limit: number) {
-        limitedToFirst = limit;
-        return chain;
-      },
-      limitToLast(limit: number) {
-        limitedToLast = limit;
-        return chain;
-      },
-      async get() {
-        let value = database.lookup(path);
-        if (orderedByChild && value && typeof value === "object" && !Array.isArray(value)) {
-          let entries = Object.entries(value as TreeRecord)
-            .filter(([, candidate]) => {
-              const childValue = ((candidate as TreeRecord) ?? {})[orderedByChild] ?? null;
-              if (rangeStart !== null && compareQueryValue(childValue, rangeStart) < 0) return false;
-              if (rangeEnd !== null && compareQueryValue(childValue, rangeEnd) > 0) return false;
-              return true;
-            })
-            .sort((left, right) => {
-              const leftValue = Number(((left[1] as TreeRecord) ?? {})[orderedByChild] ?? 0);
-              const rightValue = Number(((right[1] as TreeRecord) ?? {})[orderedByChild] ?? 0);
-              return leftValue - rightValue || left[0].localeCompare(right[0]);
-            });
-          if (limitedToFirst != null) entries = entries.slice(0, limitedToFirst);
-          if (limitedToLast != null) entries = entries.slice(-limitedToLast);
-          value = Object.fromEntries(entries);
-        }
-        return {val: () => clone(value ?? null)};
-      },
-      async set(value: unknown) {
-        database.write(path, value);
-      },
-      async transaction(update: (current: unknown) => unknown) {
-        const current = clone(database.lookup(path) ?? null);
-        const next = update(current);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => clone(database.lookup(path) ?? null)}};
-        }
-        database.write(path, next);
-        return {committed: true, snapshot: {val: () => clone(database.lookup(path) ?? null)}};
-      },
-    };
-    return chain;
-  }
-
-  private lookup(path: string): unknown {
-    const segments = split(path);
-    let current: unknown = this.tree;
-    for (const segment of segments) {
-      if (!current || typeof current !== "object" || Array.isArray(current)) return null;
-      current = (current as TreeRecord)[segment];
-      if (current === undefined) return null;
-    }
-    return current;
-  }
-
-  private write(path: string, value: unknown): void {
-    const segments = split(path);
-    if (!segments.length) {
-      this.tree = value && typeof value === "object" && !Array.isArray(value)
-        ? clone(value as TreeRecord)
-        : {};
-      return;
-    }
-    let current: TreeRecord = this.tree;
-    for (let index = 0; index < segments.length - 1; index++) {
-      const segment = segments[index]!;
-      const next = current[segment];
-      if (!next || typeof next !== "object" || Array.isArray(next)) current[segment] = {};
-      current = current[segment] as TreeRecord;
-    }
-    const leaf = segments[segments.length - 1]!;
-    if (value === null) delete current[leaf];
-    else current[leaf] = clone(value);
-  }
+function sessionDayPath(riderIdValue: string, dayKey: string): string {
+  return `private/riderRewards/sessionDays/${riderIdValue}/days/${dayKey}`;
 }
 
-function split(path: string): string[] {
-  return String(path || "").split("/").filter(Boolean);
+function activityEventPath(riderIdValue: string, eventId: string): string {
+  return `private/riderRewards/activityEvents/${riderIdValue}/events/${eventId}`;
 }
 
-function clone<T>(value: T): T {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
+function ledgerJournalPath(journalId: string): string {
+  return `${LEDGER_JOURNALS_COLLECTION}/${journalId}`;
 }
 
-function compareQueryValue(left: unknown, right: string | number): number {
-  if (typeof left === "number" && typeof right === "number") return left - right;
-  return String(left ?? "").localeCompare(String(right));
+function allJournals(database: MemoryRiderRewardsDatabase): Record<string, LedgerJournal> {
+  const prefix = `${LEDGER_JOURNALS_COLLECTION}/`;
+  const out: Record<string, LedgerJournal> = {};
+  for (const path of database.paths()) {
+    if (path.startsWith(prefix)) out[path.slice(prefix.length)] = database.read(path) as LedgerJournal;
+  }
+  return out;
 }
 
 function seedApprovedRider(database: MemoryRiderRewardsDatabase, id: string, extra: Record<string, unknown> = {}): void {
-  database.seed(`${ROOT}/riders/${id}`, {
+  database.seed(`riders/${id}`, {
     status: "approved",
     city: "Nellore",
     rating: 4.8,
@@ -163,16 +60,18 @@ function seedApprovedRider(database: MemoryRiderRewardsDatabase, id: string, ext
 }
 
 function seedCoverage(database: MemoryRiderRewardsDatabase, id: string): void {
-  database.seed(`${ROOT}/private/financialLedger/coverage/riders/${id}`, {
-    schemaVersion: 1,
-    riderId: id,
-    historicalBackfillComplete: true,
-    verifiedAt: 1,
+  database.seed(riderLedgerCoverageRef(database).path, {
+    [id]: {
+      schemaVersion: 1,
+      riderId: id,
+      historicalBackfillComplete: true,
+      verifiedAt: 1,
+    },
   });
 }
 
 function seedWallet(database: MemoryRiderRewardsDatabase, id: string, outstandingPaise = 0): void {
-  database.seed(`${ROOT}/riderWallets/${id}`, {
+  database.seed(riderWalletRef(database, id).path, {
     codOutstanding: outstandingPaise / 100,
     codOutstandingLimitPaise: 50_000,
     codRemittanceReservedPaise: 0,
@@ -181,7 +80,7 @@ function seedWallet(database: MemoryRiderRewardsDatabase, id: string, outstandin
 }
 
 function seedRewardSessionDay(database: MemoryRiderRewardsDatabase, id: string, dayKey: string, at: number): void {
-  database.seed(`${RIDER_REWARD_SESSION_DAYS_ROOT}/${id}/${dayKey}`, {
+  database.seed(sessionDayPath(id, dayKey), {
     schemaVersion: 1,
     riderId: id,
     dayKey,
@@ -198,7 +97,7 @@ function seedRewardActivityEvent(
   occurredAt: number,
   orderId = "",
 ): void {
-  database.seed(`${RIDER_REWARD_ACTIVITY_EVENTS_ROOT}/${riderIdValue}/${eventId}`, {
+  database.seed(activityEventPath(riderIdValue, eventId), {
     schemaVersion: 1,
     riderId: riderIdValue,
     eventId,
@@ -384,10 +283,10 @@ describe("rider rewards engine", () => {
 
     for (let index = 1; index <= 24; index += 1) {
       const historical = deliveryJournal(`order-${index}`, now - (25 - index) * 60_000);
-      database.seed(`${LEDGER_JOURNALS_ROOT}/${historical.journalId}`, historical);
+      database.seed(ledgerJournalPath(historical.journalId), historical);
     }
     const delivery = deliveryJournal("order-25", now);
-    database.seed(`${LEDGER_JOURNALS_ROOT}/${delivery.journalId}`, delivery);
+    database.seed(ledgerJournalPath(delivery.journalId), delivery);
     await updateRiderRewardSettings("owner-1", ownerToken, {
       operationId: "reward-settings-1",
       referralProgramActive: true,
@@ -408,10 +307,10 @@ describe("rider rewards engine", () => {
 
     expect(first.awardedJournalIds).toHaveLength(2);
     expect(second.awardedJournalIds).toHaveLength(2);
-    const ledger = database.read(LEDGER_JOURNALS_ROOT) as Record<string, unknown>;
+    const ledger = allJournals(database);
     expect(Object.keys(ledger)).toHaveLength(27);
-    expect(Object.values(ledger).filter((journal) => (journal as LedgerJournal).eventType === "rider_incentive")).toHaveLength(1);
-    expect(Object.values(ledger).filter((journal) => (journal as LedgerJournal).eventType === "rider_referral_reward")).toHaveLength(1);
+    expect(Object.values(ledger).filter((journal) => journal.eventType === "rider_incentive")).toHaveLength(1);
+    expect(Object.values(ledger).filter((journal) => journal.eventType === "rider_referral_reward")).toHaveLength(1);
   });
 
   it("returns a unique 6-digit referral code and counts riders who joined with that code or link", async () => {
@@ -426,8 +325,8 @@ describe("rider rewards engine", () => {
 
     const delivery = deliveryJournal("order-2", now - 60_000);
     const payout = payoutJournal(1_000, now);
-    database.seed(`${LEDGER_JOURNALS_ROOT}/${delivery.journalId}`, delivery);
-    database.seed(`${LEDGER_JOURNALS_ROOT}/${payout.journalId}`, payout);
+    database.seed(ledgerJournalPath(delivery.journalId), delivery);
+    database.seed(ledgerJournalPath(payout.journalId), payout);
     await updateRiderRewardSettings("owner-1", ownerToken, {
       operationId: "reward-settings-2",
       payoutMinimumPaise: 2_000,
@@ -478,7 +377,7 @@ describe("rider rewards engine", () => {
     seedWallet(database, riderId, 0);
 
     const wednesdayDelivery = deliveryJournal("order-3", new Date("2026-08-26T13:00:00+05:30").getTime());
-    database.seed(`${LEDGER_JOURNALS_ROOT}/${wednesdayDelivery.journalId}`, wednesdayDelivery);
+    database.seed(ledgerJournalPath(wednesdayDelivery.journalId), wednesdayDelivery);
 
     const dashboard = await readRiderRewardsDashboard("admin-1", ownerToken, {
       riderId,
@@ -771,16 +670,11 @@ describe("rider rewards engine", () => {
 });
 
 describe("optimistic-concurrency check does not false-abort on a fresh transaction path", () => {
-  // Firebase's RTDB transaction() may invoke the update callback with
-  // current=null even when real data exists at that path (it hasn't been
-  // synced locally yet) - the callback must not treat that as "the record
-  // is genuinely stale" and abort before the SDK gets a chance to retry with
-  // the real value. This MemoryRiderRewardsDatabase mock always resolves
-  // `current` accurately in one pass, so a never-before-seeded path is the
-  // one scenario it can reproduce: current is genuinely null there too, and
-  // the fix (only enforcing expectedUpdatedAt once current !== null) must
-  // not reject a first-ever save just because the caller supplied some
-  // expectedUpdatedAt value.
+  // A never-before-seeded settings/campaign path still has current === null
+  // on Firestore's real, freshly-read transaction snapshot - the fix (only
+  // enforcing expectedUpdatedAt once current !== null) must not reject a
+  // first-ever save just because the caller supplied some expectedUpdatedAt
+  // value.
 
   it("still creates rider reward settings on the very first save even if expectedUpdatedAt is (incorrectly) set", async () => {
     const database = new MemoryRiderRewardsDatabase();

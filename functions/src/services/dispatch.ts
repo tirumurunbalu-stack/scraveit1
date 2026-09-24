@@ -1,9 +1,8 @@
 import {getFunctions} from "firebase-admin/functions";
 import {logger} from "firebase-functions";
-import {db} from "../admin";
+import {db, firestoreDb} from "../admin";
 import {
   DISPATCH_RECOVERY_SCAN_INTERVAL_MS,
-  pathFor,
   REGION,
   ROOT,
 } from "../config";
@@ -52,6 +51,18 @@ export {
 import {stripPrivateOrderFields} from "../domain/orderSecurity";
 import {buildRiderJobProjection} from "../domain/riderJob";
 import {DomainError} from "../errors";
+import type {DocumentReferenceLike, FirestoreLike, TransactionLike, WriteBatchLike} from "../firestoreTypes";
+import {
+  dispatchQueueCollectionRef,
+  dispatchQueueRef,
+  orderRef,
+  restaurantRef,
+  riderAvailabilityCollectionRef,
+  riderAvailabilityRef,
+  riderJobRef,
+  riderJobsCollectionRef,
+  riderWalletRef,
+} from "../firestorePaths";
 import type {
   CatalogRestaurant,
   DispatchOffer,
@@ -64,10 +75,7 @@ import {requireApprovedRider} from "./authz";
 import {notifyCustomerRiderAssigned, notifyRiderOffer, stopRiderOffers} from "./notifications";
 import {reconcileRestaurantOrderProjection} from "./orderProjection";
 import {loadDispatchPolicy} from "./platformConfig";
-import {
-  RIDER_DISPATCH_ELIGIBILITY_ROOT,
-  refreshRiderDispatchEligibility,
-} from "./riderEligibility";
+import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 
 export interface Presence {
@@ -112,31 +120,39 @@ function objectMap<T>(value: unknown): Record<string, T> {
   return value && typeof value === "object" ? value as Record<string, T> : {};
 }
 
+function riderOfferRef(database: FirestoreLike, riderId: string, orderId: string): DocumentReferenceLike {
+  return database.collection("riderOffers").doc(`${riderId}_${orderId}`);
+}
+
+function dispatchRecoveryScanLeaseRef(database: FirestoreLike): DocumentReferenceLike {
+  return database.collection("private").doc("dispatchRecoveryScanLease");
+}
+
 export async function updateRiderAvailabilityIndex(
   riderId: string,
   before: Presence | null,
   after: Presence | null,
 ): Promise<void> {
-  const oldCity = availabilityCityKey(before?.city);
-  const newCity = availabilityCityKey(after?.city);
-  const updates: Record<string, unknown> = {};
-  if (before && (oldCity !== newCity || after?.online !== true)) {
-    updates[`${ROOT}/riderAvailabilityByCity/${oldCity}/${riderId}`] = null;
-  }
+  const ref = riderAvailabilityRef(firestoreDb, riderId);
   if (after?.online === true && Number.isFinite(Number(after.lat)) && Number.isFinite(Number(after.lng))) {
-    updates[`${ROOT}/riderAvailabilityByCity/${newCity}/${riderId}`] = {
+    // One document per rider, not a city-sharded path - a city change is just
+    // an overwrite of this same document, replacing the old shard's
+    // delete-plus-write pair the RTDB index used to need.
+    await ref.set({
       riderId,
       riderName: String(after.riderName ?? "Savrivo Partner").slice(0, 120),
       city: String(after.city ?? "").slice(0, 120),
+      cityKey: availabilityCityKey(after.city),
       online: true,
       lat: Number(after.lat),
       lng: Number(after.lng),
       ...(Number.isFinite(Number(after.accuracy)) ? {accuracy: Number(after.accuracy)} : {}),
       updatedAt: Number(after.updatedAt ?? Date.now()),
       ...(after.activeOrderId ? {activeOrderId: String(after.activeOrderId)} : {}),
-    };
+    });
+    return;
   }
-  if (Object.keys(updates).length) await db.ref().update(updates);
+  if (before) await ref.delete();
 }
 
 async function scheduleTimeout(orderId: string, attempt: number, delaySeconds: number): Promise<void> {
@@ -163,12 +179,12 @@ async function candidatesFor(
   policy: DispatchPolicy,
   attemptedRiders: Record<string, number> = {},
 ): Promise<RiderCandidate[]> {
-  const restaurant = (await db.ref(pathFor.restaurant(order.restaurantId)).get()).val() as CatalogRestaurant | null;
+  const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
+  const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as CatalogRestaurant : null;
   const cityKey = availabilityCityKey(restaurant?.city);
-  const [initialPresenceSnapshot, eligibilityProjectionValue] = await Promise.all([
-    db.ref(`${ROOT}/riderAvailabilityByCity/${cityKey}`).limitToFirst(500).get(),
-    db.ref(RIDER_DISPATCH_ELIGIBILITY_ROOT).limitToFirst(500).get()
-      .then((snapshot) => snapshot.val())
+  const [presenceSnapshot, eligibilitySnapshot] = await Promise.all([
+    riderAvailabilityCollectionRef(firestoreDb).where("cityKey", "==", cityKey).limit(500).get(),
+    riderDispatchEligibilityCollectionRef(firestoreDb).limit(500).get()
       .catch((error) => {
         // This cache must never become a dispatch dependency. Authoritative
         // per-rider hydration below preserves the previously deployed path.
@@ -176,13 +192,23 @@ async function candidatesFor(
         return null;
       }),
   ]);
-  let presenceSnapshot = initialPresenceSnapshot;
+  let presences: Record<string, Presence> = {};
+  for (const doc of presenceSnapshot.docs) presences[doc.id] = doc.data() as Presence;
   // Compatibility fallback while the index is being populated by rider
   // heartbeats after first deployment. It is hard-capped and should disappear
-  // after the rollout/backfill is complete.
-  if (!presenceSnapshot.exists()) presenceSnapshot = await db.ref(`${ROOT}/riderPresence`).limitToFirst(500).get();
-  const presences = objectMap<Presence>(presenceSnapshot.val());
-  const eligibilityByRider = objectMap<RiderDispatchEligibilityProjection>(eligibilityProjectionValue);
+  // after the rollout/backfill is complete. Still reads RTDB directly: the
+  // raw per-rider presence record itself (written straight from the rider
+  // app) has not migrated off RTDB yet.
+  if (presenceSnapshot.empty) {
+    const fallbackSnapshot = await db.ref(`${ROOT}/riderPresence`).limitToFirst(500).get();
+    presences = objectMap<Presence>(fallbackSnapshot.val());
+  }
+  const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
+  if (eligibilitySnapshot) {
+    for (const doc of eligibilitySnapshot.docs) {
+      eligibilityByRider[doc.id] = doc.data() as RiderDispatchEligibilityProjection;
+    }
+  }
   const now = Date.now();
   const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0};
   let eligibilityProjectionHits = 0;
@@ -314,6 +340,10 @@ function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<st
   const candidate = queue.candidates.find((entry) => entry.riderId === riderId);
   return {
     id: queue.id,
+    // Not read by any server code (the doc id `${riderId}_${orderId}` already
+    // scopes it) - needed only so the rider app's own client-side Firestore
+    // rules/query (`where("riderId","==",uid)`) can find its own offers.
+    riderId,
     orderId: queue.orderId,
     restaurantId: queue.restaurantId,
     restaurantName: queue.restaurantName,
@@ -337,11 +367,11 @@ function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<st
 }
 
 async function clearRiderOfferRecords(riderIds: string[], orderId: string): Promise<void> {
-  const updates: Record<string, null> = {};
-  [...new Set(riderIds.filter(Boolean))].forEach((riderId) => {
-    updates[`${ROOT}/riderOffers/${riderId}/${orderId}`] = null;
-  });
-  if (Object.keys(updates).length) await db.ref().update(updates);
+  const ids = [...new Set(riderIds.filter(Boolean))];
+  if (!ids.length) return;
+  const batch: WriteBatchLike = firestoreDb.batch();
+  for (const riderId of ids) batch.delete(riderOfferRef(firestoreDb, riderId, orderId));
+  await batch.commit();
 }
 
 function allOfferedRiderIds(queue: QueueWithOfferData | null | undefined): string[] {
@@ -355,8 +385,9 @@ function allOfferedRiderIds(queue: QueueWithOfferData | null | undefined): strin
 
 export async function beginSequentialDispatch(order: SavrivoOrder): Promise<QueueWithOfferData | null> {
   if (!DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) return null;
-  const ref = db.ref(pathFor.dispatch(order.id));
-  const previous = (await ref.get()).val() as QueueWithOfferData | null;
+  const ref = dispatchQueueRef(firestoreDb, order.id);
+  const previousSnapshot = await ref.get();
+  const previous = previousSnapshot.exists ? previousSnapshot.data() as QueueWithOfferData : null;
   const priorAttempts = previous?.attemptedRiders ?? {};
   const policy = previous?.policySnapshot ? policyForQueue(previous) : await loadDispatchPolicy();
   const candidates = await candidatesFor(order, policy, priorAttempts);
@@ -410,11 +441,15 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     ...(first ? {distanceKm: Number(first.distanceKm.toFixed(2))} : {}),
     ...(first ? {distanceSource: "gps_straight_line" as const} : {}),
   };
-  const result = await ref.transaction((current: QueueWithOfferData | null) => {
-    if (current && ["offering", "assigned"].includes(current.status)) return undefined;
+  let committed = false;
+  const activeQueue = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    if (current && ["offering", "assigned"].includes(current.status)) return current;
+    transaction.set(ref, queue);
+    committed = true;
     return queue;
-  }, undefined, false);
-  const activeQueue = result.snapshot.val() as QueueWithOfferData;
+  });
   logger.info("DISPATCH_STARTED", {
     orderId: order.id,
     restaurantId: order.restaurantId,
@@ -431,9 +466,9 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     // attempt and the queue transaction rejects stale attempts.
     const activePolicy = policyForQueue(activeQueue);
     await scheduleTimeout(order.id, activeQueue.attempt, activePolicy.offerTimeoutSeconds);
-    if (result.committed) {
+    if (committed) {
       await Promise.all(activeOfferEntries(activeQueue).map(async ([riderId, offer]) => {
-        await db.ref(`${ROOT}/riderOffers/${riderId}/${order.id}`).set(riderOfferRecord(activeQueue, riderId));
+        await riderOfferRef(firestoreDb, riderId, order.id).set(riderOfferRecord(activeQueue, riderId));
         logger.info("RIDER_OFFER_SENT", {
           orderId: order.id,
           riderId,
@@ -449,85 +484,88 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
 }
 
 export async function advanceDispatchOffer(orderId: string, expectedAttempt: number): Promise<void> {
-  const ref = db.ref(pathFor.dispatch(orderId));
-  const cachedQueue = (await ref.get()).val() as QueueWithOfferData | null;
+  const ref = dispatchQueueRef(firestoreDb, orderId);
   let previousRiderIds: string[] = [];
   let nextRiderIds: string[] = [];
   let nextAttempt = expectedAttempt;
-  const result = await ref.transaction((current: QueueWithOfferData | null) => {
-    // RTDB can first invoke the updater with a provisional null local value.
-    // The prior server read keeps the timeout transaction alive until Firebase
-    // reruns it with the authoritative queue record.
-    const queue = current ?? cachedQueue;
-    const currentOffers = activeOfferEntries(queue);
-    if (!queue || queue.status !== "offering" || queue.claim || queue.attempt !== expectedAttempt ||
-      !currentOffers.length || currentOffers.some(([, offer]) => offer.expiresAt > Date.now())) return undefined;
+  let committed = false;
+  const queue = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    const currentOffers = activeOfferEntries(current);
+    if (!current || current.status !== "offering" || current.claim || current.attempt !== expectedAttempt ||
+      !currentOffers.length || currentOffers.some(([, offer]) => offer.expiresAt > Date.now())) return current;
     previousRiderIds = currentOffers.map(([riderId]) => riderId);
     nextAttempt = expectedAttempt + 1;
     const now = Date.now();
-    const policy = policyForQueue(queue);
+    const policy = policyForQueue(current);
     const nextWave = findNextDispatchWave(
-      queue.candidates,
-      queue.attemptedRiders ?? {},
+      current.candidates,
+      current.attemptedRiders ?? {},
       policy,
-      Number(queue.wave ?? -1) + 1,
+      Number(current.wave ?? -1) + 1,
     );
+    let next: QueueWithOfferData;
     if (!nextWave) {
-      const {currentOffer: _offer, activeOffers: _offers, offeredRiderId: _offered, ...rest} = queue;
-      return {
+      const {currentOffer: _offer, activeOffers: _offers, offeredRiderId: _offered, ...rest} = current;
+      next = {
         ...rest,
         status: "exhausted",
         active: false,
         attempt: nextAttempt,
         updatedAt: now,
         metrics: {
-          offered: Number(queue.metrics?.offered ?? 0),
-          accepted: Number(queue.metrics?.accepted ?? 0),
-          rejected: Number(queue.metrics?.rejected ?? 0),
-          expired: Number(queue.metrics?.expired ?? 0) + previousRiderIds.length,
-          startedAt: Number(queue.metrics?.startedAt ?? queue.createdAt ?? now),
+          offered: Number(current.metrics?.offered ?? 0),
+          accepted: Number(current.metrics?.accepted ?? 0),
+          rejected: Number(current.metrics?.rejected ?? 0),
+          expired: Number(current.metrics?.expired ?? 0) + previousRiderIds.length,
+          startedAt: Number(current.metrics?.startedAt ?? current.createdAt ?? now),
+        },
+      };
+    } else {
+      const activeOffers = offersForWave(
+        nextWave.candidates,
+        nextWave.wave,
+        now,
+        policy.offerTimeoutSeconds,
+      );
+      const primary = nextWave.candidates[0]!;
+      nextRiderIds = nextWave.candidates.map((candidate) => candidate.riderId);
+      const attemptedRiders = {...(current.attemptedRiders ?? {})};
+      nextWave.candidates.forEach((candidate) => { attemptedRiders[candidate.riderId] = now; });
+      next = {
+        ...current,
+        attempt: nextAttempt,
+        wave: nextWave.wave,
+        currentOffer: activeOffers[primary.riderId],
+        activeOffers,
+        offeredRiderId: primary.riderId,
+        distanceKm: Number(primary.distanceKm.toFixed(2)),
+        distanceSource: "gps_straight_line" as const,
+        attemptedRiders,
+        updatedAt: now,
+        metrics: {
+          offered: Number(current.metrics?.offered ?? 0) + nextWave.candidates.length,
+          accepted: Number(current.metrics?.accepted ?? 0),
+          rejected: Number(current.metrics?.rejected ?? 0),
+          expired: Number(current.metrics?.expired ?? 0) + previousRiderIds.length,
+          startedAt: Number(current.metrics?.startedAt ?? current.createdAt ?? now),
         },
       };
     }
-    const activeOffers = offersForWave(
-      nextWave.candidates,
-      nextWave.wave,
-      now,
-      policy.offerTimeoutSeconds,
-    );
-    const primary = nextWave.candidates[0]!;
-    nextRiderIds = nextWave.candidates.map((candidate) => candidate.riderId);
-    const attemptedRiders = {...(queue.attemptedRiders ?? {})};
-    nextWave.candidates.forEach((candidate) => { attemptedRiders[candidate.riderId] = now; });
-    return {
-      ...queue,
-      attempt: nextAttempt,
-      wave: nextWave.wave,
-      currentOffer: activeOffers[primary.riderId],
-      activeOffers,
-      offeredRiderId: primary.riderId,
-      distanceKm: Number(primary.distanceKm.toFixed(2)),
-      distanceSource: "gps_straight_line" as const,
-      attemptedRiders,
-      updatedAt: now,
-      metrics: {
-        offered: Number(queue.metrics?.offered ?? 0) + nextWave.candidates.length,
-        accepted: Number(queue.metrics?.accepted ?? 0),
-        rejected: Number(queue.metrics?.rejected ?? 0),
-        expired: Number(queue.metrics?.expired ?? 0) + previousRiderIds.length,
-        startedAt: Number(queue.metrics?.startedAt ?? queue.createdAt ?? now),
-      },
-    };
-  }, undefined, false);
-  if (!result.committed) return;
+    transaction.set(ref, next);
+    committed = true;
+    return next;
+  });
+  if (!committed || !queue) return;
   if (previousRiderIds.length) await clearRiderOfferRecords(previousRiderIds, orderId);
   if (previousRiderIds.length) {
     await stopRiderOffers(previousRiderIds, orderId, "")
       .catch((error) => logger.warn("Expired rider offer removal failed", {orderId, riderIds: previousRiderIds, error}));
   }
-  const queue = result.snapshot.val() as QueueWithOfferData;
   if (queue.status !== "offering" || !nextRiderIds.length) return;
-  const order = (await db.ref(pathFor.order(queue.customerId, orderId)).get()).val() as SavrivoOrder | null;
+  const orderSnapshot = await orderRef(firestoreDb, orderId).get();
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order || !DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) {
     await ref.update({status: "cancelled", active: false, updatedAt: Date.now()});
     return;
@@ -537,25 +575,35 @@ export async function advanceDispatchOffer(orderId: string, expectedAttempt: num
   await Promise.all(nextRiderIds.map(async (riderId) => {
     const offer = activeOfferForRider(queue, riderId);
     if (!offer) return;
-    await db.ref(`${ROOT}/riderOffers/${riderId}/${orderId}`).set(riderOfferRecord(queue, riderId));
+    await riderOfferRef(firestoreDb, riderId, orderId).set(riderOfferRecord(queue, riderId));
     logger.info("RIDER_OFFER_SENT", {orderId, riderId, attempt: nextAttempt, wave: offer.wave ?? queue.wave ?? 0});
     await notifyRiderOffer(riderId, order, offer.expiresAt)
       .catch((error) => logger.error("Rider offer notification failed", {orderId, riderId, error}));
   }));
 }
 
+async function releaseQueueClaim(queueRef: DocumentReferenceLike, uid: string): Promise<void> {
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(queueRef);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    if (current?.claim?.riderId === uid) transaction.set(queueRef, {...current, claim: null});
+  });
+}
+
 export async function claimDispatchOffer(uid: string, orderId: string): Promise<SavrivoOrder> {
   const rider = await requireApprovedRider(uid);
-  const queueRef = db.ref(pathFor.dispatch(orderId));
+  const queueRef = dispatchQueueRef(firestoreDb, orderId);
   const [presenceSnapshot, walletSnapshot, jobsSnapshot, queueSnapshot] = await Promise.all([
     db.ref(`${ROOT}/riderPresence/${uid}`).get(),
-    db.ref(`${ROOT}/riderWallets/${uid}`).get(),
-    db.ref(`${ROOT}/riderJobs/${uid}`).get(),
+    riderWalletRef(firestoreDb, uid).get(),
+    riderJobsCollectionRef(firestoreDb).where("riderId", "==", uid).get(),
     queueRef.get(),
   ]);
   const presence = presenceSnapshot.val() as Presence | null;
-  const wallet = walletSnapshot.val() as {codBlocked?: boolean; orderBlocked?: boolean} | null;
-  const cachedQueue = queueSnapshot.val() as QueueWithOfferData | null;
+  const wallet = walletSnapshot.exists ? walletSnapshot.data() as {codBlocked?: boolean; orderBlocked?: boolean} : null;
+  const jobs: Record<string, RiderJob> = {};
+  for (const doc of jobsSnapshot.docs) jobs[doc.id] = doc.data() as RiderJob;
+  const cachedQueue = queueSnapshot.exists ? queueSnapshot.data() as QueueWithOfferData : null;
   const policy = policyForQueue(cachedQueue);
   if (wallet?.codBlocked === true || wallet?.orderBlocked === true) {
     throw new DomainError("failed-precondition", "Resolve the rider account hold before accepting another order.");
@@ -569,7 +617,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   if (!Number.isFinite(Number(presence.lat)) || !Number.isFinite(Number(presence.lng))) {
     throw new DomainError("failed-precondition", "A current rider location is required to accept this order.");
   }
-  if (!isEarlyDispatchWorkloadEligible(objectMap<RiderJob>(jobsSnapshot.val()))) {
+  if (!isEarlyDispatchWorkloadEligible(jobs)) {
     throw new DomainError("failed-precondition", "Finish the current delivery before accepting another order.");
   }
   const claimAt = Date.now();
@@ -577,55 +625,59 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   // same rider as success and repair the derived queue/job projections instead of reporting that
   // the rider lost an order they already own.
   if (cachedQueue?.claim?.riderId === uid) {
-    const claimedOrder = (await db.ref(pathFor.order(cachedQueue.customerId, orderId)).get())
-      .val() as SavrivoOrder | null;
+    const claimedOrderSnapshot = await orderRef(firestoreDb, orderId).get();
+    const claimedOrder = claimedOrderSnapshot.exists ? claimedOrderSnapshot.data() as SavrivoOrder : null;
     if (claimedOrder?.riderId === uid) {
       return finalizeRiderAssignment(cachedQueue, stripPrivateOrderFields(claimedOrder), uid,
         Number(cachedQueue.claim.claimedAt ?? claimedOrder.riderAssignedAt ?? claimAt));
     }
   }
   const operationId = `claim_${orderId}_${uid}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 180);
-  const queueResult = await queueRef.transaction((current: QueueWithOfferData | null) => {
-    const queue = current ?? cachedQueue;
-    const offer = activeOfferForRider(queue, uid);
-    if (!queue || queue.status !== "offering" || !offer || offer.expiresAt < claimAt) return undefined;
-    if (queue.claim && queue.claim.riderId !== uid) return undefined;
-    return {
-      ...queue,
+  let queueCommitted = false;
+  const queue = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(queueRef);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    const offer = activeOfferForRider(current, uid);
+    if (!current || current.status !== "offering" || !offer || offer.expiresAt < claimAt) return current;
+    if (current.claim && current.claim.riderId !== uid) return current;
+    const next: QueueWithOfferData = {
+      ...current,
       claim: {
         riderId: uid,
-        claimedAt: Number(queue.claim?.claimedAt ?? claimAt),
-        operationId: String(queue.claim?.operationId ?? operationId),
+        claimedAt: Number(current.claim?.claimedAt ?? claimAt),
+        operationId: String(current.claim?.operationId ?? operationId),
         leaseUntil: claimAt + policy.claimLeaseSeconds * 1000,
-        state: queue.claim?.state ?? "reserved",
+        state: current.claim?.state ?? "reserved",
       },
       updatedAt: claimAt,
     };
-  }, undefined, false);
-  if (!queueResult.committed) throw new DomainError("aborted", "This delivery offer is no longer available.");
-  const queue = queueResult.snapshot.val() as QueueWithOfferData;
-  const orderRef = db.ref(pathFor.order(queue.customerId, orderId));
-  const before = (await orderRef.get()).val() as SavrivoOrder | null;
+    transaction.set(queueRef, next);
+    queueCommitted = true;
+    return next;
+  });
+  if (!queueCommitted || !queue) throw new DomainError("aborted", "This delivery offer is no longer available.");
+  const orderDocRef = orderRef(firestoreDb, orderId);
+  const beforeSnapshot = await orderDocRef.get();
+  const before = beforeSnapshot.exists ? beforeSnapshot.data() as SavrivoOrder : null;
   if (before?.riderId === uid) {
     return finalizeRiderAssignment(queue, stripPrivateOrderFields(before), uid,
       Number(queue.claim?.claimedAt ?? before.riderAssignedAt ?? claimAt));
   }
   if (!before || !DISPATCH_ELIGIBLE_STATUSES.has(before.status) || before.riderId) {
-    const claimedQueue = (await queueRef.get()).val() as QueueWithOfferData | null;
-    await queueRef.transaction((current: QueueWithOfferData | null) => {
-      const queueValue = current ?? claimedQueue;
-      return queueValue?.claim?.riderId === uid ? {...queueValue, claim: null} : undefined;
-    });
+    await releaseQueueClaim(queueRef, uid);
     throw new DomainError("failed-precondition", "Order is no longer available for assignment.");
   }
   const event: StatusEvent = {status: "Assigned", at: claimAt, actorId: uid, actorRole: "rider"};
   const eventId = `e_${claimAt}_${uid.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30)}`;
-  const restaurant = (await db.ref(`${ROOT}/catalog/restaurants/${before.restaurantId}`).get()).val() as {phone?: string} | null;
-  const orderResult = await orderRef.transaction((current: SavrivoOrder | null) => {
-    const orderValue = current ?? before;
+  const restaurantSnapshot = await restaurantRef(firestoreDb, before.restaurantId).get();
+  const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as {phone?: string} : null;
+  let orderCommitted = false;
+  const order = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(orderDocRef);
+    const orderValue = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
     if (!orderValue || orderValue.id !== before.id || orderValue.customerId !== before.customerId ||
       orderValue.restaurantId !== before.restaurantId || orderValue.createdAt !== before.createdAt ||
-      !DISPATCH_ELIGIBLE_STATUSES.has(orderValue.status) || orderValue.riderId) return undefined;
+      !DISPATCH_ELIGIBLE_STATUSES.has(orderValue.status) || orderValue.riderId) return orderValue;
     const ready = orderValue.status === "Ready for pickup";
     const candidate: SavrivoOrder = {
       ...stripPrivateOrderFields(orderValue),
@@ -643,10 +695,14 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
       deriveLifecycleFromCanonicalState(candidate),
       claimAt,
     );
-    return {...candidate, ...lifecycle.patch};
-  }, undefined, false);
-  if (!orderResult.committed) {
-    const authoritativeOrder = (await orderRef.get()).val() as SavrivoOrder | null;
+    const next = {...candidate, ...lifecycle.patch};
+    transaction.set(orderDocRef, next);
+    orderCommitted = true;
+    return next;
+  });
+  if (!orderCommitted) {
+    const authoritativeSnapshot = await orderDocRef.get();
+    const authoritativeOrder = authoritativeSnapshot.exists ? authoritativeSnapshot.data() as SavrivoOrder : null;
     if (authoritativeOrder?.riderId === uid) {
       return finalizeRiderAssignment(
         queue,
@@ -655,36 +711,35 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
         Number(queue.claim?.claimedAt ?? authoritativeOrder.riderAssignedAt ?? claimAt),
       );
     }
-    const claimedQueue = (await queueRef.get()).val() as QueueWithOfferData | null;
-    await queueRef.transaction((current: QueueWithOfferData | null) => {
-      const queueValue = current ?? claimedQueue;
-      return queueValue?.claim?.riderId === uid ? {...queueValue, claim: null} : undefined;
-    });
+    await releaseQueueClaim(queueRef, uid);
     throw new DomainError("aborted", "Another rider secured this order.");
   }
-  const order = stripPrivateOrderFields(orderResult.snapshot.val() as SavrivoOrder);
+  const finalOrder = stripPrivateOrderFields(order as SavrivoOrder);
   // Persist an explicit post-order-commit phase before repairing projections.
   // If the process dies after the canonical order transaction, the scheduled
   // recovery worker can distinguish a committed assignment from an abandoned
   // reservation without ever guessing from client state.
-  const committedQueueResult = await queueRef.transaction((current: QueueWithOfferData | null) => {
-    const queueValue = current ?? queue;
-    if (!queueValue?.claim || queueValue.claim.riderId !== uid || queueValue.claim.state === "finalized") {
-      return undefined;
+  let queueAfterOrderCommit = queue;
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(queueRef);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    if (!current?.claim || current.claim.riderId !== uid || current.claim.state === "finalized") {
+      queueAfterOrderCommit = current ?? queue;
+      return;
     }
-    return {
-      ...queueValue,
+    const next: QueueWithOfferData = {
+      ...current,
       claim: {
-        ...queueValue.claim,
+        ...current.claim,
         state: "order_committed" as const,
-        leaseUntil: Math.max(Number(queueValue.claim.leaseUntil ?? 0), claimAt + policy.claimLeaseSeconds * 1000),
+        leaseUntil: Math.max(Number(current.claim.leaseUntil ?? 0), claimAt + policy.claimLeaseSeconds * 1000),
       },
       updatedAt: claimAt,
     };
-  }, undefined, false);
-  const queueAfterOrderCommit = committedQueueResult.committed ?
-    committedQueueResult.snapshot.val() as QueueWithOfferData : queue;
-  return finalizeRiderAssignment(queueAfterOrderCommit, order, uid, claimAt);
+    transaction.set(queueRef, next);
+    queueAfterOrderCommit = next;
+  });
+  return finalizeRiderAssignment(queueAfterOrderCommit, finalOrder, uid, claimAt);
 }
 
 async function finalizeRiderAssignment(
@@ -695,25 +750,33 @@ async function finalizeRiderAssignment(
 ): Promise<SavrivoOrder> {
   const currentPresence = (await db.ref(`${ROOT}/riderPresence/${uid}`).get()).val() as Presence | null;
   const activePresenceOrderId = String(currentPresence?.activeOrderId ?? "").trim() || order.id;
-  await db.ref(ROOT).update({
-    [`dispatchQueue/${order.id}/status`]: "assigned",
-    [`dispatchQueue/${order.id}/active`]: false,
-    [`dispatchQueue/${order.id}/currentOffer`]: null,
-    [`dispatchQueue/${order.id}/activeOffers`]: null,
-    [`dispatchQueue/${order.id}/offeredRiderId`]: null,
-    [`dispatchQueue/${order.id}/claim`]: {
+  const {currentOffer: _offer, activeOffers: _offers, offeredRiderId: _offered, ...restQueue} = queue;
+  const nextQueue: QueueWithOfferData = {
+    ...restQueue,
+    status: "assigned",
+    active: false,
+    claim: {
       riderId: uid,
       claimedAt: Number(queue.claim?.claimedAt ?? claimAt),
       operationId: String(queue.claim?.operationId ?? `claim_${order.id}_${uid}`).slice(0, 180),
       leaseUntil: claimAt,
       state: "finalized",
     },
-    [`dispatchQueue/${order.id}/metrics/accepted`]: Math.max(1, Number(queue.metrics?.accepted ?? 0)),
-    [`dispatchQueue/${order.id}/metrics/assignedAt`]: Number(queue.metrics?.assignedAt ?? claimAt),
-    [`dispatchQueue/${order.id}/updatedAt`]: claimAt,
-    [`riderJobs/${uid}/${order.id}`]: buildRiderJobProjection(order),
-    [`riderPresence/${uid}/activeOrderId`]: activePresenceOrderId,
-  });
+    metrics: {
+      offered: Number(queue.metrics?.offered ?? 0),
+      accepted: Math.max(1, Number(queue.metrics?.accepted ?? 0)),
+      rejected: Number(queue.metrics?.rejected ?? 0),
+      expired: Number(queue.metrics?.expired ?? 0),
+      startedAt: Number(queue.metrics?.startedAt ?? queue.createdAt ?? claimAt),
+      assignedAt: Number(queue.metrics?.assignedAt ?? claimAt),
+    },
+    updatedAt: claimAt,
+  };
+  await Promise.all([
+    dispatchQueueRef(firestoreDb, order.id).set(nextQueue),
+    riderJobRef(firestoreDb, uid, order.id).set(buildRiderJobProjection(order)),
+    db.ref(`${ROOT}/riderPresence/${uid}/activeOrderId`).set(activePresenceOrderId),
+  ]);
   await reconcileRestaurantOrderProjection(order);
   const offeredRiderIds = allOfferedRiderIds(queue);
   await clearRiderOfferRecords(offeredRiderIds, order.id);
@@ -745,31 +808,38 @@ export async function recoverDispatchClaim(
   orderId: string,
   expectedOperationId = "",
 ): Promise<DispatchClaimRecoveryOutcome> {
-  const queueRef = db.ref(pathFor.dispatch(orderId));
-  const rawQueue = (await queueRef.get()).val() as QueueWithOfferData | null;
+  const queueRef = dispatchQueueRef(firestoreDb, orderId);
+  const rawQueueSnapshot = await queueRef.get();
+  const rawQueue = rawQueueSnapshot.exists ? rawQueueSnapshot.data() as QueueWithOfferData : null;
   if (!rawQueue?.claim) return "none";
   if (expectedOperationId && String(rawQueue.claim.operationId ?? "") !== expectedOperationId) return "stale";
   const customerId = String(rawQueue.customerId ?? "");
   const queue: QueueWithOfferData = {...rawQueue, id: rawQueue.id ?? orderId, orderId};
-  const order = customerId ?
-    (await db.ref(pathFor.order(customerId, orderId)).get()).val() as SavrivoOrder | null : null;
+  const orderSnapshot = customerId ? await orderRef(firestoreDb, orderId).get() : null;
+  const order = orderSnapshot?.exists ? orderSnapshot.data() as SavrivoOrder : null;
   const plan = decideExpiredRiderClaimRecovery(queue as unknown as RiderClaimQueueLike, order, Date.now());
   if (plan.action === "wait_for_lease" || plan.action === "none") return plan.action;
 
   const offeredRiderIds = allOfferedRiderIds(queue);
-  const result = await queueRef.transaction((current: QueueWithOfferData | null) =>
-    buildRiderClaimRecoveryQueueCandidate(
+  let committed = false;
+  const committedQueue = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(queueRef);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    const next = buildRiderClaimRecoveryQueueCandidate(
       current as unknown as RiderClaimQueueLike | null,
       plan,
       Date.now(),
-    ) as unknown as QueueWithOfferData | undefined,
-  undefined, false);
-  if (!result.committed) {
+    ) as unknown as QueueWithOfferData | undefined;
+    if (!next) return current;
+    transaction.set(queueRef, next);
+    committed = true;
+    return next;
+  });
+  if (!committed || !committedQueue) {
     logger.info("RIDER_CLAIM_RECOVERY_STALE_PLAN_IGNORED", {orderId, recoveryId: plan.recoveryId});
     return "stale";
   }
 
-  const committedQueue = result.snapshot.val() as QueueWithOfferData;
   logger.warn("RIDER_CLAIM_RECOVERED", {
     orderId,
     recoveryId: plan.recoveryId,
@@ -779,8 +849,8 @@ export async function recoverDispatchClaim(
   });
 
   if (plan.action === "finalize_authoritative_assignment") {
-    const authoritativeOrder = customerId ?
-      (await db.ref(pathFor.order(customerId, orderId)).get()).val() as SavrivoOrder | null : null;
+    const authoritativeSnapshot = customerId ? await orderRef(firestoreDb, orderId).get() : null;
+    const authoritativeOrder = authoritativeSnapshot?.exists ? authoritativeSnapshot.data() as SavrivoOrder : null;
     if (authoritativeOrder?.riderId !== plan.authoritativeRiderId || !plan.authoritativeRiderId) {
       logger.warn("RIDER_CLAIM_RECOVERY_ORDER_CHANGED_AFTER_COMMIT", {orderId, recoveryId: plan.recoveryId});
       return "stale";
@@ -799,8 +869,8 @@ export async function recoverDispatchClaim(
     stopRiderOffers(offeredRiderIds, orderId, ""),
   ]);
   if (plan.action === "release_for_redispatch") {
-    const authoritativeOrder = customerId ?
-      (await db.ref(pathFor.order(customerId, orderId)).get()).val() as SavrivoOrder | null : null;
+    const authoritativeSnapshot = customerId ? await orderRef(firestoreDb, orderId).get() : null;
+    const authoritativeOrder = authoritativeSnapshot?.exists ? authoritativeSnapshot.data() as SavrivoOrder : null;
     if (authoritativeOrder && DISPATCH_ELIGIBLE_STATUSES.has(authoritativeOrder.status) && !authoritativeOrder.riderId) {
       await beginSequentialDispatch(authoritativeOrder);
     }
@@ -818,9 +888,8 @@ export async function recoverExpiredDispatchClaims(limitPerStatus = 100): Promis
   const boundedLimit = Math.max(1, Math.min(250, Math.trunc(limitPerStatus)));
   // Normal recovery is one task per claim lease. This bounded status-indexed
   // scan is only a safety net for legacy claims or a missed task enqueue.
-  const offeringSnapshot = await db.ref(`${ROOT}/dispatchQueue`)
-    .orderByChild("status").equalTo("offering").limitToFirst(boundedLimit).get();
-  const queues = objectMap<QueueWithOfferData>(offeringSnapshot.val());
+  const offeringSnapshot = await dispatchQueueCollectionRef(firestoreDb)
+    .where("status", "==", "offering").limit(boundedLimit).get();
   const summary: DispatchClaimRecoverySummary = {
     inspected: 0,
     recovered: 0,
@@ -832,11 +901,12 @@ export async function recoverExpiredDispatchClaims(limitPerStatus = 100): Promis
     failed: 0,
   };
 
-  for (const [recordKey, rawQueue] of Object.entries(queues)) {
+  for (const doc of offeringSnapshot.docs) {
+    const rawQueue = doc.data() as QueueWithOfferData;
     if (!rawQueue?.claim) continue;
     summary.inspected++;
     try {
-      const orderId = String(rawQueue.orderId ?? recordKey);
+      const orderId = String(rawQueue.orderId ?? doc.id);
       const outcome = await recoverDispatchClaim(orderId);
       if (outcome === "wait_for_lease") {
         summary.waiting++;
@@ -854,7 +924,7 @@ export async function recoverExpiredDispatchClaims(limitPerStatus = 100): Promis
       }
     } catch (error) {
       summary.failed++;
-      logger.error("RIDER_CLAIM_RECOVERY_FAILED", {recordKey, error});
+      logger.error("RIDER_CLAIM_RECOVERY_FAILED", {recordKey: doc.id, error});
     }
   }
   return summary;
@@ -863,41 +933,44 @@ export async function recoverExpiredDispatchClaims(limitPerStatus = 100): Promis
 /** Rider decline removes only that rider; the wave advances when nobody remains. */
 export async function declineDispatchOffer(uid: string, orderId: string): Promise<void> {
   await requireApprovedRider(uid);
-  const ref = db.ref(pathFor.dispatch(orderId));
-  const cached = (await ref.get()).val() as QueueWithOfferData | null;
+  const ref = dispatchQueueRef(firestoreDb, orderId);
   let attempt = -1;
   let advance = false;
-  const result = await ref.transaction((current: QueueWithOfferData | null) => {
-    const queue = current ?? cached;
-    const declinedOffer = activeOfferForRider(queue, uid);
-    if (!queue || queue.status !== "offering" || queue.claim || !declinedOffer) return undefined;
-    attempt = queue.attempt;
-    const remainingOffers = {...(queue.activeOffers ?? {})};
+  let committed = false;
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
+    const declinedOffer = activeOfferForRider(current, uid);
+    if (!current || current.status !== "offering" || current.claim || !declinedOffer) return;
+    attempt = current.attempt;
+    const remainingOffers = {...(current.activeOffers ?? {})};
     delete remainingOffers[uid];
     // Legacy sequential queues have no activeOffers map.
     const remaining = Object.entries(remainingOffers);
     advance = remaining.length === 0;
     const nextPrimary = remaining[0]?.[1];
     const nextCandidate = nextPrimary
-      ? queue.candidates.find((candidate) => candidate.riderId === nextPrimary.riderId)
+      ? current.candidates.find((candidate) => candidate.riderId === nextPrimary.riderId)
       : undefined;
-    return {
-      ...queue,
+    const next: QueueWithOfferData = {
+      ...current,
       currentOffer: nextPrimary ?? {...declinedOffer, expiresAt: 0},
       activeOffers: remainingOffers,
       ...(nextPrimary ? {offeredRiderId: nextPrimary.riderId} : {}),
       ...(nextCandidate ? {distanceKm: Number(nextCandidate.distanceKm.toFixed(2))} : {}),
       metrics: {
-        offered: Number(queue.metrics?.offered ?? 0),
-        accepted: Number(queue.metrics?.accepted ?? 0),
-        rejected: Number(queue.metrics?.rejected ?? 0) + 1,
-        expired: Number(queue.metrics?.expired ?? 0),
-        startedAt: Number(queue.metrics?.startedAt ?? queue.createdAt ?? Date.now()),
+        offered: Number(current.metrics?.offered ?? 0),
+        accepted: Number(current.metrics?.accepted ?? 0),
+        rejected: Number(current.metrics?.rejected ?? 0) + 1,
+        expired: Number(current.metrics?.expired ?? 0),
+        startedAt: Number(current.metrics?.startedAt ?? current.createdAt ?? Date.now()),
       },
       updatedAt: Date.now(),
     };
-  }, undefined, false);
-  if (!result.committed || attempt < 0) throw new DomainError("aborted", "This delivery offer is no longer available.");
+    transaction.set(ref, next);
+    committed = true;
+  });
+  if (!committed || attempt < 0) throw new DomainError("aborted", "This delivery offer is no longer available.");
   await clearRiderOfferRecords([uid], orderId);
   await stopRiderOffers([uid], orderId, "")
     .catch((error) => logger.warn("Declined rider offer removal failed", {orderId, riderId: uid, error}));
@@ -920,27 +993,32 @@ export async function recoverExhaustedDispatchesForRider(
   if (!isDispatchPresenceSearchable(after)) return;
   const becameSearchable = riderBecameDispatchSearchable(before, after);
   const now = Date.now();
-  const leaseRef = db.ref(`${ROOT}/private/dispatchRecoveryScanLease`);
-  const lease = await leaseRef.transaction((current: {nextAt?: number} | null) => {
+  const leaseRef = dispatchRecoveryScanLeaseRef(firestoreDb);
+  let leaseCommitted = false;
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(leaseRef);
+    const current = snapshot.exists ? snapshot.data() as {nextAt?: number} : null;
     const nextAt = Number(current?.nextAt ?? 0);
-    if (!becameSearchable && nextAt > now) return undefined;
-    return {
+    if (!becameSearchable && nextAt > now) return;
+    transaction.set(leaseRef, {
       triggeredBy: riderId,
       lastAt: now,
       nextAt: now + DISPATCH_RECOVERY_SCAN_INTERVAL_MS,
-    };
-  }, undefined, false);
-  if (!lease.committed) return;
-  const snapshot = await db.ref(`${ROOT}/dispatchQueue`).orderByChild("status").equalTo("exhausted").limitToFirst(25).get();
-  const queues = objectMap<QueueWithOfferData>(snapshot.val());
+    });
+    leaseCommitted = true;
+  });
+  if (!leaseCommitted) return;
+  const snapshot = await dispatchQueueCollectionRef(firestoreDb).where("status", "==", "exhausted").limit(25).get();
   logger.info("DISPATCH_RECOVERY_SCAN", {
     riderId,
     reason: becameSearchable ? "became_searchable" : "online_retry_interval",
-    exhaustedCount: Object.keys(queues).length,
+    exhaustedCount: snapshot.size,
   });
-  for (const [orderId, queue] of Object.entries(queues)) {
+  for (const doc of snapshot.docs) {
+    const queue = doc.data() as QueueWithOfferData;
     if (!queue?.customerId) continue;
-    const order = (await db.ref(pathFor.order(queue.customerId, orderId)).get()).val() as SavrivoOrder | null;
+    const orderSnapshot = await orderRef(firestoreDb, doc.id).get();
+    const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
     if (!order || !DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) continue;
     await beginSequentialDispatch(order);
   }
@@ -948,23 +1026,27 @@ export async function recoverExhaustedDispatchesForRider(
 
 /** Reconsider accepted orders when a rider reaches the final doorstep stage. */
 export async function recoverExhaustedDispatchesForFinishingRider(riderId: string): Promise<void> {
-  const snapshot = await db.ref(`${ROOT}/dispatchQueue`).orderByChild("status").equalTo("exhausted").limitToFirst(25).get();
-  const queues = objectMap<QueueWithOfferData>(snapshot.val());
-  logger.info("EARLY_DISPATCH_RECOVERY_SCAN", {riderId, exhaustedCount: Object.keys(queues).length});
-  for (const [orderId, queue] of Object.entries(queues)) {
+  const snapshot = await dispatchQueueCollectionRef(firestoreDb).where("status", "==", "exhausted").limit(25).get();
+  logger.info("EARLY_DISPATCH_RECOVERY_SCAN", {riderId, exhaustedCount: snapshot.size});
+  for (const doc of snapshot.docs) {
+    const queue = doc.data() as QueueWithOfferData;
     if (!queue?.customerId) continue;
-    const order = (await db.ref(pathFor.order(queue.customerId, orderId)).get()).val() as SavrivoOrder | null;
+    const orderSnapshot = await orderRef(firestoreDb, doc.id).get();
+    const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
     if (!order || !DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) continue;
     await beginSequentialDispatch(order);
   }
 }
 
 export async function cancelDispatchOffers(orderId: string, status: "cancelled" | "expired" = "cancelled"): Promise<void> {
-  const ref = db.ref(pathFor.dispatch(orderId));
-  const queue = (await ref.get()).val() as QueueWithOfferData | null;
+  const ref = dispatchQueueRef(firestoreDb, orderId);
+  const snapshot = await ref.get();
+  const queue = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
   const riderIds = allOfferedRiderIds(queue);
   await Promise.all([
-    ref.update({active: false, status, updatedAt: Date.now()}),
+    // `set(..., {merge: true})` instead of `update()`: an order can be
+    // cancelled before any dispatch queue document was ever created for it.
+    ref.set({active: false, status, updatedAt: Date.now()}, {merge: true}),
     clearRiderOfferRecords(riderIds, orderId),
     stopRiderOffers(riderIds, orderId, ""),
   ]);

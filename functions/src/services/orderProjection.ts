@@ -1,25 +1,30 @@
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   buildRestaurantOrderProjection,
   shouldApplyRestaurantOrderProjection,
   type RestaurantOrderProjection,
 } from "../domain/restaurantOrder";
+import type {TransactionLike} from "../firestoreTypes";
+import {restaurantOrderProjectionRef} from "../firestorePaths";
 import type {SavrivoOrder} from "../types";
 
 export async function reconcileRestaurantOrderProjection(order: SavrivoOrder): Promise<boolean> {
-  const ref = db.ref(`${ROOT}/restaurantOrders/${order.restaurantId}/${order.customerId}/${order.id}`);
-  const result = await ref.transaction((current: RestaurantOrderProjection | null) => {
+  const ref = restaurantOrderProjectionRef(firestoreDb, order.restaurantId, order.customerId, order.id);
+  const applied = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as RestaurantOrderProjection : null;
     const next = buildRestaurantOrderProjection(order, current);
-    return shouldApplyRestaurantOrderProjection(current, next) ? next : undefined;
-  }, undefined, false);
-  if (!result.committed) {
+    if (!shouldApplyRestaurantOrderProjection(current, next)) return false;
+    transaction.set(ref, next);
+    return true;
+  });
+  if (!applied) {
     logger.info("STALE_RESTAURANT_PROJECTION_IGNORED", {
       orderId: order.id,
       incomingStatus: order.status,
       incomingUpdatedAt: order.updatedAt,
     });
   }
-  return result.committed;
+  return applied;
 }

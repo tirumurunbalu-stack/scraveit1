@@ -1,8 +1,12 @@
 export const REGION = "asia-south1";
 // Realtime Database triggers must be deployed in the database instance's
-// location. Savrivo's default RTDB instance is in us-central1; keeping this
-// separate lets customer-facing callables stay close to users in India.
-export const DATABASE_REGION = "us-central1";
+// location. RTDB itself has no India region at all - `riderPresence` and
+// `tracking` (the only paths still on RTDB; everything else moved to
+// Firestore in asia-south1/Mumbai) live on a dedicated non-default instance
+// in asia-southeast1 (Singapore), the closest RTDB region actually offers to
+// India, instead of the project's original default instance in us-central1.
+export const DATABASE_REGION = "asia-southeast1";
+export const DATABASE_INSTANCE = "savrivo-app-sg";
 export const ROOT = "feastly";
 // Keep version 3 until every installed client and the deployed RTDB rules have
 // completed the coordinated schema migration. Server authority is recorded in

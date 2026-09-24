@@ -3,40 +3,14 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
 import type {SavrivoOrder} from "../src/types";
 
 const memory = vi.hoisted(() => ({
-  values: new Map<string, unknown>(),
-  transactionAttempts: 0,
-  transactionCommits: 0,
   projectionReconciles: 0,
   workloadReconciles: 0,
 }));
 
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-vi.mock("../src/admin", () => ({
-  db: {
-    ref: (path: string) => ({
-      get: async () => ({val: () => clone(memory.values.get(path) ?? null)}),
-      set: async (value: unknown) => { memory.values.set(path, clone(value)); },
-      update: async (patch: Record<string, unknown>) => {
-        const current = memory.values.get(path);
-        memory.values.set(path, {...(current && typeof current === "object" ? clone(current) : {}), ...clone(patch)});
-      },
-      transaction: async (update: (current: unknown) => unknown) => {
-        memory.transactionAttempts += 1;
-        const current = clone(memory.values.get(path) ?? null);
-        const next = update(current);
-        if (next === undefined) {
-          return {committed: false, snapshot: {val: () => clone(memory.values.get(path) ?? null)}};
-        }
-        memory.transactionCommits += 1;
-        memory.values.set(path, clone(next));
-        return {committed: true, snapshot: {val: () => clone(next)}};
-      },
-    }),
-  },
-}));
+vi.mock("../src/admin", async () => {
+  const {InMemoryFirestore} = await import("./helpers/inMemoryFirestore");
+  return {firestoreDb: new InMemoryFirestore(), db: {}};
+});
 
 vi.mock("../src/services/authz", () => ({
   authorizeTransition: vi.fn(async () => "staff"),
@@ -50,8 +24,15 @@ vi.mock("../src/services/workload", () => ({
   reconcileRestaurantWorkload: vi.fn(async () => { memory.workloadReconciles += 1; }),
 }));
 
-import {pathFor, ROOT} from "../src/config";
+import {firestoreDb} from "../src/admin";
 import {transitionOrder} from "../src/services/orders";
+import type {InMemoryFirestore} from "./helpers/inMemoryFirestore";
+
+const database = firestoreDb as unknown as InMemoryFirestore;
+
+function orderPath(orderId: string): string {
+  return `orders/${orderId}`;
+}
 
 function readyOrder(): SavrivoOrder {
   return {
@@ -109,28 +90,25 @@ const retry = {
 };
 
 describe("Ready-for-pickup assignment recovery", () => {
-  beforeEach(() => {
-    memory.values.clear();
-    memory.transactionAttempts = 0;
-    memory.transactionCommits = 0;
+  beforeEach(async () => {
+    for (const path of database.paths()) await database.doc(path).delete();
     memory.projectionReconciles = 0;
     memory.workloadReconciles = 0;
-    memory.values.set(pathFor.order("customer-1", "SV-READY-RECOVERY-1"), readyOrder());
+    database.seed(orderPath("SV-READY-RECOVERY-1"), readyOrder());
   });
 
   it("promotes an interrupted idempotent Ready retry to Assigned exactly once", async () => {
     const first = await transitionOrder("staff-1", token, retry);
     expect(first).toMatchObject({actorRole: "staff", idempotent: true, order: {status: "Assigned", riderId: "rider-1"}});
     expect(Object.values(first.order.statusHistory).filter((event) => event.status === "Assigned")).toHaveLength(1);
-    expect(memory.transactionCommits).toBe(1);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(1);
     expect(memory.projectionReconciles).toBe(1);
     expect(memory.workloadReconciles).toBe(1);
-    expect([...memory.values.keys()].filter((path) => path.startsWith(`${ROOT}/audit/`))).toHaveLength(1);
 
     const second = await transitionOrder("staff-1", token, retry);
     expect(second).toMatchObject({idempotent: true, order: {status: "Assigned", riderId: "rider-1"}});
-    expect(memory.transactionCommits).toBe(1);
     expect(Object.values(second.order.statusHistory).filter((event) => event.status === "Assigned")).toHaveLength(1);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(1);
   });
 
   it("lets concurrent recovery retries converge on one system transition and one effect set", async () => {
@@ -139,11 +117,10 @@ describe("Ready-for-pickup assignment recovery", () => {
       transitionOrder("staff-1", token, retry),
     ]);
     expect([one.order.status, two.order.status]).toEqual(["Assigned", "Assigned"]);
-    expect(memory.transactionCommits).toBe(1);
+    expect(database.paths().filter((path) => path.startsWith("audit/"))).toHaveLength(1);
     expect(memory.projectionReconciles).toBe(1);
     expect(memory.workloadReconciles).toBe(1);
-    expect([...memory.values.keys()].filter((path) => path.startsWith(`${ROOT}/audit/`))).toHaveLength(1);
-    const canonical = memory.values.get(pathFor.order("customer-1", "SV-READY-RECOVERY-1")) as SavrivoOrder;
+    const canonical = database.read(orderPath("SV-READY-RECOVERY-1")) as SavrivoOrder;
     expect(Object.values(canonical.statusHistory).filter((event) => event.status === "Assigned")).toHaveLength(1);
   });
 });

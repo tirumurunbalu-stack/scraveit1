@@ -1,12 +1,12 @@
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
+import type {FirestoreLike} from "../firestoreTypes";
 import {recordDeliveredOrderRatings} from "./ratings";
 
-type ReviewDatabase = {
-  ref(path: string): {
-    update(values: Record<string, unknown>): Promise<unknown>;
-  };
-};
+type ReviewDatabase = FirestoreLike;
+
+function reviewRef(database: ReviewDatabase, customerId: string, orderId: string) {
+  return database.collection("reviews").doc(`${customerId}_${orderId}`);
+}
 
 export type DeliveredReviewFeedback = {
   customerId: string;
@@ -25,7 +25,7 @@ type ReviewFeedbackDependencies = {
 };
 
 const defaultDependencies: ReviewFeedbackDependencies = {
-  database: db,
+  database: firestoreDb,
   recordRatings: recordDeliveredOrderRatings,
 };
 
@@ -50,9 +50,8 @@ export async function recordDeliveredReviewFeedback(
   const unverifiedMoneyDiscarded = containsUnverifiedReviewMoney(input);
 
   if (unverifiedMoneyDiscarded) {
-    await dependencies.database
-      .ref(`${ROOT}/reviews/${input.customerId}/${input.orderId}`)
-      .update({postDeliveryTip: 0, growthContribution: 0});
+    await reviewRef(dependencies.database, input.customerId, input.orderId)
+      .set({postDeliveryTip: 0, growthContribution: 0}, {merge: true});
   }
 
   await dependencies.recordRatings({

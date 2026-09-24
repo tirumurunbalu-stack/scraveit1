@@ -1,14 +1,15 @@
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {haversineKm, roundMoney} from "../domain/order";
 import {trustedActiveOrderCount} from "../domain/workload";
 import {DomainError} from "../errors";
+import {campaignsCollectionRef, menuItemsCollectionRef, restaurantRef} from "../firestorePaths";
 import {
   checkoutEligibleRiderIncentiveCampaigns,
   normalizeCheckoutCampaign,
   resolveCheckoutRiderIncentiveFeePaise,
   resolveCheckoutRiderIncentiveLineItems,
 } from "../domain/riderIncentiveEligibility";
+import {restaurantWorkloadRef} from "./workload";
 import type {Address, CatalogItem, CatalogRestaurant} from "../types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -31,10 +32,10 @@ export async function loadRestaurantAndMenu(restaurantId: string): Promise<{
   menuById: Record<string, CatalogItem>;
 }> {
   const [restaurantSnapshot, menuSnapshot] = await Promise.all([
-    db.ref(`${ROOT}/catalog/restaurants/${restaurantId}`).get(),
-    db.ref(`${ROOT}/menus/${restaurantId}`).get(),
+    restaurantRef(firestoreDb, restaurantId).get(),
+    menuItemsCollectionRef(firestoreDb, restaurantId).get(),
   ]);
-  const restaurant = restaurantSnapshot.val() as CatalogRestaurant | null;
+  const restaurant = (restaurantSnapshot.exists ? restaurantSnapshot.data() : null) as CatalogRestaurant | null;
   if (!restaurant || restaurant.id !== restaurantId) throw new DomainError("not-found", "Restaurant not found.");
   if (restaurant.archived === true || restaurant.open !== true) {
     throw new DomainError("failed-precondition", "Restaurant is not accepting orders.");
@@ -44,7 +45,7 @@ export async function loadRestaurantAndMenu(restaurantId: string): Promise<{
     throw new DomainError("failed-precondition", "Restaurant delivery configuration is incomplete.");
   }
 
-  const normalized = records<CatalogItem>(menuSnapshot.val());
+  const normalized = menuSnapshot.docs.map((doc) => ({id: doc.id, ...(doc.data() as object)} as CatalogItem));
   const embedded = records<CatalogItem>(restaurant.menu);
   const selected = normalized.length ? normalized : embedded;
   const menuById = Object.fromEntries(selected.filter((item) => item.id).map((item) => [item.id, item]));
@@ -56,7 +57,8 @@ export async function loadCustomerAddress(uid: string, addressId: string): Promi
   address: Address;
   profile: UnknownRecord;
 }> {
-  const profile = (await db.ref(`${ROOT}/users/${uid}`).get()).val() as UnknownRecord | null;
+  const profileSnapshot = await firestoreDb.collection("users").doc(uid).get();
+  const profile = (profileSnapshot.exists ? profileSnapshot.data() : null) as UnknownRecord | null;
   if (!profile) throw new DomainError("failed-precondition", "Complete the customer profile before ordering.");
   const raw = records<Address>(profile.addresses).find((candidate) => candidate.id === addressId);
   if (!raw) throw new DomainError("not-found", "Saved delivery address not found.");
@@ -105,18 +107,18 @@ export async function loadServerFees(
   activeOrders: number;
 }> {
   const [settingsSnapshot, loadSnapshot, signalSnapshot, campaignsSnapshot] = await Promise.all([
-    db.ref(`${ROOT}/settings/customer`).get(),
-    db.ref(`${ROOT}/private/restaurantWorkload/${restaurant.id}`).get(),
-    db.ref(`${ROOT}/pricingSignals/${restaurant.id}`).get(),
+    firestoreDb.collection("settings").doc("customer").get(),
+    restaurantWorkloadRef(firestoreDb, restaurant.id).get(),
+    firestoreDb.collection("pricingSignals").doc(restaurant.id).get(),
     // A read failure here must never block checkout - it just means no
     // rider-incentive surcharge is applied, same "fail closed" idiom as rain.
-    db.ref(`${ROOT}/private/riderRewards/campaigns`).get().catch(() => null),
+    campaignsCollectionRef(firestoreDb).get().catch(() => null),
   ]);
-  const settings = (settingsSnapshot.val() ?? {}) as UnknownRecord;
-  const load = (loadSnapshot.val() ?? {}) as UnknownRecord;
-  const signal = (signalSnapshot.val() ?? {}) as UnknownRecord;
-  const riderCampaigns = records<{id: string}>(campaignsSnapshot?.val())
-    .map((entry) => normalizeCheckoutCampaign(entry.id, entry))
+  const settings = (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as UnknownRecord;
+  const load = (loadSnapshot.exists ? loadSnapshot.data() : {}) as UnknownRecord;
+  const signal = (signalSnapshot.exists ? signalSnapshot.data() : {}) as UnknownRecord;
+  const riderCampaigns = (campaignsSnapshot?.docs ?? [])
+    .map((doc) => normalizeCheckoutCampaign(doc.id, doc.data()))
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   const distanceKm = haversineKm(restaurant, address);
   const maxDeliveryKm = finite(settings.maxDeliveryKm, 15);
@@ -201,8 +203,8 @@ export async function loadServerFees(
  */
 async function customerHasOrderedBefore(customerId: string): Promise<boolean> {
   if (!customerId) return true;
-  const snapshot = await db.ref(`${ROOT}/orders/${customerId}`).limitToFirst(1).get();
-  return snapshot.exists();
+  const snapshot = await firestoreDb.collection("orders").where("customerId", "==", customerId).limit(1).get();
+  return !snapshot.empty;
 }
 
 export async function calculateDiscount(
@@ -212,8 +214,8 @@ export async function calculateDiscount(
   customerId: string,
 ): Promise<number> {
   if (!code) return 0;
-  const snapshot = await db.ref(`${ROOT}/promotions`).orderByChild("code").equalTo(code).limitToFirst(5).get();
-  const promotions = records<UnknownRecord>(snapshot.val());
+  const snapshot = await firestoreDb.collection("promotions").where("code", "==", code).limit(5).get();
+  const promotions = snapshot.docs.map((doc) => doc.data() as UnknownRecord);
   const promotion = promotions.find((entry) => entry.active === true && String(entry.code) === code);
   if (!promotion) throw new DomainError("failed-precondition", "Coupon is not valid.");
   if (finite(promotion.expiresAt) > 0 && finite(promotion.expiresAt) <= Date.now()) {

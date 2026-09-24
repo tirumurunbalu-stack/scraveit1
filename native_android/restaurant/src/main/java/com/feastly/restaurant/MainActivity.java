@@ -71,6 +71,7 @@ public class MainActivity extends ComponentActivity {
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
   private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
   private static final int PREPARED_IMAGE_MAX_EDGE = 1800;
+  private static final int PREPARED_THUMB_MAX_EDGE = 480;
   private static final long MAX_SOURCE_IMAGE_BYTES = 50L * 1024L * 1024L;
   private final Handler handler = new Handler(android.os.Looper.getMainLooper());
   private final ExecutorService imageExecutor = Executors.newSingleThreadExecutor();
@@ -83,6 +84,7 @@ public class MainActivity extends ComponentActivity {
   private SavrivoWebPushBinder pushBinder;
   private ValueCallback<Uri[]> fileChooserCallback;
   private volatile File preparedImageFile;
+  private volatile File preparedThumbFile;
   private boolean awaitingRestaurantLocation;
 
   @Override public void onCreate(Bundle state) {
@@ -364,7 +366,14 @@ public class MainActivity extends ComponentActivity {
       String safeRequestId = requestId == null ? "" : requestId.trim();
       String safeToken = idToken == null ? "" : idToken.trim();
       String safePath = objectPath == null ? "" : objectPath.trim();
-      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath));
+      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath, preparedImageFile));
+    }
+    @JavascriptInterface public void uploadPreparedThumb(String requestId, String idToken,
+                                                          String objectPath) {
+      String safeRequestId = requestId == null ? "" : requestId.trim();
+      String safeToken = idToken == null ? "" : idToken.trim();
+      String safePath = objectPath == null ? "" : objectPath.trim();
+      runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath, preparedThumbFile));
     }
   }
 
@@ -378,12 +387,11 @@ public class MainActivity extends ComponentActivity {
         "window.googleSignInFailed&&window.googleSignInFailed(" + JSONObject.quote(message) + ")", null);
   }
 
-  private void beginPreparedImageUpload(String requestId, String idToken, String objectPath) {
+  private void beginPreparedImageUpload(String requestId, String idToken, String objectPath, File source) {
     if (!isTrustedPageLoaded()) {
       publishImageUpload(requestId, false, "Image upload is unavailable on this screen.");
       return;
     }
-    File source = preparedImageFile;
     boolean validPath = objectPath.matches(
         "restaurants/[A-Za-z0-9_-]{1,128}/users/[A-Za-z0-9_-]{1,128}/(?:cover|menu/[A-Za-z0-9_-]{1,180})/[A-Za-z0-9_.-]{1,180}\\.jpg");
     if (!requestId.matches("[A-Za-z0-9_-]{1,80}") || idToken.length() < 20
@@ -396,6 +404,7 @@ public class MainActivity extends ComponentActivity {
       try {
         String downloadUrl = uploadImageToFirebase(source, idToken, objectPath);
         if (preparedImageFile == source) preparedImageFile = null;
+        if (preparedThumbFile == source) preparedThumbFile = null;
         source.delete();
         publishImageUpload(requestId, true, downloadUrl);
       } catch (Exception error) {
@@ -448,12 +457,42 @@ public class MainActivity extends ComponentActivity {
         String serverToken = new JSONObject(response).optString("downloadTokens", "");
         if (!serverToken.isEmpty()) downloadToken = serverToken.split(",")[0];
       }
+      setImmutableCacheControl(bucket, objectPath, idToken);
       return "https://firebasestorage.googleapis.com/v0/b/" + Uri.encode(bucket)
           + "/o/" + Uri.encode(objectPath) + "?alt=media&token=" + Uri.encode(downloadToken);
     } catch (org.json.JSONException error) {
       throw new IOException("Firebase returned an invalid upload response.", error);
     } finally {
       connection.disconnect();
+    }
+  }
+
+  /**
+   * Every uploaded object path is timestamp-unique (a new save always uploads to a new
+   * name), so it is safe to let clients cache it forever. Best-effort: a failure here
+   * only costs a slower repeat load, never the upload itself.
+   */
+  private void setImmutableCacheControl(String bucket, String objectPath, String idToken) {
+    try {
+      String endpoint = "https://firebasestorage.googleapis.com/v0/b/" + Uri.encode(bucket)
+          + "/o/" + Uri.encode(objectPath);
+      HttpURLConnection connection = (HttpURLConnection)new URL(endpoint).openConnection();
+      connection.setConnectTimeout(10000);
+      connection.setReadTimeout(10000);
+      connection.setRequestMethod("PATCH");
+      connection.setDoOutput(true);
+      connection.setRequestProperty("Authorization", "Bearer " + idToken);
+      connection.setRequestProperty("Content-Type", "application/json");
+      byte[] body = "{\"cacheControl\":\"public, max-age=31536000, immutable\"}"
+          .getBytes(StandardCharsets.UTF_8);
+      connection.setFixedLengthStreamingMode(body.length);
+      try (BufferedOutputStream output = new BufferedOutputStream(connection.getOutputStream())) {
+        output.write(body);
+        output.flush();
+      }
+      connection.getResponseCode();
+      connection.disconnect();
+    } catch (Exception ignored) {
     }
   }
 
@@ -552,10 +591,14 @@ public class MainActivity extends ComponentActivity {
 
   private void prepareSelectedImage(Uri source) {
     File previous = preparedImageFile;
+    File previousThumb = preparedThumbFile;
     preparedImageFile = null;
+    preparedThumbFile = null;
     if (previous != null && previous.isFile()) previous.delete();
+    if (previousThumb != null && previousThumb.isFile()) previousThumb.delete();
     imageExecutor.execute(() -> {
       File output = null;
+      File thumbOutput = null;
       try {
         long sourceLength = sourceLength(source);
         if (sourceLength > MAX_SOURCE_IMAGE_BYTES) throw new IOException("Image is larger than 50 MB");
@@ -564,14 +607,17 @@ public class MainActivity extends ComponentActivity {
           throw new IOException("Image could not be decoded");
         }
         Bitmap prepared = flattenAndResize(decoded, PREPARED_IMAGE_MAX_EDGE);
-        if (prepared != decoded) decoded.recycle();
+        Bitmap thumb = flattenAndResize(decoded, PREPARED_THUMB_MAX_EDGE);
+        decoded.recycle();
         File directory = new File(getCacheDir(), "savrivo-images");
         if (!directory.exists() && !directory.mkdirs()) {
           prepared.recycle();
+          thumb.recycle();
           throw new IOException("Could not prepare image cache");
         }
         removeExpiredPreparedImages(directory);
-        output = new File(directory, "restaurant-upload-" + System.currentTimeMillis() + ".jpg");
+        long stamp = System.currentTimeMillis();
+        output = new File(directory, "restaurant-upload-" + stamp + ".jpg");
         try (FileOutputStream stream = new FileOutputStream(output)) {
           if (!prepared.compress(Bitmap.CompressFormat.JPEG, 88, stream)) {
             throw new IOException("Image compression failed");
@@ -580,13 +626,24 @@ public class MainActivity extends ComponentActivity {
         } finally {
           prepared.recycle();
         }
+        thumbOutput = new File(directory, "restaurant-upload-" + stamp + "-thumb.jpg");
+        try (FileOutputStream stream = new FileOutputStream(thumbOutput)) {
+          if (!thumb.compress(Bitmap.CompressFormat.JPEG, 72, stream)) {
+            throw new IOException("Thumbnail compression failed");
+          }
+          stream.flush();
+        } finally {
+          thumb.recycle();
+        }
         Uri preparedUri = FileProvider.getUriForFile(this,
             getPackageName() + ".fileprovider", output);
         preparedImageFile = output;
+        preparedThumbFile = thumbOutput;
         grantUriPermission(getPackageName(), preparedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         runOnUiThread(() -> completeFileChooser(preparedUri));
       } catch (Exception error) {
         if (output != null && output.exists()) output.delete();
+        if (thumbOutput != null && thumbOutput.exists()) thumbOutput.delete();
         runOnUiThread(() -> {
           Toast.makeText(this,
               "This image is damaged or unsupported. Choose another photo or take a new one.",
@@ -676,6 +733,9 @@ public class MainActivity extends ComponentActivity {
     File prepared = preparedImageFile;
     preparedImageFile = null;
     if (prepared != null && prepared.isFile()) prepared.delete();
+    File preparedThumb = preparedThumbFile;
+    preparedThumbFile = null;
+    if (preparedThumb != null && preparedThumb.isFile()) preparedThumb.delete();
     if (fileChooserCallback != null) {
       fileChooserCallback.onReceiveValue(null);
       fileChooserCallback = null;

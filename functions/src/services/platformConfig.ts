@@ -1,6 +1,5 @@
 import {logger} from "firebase-functions";
-import {db} from "../admin";
-import {ROOT} from "../config";
+import {firestoreDb} from "../admin";
 import {
   DEFAULT_DISPATCH_POLICY,
   normalizeDispatchPolicy,
@@ -13,6 +12,8 @@ import {
   type CheckoutConfiguration,
   type FinancePolicy,
 } from "../domain/financePolicy";
+import type {FirestoreLike} from "../firestoreTypes";
+import {platformConfigRef} from "../firestorePaths";
 
 const CONFIG_CACHE_MS = 30_000;
 let dispatchCache: {policy: DispatchPolicy; expiresAt: number} | null = null;
@@ -23,11 +24,15 @@ let financeCache: {policy: FinancePolicy; expiresAt: number} | null = null;
  * configuration fails safely to the existing deployed sequential behavior.
  * In-flight queues persist their own policy snapshot.
  */
-export async function loadDispatchPolicy(now = Date.now()): Promise<DispatchPolicy> {
+async function readPlatformConfigField(database: FirestoreLike, field: "dispatch" | "finance"): Promise<unknown> {
+  const snapshot = await platformConfigRef(database).get();
+  return snapshot.exists ? (snapshot.data() as Record<string, unknown> | undefined)?.[field] ?? null : null;
+}
+
+export async function loadDispatchPolicy(now = Date.now(), database: FirestoreLike = firestoreDb): Promise<DispatchPolicy> {
   if (dispatchCache && dispatchCache.expiresAt > now) return dispatchCache.policy;
   try {
-    const snapshot = await db.ref(`${ROOT}/platformConfig/dispatch`).get();
-    const policy = normalizeDispatchPolicy(snapshot.val());
+    const policy = normalizeDispatchPolicy(await readPlatformConfigField(database, "dispatch"));
     dispatchCache = {policy, expiresAt: now + CONFIG_CACHE_MS};
     return policy;
   } catch (error) {
@@ -38,11 +43,10 @@ export async function loadDispatchPolicy(now = Date.now()): Promise<DispatchPoli
   }
 }
 
-export async function loadFinancePolicy(now = Date.now()): Promise<FinancePolicy> {
+export async function loadFinancePolicy(now = Date.now(), database: FirestoreLike = firestoreDb): Promise<FinancePolicy> {
   if (financeCache && financeCache.expiresAt > now) return financeCache.policy;
   try {
-    const snapshot = await db.ref(`${ROOT}/platformConfig/finance`).get();
-    const policy = normalizeFinancePolicy(snapshot.val());
+    const policy = normalizeFinancePolicy(await readPlatformConfigField(database, "finance"));
     financeCache = {policy, expiresAt: now + CONFIG_CACHE_MS};
     return policy;
   } catch (error) {

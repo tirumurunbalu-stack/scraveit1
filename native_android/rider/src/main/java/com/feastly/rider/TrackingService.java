@@ -64,6 +64,25 @@ public class TrackingService extends Service implements LocationListener {
     private static final long MAX_LAST_KNOWN_AGE_MS = 45_000L;
     private static final float MAX_UPLOAD_ACCURACY_METERS = 80f;
     private static final float MAX_PROXIMITY_ACCURACY_METERS = 50f;
+    // GPS pings speed up automatically for the final stretch of a delivery -
+    // once the rider is within proximity range of the customer's door, where
+    // freshness matters most and the window is short - then drop back to the
+    // normal cadence for the rest of the trip. This keeps the battery cost of
+    // faster polling limited to the part of the delivery where it earns its
+    // keep, instead of running the fast rate for an entire shift.
+    private static final long NORMAL_LOCATION_INTERVAL_MS = 3_000L;
+    private static final long NEAR_LOCATION_INTERVAL_MS = 1_500L;
+    private static final long NORMAL_UPLOAD_THROTTLE_MS = 2_000L;
+    private static final long NEAR_UPLOAD_THROTTLE_MS = 1_000L;
+    // A rider stopped at a signal or waiting at the restaurant produces a new
+    // "accepted" GPS fix every throttle interval at essentially the same
+    // spot - uploading each one burns battery and data for no real update.
+    // Skip fixes that haven't moved meaningfully, but never skip for longer
+    // than this, so the customer app's own 45s "STALE" cutoff (premium.js's
+    // `fresh` check) is never at risk of tripping while the partner is
+    // genuinely still online, just stationary.
+    private static final float STATIONARY_DISTANCE_METERS = 15f;
+    private static final long STATIONARY_UPLOAD_CEILING_MS = 20_000L;
 
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -85,6 +104,7 @@ public class TrackingService extends Service implements LocationListener {
     private double customerLat = Double.NaN;
     private double customerLng = Double.NaN;
     private Location lastLocation;
+    private long activeLocationIntervalMs = NORMAL_LOCATION_INTERVAL_MS;
     private long lastUploadAt;
     private long lastAcceptedElapsedNanos;
     private long lastHeartbeatAt;
@@ -369,17 +389,52 @@ public class TrackingService extends Service implements LocationListener {
             stopTracking();
             return;
         }
+        activeLocationIntervalMs = isNearDestination() ? NEAR_LOCATION_INTERVAL_MS : NORMAL_LOCATION_INTERVAL_MS;
         try {
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
-                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 3000, 0, this);
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000, 0, this);
+            requestUpdatesAtActiveInterval();
             Location last = newestLastKnown();
             if (last != null) handleLocation(last, true);
         } catch (Exception error) {
             publishState("sync_error", "Location updates could not start. Check Location settings.");
             stopTracking();
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private void requestUpdatesAtActiveInterval() {
+        if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, activeLocationIntervalMs, 0, this);
+        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, activeLocationIntervalMs, 0, this);
+    }
+
+    private boolean isNearDestination() {
+        return "Near you".equals(lastProximityStatus) || "Arrived".equals(lastProximityStatus);
+    }
+
+    // Called whenever lastProximityStatus might have changed (local GPS
+    // detection or a server-confirmed job status). Re-registering location
+    // updates is the only way to change the legacy LocationManager's polling
+    // interval, so this only does it when the target rate actually differs -
+    // not on every proximity check.
+    @SuppressLint("MissingPermission")
+    private void applyLocationUpdateRate() {
+        long targetIntervalMs = isNearDestination() ? NEAR_LOCATION_INTERVAL_MS : NORMAL_LOCATION_INTERVAL_MS;
+        if (targetIntervalMs == activeLocationIntervalMs) return;
+        // updateProximity() and the job-status check both run on the
+        // background `network` executor, which has no Looper - LocationManager
+        // requires the calling thread to have one (it throws otherwise), and
+        // registering from a different thread than beginLocationUpdates() did
+        // would also move where onLocationChanged() callbacks land. Hop back
+        // to the main thread, the same one beginLocationUpdates() used.
+        mainHandler.post(() -> {
+            if (locationManager == null || stopping || targetIntervalMs == activeLocationIntervalMs) return;
+            activeLocationIntervalMs = targetIntervalMs;
+            try {
+                locationManager.removeUpdates(this);
+                requestUpdatesAtActiveInterval();
+            } catch (Exception ignored) { }
+        });
     }
 
     @SuppressLint("MissingPermission")
@@ -406,7 +461,14 @@ public class TrackingService extends Service implements LocationListener {
         // Two independent accurate fixes are still required by the backend,
         // but they can now be supplied promptly while the rider is waiting at
         // the doorstep instead of being artificially spaced 6.5 seconds apart.
-        if (now - lastUploadAt < 2000) return;
+        long uploadThrottleMs = isNearDestination() ? NEAR_UPLOAD_THROTTLE_MS : NORMAL_UPLOAD_THROTTLE_MS;
+        if (now - lastUploadAt < uploadThrottleMs) return;
+        if (lastLocation != null && !fromLastKnown && now - lastUploadAt < STATIONARY_UPLOAD_CEILING_MS) {
+            float[] moved = new float[1];
+            Location.distanceBetween(lastLocation.getLatitude(), lastLocation.getLongitude(),
+                    location.getLatitude(), location.getLongitude(), moved);
+            if (moved[0] < STATIONARY_DISTANCE_METERS) return;
+        }
         lastUploadAt = now;
         lastLocation = location;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1
@@ -519,6 +581,7 @@ public class TrackingService extends Service implements LocationListener {
             else if ("Near you".equals(orderStatus) && !"Arrived".equals(lastProximityStatus)) {
                 lastProximityStatus = "Near you";
             }
+            applyLocationUpdateRate();
             String serverPhase = pointer.optString("phase", "");
             String nextPhase = ("delivery".equals(serverPhase) || "arrived".equals(serverPhase))
                     ? "delivery" : "pickup";
@@ -555,6 +618,7 @@ public class TrackingService extends Service implements LocationListener {
         // assigned rider, freshness, accuracy and distance before advancing the order lifecycle.
         if (publishProximityEvidence(candidate, result[0], accuracy, timestamp)) {
             lastProximityStatus = candidate;
+            applyLocationUpdateRate();
             persistSession();
             proximityCandidate = "";
             proximityFixCount = 0;

@@ -1,0 +1,12 @@
+name = "savrivo-image-cdn"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# No routes are declared here on purpose. Deploying with a plain
+# `wrangler deploy` publishes this to the free *.workers.dev subdomain first
+# (e.g. https://savrivo-image-cdn.<your-subdomain>.workers.dev) - that works
+# immediately with zero DNS changes and zero risk to scraveit.in.
+#
+# To move it to a branded host like img.scraveit.in later, add scraveit.in as
+# a zone in the same Cloudflare account, then uncomment:
+# routes = [{ pattern = "img.scraveit.in/*", zone_name = "scraveit.in" }]

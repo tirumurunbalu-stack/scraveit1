@@ -38,10 +38,16 @@ public final class SavrivoCallableClient {
             "getAdminRiderRewardsDashboard", "upsertRiderRewardCampaignPolicy",
             "updateRiderRewardSettingsPolicy", "getRestaurantSettlementSummary",
             "getPlatformConfiguration", "updatePlatformConfigurationPolicy",
-            "exportPlatformDataWorkbook"));
+            "exportPlatformDataWorkbook", "submitRiderFaceCheckCall", "verifyRiderLoginFaceCall",
+            "resolveRiderFaceReviewCall"));
     private static final ExecutorService NETWORK = Executors.newFixedThreadPool(3);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;
+    private static final int MAX_PAYLOAD_BYTES = 64_000;
+    // A face photo's base64 payload is the one legitimate exception to the
+    // tight default above - everything else this client sends is small,
+    // structured JSON.
+    private static final int MAX_FACE_IMAGE_PAYLOAD_BYTES = 2_200_000;
 
     private SavrivoCallableClient() { }
 
@@ -181,6 +187,21 @@ public final class SavrivoCallableClient {
         riderOrderAction(context, "markRiderArrivedRestaurant", idToken, orderId, callback);
     }
 
+    public static void submitRiderFaceCheck(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "submitRiderFaceCheckCall", idToken, payload, callback, MAX_FACE_IMAGE_PAYLOAD_BYTES);
+    }
+
+    public static void verifyRiderLoginFace(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "verifyRiderLoginFaceCall", idToken, payload, callback, MAX_FACE_IMAGE_PAYLOAD_BYTES);
+    }
+
+    public static void resolveRiderFaceReview(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "resolveRiderFaceReviewCall", idToken, payload, callback);
+    }
+
     private static void riderOrderAction(
             Context context, String function, String idToken, String orderId, Callback callback) {
         if (orderId == null || !orderId.matches("[A-Za-z0-9_.:-]{1,120}")) {
@@ -195,6 +216,12 @@ public final class SavrivoCallableClient {
 
     private static void call(
             Context context, String function, String idToken, JSONObject data, Callback callback) {
+        call(context, function, idToken, data, callback, MAX_PAYLOAD_BYTES);
+    }
+
+    private static void call(
+            Context context, String function, String idToken, JSONObject data, Callback callback,
+            int maxPayloadBytes) {
         if (!FUNCTIONS.contains(function)) {
             fail(callback, "FUNCTION_NOT_ALLOWED");
             return;
@@ -203,7 +230,7 @@ public final class SavrivoCallableClient {
             fail(callback, "AUTH_REQUIRED");
             return;
         }
-        if (data == null || data.toString().length() > 64_000) {
+        if (data == null || data.toString().length() > maxPayloadBytes) {
             fail(callback, "INVALID_PAYLOAD");
             return;
         }
@@ -272,7 +299,10 @@ public final class SavrivoCallableClient {
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(15_000);
-            connection.setReadTimeout(30_000);
+            // 45s, not 30s: a face check uploads a multi-hundred-KB image and
+            // waits on a Rekognition round trip inside the function, not just
+            // a Firestore read/write like most other calls here.
+            connection.setReadTimeout(45_000);
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             connection.setRequestProperty("Accept", "application/json");
