@@ -272,7 +272,7 @@ function deliveredOrder(orderId: string, deliveredAt: number): SavrivoOrder {
 }
 
 describe("rider rewards engine", () => {
-  it("accrues the ₹500 inviter referral reward exactly once when the referred rider reaches 25 completed orders", async () => {
+  it("accrues a configured ₹500 / 25-order inviter referral reward exactly once at the 25th delivered order", async () => {
     const database = new MemoryRiderRewardsDatabase();
     const now = new Date("2026-08-26T12:30:00+05:30").getTime();
     seedApprovedRider(database, inviterId);
@@ -284,6 +284,8 @@ describe("rider rewards engine", () => {
     for (let index = 1; index <= 24; index += 1) {
       const historical = deliveryJournal(`order-${index}`, now - (25 - index) * 60_000);
       database.seed(ledgerJournalPath(historical.journalId), historical);
+      // The referral counts delivered orders, not ledger rows.
+      database.seed(`orders/order-${index}`, {riderId, status: "Delivered", deliveredAt: now - (25 - index) * 60_000});
     }
     const delivery = deliveryJournal("order-25", now);
     database.seed(ledgerJournalPath(delivery.journalId), delivery);

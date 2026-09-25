@@ -21,7 +21,7 @@ import {
 } from "./firestorePaths";
 import {buildRiderJobProjection} from "./domain/riderJob";
 import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
-import {priceCart} from "./domain/order";
+import {buildPricing, priceCart} from "./domain/order";
 import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weather";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
 import {
@@ -38,6 +38,18 @@ import {
   financeStatementQuerySchema,
   adminRiderRewardsDashboardQuerySchema,
   checkoutPricingPreviewSchema,
+  cityEconomicsQuerySchema,
+  restaurantOfferSchema,
+  restaurantOffersQuerySchema,
+  reviewRestaurantOfferSchema,
+  simulateGuaranteeSchema,
+  simulateOfferSchema,
+  updateEconomicsControlSchema,
+  breakEvenSchema,
+  cashbackCampaignSchema,
+  operatingCostSchema,
+  upsertGrowthBudgetSchema,
+  upsertPromotionSchema,
   createOrderSchema,
   createCodOrderSchema,
   declineOrderSchema,
@@ -77,6 +89,52 @@ import {
   updateRiderAvailabilityIndex,
 } from "./services/dispatch";
 import {registerDeviceToken, unregisterDeviceToken} from "./services/deviceTokens";
+import {
+  checkoutTax,
+  loadEconomicsControl,
+  planCheckoutEconomics,
+  readEconomicsControlForAdmin,
+  recordOrderEconomicsOutcome,
+  releasePromotionSpend,
+  resolveCheckoutPromotion,
+  updateEconomicsControlForAdmin,
+} from "./services/economics";
+import {
+  breakEvenForAdmin,
+  listOperatingCostsForAdmin,
+  upsertOperatingCostForAdmin,
+  listGrowthBudgetsForAdmin,
+  listRestaurantOffers,
+  readCityEconomics,
+  readRestaurantOfferPerformance,
+  reviewRestaurantOfferForAdmin,
+  simulateGuaranteeForAdmin,
+  simulateOfferForAdmin,
+  upsertGrowthBudgetForAdmin,
+  upsertPromotionForAdmin,
+  upsertRestaurantOffer,
+} from "./services/economicsAdmin";
+import {economicsScopeKey, rupeesToPaise} from "./domain/economics";
+import {orderAttribution} from "./services/deliverySettlement";
+import {
+  earnCashbackForDeliveredOrder,
+  estimateCashback,
+  expireWalletLots,
+  planWalletRedemption,
+  listCashbackCampaignsForAdmin,
+  readCustomerWallet,
+  restoreWalletRedemption,
+  reverseCashbackForOrder,
+  upsertCashbackCampaignForAdmin,
+} from "./services/wallet";
+import {
+  applyCustomerReferralCode,
+  listCustomerReferralsForAdmin,
+  qualifyCustomerReferralOnDelivery,
+  readCustomerReferral,
+  reviewCustomerReferralForAdmin,
+} from "./services/customerReferrals";
+import {loadFinancePolicy} from "./services/platformConfig";
 import {readPlatformConfiguration, updatePlatformConfiguration} from "./services/platformConfigControl";
 import {loadCheckoutConfiguration} from "./services/platformConfig";
 import {
@@ -120,6 +178,12 @@ import {readRiderFinancialSummary} from "./services/riderFinance";
 import {getRestaurantSettlementSummary as readRestaurantSettlementSummary} from "./services/restaurantSettlements";
 import {
   evaluateRiderRewardsForDeliveredOrder,
+  expireRiderReferrals,
+  readRiderReferralOverviewForAdmin,
+  reverseRiderReferralDelivery,
+  reviewRiderReferralForAdmin,
+  simulateRiderReferralForAdmin,
+  syncRiderReferralForProfile,
   recordRiderRewardOrderCancelledAfterAccept,
   recordRiderRewardOrderPickedUp,
   recordRiderRewardPresenceUpdate,
@@ -328,6 +392,10 @@ export const verifyRiderLoginFaceCall = onCall({
   secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to verify your identity."));
+  // The rider app sends this the moment the face screen opens, so the
+  // instance is already started (no ~3 s cold start) by the time the photo
+  // arrives - without paying for an always-on instance.
+  if ((request.data as {warmup?: unknown} | null)?.warmup === true) return {warm: true};
   try {
     const input = parse(riderFaceImageSchema, request.data);
     return await verifyRiderLoginFace(request.auth.uid, input, AWS_ACCESS_KEY_ID.value(), AWS_SECRET_ACCESS_KEY.value());
@@ -447,9 +515,87 @@ export const getCheckoutConfiguration = onCall({
         loadCustomerAddress(request.auth.uid, input.addressId),
       ]);
       const {subtotal} = priceCart(input.items, menuById);
-      const fees = await loadServerFees(restaurant, address, subtotal);
+      const now = Date.now();
+      const [fees, control, financePolicy] = await Promise.all([
+        loadServerFees(restaurant, address, subtotal),
+        loadEconomicsControl(now),
+        loadFinancePolicy(now),
+      ]);
+      // The same plan order creation runs, so the customer sees exactly the
+      // discount (and who funds it) that the real order will get.
+      let offerPreview: Record<string, unknown> | null = null;
+      let promotion: Awaited<ReturnType<typeof resolveCheckoutPromotion>> = null;
+      if (input.couponCode) {
+        try {
+          promotion = await resolveCheckoutPromotion(input.couponCode, {
+            subtotalPaise: rupeesToPaise(subtotal),
+            restaurantId: restaurant.id,
+            cityKey: economicsScopeKey(restaurant.city),
+            customerId: request.auth.uid,
+            at: now,
+          });
+        } catch (offerError) {
+          offerPreview = {
+            valid: false,
+            code: input.couponCode,
+            message: offerError instanceof DomainError ? offerError.message : "Coupon is not valid.",
+          };
+        }
+      }
+      const plan = planCheckoutEconomics({
+        control, restaurant, address, subtotal, fees,
+        paymentMethod: input.paymentMethod,
+        tip: input.tip,
+        promotion,
+        defaultCommissionBps: financePolicy.restaurantCommissionBps,
+        now,
+      });
+      if (plan.offer) {
+        offerPreview = {
+          ...plan.offer,
+          valid: true,
+          discount: (plan.discount.restaurantDiscountPaise + plan.discount.platformDiscountPaise) / 100,
+          restaurantFunded: plan.discount.restaurantDiscountPaise / 100,
+          platformFunded: plan.discount.platformDiscountPaise / 100,
+        };
+      }
+      const tax = checkoutTax(control, plan, fees, subtotal, now);
+      const feeInput = {
+        subtotal,
+        discount: (plan.discount.restaurantDiscountPaise + plan.discount.platformDiscountPaise) / 100,
+        deliveryFee: fees.deliveryFee, platformFee: fees.platformFee, taxRate: fees.taxRate, tip: input.tip,
+        smallOrderThreshold: fees.smallOrderThreshold, smallOrderFee: fees.smallOrderFee,
+        lateNightFee: fees.lateNightFee, rainFee: fees.rainFee, surgeFee: fees.surgeFee,
+        riderIncentiveFee: fees.riderIncentiveFee,
+        ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
+      };
+      const beforeWallet = buildPricing(feeInput);
+      const wallet = plan.engineEnabled ? await planWalletRedemption({
+        customerId: request.auth.uid,
+        rules: control.walletRules,
+        subtotalPaise: rupeesToPaise(subtotal),
+        payableBeforeWalletPaise: rupeesToPaise(beforeWallet.total),
+        at: now,
+        requested: input.useWallet,
+      }).catch(() => null) : null;
+      const priced = buildPricing({...feeInput, ...(wallet?.amountPaise ? {walletRedeem: wallet.amountPaise / 100} : {})});
+      const cashback = plan.engineEnabled ? await estimateCashback(request.auth.uid, restaurant.id, plan, priced, now)
+        .catch(() => null) : null;
+      const checkoutPreview = {
+        serverAuthoritative: true,
+        ...priced.pricing,
+        restaurantDiscount: plan.discount.restaurantDiscountPaise / 100,
+        platformDiscount: plan.discount.platformDiscountPaise / 100,
+        total: priced.total,
+        walletBalance: (wallet?.balancePaise ?? 0) / 100,
+        walletMaxForOrder: (wallet?.maxForOrderPaise ?? 0) / 100,
+        cashbackEstimate: cashback,
+        taxVersionId: tax?.versionId ?? "",
+      };
       return {
         ...config,
+        checkoutPreview,
+        ...(offerPreview ? {offerPreview} : {}),
         feePreview: {
           deliveryFee: fees.deliveryFee,
           platformFee: fees.platformFee,
@@ -989,6 +1135,21 @@ export const reconcileExpiredDispatchClaims = onSchedule({
   logger.info("RIDER_CLAIM_RECOVERY_RUN_COMPLETED", summary);
 });
 
+/** Expires unspent wallet money (cashback / referral credit) past its date. */
+export const expireCustomerWalletLots = onSchedule({
+  schedule: "every day 03:30",
+  timeZone: "Asia/Kolkata",
+  region: REGION,
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  const result = await expireWalletLots(Date.now());
+  logger.info("WALLET_EXPIRY_RUN_COMPLETED", result);
+  // Rider referrals past their qualification deadline release their budget.
+  const expiredReferrals = await expireRiderReferrals();
+  logger.info("RIDER_REFERRAL_EXPIRY_RUN_COMPLETED", {expiredReferrals});
+});
+
 export const settleRiderIncentivePeriods = onSchedule({
   schedule: "every 15 minutes",
   region: REGION,
@@ -1121,6 +1282,14 @@ export const onOrderUpdated = onDocumentUpdated({
     const queue = queueSnapshot.exists ? queueSnapshot.data() as {status?: string} : null;
     if (!queue || queue.status === "exhausted") await beginSequentialDispatch(order);
   }
+  // A refund after delivery takes back any cashback that is still unspent.
+  if (before.paymentState !== "refunded" && order.paymentState === "refunded") {
+    await sideEffectLease(`cashback-reversal:${order.id}:refund`, async () => {
+      await reverseCashbackForOrder(order, "order refunded", await orderAttribution(order));
+    });
+    // A refunded order no longer counts toward a rider referral target.
+    if (order.riderId) await reverseRiderReferralDelivery(order);
+  }
   if (before.status === order.status) return;
   logger.info("ORDER_STATUS_CHANGED", {
     orderId: order.id,
@@ -1148,6 +1317,12 @@ export const onOrderUpdated = onDocumentUpdated({
       db.ref(`${ROOT}/tracking/${order.id}`).remove(),
     ]);
     await cancelDispatchOffers(order.id, "cancelled");
+    // A cancelled order must not keep spending an offer's budget or a
+    // customer's one-time use. Idempotent: the redemption record guards it.
+    await releasePromotionSpend(order.id);
+    await recordOrderEconomicsOutcome(order);
+    // Wallet money used on a cancelled order goes back to the customer, once.
+    await restoreWalletRedemption(order.id);
     if (before.riderId) {
       await recordRiderRewardOrderCancelledAfterAccept(
         before.riderId,
@@ -1197,6 +1372,16 @@ export const onOrderUpdated = onDocumentUpdated({
   if (order.status === "Delivered") {
     await recordCodLedger(order);
     await recordOnlinePaymentLedger(order);
+    await recordOrderEconomicsOutcome(order);
+    if (order.economics) {
+      const attribution = await orderAttribution(order);
+      await sideEffectLease(`cashback:${order.id}`, async () => {
+        await earnCashbackForDeliveredOrder(order, attribution);
+      });
+      await sideEffectLease(`customer-referral:${order.id}`, async () => {
+        await qualifyCustomerReferralOnDelivery(order, attribution);
+      });
+    }
     await sideEffectLease(`rider-rewards:${order.id}`, async () => {
       await evaluateRiderRewardsForDeliveredOrder(order);
     });
@@ -1359,6 +1544,12 @@ export const onRiderProfileEligibilitySourceWritten = onDocumentWritten({
     String(event.params.riderId),
     Number.isFinite(parsed) ? parsed : Date.now(),
   );
+  // Creates the rider referral (terms frozen) when a referred rider applies.
+  const after = event.data?.after?.data() as {referredByCode?: unknown; status?: unknown} | undefined;
+  const before = event.data?.before?.data() as {status?: unknown} | undefined;
+  if (after?.referredByCode && (after.status !== before?.status || !event.data?.before?.exists)) {
+    await syncRiderReferralForProfile(String(event.params.riderId));
+  }
 });
 
 export const onRiderWalletEligibilitySourceWritten = onDocumentWritten({
@@ -1479,3 +1670,149 @@ export const onTrackingUpdated = onValueWritten({
     logger.info("Tracking geofence advanced order", {orderId: event.params.orderId, status: result.status});
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Economics engine control plane
+// ---------------------------------------------------------------------------
+
+function economicsCallable<S extends z.ZodTypeAny, R>(
+  name: string,
+  schema: S,
+  handler: (uid: string, token: DecodedIdTokenLike, input: z.infer<S>) => Promise<R>,
+) {
+  return onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+    try {
+      return await handler(request.auth.uid, request.auth.token, parse(schema, request.data ?? {}));
+    } catch (error) {
+      logger.warn(`${name} rejected`, {
+        uid: request.auth.uid,
+        error: error instanceof Error ? error.message.slice(0, 200) : "unknown",
+      });
+      throw asHttpsError(error);
+    }
+  });
+}
+
+type DecodedIdTokenLike = Parameters<typeof readEconomicsControlForAdmin>[0];
+
+export const getEconomicsControl = economicsCallable("getEconomicsControl", z.object({}).strict(),
+  async (_uid, token) => {
+    const [control, growthBudgets] = await Promise.all([
+      readEconomicsControlForAdmin(token),
+      listGrowthBudgetsForAdmin(token),
+    ]);
+    return {...control, growthBudgets};
+  });
+
+export const updateEconomicsControl = economicsCallable("updateEconomicsControl", updateEconomicsControlSchema,
+  (uid, token, input) => updateEconomicsControlForAdmin(uid, token, input));
+
+export const simulateEconomicsOffer = economicsCallable("simulateEconomicsOffer", simulateOfferSchema,
+  (_uid, token, input) => simulateOfferForAdmin(token, input));
+
+export const simulateEconomicsGuarantee = economicsCallable("simulateEconomicsGuarantee", simulateGuaranteeSchema,
+  (_uid, token, input) => simulateGuaranteeForAdmin(token, input));
+
+export const upsertPromotionPolicy = economicsCallable("upsertPromotionPolicy", upsertPromotionSchema,
+  (uid, token, input) => upsertPromotionForAdmin(uid, token, input));
+
+export const upsertGrowthBudget = economicsCallable("upsertGrowthBudget", upsertGrowthBudgetSchema,
+  (uid, token, input) => upsertGrowthBudgetForAdmin(uid, token, input));
+
+export const reviewRestaurantOffer = economicsCallable("reviewRestaurantOffer", reviewRestaurantOfferSchema,
+  (uid, token, input) => reviewRestaurantOfferForAdmin(uid, token, input));
+
+export const getCityEconomics = economicsCallable("getCityEconomics", cityEconomicsQuerySchema,
+  (_uid, token, input) => readCityEconomics(token, input));
+
+export const saveRestaurantOffer = economicsCallable("saveRestaurantOffer", restaurantOfferSchema,
+  (uid, token, input) => upsertRestaurantOffer(uid, token, input));
+
+export const getRestaurantOffers = economicsCallable("getRestaurantOffers", restaurantOffersQuerySchema,
+  (uid, token, input) => listRestaurantOffers(uid, token, input.restaurantId));
+
+// ---------------------------------------------------------------------------
+// Wallet, cashback, customer referrals, city P&L
+// ---------------------------------------------------------------------------
+
+const installIdSchema = z.string().trim().max(80).default("");
+
+/** Customer: wallet balance, expiring money, history, live cashback offers and referral status. */
+export const getCustomerWallet = economicsCallable("getCustomerWallet", z.object({installId: installIdSchema}).strict(),
+  async (uid, _token, input) => {
+    const [wallet, referral] = await Promise.all([readCustomerWallet(uid), readCustomerReferral(uid, input.installId)]);
+    return {wallet, referral};
+  });
+
+export const applyCustomerReferral = economicsCallable("applyCustomerReferral",
+  z.object({code: z.string().trim().min(4).max(200), installId: installIdSchema}).strict(),
+  (uid, _token, input) => applyCustomerReferralCode(uid, input));
+
+export const upsertCashbackCampaign = economicsCallable("upsertCashbackCampaign", cashbackCampaignSchema,
+  (uid, token, input) => upsertCashbackCampaignForAdmin(uid, token, input));
+
+export const listCashbackCampaigns = economicsCallable("listCashbackCampaigns", z.object({}).strict(),
+  (_uid, token) => listCashbackCampaignsForAdmin(token));
+
+export const listCustomerReferrals = economicsCallable("listCustomerReferrals", z.object({}).strict(),
+  (_uid, token) => listCustomerReferralsForAdmin(token));
+
+export const reviewCustomerReferral = economicsCallable("reviewCustomerReferral",
+  z.object({referredUid: z.string().trim().min(1).max(128), decision: z.enum(["approved", "rejected"]), reason: z.string().trim().max(300).default("")}).strict(),
+  (uid, token, input) => reviewCustomerReferralForAdmin(uid, token, input));
+
+export const upsertCityOperatingCost = economicsCallable("upsertCityOperatingCost", operatingCostSchema,
+  (uid, token, input) => upsertOperatingCostForAdmin(uid, token, input));
+
+export const listCityOperatingCosts = economicsCallable("listCityOperatingCosts",
+  z.object({cityKey: z.string().trim().max(80).default("")}).strict(),
+  (_uid, token, input) => listOperatingCostsForAdmin(token, input.cityKey));
+
+export const getCityBreakEven = economicsCallable("getCityBreakEven", breakEvenSchema,
+  (_uid, token, input) => breakEvenForAdmin(token, input));
+
+export const getRiderReferralOverview = economicsCallable("getRiderReferralOverview",
+  z.object({
+    cityKey: z.string().trim().max(80).default(""),
+    status: z.enum(["", "in_progress", "review", "qualified", "paid", "expired", "rejected", "not_eligible"]).default(""),
+    limit: z.number().int().min(1).max(500).default(200),
+  }).strict(),
+  (_uid, token, input) => readRiderReferralOverviewForAdmin(token, input));
+
+export const reviewRiderReferral = economicsCallable("reviewRiderReferral",
+  z.object({
+    referredRiderId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9._:-]+$/),
+    decision: z.enum(["approved", "rejected"]),
+    note: z.string().trim().max(300).default(""),
+  }).strict(),
+  (uid, token, input) => reviewRiderReferralForAdmin(uid, token, input));
+
+export const simulateRiderReferral = economicsCallable("simulateRiderReferral",
+  z.object({
+    expectedReferredRiders: z.number().int().min(0).max(1_000_000),
+    qualificationRatePercent: z.number().min(0).max(100),
+    cityKey: z.string().trim().max(80).default("nellore"),
+  }).strict(),
+  async (_uid, token, input) => {
+    const endAt = Date.now();
+    // A month of the city's real results, so the effect on operating profit
+    // and the expansion fund is shown against actual numbers.
+    const city = input.cityKey
+      ? await readCityEconomics(token, {cityKey: input.cityKey, startAt: endAt - 30 * 24 * 60 * 60 * 1000, endAt}).catch(() => null)
+      : null;
+    return {
+      cityKey: input.cityKey,
+      ...(await simulateRiderReferralForAdmin(token, {
+        expectedReferredRiders: input.expectedReferredRiders,
+        qualificationRatePercent: input.qualificationRatePercent,
+        monthlyOperatingProfitPaise: city?.pnl?.operatingProfitPaise ?? null,
+        monthlyExpansionFundPaise: city?.pnl?.expansionAllocationPaise ?? null,
+      })),
+    };
+  });
+
+export const getRestaurantOfferPerformance = economicsCallable("getRestaurantOfferPerformance",
+  z.object({restaurantId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/), days: z.number().int().min(1).max(90).default(30)}).strict(),
+  (uid, token, input) => readRestaurantOfferPerformance(uid, token, input));

@@ -877,3 +877,6 @@ html.keyboard-open select:focus {
   .restaurant-hero { height: min(34dvh, 220px); min-height: 190px; }
   .home-promo .promo-card, .home-promo .local-ad, .home-promo .local-ad-copy { min-height: 138px; }
 }
+/* Wallet & rewards */
+.referral-code{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-radius:14px;border:1px dashed var(--brand, #155eef);background:color-mix(in srgb, var(--brand, #155eef), transparent 92%)}.referral-code span{font-size:12px;color:var(--muted)}.referral-code strong{font-size:22px;letter-spacing:.12em;font-variant-numeric:tabular-nums}
+.wallet-offer .status-pill{white-space:nowrap}

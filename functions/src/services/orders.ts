@@ -29,12 +29,26 @@ import type {TransactionLike} from "../firestoreTypes";
 import {FieldValue} from "../firestoreTypes";
 import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef, riderWalletRef} from "../firestorePaths";
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
-import type {ActorRole, OrderStatus, SavrivoOrder, StatusEvent} from "../types";
+import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
 import {authorizeTransition} from "./authz";
-import {calculateDiscount, loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
+import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
+import {
+  checkoutTax,
+  finalizeOrderEconomics,
+  loadEconomicsControl,
+  orderEconomicsRecord,
+  orderEconomicsRef,
+  planCheckoutEconomics,
+  promotionReservationRefs,
+  reservePromotionSpend,
+  resolveCheckoutPromotion,
+} from "./economics";
+import {economicsScopeKey, rupeesToPaise, settlementTerms} from "../domain/economics";
+import {planWalletRedemption, reserveWalletRedemption} from "./wallet";
 import {reconcileRestaurantWorkload} from "./workload";
 import {reconcileRestaurantOrderProjection} from "./orderProjection";
 import {persistCodOrderDeliveryLedger} from "./ledger";
+import {resolveDeliverySettlementOptions} from "./deliverySettlement";
 import {persistOnlineOrderDeliveryLedger} from "./onlineDeliveryLedger";
 import {loadFinancePolicy} from "./platformConfig";
 import {requireVerifiedRiderRestaurantArrival} from "./riderRestaurantArrival";
@@ -400,9 +414,17 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     loadCustomerAddress(uid, input.addressId),
   ]);
   const {items, subtotal} = priceCart(input.items, menuById);
-  const [fees, discount, availableRiders] = await Promise.all([
+  const pricedAt = Date.now();
+  const [fees, promotion, economicsControl, availableRiders] = await Promise.all([
     loadServerFees(restaurant, address, subtotal),
-    calculateDiscount(input.couponCode, subtotal, restaurant.id, uid),
+    resolveCheckoutPromotion(input.couponCode, {
+      subtotalPaise: rupeesToPaise(subtotal),
+      restaurantId: restaurant.id,
+      cityKey: economicsScopeKey(restaurant.city),
+      customerId: uid,
+      at: pricedAt,
+    }),
+    loadEconomicsControl(pricedAt),
     // Rider supply feeds the delivery estimate only. A read failure must never
     // block an order, so it degrades to "unknown" - which the estimator treats
     // as unknown rather than as zero riders.
@@ -419,7 +441,32 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
         return null;
       }),
   ]);
-  const {pricing, total} = buildPricing({
+  let payment: Pick<SavrivoOrder, "paymentMethod" | "paymentState" | "paymentProvider">;
+  const financePolicy = await loadFinancePolicy(pricedAt);
+  try {
+    payment = paymentDetailsFromCreateInput(input, financePolicy);
+  } catch (error) {
+    throw paymentSelectionError(error) ?? error;
+  }
+  // Who pays for the discount, and how much Scraveit can safely fund, is
+  // decided once here - the same plan the checkout preview showed.
+  const economicsPlan = planCheckoutEconomics({
+    control: economicsControl,
+    restaurant,
+    address,
+    subtotal,
+    fees,
+    paymentMethod: payment.paymentMethod,
+    tip: input.tip,
+    promotion,
+    defaultCommissionBps: financePolicy.restaurantCommissionBps,
+    now: pricedAt,
+  });
+  const discount = (economicsPlan.discount.restaurantDiscountPaise + economicsPlan.discount.platformDiscountPaise) / 100;
+  // CA-defined component tax rules replace the flat food tax only once a
+  // version in component_rules mode is in force (see domain/taxRules.ts).
+  const tax = checkoutTax(economicsControl, economicsPlan, fees, subtotal, pricedAt);
+  const feeInput = {
     subtotal,
     discount,
     deliveryFee: fees.deliveryFee,
@@ -432,16 +479,59 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     rainFee: fees.rainFee,
     surgeFee: fees.surgeFee,
     riderIncentiveFee: fees.riderIncentiveFee,
+    ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
+  };
+  // Wallet money (cashback / referral credit) is a way of paying, used only
+  // when the customer asked and only up to the wallet rules for this order.
+  const walletPlan = economicsPlan.engineEnabled && input.useWallet ? await planWalletRedemption({
+    customerId: uid,
+    rules: economicsControl.walletRules,
+    subtotalPaise: rupeesToPaise(subtotal),
+    payableBeforeWalletPaise: rupeesToPaise(buildPricing(feeInput).total),
+    at: pricedAt,
+    requested: true,
+  }) : null;
+  const walletRedeemPaise = walletPlan?.amountPaise ?? 0;
+  const {pricing: basePricing, total} = buildPricing({
+    ...feeInput,
+    ...(walletRedeemPaise > 0 ? {walletRedeem: walletRedeemPaise / 100} : {}),
   });
+  const pricing: PricingBreakdown = economicsPlan.engineEnabled ? {
+    ...basePricing,
+    restaurantDiscount: economicsPlan.discount.restaurantDiscountPaise / 100,
+    platformDiscount: economicsPlan.discount.platformDiscountPaise / 100,
+  } : basePricing;
+  const economics = economicsPlan.engineEnabled ? finalizeOrderEconomics(
+    economicsPlan,
+    pricing,
+    total,
+    restaurant.id,
+    payment.paymentMethod,
+    [...(fees.riderIncentiveCampaignIds ?? []).map((id) => `rider_campaign:${id}`), ...fees.pricingScopes.map((scope) => `pricing:${scope}`)],
+    tax ? {commissionTaxPaise: tax.restaurantTaxPaise, taxVersionId: tax.versionId} : {},
+  ) : undefined;
   if (fees.riderIncentiveFee > 0) {
     logger.info("RIDER_INCENTIVE_FEE_APPLIED", {
       orderId, restaurantId: restaurant.id,
       amount: fees.riderIncentiveFee, campaignIds: fees.riderIncentiveCampaignIds,
     });
   }
+  if (economics) {
+    logger.info("ORDER_ECONOMICS_PRICED", {
+      orderId,
+      cityKey: economics.cityKey,
+      payablePaise: economics.customer.payablePaise,
+      restaurantReceivablePaise: economics.restaurant.receivablePaise,
+      riderPayPaise: economics.rider.totalPaise,
+      contributionPaise: economics.platform.contributionPaise,
+      verdict: economics.guardrail.verdict,
+      offer: economicsPlan.offer?.code ?? "",
+      withheldPlatformPaise: economicsPlan.discount.withheldPlatformPaise,
+      policyScopes: economics.policyScopes.join(","),
+    });
+  }
 
-  const now = Date.now();
-  const financePolicy = await loadFinancePolicy(now);
+  const now = pricedAt;
   const deliveryEstimate = estimateDelivery({
     kitchenEtaMinMinutes: restaurant.etaMin,
     kitchenEtaMaxMinutes: restaurant.etaMax,
@@ -456,12 +546,6 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   const otpRecord = await reserveDeliveryOtp(uid, orderId);
   const deliveryOtp = String(otpRecord.otp);
   const event: StatusEvent = {status: "Order placed", at: now, actorId: uid, actorRole: "customer"};
-  let payment: Pick<SavrivoOrder, "paymentMethod" | "paymentState" | "paymentProvider">;
-  try {
-    payment = paymentDetailsFromCreateInput(input, financePolicy);
-  } catch (error) {
-    throw paymentSelectionError(error) ?? error;
-  }
   const orderBase: SavrivoOrder = {
     id: orderId,
     schemaVersion: SCHEMA_VERSION,
@@ -501,14 +585,40 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     // Kept so a late delivery can be explained after the fact, and so the
     // promise can be scored against the actual time once enough have landed.
     etaBasis: deliveryEstimate.basis,
+    ...(economics ? {economics: settlementTerms(economics)} : {}),
+    ...(economicsPlan.offer ? {appliedOffer: economicsPlan.offer} : {}),
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
 
   let created = false;
+  const reservationRefs = economicsPlan.engineEnabled ?
+    promotionReservationRefs(firestoreDb, orderId, uid, economicsPlan.offer, promotion?.terms ?? null) : null;
   const committedOrder = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
     const snapshot = await transaction.get(ref);
     if (snapshot.exists) return snapshot.data() as SavrivoOrder;
+    // Offer budgets and per-customer limits are reserved in the same
+    // transaction as the order itself, so neither can exist without the other.
+    const writeReservation = reservationRefs && economicsPlan.offer && promotion ?
+      await reservePromotionSpend(transaction, reservationRefs, {
+        orderId,
+        customerId: uid,
+        offer: economicsPlan.offer,
+        terms: promotion.terms,
+        cityKey: economicsPlan.cityKey,
+        at: now,
+      }) : null;
     transaction.set(ref, order);
+    const writeWallet = walletRedeemPaise > 0 ?
+      await reserveWalletRedemption(transaction, {customerId: uid, orderId, amountPaise: walletRedeemPaise, at: now}) : null;
+    if (economics) {
+      transaction.set(orderEconomicsRef(firestoreDb, orderId), orderEconomicsRecord(order, economics, {
+        tripPayPolicy: economicsPlan.tripPayPolicy,
+        distanceMeters: Math.round(fees.distanceKm * 1_000),
+        taxLines: tax?.lines ?? [],
+      }));
+    }
+    writeReservation?.();
+    writeWallet?.();
     created = true;
     return order;
   });
@@ -667,7 +777,7 @@ export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
   const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
   // The immutable balanced journal is authoritative. The existing mutable
   // rider wallet remains only a backwards-compatible operational projection.
-  await persistCodOrderDeliveryLedger(order, commissionBps);
+  await persistCodOrderDeliveryLedger(order, commissionBps, await resolveDeliverySettlementOptions(order));
   const ref = riderWalletRef(firestoreDb, order.riderId);
   await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
     const snapshot = await transaction.get(ref);
@@ -702,5 +812,5 @@ export async function recordOnlinePaymentLedger(order: SavrivoOrder): Promise<vo
   if (order.paymentMethod === "cod" || order.status !== "Delivered" || !order.riderId) return;
   const financePolicy = await loadFinancePolicy();
   const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
-  await persistOnlineOrderDeliveryLedger(order, commissionBps);
+  await persistOnlineOrderDeliveryLedger(order, commissionBps, undefined, await resolveDeliverySettlementOptions(order));
 }

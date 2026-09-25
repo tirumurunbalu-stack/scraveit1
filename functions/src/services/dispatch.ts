@@ -49,7 +49,7 @@ export {
   wasRecentlyOffered,
 } from "../domain/dispatch";
 import {stripPrivateOrderFields} from "../domain/orderSecurity";
-import {buildRiderJobProjection} from "../domain/riderJob";
+import {buildRiderJobProjection, riderOfferPayout, riderPayoutBreakdown} from "../domain/riderJob";
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike, WriteBatchLike} from "../firestoreTypes";
 import {
@@ -105,6 +105,7 @@ type QueueWithOfferData = DispatchQueueRecord & {
   approximateDropZone: string;
   itemCount: number;
   payout: number;
+  payoutBreakdown?: {tripPay: number; incentives: number; tip: number; total: number};
   estimatedMinutes: number;
   restaurantArea: string;
   offeredRiderId?: string;
@@ -354,6 +355,7 @@ function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<st
     approximateDropZone: queue.approximateDropZone,
     itemCount: queue.itemCount,
     payout: queue.payout,
+    ...(queue.payoutBreakdown ? {payoutBreakdown: queue.payoutBreakdown} : {}),
     estimatedMinutes: queue.estimatedMinutes,
     kitchenStatus: queue.kitchenStatus,
     active: true,
@@ -434,7 +436,8 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     restaurantLng: order.restaurantLocation.lng,
     approximateDropZone: order.address.area || order.address.city || "Service area",
     itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    payout: order.pricing.deliveryFee,
+    payout: riderOfferPayout(order),
+    payoutBreakdown: riderPayoutBreakdown(order),
     estimatedMinutes: order.etaMax,
     kitchenStatus: order.status,
     ...(first ? {offeredRiderId: first.riderId} : {}),

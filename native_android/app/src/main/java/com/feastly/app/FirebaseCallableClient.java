@@ -144,6 +144,8 @@ final class FirebaseCallableClient {
     return "createCodOrder".equals(name)
         || "createOrder".equals(name)
         || "getCheckoutConfiguration".equals(name)
+        || "getCustomerWallet".equals(name)
+        || "applyCustomerReferral".equals(name)
         || "createPaymentIntent".equals(name)
         || "createPhonePeIntent".equals(name)
         || "recoverDeliveryOtp".equals(name)

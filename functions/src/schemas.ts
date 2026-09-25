@@ -23,6 +23,8 @@ const createOrderBaseSchema = z.object({
   deliveryMode: z.literal("asap").default("asap"),
   instructions: z.string().trim().max(500).default(""),
   contactless: z.boolean().default(false),
+  /** Use wallet money (cashback / referral credit) on this order. */
+  useWallet: z.boolean().default(false),
 }).strict();
 
 export const createCodOrderSchema = createOrderBaseSchema;
@@ -52,6 +54,12 @@ export const checkoutPricingPreviewSchema = z.object({
   restaurantId: identifier,
   items: z.array(cartLineSchema).min(1).max(MAX_CART_LINES),
   addressId: identifier,
+  // Optional so older app builds keep getting fee previews; when present the
+  // preview also shows exactly how the offer applies and who funds it.
+  couponCode: z.string().trim().toUpperCase().max(30).default(""),
+  tip: z.number().finite().min(0).max(10_000).default(0),
+  paymentMethod: paymentMethodSchema.default("cod"),
+  useWallet: z.boolean().default(false),
 }).strict();
 
 export const statusSchema = z.enum([
@@ -236,6 +244,16 @@ const rewardStackingSchema = z.enum([
 const rewardMilestonePayoutModeSchema = z.enum([
   "highest_unlocked",
   "cumulative",
+  // Milestone amounts are guaranteed earnings; only the shortfall is paid.
+  "earnings_guarantee",
+]);
+
+const guaranteeComponentSchema = z.enum([
+  "trip_pay",
+  "per_order_incentives",
+  "tips",
+  "referral_rewards",
+  "other_guarantees",
 ]);
 
 const rewardSlotOverlapModeSchema = z.enum([
@@ -398,6 +416,9 @@ export const riderRewardCampaignSchema = z.object({
   conditionGroups: z.array(rewardConditionGroupSchema).max(12).default([]),
   otherConditions: z.array(rewardOtherConditionSchema).max(32).default([]),
   milestonePayoutMode: rewardMilestonePayoutModeSchema.default("highest_unlocked"),
+  guaranteeComponents: z.array(guaranteeComponentSchema).max(5).default(["trip_pay", "per_order_incentives"]),
+  budgetPaise: z.number().int().min(0).max(1_000_000_000_00).default(0),
+  maxEligibleRiders: z.number().int().min(0).max(100_000).default(0),
   timezone: z.string().trim().min(1).max(80).default("Asia/Kolkata"),
   tripAttribution: rewardTripAttributionSchema.default("delivered_at"),
   allowOverlappingSlotCredit: z.boolean().default(false),
@@ -429,6 +450,13 @@ export const riderRewardCampaignSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["milestones"],
       message: "Milestone campaigns require at least one milestone.",
+    });
+  }
+  if (value.milestonePayoutMode === "earnings_guarantee" && value.kind !== "milestone_bonus") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["milestonePayoutMode"],
+      message: "An earnings guarantee needs delivery targets, so it must be a milestone campaign.",
     });
   }
   if (value.kind === "milestone_bonus" && value.rewardAmountPaise !== undefined) {
@@ -504,6 +532,11 @@ export const updateRiderRewardSettingsSchema = z.object({
   inviteeRewardPaise: z.number().int().min(0).max(1_000_000_000).optional(),
   referralMinCompletedTrips: z.number().int().min(0).max(100_000).optional(),
   referralMaxRewardsPerRider: z.number().int().min(0).max(100_000).optional(),
+  referralProgramStartAt: z.number().int().min(0).optional(),
+  referralProgramEndAt: z.number().int().min(0).optional(),
+  referralCityNames: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+  referralBudgetPaise: z.number().int().min(0).max(1_000_000_000_00).optional(),
+  referralQualificationDays: z.number().int().min(0).max(3_650).optional(),
 }).strict().refine((value) => Object.keys(value).some((key) => !["operationId", "expectedUpdatedAt"].includes(key)), {
   message: "At least one rider rewards setting is required.",
 });
@@ -541,3 +574,284 @@ export const unregisterDeviceTokenSchema = z.object({
 export function validationMessage(error: z.ZodError): string {
   return error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ");
 }
+
+// ---------------------------------------------------------------------------
+// Economics engine control plane. Every amount is integer paise and every
+// percentage basis points; clients never submit computed totals.
+// ---------------------------------------------------------------------------
+
+const paise = z.number().int().min(0).max(1_000_000_000_00);
+const bps = z.number().int().min(0).max(10_000);
+const economicsPolicyOverrideSchema = z.object({
+  minContributionPaisePerOrder: paise.optional(),
+  minContributionBpsOfGmv: bps.optional(),
+  targetContributionPaisePerOrder: paise.optional(),
+  operatingReserveBps: bps.optional(),
+  expansionReserveBps: bps.optional(),
+  riskReserveBps: bps.optional(),
+  paymentGatewayCostBps: bps.optional(),
+  codHandlingCostPaise: paise.optional(),
+  refundReserveBpsOfGmv: bps.optional(),
+  supportCostPaisePerOrder: paise.optional(),
+  otherVariableCostPaisePerOrder: paise.optional(),
+  maxPlatformSubsidyPerOrderPaise: paise.optional(),
+  cashbackMaxShareOfContributionBps: bps.optional(),
+  targetContributionBpsOfGmv: bps.optional(),
+}).strict();
+
+export const updateEconomicsControlSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+  expectedRevision: z.number().int().min(0).optional(),
+  update: z.discriminatedUnion("section", [
+    z.object({
+      section: z.literal("flags"),
+      value: z.object({
+        economicsEngine: z.boolean().optional(),
+        profitabilityGuardrail: z.boolean().optional(),
+        riderGuarantee: z.boolean().optional(),
+        restaurantOffers: z.boolean().optional(),
+        enabledCityKeys: z.array(z.string().trim().min(1).max(80)).max(100).optional(),
+      }).strict(),
+    }).strict(),
+    z.object({
+      section: z.literal("policy"),
+      scopeType: z.enum(["global", "city", "zone", "restaurant"]),
+      scopeKey: z.string().trim().max(200).default(""),
+      value: economicsPolicyOverrideSchema,
+    }).strict(),
+    z.object({
+      section: z.literal("commercialPlans"),
+      restaurantId: identifier,
+      value: z.array(z.object({
+        planId: z.string().trim().min(1).max(60),
+        label: z.string().trim().min(1).max(80),
+        commissionBps: z.number().int().min(0).max(5_000),
+        effectiveFrom: z.number().int().min(0),
+        effectiveTo: z.number().int().min(0),
+      }).strict()).max(20),
+    }).strict(),
+    z.object({
+      section: z.literal("riderPay"),
+      value: z.object({minimumTripPayPaise: z.number().int().min(0).max(50_000)}).strict(),
+    }).strict(),
+    z.object({
+      section: z.literal("riderTripPay"),
+      scopeType: z.enum(["global", "city", "zone"]),
+      scopeKey: z.string().trim().max(200).default(""),
+      value: z.array(z.object({
+        effectiveFrom: z.number().int().min(0),
+        effectiveTo: z.number().int().min(0).default(0),
+        label: z.string().trim().max(80).default(""),
+        override: z.record(z.string(), z.unknown()),
+      }).strict()).max(50),
+    }).strict(),
+    z.object({
+      section: z.literal("customerPricing"),
+      scopeType: z.enum(["city", "zone"]),
+      scopeKey: z.string().trim().min(1).max(200),
+      value: z.record(z.string(), z.unknown()),
+    }).strict(),
+    z.object({
+      section: z.literal("city"),
+      cityKey: z.string().trim().min(1).max(80),
+      value: z.object({
+        name: z.string().trim().min(1).max(80),
+        stateKey: z.string().trim().max(80).default(""),
+        countryKey: z.string().trim().max(10).default("in"),
+        timezone: z.string().trim().max(60).default("Asia/Kolkata"),
+      }).strict(),
+    }).strict(),
+    z.object({
+      section: z.literal("cityFinance"),
+      scopeType: z.enum(["global", "city"]),
+      scopeKey: z.string().trim().max(80).default(""),
+      value: z.record(z.string(), z.unknown()),
+    }).strict(),
+    z.object({section: z.literal("walletRules"), value: z.record(z.string(), z.unknown())}).strict(),
+    z.object({section: z.literal("customerReferral"), value: z.record(z.string(), z.unknown())}).strict(),
+    z.object({section: z.literal("taxVersions"), value: z.array(z.record(z.string(), z.unknown())).max(50)}).strict(),
+    z.object({
+      section: z.literal("restaurantOfferAutoApproval"),
+      value: z.object({
+        enabled: z.boolean().optional(),
+        maxPercent: z.number().int().min(0).max(100).optional(),
+        maxDiscountPaise: paise.optional(),
+      }).strict(),
+    }).strict(),
+  ]),
+}).strict();
+
+const offerShapeSchema = z.object({
+  kind: z.enum(["percent", "flat"]),
+  percent: z.number().int().min(0).max(100).default(0),
+  flatAmountPaise: paise.default(0),
+  maxDiscountPaise: paise.default(0),
+  fundingSource: z.enum(["restaurant", "platform", "shared"]),
+  restaurantShareBps: bps.default(5_000),
+}).strict();
+
+const simulationSampleSchema = z.object({
+  averageOrderValuePaise: z.number().int().min(100).max(10_000_000),
+  deliveryFeePaise: paise.default(2_500),
+  platformFeePaise: paise.default(700),
+  riderPayPerOrderPaise: paise.default(2_500),
+  onlinePaymentShareBps: bps.default(3_000),
+  expectedOrders: z.number().int().min(0).max(10_000_000).default(1_000),
+  redemptionShareBps: bps.default(5_000),
+  commissionBps: z.number().int().min(0).max(5_000).optional(),
+}).strict();
+
+export const simulateOfferSchema = simulationSampleSchema.extend({
+  cityKey: z.string().trim().max(80).default(""),
+  offer: offerShapeSchema,
+}).strict();
+
+export const simulateGuaranteeSchema = z.object({
+  tiers: z.array(z.object({target: z.number().int().min(1).max(1_000), guaranteedPaise: paise}).strict()).min(1).max(20),
+  maxRiders: z.number().int().min(0).max(100_000),
+  expectedRiders: z.number().int().min(0).max(100_000),
+  minimumEarningPerDeliveryPaise: paise,
+  expectedEarningPerDeliveryPaise: paise,
+  budgetPaise: paise.default(0),
+  expectedOrders: z.number().int().min(0).max(10_000_000).default(0),
+  contributionPerOrderPaise: z.number().int().min(-1_000_000).max(1_000_000).default(0),
+}).strict();
+
+export const upsertPromotionSchema = z.object({
+  promotionId: identifier.optional(),
+  code: z.string().trim().min(3).max(24).regex(/^[A-Za-z0-9_-]+$/),
+  title: z.string().trim().min(3).max(120),
+  description: z.string().trim().max(300).default(""),
+  kind: z.enum(["percent", "flat"]),
+  percent: z.number().int().min(0).max(100).default(0),
+  flatAmountPaise: paise.default(0),
+  maxDiscountPaise: paise.default(0),
+  minimumOrderPaise: paise.default(0),
+  fundingSource: z.enum(["restaurant", "platform", "shared"]),
+  restaurantShareBps: bps.default(5_000),
+  restaurantIds: z.array(identifier).max(200).default([]),
+  cityKeys: z.array(z.string().trim().min(1).max(80)).max(50).default([]),
+  firstOrderOnly: z.boolean().default(false),
+  perCustomerLimit: z.number().int().min(0).max(1_000).default(0),
+  budgetPaise: paise.default(0),
+  growthBudgetId: z.string().trim().max(80).default(""),
+  startsAt: z.number().int().min(0).default(0),
+  expiresAt: z.number().int().min(0).default(0),
+  active: z.boolean().default(false),
+  approvalStatus: z.enum(["approved", "pending", "rejected"]).optional(),
+  acknowledgeLimitedFunding: z.boolean().default(false),
+  simulation: simulationSampleSchema,
+}).strict().superRefine((value, context) => {
+  if (value.kind === "percent" && value.percent <= 0) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["percent"], message: "Give a discount percentage."});
+  }
+  if (value.kind === "flat" && value.flatAmountPaise <= 0) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["flatAmountPaise"], message: "Give a flat discount amount."});
+  }
+});
+
+export const upsertGrowthBudgetSchema = z.object({
+  budgetId: identifier.optional(),
+  name: z.string().trim().min(3).max(120),
+  cityKey: z.string().trim().max(80).default(""),
+  approvedPaise: paise,
+  validFrom: z.number().int().min(0),
+  validUntil: z.number().int().min(0),
+  active: z.boolean(),
+  reason: z.string().trim().min(3).max(500),
+}).strict();
+
+export const restaurantOfferSchema = z.object({
+  restaurantId: identifier,
+  promotionId: identifier.optional(),
+  code: z.string().trim().min(3).max(24).regex(/^[A-Za-z0-9_-]+$/),
+  title: z.string().trim().min(3).max(120),
+  kind: z.enum(["percent", "flat"]),
+  percent: z.number().int().min(0).max(100).default(0),
+  flatAmountPaise: paise.default(0),
+  maxDiscountPaise: paise.default(0),
+  minimumOrderPaise: paise.default(0),
+  perCustomerLimit: z.number().int().min(0).max(1_000).default(0),
+  startsAt: z.number().int().min(0).default(0),
+  expiresAt: z.number().int().min(0).default(0),
+  active: z.boolean().default(true),
+}).strict().superRefine((value, context) => {
+  if (value.kind === "percent" && (value.percent <= 0 || value.maxDiscountPaise <= 0)) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["percent"], message: "A percentage offer needs a percentage and a maximum discount."});
+  }
+  if (value.kind === "flat" && value.flatAmountPaise <= 0) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["flatAmountPaise"], message: "Give a flat discount amount."});
+  }
+});
+
+export const restaurantOffersQuerySchema = z.object({restaurantId: identifier}).strict();
+
+export const reviewRestaurantOfferSchema = z.object({
+  promotionId: identifier,
+  decision: z.enum(["approved", "rejected"]),
+  reason: z.string().trim().max(300).default(""),
+}).strict();
+
+export const cityEconomicsQuerySchema = z.object({
+  cityKey: z.string().trim().max(80).default(""),
+  startAt: z.number().int().min(0),
+  endAt: z.number().int().min(1),
+}).strict().refine((value) => value.endAt > value.startAt && value.endAt - value.startAt <= 400 * 86_400_000, {
+  message: "Choose a period of up to 400 days.",
+});
+
+export const cashbackCampaignSchema = z.object({
+  campaignId: identifier.optional(),
+  title: z.string().trim().min(3).max(120),
+  active: z.boolean().default(false),
+  funding: z.enum(["platform_budget", "restaurant", "shared", "realized_contribution"]),
+  restaurantShareBps: bps.default(5_000),
+  kind: z.enum(["percent", "flat"]),
+  percent: z.number().int().min(0).max(100).default(0),
+  flatAmountPaise: paise.default(0),
+  maxCashbackPaise: paise.default(0),
+  minimumOrderPaise: paise.default(0),
+  restaurantIds: z.array(identifier).max(200).default([]),
+  cityKeys: z.array(z.string().trim().min(1).max(80)).max(50).default([]),
+  zoneKeys: z.array(z.string().trim().min(1).max(120)).max(100).default([]),
+  startsAt: z.number().int().min(0).default(0),
+  endsAt: z.number().int().min(0).default(0),
+  expiryDays: z.number().int().min(1).max(3_650).default(30),
+  budgetPaise: paise.default(0),
+  perCustomerLimit: z.number().int().min(0).max(1_000).default(0),
+  firstOrderOnly: z.boolean().default(false),
+  contributionShareBps: bps.default(2_000),
+  reason: z.string().trim().min(3).max(500),
+}).strict();
+
+export const operatingCostSchema = z.object({
+  costId: identifier.optional(),
+  cityKey: z.string().trim().min(1).max(80),
+  category: z.enum(["payroll", "rent", "cloud", "support", "marketing", "accounting", "legal", "banking_software", "equipment", "other"]),
+  label: z.string().trim().min(2).max(120),
+  amountPaise: paise,
+  recurrence: z.enum(["monthly", "one_time"]),
+  startAt: z.number().int().min(1),
+  endAt: z.number().int().min(0).default(0),
+  notes: z.string().trim().max(500).default(""),
+  reference: z.string().trim().max(200).default(""),
+  active: z.boolean().default(true),
+  reason: z.string().trim().min(3).max(500),
+}).strict();
+
+export const breakEvenSchema = z.object({
+  cityKey: z.string().trim().max(80).default(""),
+  ordersPerDay: z.number().min(0).max(1_000_000).optional(),
+  averageOrderValuePaise: paise.optional(),
+  commissionBps: z.number().int().min(0).max(5_000).optional(),
+  customerFeesPerOrderPaise: paise.optional(),
+  riderCostPerOrderPaise: paise.optional(),
+  promoCostPerOrderPaise: paise.optional(),
+  paymentCostBps: bps.optional(),
+  refundRateBps: bps.optional(),
+  otherVariableCostPerOrderPaise: paise.optional(),
+  fixedMonthlyCostPaise: paise.optional(),
+  riskReserveBps: bps.optional(),
+  workingCapitalReserveBps: bps.optional(),
+  expansionBps: bps.optional(),
+}).strict();

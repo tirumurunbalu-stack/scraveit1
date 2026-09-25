@@ -293,6 +293,10 @@ service cloud.firestore {
         && resource.data.faceMatchStatus == 'unique'
         && request.resource.data.faceMatchStatus == resource.data.faceMatchStatus
         && request.resource.data.rekognitionFaceId == resource.data.rekognitionFaceId
+        // Who referred a rider can be set once and never switched later (the
+        // referral itself is frozen server-side in riderReferrals/{uid}).
+        && (!('referredByCode' in resource.data)
+          || request.resource.data.get('referredByCode', null) == resource.data.referredByCode)
       );
       allow delete: if isPrivileged();
     }
@@ -336,9 +340,14 @@ service cloud.firestore {
     // ---------------------------------------------------------------
     // Customer-facing content
     // ---------------------------------------------------------------
+    // Offers are written only through the upsertPromotionPolicy /
+    // saveRestaurantOffer callables, which validate funding, run the
+    // profitability simulation and audit every change. Budget counters
+    // (usedBudgetPaise) are server-maintained inside the order transaction,
+    // so no client - admin included - may write this collection directly.
     match /promotions/{promoId} {
       allow read: if true;
-      allow write: if isPrivileged();
+      allow write: if false;
     }
 
     match /localAds/{adId} {
@@ -398,6 +407,21 @@ service cloud.firestore {
       allow write: if false; // Server-computed only.
     }
 
+    // Economics engine records are server-only and reached through admin
+    // callables: economicsControl, economicsControlHistory, orderEconomics
+    // (Scraveit's per-order margin and reserves), promotionRedemptions,
+    // promotionCustomerUsage, growthBudgets, riderGuaranteeSettlements,
+    // riderGuaranteeBudgets and riderGuaranteeEnrollments all fall through to
+    // the deny-all below on purpose. So do the wallet and reward records
+    // (customerWallets, walletLots, walletEntries, cashbackCampaigns,
+    // cashbackCustomerUsage, walletDailyEarn, customerReferral*,
+    // referralInstallations, riderReferrals (and their countedOrders),
+    // riderReferralProgrammeVersions, riderReferralAwards,
+    // riderReferralInviterCounts, programBudgets) and city finance
+    // (cityOperatingCosts): customers read their own wallet only through the
+    // getCustomerWallet callable, and riders see their referrals only through
+    // getRiderRewardsDashboard.
+    //
     // Everything else server-owned with no client read path at all today
     // (backendEvents, orderIdempotency, platformConfig, pricingSignals,
     // riderAvailability, deviceTokens, catalogSearchTokens excluded above,

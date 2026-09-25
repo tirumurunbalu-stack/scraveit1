@@ -17,6 +17,12 @@ export const LEDGER_EVENT_TYPES = [
   "payment",
   "refund",
   "adjustment",
+  // Customer wallet: cashback and referral credit is money Scraveit (or a
+  // restaurant) owes the customer until it is used, reversed or expires.
+  "cashback_earned",
+  "cashback_reversed",
+  "wallet_expired",
+  "customer_referral_reward",
 ] as const;
 
 export type LedgerEventType = typeof LEDGER_EVENT_TYPES[number];

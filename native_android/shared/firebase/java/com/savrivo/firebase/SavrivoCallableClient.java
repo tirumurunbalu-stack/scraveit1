@@ -39,7 +39,42 @@ public final class SavrivoCallableClient {
             "updateRiderRewardSettingsPolicy", "getRestaurantSettlementSummary",
             "getPlatformConfiguration", "updatePlatformConfigurationPolicy",
             "exportPlatformDataWorkbook", "submitRiderFaceCheckCall", "verifyRiderLoginFaceCall",
-            "resolveRiderFaceReviewCall"));
+            "resolveRiderFaceReviewCall",
+            // Economics engine control plane (admin) and restaurant-funded offers.
+            "getEconomicsControl", "updateEconomicsControl", "simulateEconomicsOffer",
+            "simulateEconomicsGuarantee", "upsertPromotionPolicy", "upsertGrowthBudget",
+            "reviewRestaurantOffer", "getCityEconomics", "saveRestaurantOffer",
+            "getRestaurantOffers", "getRestaurantOfferPerformance", "upsertCashbackCampaign",
+            "listCashbackCampaigns", "listCustomerReferrals", "reviewCustomerReferral",
+            "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
+            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral"));
+
+    /** Economics callables each app role may reach through the generic bridge. */
+    private static final Set<String> ADMIN_ECONOMICS = new HashSet<>(Arrays.asList(
+            "getEconomicsControl", "updateEconomicsControl", "simulateEconomicsOffer",
+            "simulateEconomicsGuarantee", "upsertPromotionPolicy", "upsertGrowthBudget",
+            "reviewRestaurantOffer", "getCityEconomics", "upsertCashbackCampaign",
+            "listCashbackCampaigns", "listCustomerReferrals", "reviewCustomerReferral",
+            "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
+            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral"));
+    private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
+            "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance"));
+
+    public static boolean economicsFunctionAllowed(String appRole, String function) {
+        if (function == null) return false;
+        if ("admin".equals(appRole)) return ADMIN_ECONOMICS.contains(function);
+        if ("restaurant".equals(appRole)) return RESTAURANT_ECONOMICS.contains(function);
+        return false;
+    }
+
+    public static void invokeEconomics(
+            Context context, String function, String idToken, JSONObject payload, Callback callback) {
+        if (!economicsFunctionAllowed(SavrivoFirebase.appRole(context), function)) {
+            fail(callback, "FUNCTION_NOT_ALLOWED");
+            return;
+        }
+        call(context, function, idToken, payload, callback);
+    }
     private static final ExecutorService NETWORK = Executors.newFixedThreadPool(3);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;

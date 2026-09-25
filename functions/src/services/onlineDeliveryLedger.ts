@@ -15,6 +15,7 @@ import {
   buildOnlineOrderDeliveryJournal,
   buildOnlinePaymentReceiptJournal,
   orderDeliveryAmounts,
+  type DeliveryLedgerOptions,
   persistLedgerJournal,
   validatedLedgerJournalId,
   type PersistedLedgerJournalResult,
@@ -125,6 +126,7 @@ export async function persistOnlineOrderDeliveryLedger(
   order: SavrivoOrder,
   restaurantCommissionBps: number,
   database: OnlineDeliveryLedgerDatabase = firestoreDb as unknown as OnlineDeliveryLedgerDatabase,
+  options: DeliveryLedgerOptions = {},
 ): Promise<PersistedLedgerJournalResult> {
   if (
     order.status !== "Delivered" ||
@@ -161,12 +163,14 @@ export async function persistOnlineOrderDeliveryLedger(
   const receipt = storedJournal(receiptSnapshot.exists ? receiptSnapshot.data() : null);
   resolveImmutableJournalWrite(receipt, expectedReceipt);
 
-  const amounts = orderDeliveryAmounts(order, restaurantCommissionBps);
+  const amounts = orderDeliveryAmounts(order, restaurantCommissionBps, {finalTripPayPaise: options.finalTripPayPaise});
   return persistLedgerJournal(buildOnlineOrderDeliveryJournal({
     ...amounts,
     orderId: order.id,
     restaurantId: order.restaurantId,
     riderId: order.riderId,
+    customerId: order.customerId,
+    ...(options.attribution ? {attribution: options.attribution} : {}),
     occurredAt: Number(order.deliveredAt ?? order.updatedAt),
     paymentProvider: provider,
     providerTransactionId,

@@ -69,7 +69,8 @@ export function buildRiderJobProjection(
     restaurantLng: order.restaurantLocation.lng,
     approximateDropZone: order.address.area || order.address.city || "Service area",
     itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    payout: order.pricing.deliveryFee,
+    payout: riderOfferPayout(order),
+    payoutBreakdown: riderPayoutBreakdown(order),
     estimatedMinutes: order.etaMax,
     assignedAt: assignedAt(order),
     createdAt: assignedAt(order),
@@ -110,4 +111,46 @@ export function buildRiderJobProjection(
     if (order.contactProxy) projection.contactProxy = order.contactProxy;
   }
   return projection;
+}
+
+/**
+ * What the rider earns for this trip, as frozen in the order's economics:
+ * trip pay (never below the minimum trip pay, even when the customer's
+ * delivery fee was waived), expected per-order bonuses, and the customer's tip
+ * which is always 100% the rider's. Orders priced before the economics engine
+ * keep the delivery fee as their trip pay, exactly as before.
+ */
+export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "economics">): {
+  tripPay: number;
+  incentives: number;
+  tip: number;
+  total: number;
+  /** How trip pay is built (estimate at order time; waiting pay is added after pickup). */
+  components?: {basePay: number; distancePay: number; waitPay: number; slotPay: number; minimumTopUp: number;
+    pickupKm: number; dropKm: number; estimated: boolean};
+} {
+  const rider = order.economics?.rider;
+  const tripPay = rider ? rider.deliveryPayPaise / 100 : Number(order.pricing.deliveryFee) || 0;
+  const incentives = rider ? rider.incentivePayPaise / 100 : 0;
+  const tip = rider ? rider.tipPaise / 100 : Number(order.pricing.tip) || 0;
+  const trip = rider?.tripPay;
+  return {
+    tripPay, incentives, tip, total: Math.round((tripPay + incentives + tip) * 100) / 100,
+    ...(trip ? {components: {
+      basePay: trip.basePickupPaise / 100,
+      distancePay: (trip.pickupDistancePaise + trip.dropDistancePaise + trip.longDistancePaise + trip.vehicleAdjustmentPaise) / 100,
+      waitPay: trip.waitingPaise / 100,
+      slotPay: trip.slotPaise / 100,
+      minimumTopUp: (trip.minimumTopUpPaise - trip.maximumCapPaise) / 100,
+      pickupKm: Math.round(trip.pickupMeters / 100) / 10,
+      dropKm: Math.round(trip.dropMeters / 100) / 10,
+      estimated: trip.estimated,
+    }} : {}),
+  };
+}
+
+/** Headline figure on the rider's offer card: trip pay plus bonuses, before tip. */
+export function riderOfferPayout(order: Pick<SavrivoOrder, "pricing" | "economics">): number {
+  const breakdown = riderPayoutBreakdown(order);
+  return Math.round((breakdown.tripPay + breakdown.incentives) * 100) / 100;
 }

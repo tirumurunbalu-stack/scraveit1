@@ -57,6 +57,38 @@
         {"fieldPath": "channel", "order": "ASCENDING"},
         {"fieldPath": "at", "order": "ASCENDING"}
       ]
+    },
+    {
+      "collectionGroup": "orderEconomics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "restaurantId", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "walletLots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "customerId", "order": "ASCENDING"},
+        {"fieldPath": "remainingPaise", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "walletEntries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "customerId", "order": "ASCENDING"},
+        {"fieldPath": "at", "order": "DESCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "orderEconomics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "cityKey", "order": "ASCENDING"},
+        {"fieldPath": "createdAt", "order": "ASCENDING"}
+      ]
     }
   ],
   "fieldOverrides": []

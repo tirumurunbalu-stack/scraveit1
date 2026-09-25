@@ -177,9 +177,9 @@ describe("who the period's money belongs to", () => {
 
   /** The identity every allocation must satisfy: nothing counted twice,
    *  nothing left uncounted. */
-  const expectReconciles = (allocation: {grossPaise: number; restaurantPaise: number; riderPaise: number; platformPaise: number; taxPaise: number}) => {
-    expect(allocation.restaurantPaise + allocation.riderPaise + allocation.platformPaise + allocation.taxPaise)
-      .toBe(allocation.grossPaise);
+  const expectReconciles = (allocation: {grossPaise: number; restaurantPaise: number; riderPaise: number; platformPaise: number; taxPaise: number; customerWalletPaise: number}) => {
+    expect(allocation.restaurantPaise + allocation.riderPaise + allocation.platformPaise + allocation.taxPaise +
+      allocation.customerWalletPaise).toBe(allocation.grossPaise);
   };
 
   it("splits one delivered order into gross, the restaurant's, the rider's, the platform's and tax", async () => {
@@ -190,6 +190,7 @@ describe("who the period's money belongs to", () => {
       riderPaise: 6_000 + 1_000,
       platformPaise: 6_000 + 2_000,
       taxPaise: 1_000,
+      customerWalletPaise: 0,
     });
     expectReconciles(result.allocation);
   });
@@ -235,7 +236,7 @@ describe("who the period's money belongs to", () => {
 
   it("a settlement run on its own contributes nothing - it is not gross, just a later cash movement", async () => {
     const result = await load([restaurantSettled("s1", 100, "r1", 24_000)]);
-    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0});
+    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0, customerWalletPaise: 0});
   });
 
   it("leaves out a refund clawback rather than guessing whether it was a real reduction", async () => {
@@ -278,7 +279,7 @@ describe("who the period's money belongs to", () => {
 
   it("reports zero allocation for an empty period rather than throwing", async () => {
     const result = await load([]);
-    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0});
+    expect(result.allocation).toEqual({grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0, customerWalletPaise: 0});
   });
 
   it("gives every entry its own allocation that sums exactly to the period total", async () => {
@@ -294,8 +295,9 @@ describe("who the period's money belongs to", () => {
         riderPaise: acc.riderPaise + e.allocation.riderPaise,
         platformPaise: acc.platformPaise + e.allocation.platformPaise,
         taxPaise: acc.taxPaise + e.allocation.taxPaise,
+        customerWalletPaise: acc.customerWalletPaise + e.allocation.customerWalletPaise,
       }),
-      {grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0},
+      {grossPaise: 0, restaurantPaise: 0, riderPaise: 0, platformPaise: 0, taxPaise: 0, customerWalletPaise: 0},
     );
     expect(summed).toEqual(result.allocation);
     result.entries.forEach((e) => expectReconciles(e.allocation));

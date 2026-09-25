@@ -489,8 +489,19 @@ public class MainActivity extends ComponentActivity {
         faceExecutor.execute(() -> {
             String encoded;
             try {
-                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path));
-                if (bytes.length == 0 || bytes.length > 2_000_000) throw new IllegalStateException("FACE_IMAGE_SIZE_INVALID");
+                // java.nio.file is API 26+; the rider app supports API 23.
+                java.io.File file = new java.io.File(path);
+                long length = file.length();
+                if (length <= 0 || length > 2_000_000) throw new IllegalStateException("FACE_IMAGE_SIZE_INVALID");
+                byte[] bytes = new byte[(int) length];
+                try (java.io.FileInputStream input = new java.io.FileInputStream(file)) {
+                    int offset = 0;
+                    while (offset < bytes.length) {
+                        int read = input.read(bytes, offset, bytes.length - offset);
+                        if (read < 0) throw new java.io.EOFException("FACE_IMAGE_TRUNCATED");
+                        offset += read;
+                    }
+                }
                 encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
             } catch (Exception error) {
                 runOnUiThread(() -> publishFaceCaptureFailure("The photo could not be read. Try again."));

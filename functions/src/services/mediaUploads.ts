@@ -1,5 +1,6 @@
 import {createHash, randomUUID} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
+import {logger} from "firebase-functions";
 import {z} from "zod";
 import {firestoreDb, storage} from "../admin";
 import {
@@ -461,6 +462,7 @@ export async function verifyRiderLoginFace(
   awsAccessKeyId: string,
   awsSecretAccessKey: string,
 ): Promise<{verified: boolean}> {
+  const startedAt = Date.now();
   const riderSnapshot = await riderRef(firestoreDb, uid).get();
   const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as
     {faceReferenceObjectPath?: string; faceMatchStatus?: string} | null;
@@ -468,8 +470,15 @@ export async function verifyRiderLoginFace(
     throw new DomainError("failed-precondition", "Complete identity verification before signing in.");
   }
   const image = inspect(input, "kyc");
+  const profileMs = Date.now() - startedAt;
   const [referenceBuffer] = await storage.bucket().file(rider.faceReferenceObjectPath).download();
+  const downloadMs = Date.now() - startedAt - profileMs;
   const result = await compareRiderLoginFace(awsAccessKeyId, awsSecretAccessKey, uid, referenceBuffer, image.buffer);
+  logger.info("RIDER_LOGIN_FACE_TIMING", {
+    uid, verified: result.verified, profileMs, downloadMs,
+    compareMs: Date.now() - startedAt - profileMs - downloadMs, totalMs: Date.now() - startedAt,
+    liveImageBytes: image.buffer.length, referenceBytes: referenceBuffer.length,
+  });
   return {verified: result.verified};
 }
 

@@ -10,6 +10,9 @@ import {
   resolveCheckoutRiderIncentiveLineItems,
 } from "../domain/riderIncentiveEligibility";
 import {restaurantWorkloadRef} from "./workload";
+import {loadEconomicsControl, promotionDiscountPaise, resolveCheckoutPromotion} from "./economics";
+import {economicsScopeKey, rupeesToPaise} from "../domain/economics";
+import {applyCustomerPricingOverride, resolveCustomerPricing} from "../domain/customerPricing";
 import type {Address, CatalogItem, CatalogRestaurant} from "../types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -105,6 +108,7 @@ export async function loadServerFees(
   riderIncentiveItems: {label: string; amount: number}[];
   distanceKm: number;
   activeOrders: number;
+  pricingScopes: string[];
 }> {
   const [settingsSnapshot, loadSnapshot, signalSnapshot, campaignsSnapshot] = await Promise.all([
     firestoreDb.collection("settings").doc("customer").get(),
@@ -114,7 +118,21 @@ export async function loadServerFees(
     // rider-incentive surcharge is applied, same "fail closed" idiom as rain.
     campaignsCollectionRef(firestoreDb).get().catch(() => null),
   ]);
-  const settings = (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as UnknownRecord;
+  // City and zone price lists (Admin → Economics → Zones) layer over the
+  // global customer settings; they set customer prices only, never rider pay.
+  const control = await loadEconomicsControl();
+  const pricing = resolveCustomerPricing(
+    control.customerPricing,
+    economicsScopeKey(restaurant.city),
+    economicsScopeKey(address.area || address.label),
+  );
+  const settings = applyCustomerPricingOverride(
+    (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as UnknownRecord,
+    pricing.override,
+  );
+  if (finite(settings.minimumOrder) > 0 && subtotal < finite(settings.minimumOrder)) {
+    throw new DomainError("failed-precondition", `The minimum order here is ₹${finite(settings.minimumOrder)}.`);
+  }
   const load = (loadSnapshot.exists ? loadSnapshot.data() : {}) as UnknownRecord;
   const signal = (signalSnapshot.exists ? signalSnapshot.data() : {}) as UnknownRecord;
   const riderCampaigns = (campaignsSnapshot?.docs ?? [])
@@ -191,45 +209,32 @@ export async function loadServerFees(
     riderIncentiveItems,
     distanceKm,
     activeOrders,
+    pricingScopes: pricing.scopes,
   };
 }
 
 /**
- * A first-order offer exists to buy a new customer, so any previous order at
- * all disqualifies it - including one that was cancelled, which would
- * otherwise be an obvious way to keep claiming it. An unknown customer is
- * treated as "not new": failing closed costs at most one missed discount,
- * while failing open hands out an unlimited one.
+ * Gross discount (in rupees) a coupon gives this cart, after every
+ * eligibility rule - first order only, per-customer limit, restaurant/city
+ * scope, minimum order, dates and remaining budget. Who pays for it, and how
+ * much of a Scraveit-funded share the order can safely afford, is decided by
+ * planCheckoutEconomics; this stays as the simple "is the code valid" entry.
  */
-async function customerHasOrderedBefore(customerId: string): Promise<boolean> {
-  if (!customerId) return true;
-  const snapshot = await firestoreDb.collection("orders").where("customerId", "==", customerId).limit(1).get();
-  return !snapshot.empty;
-}
-
 export async function calculateDiscount(
   code: string,
   subtotal: number,
   restaurantId: string,
   customerId: string,
+  cityKey = "",
 ): Promise<number> {
-  if (!code) return 0;
-  const snapshot = await firestoreDb.collection("promotions").where("code", "==", code).limit(5).get();
-  const promotions = snapshot.docs.map((doc) => doc.data() as UnknownRecord);
-  const promotion = promotions.find((entry) => entry.active === true && String(entry.code) === code);
-  if (!promotion) throw new DomainError("failed-precondition", "Coupon is not valid.");
-  if (finite(promotion.expiresAt) > 0 && finite(promotion.expiresAt) <= Date.now()) {
-    throw new DomainError("failed-precondition", "Coupon has expired.");
-  }
-  if (subtotal < finite(promotion.minimumOrder)) {
-    throw new DomainError("failed-precondition", "Order does not meet the coupon minimum.");
-  }
-  const restaurants = Array.isArray(promotion.restaurantIds) ? promotion.restaurantIds.map(String) : [];
-  if (restaurants.length && !restaurants.includes(restaurantId)) {
-    throw new DomainError("failed-precondition", "Coupon is not valid for this restaurant.");
-  }
-  if (promotion.firstOrderOnly === true && await customerHasOrderedBefore(customerId)) {
-    throw new DomainError("failed-precondition", "This offer is only for a first Scraveit order.");
-  }
-  return roundMoney(Math.min(subtotal * finite(promotion.percent) / 100, finite(promotion.maxDiscount, subtotal)));
+  const subtotalPaise = rupeesToPaise(subtotal);
+  const promotion = await resolveCheckoutPromotion(code, {
+    subtotalPaise,
+    restaurantId,
+    cityKey,
+    customerId,
+    at: Date.now(),
+  });
+  if (!promotion) return 0;
+  return promotionDiscountPaise(promotion.terms, subtotalPaise) / 100;
 }

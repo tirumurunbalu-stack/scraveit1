@@ -202,6 +202,10 @@ export interface FeeInput {
   rainFee?: number;
   surgeFee?: number;
   riderIncentiveFee?: number;
+  /** Wallet money applied: a way of paying, not a discount, so tax is unaffected. */
+  walletRedeem?: number;
+  /** Tax computed by CA-defined component rules; replaces taxRate when present. */
+  taxOverride?: number;
 }
 
 export function buildPricing(input: FeeInput): {pricing: PricingBreakdown; total: number} {
@@ -218,15 +222,17 @@ export function buildPricing(input: FeeInput): {pricing: PricingBreakdown; total
     surgeFee: roundMoney(Math.max(0, input.surgeFee ?? 0)),
     riderIncentiveFee: roundMoney(Math.max(0, input.riderIncentiveFee ?? 0)),
     platformFee: roundMoney(Math.max(0, input.platformFee)),
-    tax: roundMoney(taxable * Math.max(0, input.taxRate) / 100),
+    tax: input.taxOverride !== undefined ? roundMoney(Math.max(0, input.taxOverride)) :
+      roundMoney(taxable * Math.max(0, input.taxRate) / 100),
     tip: roundMoney(Math.max(0, input.tip)),
+    ...(input.walletRedeem && input.walletRedeem > 0 ? {walletRedeem: roundMoney(input.walletRedeem)} : {}),
     currency: "INR",
     source: "catalog_snapshot_v3",
   };
   const total = roundMoney(
     pricing.subtotal - pricing.discount + pricing.deliveryFee + pricing.smallOrderFee +
     pricing.lateNightFee + pricing.rainFee + pricing.surgeFee + pricing.riderIncentiveFee +
-    pricing.platformFee + pricing.tax + pricing.tip,
+    pricing.platformFee + pricing.tax + pricing.tip - (pricing.walletRedeem ?? 0),
   );
   return {pricing, total};
 }

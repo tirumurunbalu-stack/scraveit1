@@ -235,6 +235,34 @@ public final class SavrivoOperationsBridge {
         }
     }
 
+    /**
+     * One entry point for the economics callables. The function name is checked
+     * against the calling app's own allowlist (admin vs restaurant) on the
+     * native side as well as by the server's own claims checks.
+     */
+    @JavascriptInterface public void invokeEconomics(
+            String requestId, String function, String idToken, String payloadJson) {
+        try {
+            if (payloadJson == null || payloadJson.length() > 64_000
+                    || !SavrivoCallableClient.economicsFunctionAllowed(SavrivoFirebase.appRole(activity), function)) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, "NATIVE_ECONOMICS_UNAVAILABLE", () -> {
+                if (!valid(requestId, idToken)) {
+                    respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                SavrivoCallableClient.invokeEconomics(activity, function, idToken, payload,
+                        (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "invokeEconomics bridge failed", error);
+            respond(requestId, false, "{\"error\":{\"message\":\"NATIVE_ECONOMICS_UNAVAILABLE\"}}");
+        }
+    }
+
     @JavascriptInterface public void getAdminRiderRewardsDashboard(
             String requestId, String idToken, String payloadJson) {
         try {

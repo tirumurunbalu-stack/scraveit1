@@ -61,6 +61,9 @@ export interface FinanceStatementAllocation {
   readonly riderPaise: number;
   readonly platformPaise: number;
   readonly taxPaise: number;
+  /** Money owed to customers as wallet balance (cashback, referral credit) that
+   *  has not been spent, reversed or expired yet. */
+  readonly customerWalletPaise: number;
 }
 
 export interface FinanceStatement {
@@ -121,6 +124,7 @@ const REVENUE_PREFIX = "revenue:";
 const EXPENSE_PREFIX = "expense:";
 const TAX_PAYABLE_ACCOUNT = "liability:tax-payable";
 const COD_RECEIVABLE_PREFIX = "asset:cod-receivable:";
+const CUSTOMER_WALLET_PREFIX = "liability:customer-wallet:";
 const CUSTOMER_ORDER_FUNDS_PREFIX = "liability:customer-order-funds:";
 
 /**
@@ -169,21 +173,31 @@ function summarizeAllocation(journals: readonly LedgerJournal[]): FinanceStateme
   let riderPaise = 0;
   let platformPaise = 0;
   let taxPaise = 0;
+  let customerWalletPaise = 0;
+  const walletEvents = new Set(["cashback_earned", "cashback_reversed", "wallet_expired", "customer_referral_reward"]);
   for (const journal of journals) {
+    const isDelivery = journal.eventType === "cod_delivery" || journal.eventType === "payment";
     for (const entry of journal.entries) {
       if (entry.side === "credit") {
         if (entry.accountId.startsWith(RESTAURANT_PAYABLE_PREFIX)) restaurantPaise += entry.amountPaise;
         else if (entry.accountId.startsWith(RIDER_EARNINGS_PREFIX) || entry.accountId.startsWith(RIDER_TIPS_PREFIX)) riderPaise += entry.amountPaise;
         else if (entry.accountId.startsWith(REVENUE_PREFIX)) platformPaise += entry.amountPaise;
+        else if (entry.accountId.startsWith(EXPENSE_PREFIX)) platformPaise += entry.amountPaise;
         else if (entry.accountId === TAX_PAYABLE_ACCOUNT) taxPaise += entry.amountPaise;
+        else if (entry.accountId.startsWith(CUSTOMER_WALLET_PREFIX)) customerWalletPaise += entry.amountPaise;
       } else {
         if (entry.accountId.startsWith(EXPENSE_PREFIX)) platformPaise -= entry.amountPaise;
         else if (journal.eventType === "cod_delivery" && entry.accountId.startsWith(COD_RECEIVABLE_PREFIX)) grossPaise += entry.amountPaise;
         else if (journal.eventType === "payment" && entry.accountId.startsWith(CUSTOMER_ORDER_FUNDS_PREFIX)) grossPaise += entry.amountPaise;
+        // Wallet money spent on an order is part of what the customer paid for it.
+        else if (isDelivery && entry.accountId.startsWith(CUSTOMER_WALLET_PREFIX)) grossPaise += entry.amountPaise;
+        else if (entry.accountId.startsWith(CUSTOMER_WALLET_PREFIX)) customerWalletPaise -= entry.amountPaise;
+        // A restaurant funding cashback gives up part of what it was owed.
+        else if (walletEvents.has(journal.eventType) && entry.accountId.startsWith(RESTAURANT_PAYABLE_PREFIX)) restaurantPaise -= entry.amountPaise;
       }
     }
   }
-  return {grossPaise, restaurantPaise, riderPaise, platformPaise, taxPaise};
+  return {grossPaise, restaurantPaise, riderPaise, platformPaise, taxPaise, customerWalletPaise};
 }
 
 function addAllocation(a: FinanceStatementAllocation, b: FinanceStatementAllocation): FinanceStatementAllocation {
@@ -193,6 +207,7 @@ function addAllocation(a: FinanceStatementAllocation, b: FinanceStatementAllocat
     riderPaise: a.riderPaise + b.riderPaise,
     platformPaise: a.platformPaise + b.platformPaise,
     taxPaise: a.taxPaise + b.taxPaise,
+    customerWalletPaise: a.customerWalletPaise + b.customerWalletPaise,
   };
 }
 

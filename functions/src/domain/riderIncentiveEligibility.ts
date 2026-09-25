@@ -252,6 +252,10 @@ export function normalizeCheckoutCampaign(campaignId: string, raw: unknown): Rid
     conditionGroups: [],
     otherConditions: [],
     milestonePayoutMode: (source.milestonePayoutMode as RiderRewardCampaign["milestonePayoutMode"]) ?? "highest_unlocked",
+    // Checkout only prices per-order bonuses; guarantee settings are irrelevant here.
+    guaranteeComponents: [],
+    budgetPaise: 0,
+    maxEligibleRiders: 0,
     timezone: String(source.timezone ?? DEFAULT_TIMEZONE),
     tripAttribution: "delivered_at",
     allowOverlappingSlotCredit: source.allowOverlappingSlotCredit === true,

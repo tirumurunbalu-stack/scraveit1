@@ -36,7 +36,18 @@ export interface OrderDeliveryAmounts {
   taxPayablePaise: number;
   riderDeliveryEarningPaise: number;
   riderTipPaise: number;
+  /** Scraveit-funded discount: a platform expense, never deducted from the
+   *  restaurant. Only orders priced by the economics engine carry it. */
+  platformPromotionPaise?: number;
+  /** Rider trip pay above the customer's delivery fee (e.g. a waived fee):
+   *  Scraveit pays the difference so the rider is never paid less. */
+  riderTripSubsidyPaise?: number;
+  /** Customer wallet money used on the order (debited from the wallet liability). */
+  walletRedeemPaise?: number;
 }
+
+/** City/zone/party attribution carried on every new financial entry. */
+export type LedgerAttribution = Readonly<Record<string, string>>;
 
 export interface OrderDeliveryJournalInput extends OrderDeliveryAmounts {
   orderId: string;
@@ -44,6 +55,9 @@ export interface OrderDeliveryJournalInput extends OrderDeliveryAmounts {
   riderId: string;
   occurredAt: number;
   actorId?: string;
+  /** Required when walletRedeemPaise > 0. */
+  customerId?: string;
+  attribution?: LedgerAttribution;
 }
 
 export interface OnlineOrderDeliveryJournalInput extends OrderDeliveryJournalInput {
@@ -96,11 +110,21 @@ function moneyToPaise(value: number): number {
  * Converts the server pricing snapshot into a balanced delivery allocation.
  * Platform fees are deliberately the residual after restaurant, rider and tip
  * obligations so rounding can never make the immutable journal unbalanced.
+ *
+ * An order priced by the economics engine settles from its own frozen
+ * snapshot - its commission rate, who funded its discount and the rider's
+ * trip pay as they stood at checkout - and `restaurantCommissionBps` is not
+ * consulted. Older orders keep the original rule, where the whole discount
+ * came out of the discounted menu value.
  */
 export function orderDeliveryAmounts(
-  order: Pick<SavrivoOrder, "total" | "pricing">,
+  order: Pick<SavrivoOrder, "total" | "pricing"> & Partial<Pick<SavrivoOrder, "economics">>,
   restaurantCommissionBps: number,
+  options: {finalTripPayPaise?: number} = {},
 ): OrderDeliveryAmounts {
+  if (order.economics && order.economics.calculationVersion === 1) {
+    return snapshotDeliveryAmounts({total: order.total, pricing: order.pricing, economics: order.economics}, options);
+  }
   if (!Number.isSafeInteger(restaurantCommissionBps) || restaurantCommissionBps < 0 ||
     restaurantCommissionBps > 5_000) fail("LEDGER_INVALID_COMMISSION_BPS");
   const grossAmountPaise = moneyToPaise(order.total);
@@ -127,9 +151,53 @@ export function orderDeliveryAmounts(
   });
 }
 
+function snapshotDeliveryAmounts(
+  order: Pick<SavrivoOrder, "total" | "pricing"> & Required<Pick<SavrivoOrder, "economics">>,
+  options: {finalTripPayPaise?: number},
+): OrderDeliveryAmounts {
+  const snapshot = order.economics;
+  const grossAmountPaise = moneyToPaise(order.total);
+  if (grossAmountPaise !== snapshot.customer.payablePaise) fail("LEDGER_ECONOMICS_SNAPSHOT_TOTAL_MISMATCH");
+  const restaurantPayablePaise = snapshot.restaurant.receivablePaise;
+  const platformCommissionPaise = snapshot.restaurant.commissionPaise;
+  // Tax on commission is withheld from the restaurant and owed onward.
+  const taxPayablePaise = snapshot.customer.taxPaise + (snapshot.restaurant.commissionTaxPaise ?? 0);
+  const riderTipPaise = snapshot.customer.tipPaise;
+  // The trip pay estimated at checkout is replaced by the final figure (real
+  // pickup distance and waiting time) when the delivery is settled.
+  const finalTrip = options.finalTripPayPaise;
+  const riderDeliveryEarningPaise = finalTrip !== undefined && Number.isSafeInteger(finalTrip) && finalTrip >= 0 ?
+    finalTrip : snapshot.rider.deliveryPayPaise;
+  const platformPromotionPaise = snapshot.customer.platformDiscountPaise;
+  const walletRedeemPaise = snapshot.customer.walletRedeemPaise ?? 0;
+  const riderTripSubsidyPaise = Math.max(0, riderDeliveryEarningPaise - snapshot.customer.deliveryFeePaise);
+  const platformFeePaise = grossAmountPaise + platformPromotionPaise + riderTripSubsidyPaise + walletRedeemPaise -
+    restaurantPayablePaise - platformCommissionPaise - taxPayablePaise - riderDeliveryEarningPaise - riderTipPaise;
+  if (platformFeePaise < 0) fail("LEDGER_ORDER_ALLOCATION_NEGATIVE_PLATFORM_RESIDUAL");
+  return normalizedAmounts({
+    grossAmountPaise,
+    restaurantPayablePaise,
+    platformCommissionPaise,
+    platformFeePaise,
+    taxPayablePaise,
+    riderDeliveryEarningPaise,
+    riderTipPaise,
+    platformPromotionPaise,
+    riderTripSubsidyPaise,
+    walletRedeemPaise,
+  });
+}
+
+export interface DeliveryLedgerOptions {
+  /** Final rider trip pay (real pickup distance and waiting time). */
+  finalTripPayPaise?: number;
+  attribution?: LedgerAttribution;
+}
+
 export async function persistCodOrderDeliveryLedger(
   order: SavrivoOrder,
   restaurantCommissionBps: number,
+  options: DeliveryLedgerOptions = {},
 ): Promise<PersistedLedgerJournalResult> {
   if (order.paymentMethod !== "cod" || order.status !== "Delivered" || !order.riderId) {
     fail("LEDGER_ORDER_NOT_DELIVERED_COD");
@@ -143,13 +211,15 @@ export async function persistCodOrderDeliveryLedger(
     }
     return {outcome: "idempotent", journal: existing, journalId: existingJournalId};
   }
-  const amounts = orderDeliveryAmounts(order, restaurantCommissionBps);
+  const amounts = orderDeliveryAmounts(order, restaurantCommissionBps, {finalTripPayPaise: options.finalTripPayPaise});
   return persistLedgerJournal(buildCodOrderDeliveryJournal({
     ...amounts,
     orderId: order.id,
     restaurantId: order.restaurantId,
     riderId: order.riderId,
+    customerId: order.customerId,
     occurredAt: Number(order.deliveredAt ?? order.updatedAt),
+    ...(options.attribution ? {attribution: options.attribution} : {}),
   }));
 }
 
@@ -183,6 +253,9 @@ function addPaise(total: number, amount: number): number {
 }
 
 function normalizedAmounts(amounts: OrderDeliveryAmounts): OrderDeliveryAmounts {
+  const platformPromotionPaise = requireNonNegativePaise(amounts.platformPromotionPaise ?? 0);
+  const riderTripSubsidyPaise = requireNonNegativePaise(amounts.riderTripSubsidyPaise ?? 0);
+  const walletRedeemPaise = requireNonNegativePaise(amounts.walletRedeemPaise ?? 0);
   const normalized: OrderDeliveryAmounts = {
     grossAmountPaise: requirePositivePaise(amounts.grossAmountPaise),
     restaurantPayablePaise: requireNonNegativePaise(amounts.restaurantPayablePaise),
@@ -191,12 +264,20 @@ function normalizedAmounts(amounts: OrderDeliveryAmounts): OrderDeliveryAmounts 
     taxPayablePaise: requireNonNegativePaise(amounts.taxPayablePaise),
     riderDeliveryEarningPaise: requireNonNegativePaise(amounts.riderDeliveryEarningPaise),
     riderTipPaise: requireNonNegativePaise(amounts.riderTipPaise),
+    // Only carried when non-zero, so every pre-engine journal keeps exactly
+    // the shape (and fingerprint) it was first written with.
+    ...(platformPromotionPaise > 0 ? {platformPromotionPaise} : {}),
+    ...(riderTripSubsidyPaise > 0 ? {riderTripSubsidyPaise} : {}),
+    ...(walletRedeemPaise > 0 ? {walletRedeemPaise} : {}),
   };
   const allocated = COMPONENT_KEYS.reduce(
     (total, key) => addPaise(total, normalized[key]),
     0,
   );
-  if (allocated !== normalized.grossAmountPaise) fail("LEDGER_DELIVERY_ALLOCATION_MISMATCH");
+  // Credits equal what the customer paid plus whatever Scraveit put in itself.
+  if (allocated !== normalized.grossAmountPaise + platformPromotionPaise + riderTripSubsidyPaise + walletRedeemPaise) {
+    fail("LEDGER_DELIVERY_ALLOCATION_MISMATCH");
+  }
   return normalized;
 }
 
@@ -234,7 +315,42 @@ function allocationMetadata(amounts: OrderDeliveryAmounts) {
     taxPayablePaise: amounts.taxPayablePaise,
     riderDeliveryEarningPaise: amounts.riderDeliveryEarningPaise,
     riderTipPaise: amounts.riderTipPaise,
+    ...(amounts.platformPromotionPaise ? {platformPromotionPaise: amounts.platformPromotionPaise} : {}),
+    ...(amounts.riderTripSubsidyPaise ? {riderTripSubsidyPaise: amounts.riderTripSubsidyPaise} : {}),
+    ...(amounts.walletRedeemPaise ? {walletRedeemPaise: amounts.walletRedeemPaise} : {}),
   } as const;
+}
+
+/** Scraveit's own contributions to an order, debited to expense accounts, and
+ *  customer wallet money released to pay for it. */
+function platformFundingDebits(amounts: OrderDeliveryAmounts, customerId?: string): LedgerPostingInput[] {
+  const postings: LedgerPostingInput[] = [];
+  if (amounts.walletRedeemPaise) {
+    if (!customerId) fail("LEDGER_WALLET_REDEMPTION_CUSTOMER_REQUIRED");
+    postings.push({
+      accountId: `liability:customer-wallet:${customerId}`,
+      side: "debit",
+      amountPaise: amounts.walletRedeemPaise,
+      memo: "Customer wallet used for this order",
+    });
+  }
+  if (amounts.platformPromotionPaise) {
+    postings.push({
+      accountId: "expense:platform-promotions",
+      side: "debit",
+      amountPaise: amounts.platformPromotionPaise,
+      memo: "Scraveit-funded customer discount",
+    });
+  }
+  if (amounts.riderTripSubsidyPaise) {
+    postings.push({
+      accountId: "expense:rider-trip-subsidy",
+      side: "debit",
+      amountPaise: amounts.riderTripSubsidyPaise,
+      memo: "Rider trip pay above the delivery fee",
+    });
+  }
+  return postings;
 }
 
 /**
@@ -249,7 +365,7 @@ export function buildCodOrderDeliveryJournal(input: OrderDeliveryJournalInput): 
     occurredAt: input.occurredAt,
     orderId: input.orderId,
     actorId: input.actorId ?? "system:order-delivery-ledger",
-    metadata: {paymentMethod: "cod", ...allocationMetadata(amounts)},
+    metadata: {paymentMethod: "cod", ...allocationMetadata(amounts), ...(input.attribution ?? {})},
     postings: [
       {
         accountId: `asset:cod-receivable:${input.riderId}`,
@@ -257,6 +373,7 @@ export function buildCodOrderDeliveryJournal(input: OrderDeliveryJournalInput): 
         amountPaise: amounts.grossAmountPaise,
         memo: "COD collected by rider",
       },
+      ...platformFundingDebits(amounts, input.customerId),
       ...allocationCredits(input, amounts),
     ],
   });
@@ -280,6 +397,7 @@ export function buildOnlineOrderDeliveryJournal(input: OnlineOrderDeliveryJourna
       paymentProvider: input.paymentProvider,
       providerTransactionId: input.providerTransactionId,
       ...allocationMetadata(amounts),
+      ...(input.attribution ?? {}),
     },
     postings: [
       {
@@ -288,6 +406,7 @@ export function buildOnlineOrderDeliveryJournal(input: OnlineOrderDeliveryJourna
         amountPaise: amounts.grossAmountPaise,
         memo: "Release verified customer funds at delivery",
       },
+      ...platformFundingDebits(amounts, input.customerId),
       ...allocationCredits(input, amounts),
     ],
   });
@@ -477,6 +596,30 @@ function persistedJournal(value: unknown): LedgerJournal {
 
 function serializableJournal(journal: LedgerJournal): LedgerJournal {
   return JSON.parse(JSON.stringify(journal)) as LedgerJournal;
+}
+
+/**
+ * Writes a journal only if nothing is stored at its deterministic id yet, and
+ * otherwise returns what is there. For rewards that must be credited exactly
+ * once: a journal written by an earlier release (before attribution fields
+ * existed) is accepted as the one credit instead of being treated as a
+ * conflict on every retry.
+ */
+export async function persistLedgerJournalIfAbsent(
+  candidate: LedgerJournal,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
+): Promise<PersistedLedgerJournalResult> {
+  validateLedgerJournal(candidate);
+  const journalId = validatedLedgerJournalId(candidate);
+  const candidateValue = serializableJournal(candidate);
+  const ref = database.collection(LEDGER_JOURNALS_COLLECTION).doc(journalId);
+  const {outcome, stored} = await database.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists) return {outcome: "idempotent" as const, stored: snapshot.data()};
+    transaction.set(ref, candidateValue);
+    return {outcome: "insert" as const, stored: candidateValue};
+  });
+  return {outcome, journal: persistedJournal(stored), journalId};
 }
 
 /**

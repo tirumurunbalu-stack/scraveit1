@@ -56,3 +56,10 @@ img,svg,video,canvas{max-width:100%}
 .rain-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--brand-soft);color:var(--brand);font-size:12px;font-weight:800}
 .row-card{border:1px dashed var(--border2);border-radius:14px;padding:12px;display:grid;gap:10px;background:var(--raised)}
 .row-card .row-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+/* Pay breakdown on delivery offers, and guarantee progress */
+.pay-breakdown{display:flex;flex-wrap:wrap;gap:8px}.pay-breakdown span{display:grid;gap:2px;padding:8px 11px;border-radius:12px;background:var(--raised);border:1px solid var(--border);min-width:84px}.pay-breakdown small{font-size:11px;color:var(--muted)}.pay-breakdown strong{font-variant-numeric:tabular-nums}
+.guarantee-card .eyebrow{margin-bottom:4px}.guarantee-tiers{display:flex;gap:6px;overflow-x:auto}.guarantee-tiers span{flex:1 0 64px;display:grid;justify-items:center;gap:2px;padding:8px 6px;border-radius:12px;border:1px solid var(--border);background:var(--raised);font-variant-numeric:tabular-nums}.guarantee-tiers span.reached{border-color:var(--success);color:var(--success)}.guarantee-tiers small{font-size:11px;color:var(--muted)}.guarantee-conditions{margin:0;padding-left:18px;display:grid;gap:3px}
+.referral-headline{margin:2px 0 4px;font-size:26px;font-weight:800;letter-spacing:-.01em;color:var(--brand)}
+.referral-friends{border-top:1px solid var(--border);padding-top:12px}
+.referral-friend{display:grid;gap:8px;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--surface)}
+.referral-count{font-variant-numeric:tabular-nums;font-size:13px}

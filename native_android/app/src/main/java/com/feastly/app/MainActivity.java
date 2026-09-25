@@ -495,6 +495,31 @@ public class MainActivity extends ComponentActivity {
       });
     }
 
+    /** Wallet balance, cashback offers and referral status (read-only for the customer). */
+    @JavascriptInterface public void getCustomerWallet(String requestId, String firebaseIdToken, String payloadJson) {
+      invokeSimpleCallable(requestId, "getCustomerWallet", firebaseIdToken, payloadJson,
+          "Your wallet could not be loaded right now.");
+    }
+
+    @JavascriptInterface public void applyCustomerReferral(String requestId, String firebaseIdToken, String payloadJson) {
+      invokeSimpleCallable(requestId, "applyCustomerReferral", firebaseIdToken, payloadJson,
+          "The referral code could not be applied right now.");
+    }
+
+    private void invokeSimpleCallable(String requestId, String operation, String firebaseIdToken, String payloadJson,
+                                      String failureMessage) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          if (payloadJson != null && payloadJson.length() > 8_000) throw new IllegalArgumentException("PAYLOAD_TOO_LARGE");
+          JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          invokeCallable(requestId, operation, firebaseIdToken, payload, null);
+        } catch (Exception error) {
+          publishNativeFailure(requestId, operation, "INVALID_ARGUMENT", failureMessage);
+        }
+      });
+    }
+
     @JavascriptInterface public void createPaymentIntent(String requestId, String firebaseIdToken,
                                                          String payloadJson) {
       runOnUiThread(() -> {

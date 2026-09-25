@@ -1,4 +1,5 @@
 import type {DeliveryEstimateBasis} from "./domain/deliveryEstimate";
+import type {FundingSource, OrderSettlementTerms} from "./domain/economics";
 
 export type ActorRole = "customer" | "staff" | "owner" | "ops_admin" | "rider" | "system";
 
@@ -99,8 +100,29 @@ export interface PricingBreakdown {
   platformFee: number;
   tax: number;
   tip: number;
+  /** Split of `discount` by who pays it. Absent on orders priced before the
+   *  economics engine, where the whole discount was restaurant-funded. */
+  restaurantDiscount?: number;
+  platformDiscount?: number;
+  /** Customer wallet money (cashback / referral credit) used; reduces the total. */
+  walletRedeem?: number;
   currency: "INR";
   source: "catalog_snapshot_v3";
+}
+
+/** The offer applied to an order, as it stood when the order was priced. */
+export interface AppliedOfferSnapshot {
+  promotionId: string;
+  code: string;
+  title: string;
+  fundingSource: FundingSource;
+  restaurantFundedPaise: number;
+  platformFundedPaise: number;
+  growthSubsidyPaise: number;
+  growthBudgetId: string;
+  /** Platform funding the offer asked for that the profitability rule withheld. */
+  withheldPlatformPaise: number;
+  limitedBy: "" | "profitability" | "growth_budget" | "promotion_budget";
 }
 
 export interface StatusEvent {
@@ -177,6 +199,11 @@ export interface SavrivoOrder {
   statusBeforeTerminal?: OrderStatus;
   cancelledByRole?: ActorRole;
   cancellationKind?: "restaurant_rejected" | "customer_cancelled" | "system_cancelled" | "delivery_failed";
+  /** Settlement terms frozen at checkout. Settlement reads these, never
+   *  today's configuration, so later rule changes cannot alter them. The full
+   *  snapshot (Scraveit's margin and reserves) is in `orderEconomics/{id}`. */
+  economics?: OrderSettlementTerms;
+  appliedOffer?: AppliedOfferSnapshot;
 }
 
 export interface AuthzDecision {

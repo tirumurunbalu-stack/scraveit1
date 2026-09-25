@@ -3,7 +3,7 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
 import {financePayoutAutomationSummary} from "../domain/financePolicy";
-import {createLedgerJournal, validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
+import {createLedgerJournal, deterministicJournalId, validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {DomainError} from "../errors";
 import type {
   AdminRiderRewardsDashboardQueryInput,
@@ -24,10 +24,43 @@ import {
   requirePlatformConfigAdminClaim,
   type PlatformConfigAdminRole,
 } from "./authz";
-import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal, persistLedgerJournalIfAbsent} from "./ledger";
 import {notifyRiderRewardUpdate} from "./notifications";
 import {loadFinancePolicy} from "./platformConfig";
 import {readRiderFinancialSummary, type RiderFinancialSummary} from "./riderFinance";
+import {
+  eligibleGuaranteeEarningsPaise,
+  evaluateGuarantee,
+  guaranteeTopUpPaise,
+  normalizeGuaranteeComponents,
+  qualifiedGuaranteeTier,
+  type GuaranteeEarningComponent,
+  type GuaranteeEarningsBreakdown,
+} from "../domain/earningsGuarantee";
+import {loadEconomicsControl} from "./economics";
+import {
+  LEGACY_RIDER_REFERRAL_TERMS,
+  OPEN_REFERRAL_STATUSES,
+  RIDER_REFERRAL_DEFAULT_PROGRAMME_VERSION,
+  RIDER_REFERRAL_DEFAULT_QUALIFYING_ORDERS,
+  RIDER_REFERRAL_DEFAULT_REWARD_PAISE,
+  RIDER_REFERRAL_FROZEN_TERMS_SINCE,
+  RIDER_REFERRAL_PROGRAMME_ID,
+  isTestAccount,
+  nextReferralStatus,
+  referralBudgetRemaining,
+  referralDeadline,
+  referralRewardTotal,
+  riderReferralProgrammeState,
+  riderReferralProgress,
+  riderReferralRiskFlags,
+  simulateRiderReferralCost,
+  type RiderReferralBudget,
+  type RiderReferralProgrammeState,
+  type RiderReferralSimulation,
+  type RiderReferralStatus,
+  type RiderReferralTerms,
+} from "../domain/riderReferral";
 
 const IST_OFFSET_MS = 330 * 60 * 1_000;
 const DEFAULT_REWARD_TIMEZONE = "Asia/Kolkata";
@@ -98,7 +131,7 @@ type RewardDisplayType =
 type RewardKind = "per_order_bonus" | "milestone_bonus";
 type RewardWindow = "daily" | "weekly" | "custom";
 type RewardStacking = "stack" | "highest_only";
-type RewardMilestonePayoutMode = "highest_unlocked" | "cumulative";
+type RewardMilestonePayoutMode = "highest_unlocked" | "cumulative" | "earnings_guarantee";
 type RewardTripAttribution = "delivered_at";
 type RewardSlotOverlapMode = "no_double_count" | "allow_double_count";
 type RiderRewardOfferStatus =
@@ -187,6 +220,20 @@ export interface RiderRewardSettings {
   readonly inviteeRewardPaise: number;
   readonly referralMinCompletedTrips: number;
   readonly referralMaxRewardsPerRider: number;
+  /** 0 = no start / end limit. */
+  readonly referralProgramStartAt: number;
+  readonly referralProgramEndAt: number;
+  /** Empty = every city. Matched against the referred rider's city. */
+  readonly referralCityNames: readonly string[];
+  /** Total referral money the programme may pay. 0 = no cap. */
+  readonly referralBudgetPaise: number;
+  /** Days a referred rider has to reach the target. 0 = no deadline. */
+  readonly referralQualificationDays: number;
+  /** Bumped whenever the reward, target or deadline changes. Referrals keep
+   * the version (and terms) they were accepted under. */
+  readonly referralProgrammeVersion: number;
+  /** Terms for riders who applied before terms were frozen per referral. */
+  readonly referralLegacyTerms: RiderReferralTerms;
   readonly updatedAt: number;
   readonly updatedBy: string;
   readonly updatedByRole: "" | PlatformConfigAdminRole;
@@ -203,6 +250,25 @@ export interface RiderRewardTimeSlot {
   readonly label: string;
   readonly startMinute: number;
   readonly endMinute: number;
+}
+
+/**
+ * Live state of a minimum-earnings-guarantee campaign for one rider and
+ * period. Milestones hold the guaranteed amounts; the reward is only ever the
+ * gap between that and what the rider actually earned (see domain/earningsGuarantee).
+ */
+export interface RiderGuaranteeProgress {
+  readonly tierTarget: number;
+  readonly guaranteedPaise: number;
+  readonly eligibleEarningsPaise: number;
+  readonly topUpPaise: number;
+  readonly finalEarningsPaise: number;
+  readonly nextTarget: number;
+  readonly nextGuaranteedPaise: number;
+  readonly completedDeliveries: number;
+  readonly components: readonly GuaranteeEarningComponent[];
+  readonly breakdown: GuaranteeEarningsBreakdown;
+  readonly status: "open" | "seats_full" | "budget_exhausted" | "paused";
 }
 
 export interface RiderRewardCampaign {
@@ -236,6 +302,12 @@ export interface RiderRewardCampaign {
   readonly conditionGroups: readonly RiderRewardConditionGroup[];
   readonly otherConditions: readonly RiderRewardOtherCondition[];
   readonly milestonePayoutMode: RewardMilestonePayoutMode;
+  /** earnings_guarantee only: what counts toward the guarantee. */
+  readonly guaranteeComponents: readonly GuaranteeEarningComponent[];
+  /** Total Scraveit money this campaign may pay out. 0 = no cap. */
+  readonly budgetPaise: number;
+  /** earnings_guarantee only: riders who can join per period. 0 = no cap. */
+  readonly maxEligibleRiders: number;
   readonly timezone: string;
   readonly tripAttribution: RewardTripAttribution;
   readonly allowOverlappingSlotCredit: boolean;
@@ -316,6 +388,8 @@ export interface RiderRewardOffer {
   readonly selectedDayGroups?: readonly RiderRewardConditionGroupProgress[];
   readonly liabilityRewardPaise?: number;
   readonly periodLabel?: string;
+  readonly payoutMode?: RewardMilestonePayoutMode;
+  readonly guarantee?: RiderGuaranteeProgress | null;
 }
 
 export interface RiderRewardConditionSlotProgress {
@@ -400,6 +474,7 @@ interface RiderRewardProgressSnapshot {
   readonly generatedAt: number;
   readonly settlementJournalId: string;
   readonly conditionsSummary: readonly string[];
+  readonly guarantee?: RiderGuaranteeProgress | null;
 }
 
 export interface RiderPayoutEntry {
@@ -425,15 +500,39 @@ export interface RiderPayoutSummary {
   };
 }
 
+export interface RiderReferralFriend {
+  readonly name: string;
+  readonly joinedAt: number;
+  readonly delivered: number;
+  readonly target: number;
+  readonly remaining: number;
+  readonly percent: number;
+  /** "invited" = applied with the code but not yet accepted. */
+  readonly status: RiderReferralStatus | "invited";
+  readonly statusReason: string;
+  readonly rewardPaise: number;
+  readonly deadlineAt: number;
+  readonly qualifiedAt: number;
+  readonly paidAt: number;
+}
+
 export interface RiderReferralSummary {
+  /** True only when new referrals are being accepted and can be paid. */
   readonly active: boolean;
+  readonly programmeState: RiderReferralProgrammeState;
+  readonly programmeVersion: number;
   readonly referralCode: string;
   readonly inviterRewardPaise: number;
   readonly inviteeRewardPaise: number;
   readonly minCompletedTrips: number;
+  readonly qualificationDays: number;
   readonly maxRewardsPerRider: number;
+  /** null = no per-inviter limit. */
+  readonly remainingInviterSlots: number | null;
   readonly referredRiderCount: number;
   readonly earnedRewardPaise: number;
+  readonly pendingRewardPaise: number;
+  readonly referrals: readonly RiderReferralFriend[];
 }
 
 export interface RiderRewardLoginSessionTrackerDay {
@@ -502,7 +601,10 @@ export interface RiderRewardCampaignAdminView {
     groupsRequired: number;
     nextMilestone: RiderRewardOffer["nextMilestone"];
     conditionsSummary: readonly string[];
+    guarantee: RiderGuaranteeProgress | null;
   }[];
+  /** earnings_guarantee campaigns: top-up money already committed from the budget. */
+  readonly guaranteeBudgetSpentPaise: number;
 }
 
 export interface RiderRewardsAdminDashboard {
@@ -532,10 +634,17 @@ const DEFAULT_RIDER_REWARD_SETTINGS: RiderRewardSettings = Object.freeze({
   schemaVersion: 1,
   payoutMinimumPaise: 0,
   referralProgramActive: true,
-  inviterRewardPaise: 50_000,
+  inviterRewardPaise: RIDER_REFERRAL_DEFAULT_REWARD_PAISE,
   inviteeRewardPaise: 0,
-  referralMinCompletedTrips: 25,
+  referralMinCompletedTrips: RIDER_REFERRAL_DEFAULT_QUALIFYING_ORDERS,
   referralMaxRewardsPerRider: 0,
+  referralProgramStartAt: 0,
+  referralProgramEndAt: 0,
+  referralCityNames: [],
+  referralBudgetPaise: 0,
+  referralQualificationDays: 0,
+  referralProgrammeVersion: RIDER_REFERRAL_DEFAULT_PROGRAMME_VERSION,
+  referralLegacyTerms: LEGACY_RIDER_REFERRAL_TERMS,
   updatedAt: 0,
   updatedBy: "",
   updatedByRole: "",
@@ -869,19 +978,77 @@ function normalizeOtherConditions(value: unknown): readonly RiderRewardOtherCond
   });
 }
 
+function normalizeReferralTerms(value: unknown, fallback: RiderReferralTerms): RiderReferralTerms {
+  const source = record(value);
+  return {
+    inviterRewardPaise: integer(source.inviterRewardPaise, fallback.inviterRewardPaise, 0, 1_000_000_000),
+    inviteeRewardPaise: integer(source.inviteeRewardPaise, fallback.inviteeRewardPaise, 0, 1_000_000_000),
+    qualifyingDeliveredOrders: integer(source.qualifyingDeliveredOrders, fallback.qualifyingDeliveredOrders, 0, 100_000),
+    qualificationDays: integer(source.qualificationDays, fallback.qualificationDays, 0, 3_650),
+  };
+}
+
+/**
+ * Settings saved before the programme was versioned hold the ₹500 / 25-order
+ * programme. Those old default values become the legacy terms and the new
+ * default (₹5,000 / 250) takes over; values an admin had deliberately changed
+ * are kept as they are.
+ */
+function referralTermsFromSettingsSource(source: Record<string, unknown>): {
+  current: RiderReferralTerms; legacy: RiderReferralTerms; version: number;
+} {
+  const storedVersion = integer(source.referralProgrammeVersion, 0, 0);
+  const saved = {
+    inviterRewardPaise: source.inviterRewardPaise,
+    inviteeRewardPaise: source.inviteeRewardPaise,
+    qualifyingDeliveredOrders: source.referralMinCompletedTrips,
+    qualificationDays: source.referralQualificationDays,
+  };
+  if (storedVersion > 0) {
+    return {
+      current: normalizeReferralTerms(saved, {
+        inviterRewardPaise: RIDER_REFERRAL_DEFAULT_REWARD_PAISE,
+        inviteeRewardPaise: 0,
+        qualifyingDeliveredOrders: RIDER_REFERRAL_DEFAULT_QUALIFYING_ORDERS,
+        qualificationDays: 0,
+      }),
+      legacy: normalizeReferralTerms(source.referralLegacyTerms, LEGACY_RIDER_REFERRAL_TERMS),
+      version: storedVersion,
+    };
+  }
+  const old = normalizeReferralTerms(saved, LEGACY_RIDER_REFERRAL_TERMS);
+  const wasOldDefault = old.inviterRewardPaise === LEGACY_RIDER_REFERRAL_TERMS.inviterRewardPaise &&
+    old.qualifyingDeliveredOrders === LEGACY_RIDER_REFERRAL_TERMS.qualifyingDeliveredOrders;
+  return {
+    current: wasOldDefault
+      ? {...old, inviterRewardPaise: RIDER_REFERRAL_DEFAULT_REWARD_PAISE, qualifyingDeliveredOrders: RIDER_REFERRAL_DEFAULT_QUALIFYING_ORDERS}
+      : old,
+    legacy: old,
+    version: RIDER_REFERRAL_DEFAULT_PROGRAMME_VERSION,
+  };
+}
+
 export function normalizeRewardSettings(value: unknown): RiderRewardSettings {
   const source = record(value);
   const role = source.updatedByRole === "owner" || source.updatedByRole === "ops_admin"
     ? source.updatedByRole
     : "";
+  const terms = referralTermsFromSettingsSource(source);
   return {
     schemaVersion: 1,
     payoutMinimumPaise: integer(source.payoutMinimumPaise, DEFAULT_RIDER_REWARD_SETTINGS.payoutMinimumPaise, 0, 1_000_000_000),
     referralProgramActive: truthy(source.referralProgramActive, DEFAULT_RIDER_REWARD_SETTINGS.referralProgramActive),
-    inviterRewardPaise: integer(source.inviterRewardPaise, DEFAULT_RIDER_REWARD_SETTINGS.inviterRewardPaise, 0, 1_000_000_000),
-    inviteeRewardPaise: integer(source.inviteeRewardPaise, DEFAULT_RIDER_REWARD_SETTINGS.inviteeRewardPaise, 0, 1_000_000_000),
-    referralMinCompletedTrips: integer(source.referralMinCompletedTrips, DEFAULT_RIDER_REWARD_SETTINGS.referralMinCompletedTrips, 0, 100_000),
+    inviterRewardPaise: terms.current.inviterRewardPaise,
+    inviteeRewardPaise: terms.current.inviteeRewardPaise,
+    referralMinCompletedTrips: terms.current.qualifyingDeliveredOrders,
     referralMaxRewardsPerRider: integer(source.referralMaxRewardsPerRider, DEFAULT_RIDER_REWARD_SETTINGS.referralMaxRewardsPerRider, 0, 100_000),
+    referralProgramStartAt: integer(source.referralProgramStartAt, 0, 0),
+    referralProgramEndAt: integer(source.referralProgramEndAt, 0, 0),
+    referralCityNames: normalizeNameList(source.referralCityNames, 50, 80),
+    referralBudgetPaise: integer(source.referralBudgetPaise, 0, 0, 1_000_000_000_00),
+    referralQualificationDays: terms.current.qualificationDays,
+    referralProgrammeVersion: terms.version,
+    referralLegacyTerms: terms.legacy,
     updatedAt: integer(source.updatedAt, 0, 0),
     updatedBy: text(source.updatedBy, 128),
     updatedByRole: role,
@@ -928,7 +1095,9 @@ function normalizeRewardCampaign(campaignId: string, value: unknown): RiderRewar
   if (kind === "milestone_bonus" && milestones.length === 0) return null;
   const conditionGroups = normalizeConditionGroups(source.conditionGroups);
   const otherConditions = normalizeOtherConditions(source.otherConditions);
-  const milestonePayoutMode = source.milestonePayoutMode === "cumulative" ? "cumulative" : "highest_unlocked";
+  const milestonePayoutMode: RewardMilestonePayoutMode = source.milestonePayoutMode === "cumulative" ? "cumulative" :
+    source.milestonePayoutMode === "earnings_guarantee" && kind === "milestone_bonus" ? "earnings_guarantee" :
+      "highest_unlocked";
   const timezone = text(source.timezone, 80, DEFAULT_REWARD_TIMEZONE) || DEFAULT_REWARD_TIMEZONE;
   const tripAttribution = source.tripAttribution === "delivered_at" ? "delivered_at" : "delivered_at";
   return {
@@ -952,23 +1121,26 @@ function normalizeRewardCampaign(campaignId: string, value: unknown): RiderRewar
     zoneNames: normalizeNameList(source.zoneNames, 50, 120),
     restaurantIds: normalizeIdentifierList(source.restaurantIds, 100),
     riderIds: normalizeIdentifierList(source.riderIds, 200),
-    minCompletedTrips: source.minCompletedTrips === undefined ? null : integer(source.minCompletedTrips, 0, 0, 100_000),
+    minCompletedTrips: source.minCompletedTrips == null ? null : integer(source.minCompletedTrips, 0, 0, 100_000),
     minRating: decimal(source.minRating, null, 0, 5),
-    firstNCompletedTrips: source.firstNCompletedTrips === undefined ? null : integer(source.firstNCompletedTrips, 0, 1, 100_000),
-    orderTotalMinPaise: source.orderTotalMinPaise === undefined ? null : integer(source.orderTotalMinPaise, 0, 0, 1_000_000_000),
+    firstNCompletedTrips: source.firstNCompletedTrips == null ? null : integer(source.firstNCompletedTrips, 0, 1, 100_000),
+    orderTotalMinPaise: source.orderTotalMinPaise == null ? null : integer(source.orderTotalMinPaise, 0, 0, 1_000_000_000),
     rainOnly: truthy(source.rainOnly, false),
     requireDailyLoginSession: truthy(source.requireDailyLoginSession, false),
-    minimumCompletedSessionsPerDay: source.minimumCompletedSessionsPerDay === undefined ? null :
+    minimumCompletedSessionsPerDay: source.minimumCompletedSessionsPerDay == null ? null :
       integer(source.minimumCompletedSessionsPerDay, 0, 1, 24),
     conditionGroups,
     otherConditions,
     milestonePayoutMode,
+    guaranteeComponents: normalizeGuaranteeComponents(source.guaranteeComponents),
+    budgetPaise: integer(source.budgetPaise, 0, 0, 1_000_000_000_00),
+    maxEligibleRiders: integer(source.maxEligibleRiders, 0, 0, 100_000),
     timezone,
     tripAttribution,
     allowOverlappingSlotCredit: truthy(source.allowOverlappingSlotCredit, false),
     eligibleRiderTypes: normalizeTextList(source.eligibleRiderTypes, 20, 80),
     vehicleTypes: normalizeTextList(source.vehicleTypes, 20, 80),
-    minimumAccountAgeDays: source.minimumAccountAgeDays === undefined ? null :
+    minimumAccountAgeDays: source.minimumAccountAgeDays == null ? null :
       integer(source.minimumAccountAgeDays, 0, 0, 10_000),
     stacking,
     priority: integer(source.priority, 100, 0, 1_000),
@@ -2120,6 +2292,9 @@ function evaluateOtherCondition(
 
 function milestonePotentialRewardPaise(campaign: RiderRewardCampaign): number {
   if (!campaign.milestones.length) return campaign.rewardAmountPaise ?? 0;
+  if (campaign.milestonePayoutMode === "earnings_guarantee") {
+    return Math.max(...campaign.milestones.map((milestone) => milestone.rewardAmountPaise));
+  }
   if (campaign.milestonePayoutMode === "cumulative") {
     return campaign.milestones.reduce((total, milestone) => total + milestone.rewardAmountPaise, 0);
   }
@@ -2247,6 +2422,104 @@ function formatProgressDuration(ms: number): string {
   if (hours && minutes) return `${hours}h ${minutes}m`;
   if (hours) return `${hours}h`;
   return `${minutes}m`;
+}
+
+function isGuaranteeCampaign(campaign: RiderRewardCampaign): boolean {
+  return campaign.kind === "milestone_bonus" && campaign.milestonePayoutMode === "earnings_guarantee";
+}
+
+/**
+ * A dinner guarantee counts dinner work only: when the campaign names time
+ * slots (directly or through its login condition groups), only deliveries
+ * and earnings inside them count, grace period included.
+ */
+function guaranteeWindowMatches(campaign: RiderRewardCampaign, at: number): boolean {
+  if (!matchesDay(campaign, at)) return false;
+  const slots = campaignSessionTrackingSlots(campaign);
+  if (!slots.length) return true;
+  const minute = minuteOfDayAtTimeZone(at, safeTimeZone(campaign.timezone));
+  return slots.some((slot) => {
+    const end = (slot.endMinute + slot.gracePeriodMinutes) % 1_440;
+    return slot.startMinute < end
+      ? minute >= slot.startMinute && minute < end
+      : minute >= slot.startMinute || minute < end;
+  });
+}
+
+function guaranteeBreakdownFromJournals(
+  journals: readonly LedgerJournal[],
+  riderId: string,
+  campaign: RiderRewardCampaign,
+  startAt: number,
+  endAt: number,
+): GuaranteeEarningsBreakdown {
+  const breakdown = {tripPayPaise: 0, perOrderIncentivesPaise: 0, tipsPaise: 0, referralRewardsPaise: 0, otherGuaranteesPaise: 0};
+  for (const journal of journals) {
+    if (journal.occurredAt < startAt || journal.occurredAt >= endAt) continue;
+    if (!guaranteeWindowMatches(campaign, journal.occurredAt)) continue;
+    const movement = riderLedgerMovement(journal, riderId);
+    const earned = Math.max(0, movement.earningsMovementPaise);
+    if (journal.eventType === "cod_delivery" || journal.eventType === "payment") {
+      breakdown.tripPayPaise += earned;
+      breakdown.tipsPaise += Math.max(0, movement.tipMovementPaise);
+    } else if (journal.eventType === "rider_incentive") {
+      // Never count this campaign's own top-up toward itself.
+      if (String(journal.metadata.campaignId ?? "") === campaign.campaignId) continue;
+      if (journal.metadata.payoutMode === "earnings_guarantee") breakdown.otherGuaranteesPaise += earned;
+      else breakdown.perOrderIncentivesPaise += earned;
+    } else if (journal.eventType === "rider_referral_reward") {
+      breakdown.referralRewardsPaise += earned;
+    }
+  }
+  return breakdown;
+}
+
+function guaranteeDeliveriesInPeriod(
+  events: readonly RiderRewardActivityEvent[],
+  campaign: RiderRewardCampaign,
+  startAt: number,
+  endAt: number,
+): number {
+  const orderIds = new Set<string>();
+  for (const event of events) {
+    if (event.type !== "ORDER_DELIVERED" || !event.orderId) continue;
+    if (event.occurredAt < startAt || event.occurredAt >= endAt) continue;
+    if (guaranteeWindowMatches(campaign, event.occurredAt)) orderIds.add(event.orderId);
+  }
+  return orderIds.size;
+}
+
+function guaranteeProgress(input: {
+  campaign: RiderRewardCampaign;
+  riderId: string;
+  journals: readonly LedgerJournal[];
+  events: readonly RiderRewardActivityEvent[];
+  startAt: number;
+  endAt: number;
+  conditionsMet: boolean;
+}): RiderGuaranteeProgress {
+  const completedDeliveries = guaranteeDeliveriesInPeriod(input.events, input.campaign, input.startAt, input.endAt);
+  const breakdown = guaranteeBreakdownFromJournals(input.journals, input.riderId, input.campaign, input.startAt, input.endAt);
+  const evaluation = evaluateGuarantee({
+    tiers: input.campaign.milestones.map((milestone) => ({target: milestone.target, guaranteedPaise: milestone.rewardAmountPaise})),
+    completedDeliveries,
+    breakdown,
+    components: input.campaign.guaranteeComponents,
+    conditionsMet: input.conditionsMet,
+  });
+  return {
+    tierTarget: evaluation.tier?.target ?? 0,
+    guaranteedPaise: evaluation.tier?.guaranteedPaise ?? 0,
+    eligibleEarningsPaise: evaluation.eligibleEarningsPaise,
+    topUpPaise: evaluation.topUpPaise,
+    finalEarningsPaise: evaluation.finalEarningsPaise,
+    nextTarget: evaluation.nextTier?.target ?? 0,
+    nextGuaranteedPaise: evaluation.nextTier?.guaranteedPaise ?? 0,
+    completedDeliveries,
+    components: input.campaign.guaranteeComponents,
+    breakdown,
+    status: "open",
+  };
 }
 
 function computeCampaignProgressSnapshot(input: {
@@ -2429,15 +2702,29 @@ function computeCampaignProgressSnapshot(input: {
   const allGroupsSatisfied = groupProgress.every((group) => group.qualified);
   const allOtherSatisfied = otherConditions.every((condition) => condition.status !== "FAILED");
   const loginRequirementSatisfied = effectiveSessionRequirement.status === "DISABLED" || effectiveSessionRequirement.status === "ELIGIBLE";
-  const currentUnlockedRewardPaise = unlockedMilestoneRewardPaise(input.campaign, activitySummary.completedTrips);
-  const potentialRewardPaise = milestonePotentialRewardPaise(input.campaign);
-  const credited = creditedRewardPaiseForPeriod(input.riderJournals, input.riderId, input.campaign.campaignId, period.key);
-  const qualified = allGroupsSatisfied &&
+  const guaranteeMode = isGuaranteeCampaign(input.campaign);
+  const conditionsMet = allGroupsSatisfied &&
     allOtherSatisfied &&
     loginRequirementSatisfied &&
-    currentUnlockedRewardPaise > 0 &&
     staticEligibility.status !== "locked" &&
     staticEligibility.status !== "FAILED";
+  const guarantee = guaranteeMode ? guaranteeProgress({
+    campaign: input.campaign,
+    riderId: input.riderId,
+    journals: input.riderJournals,
+    events: input.activityEvents,
+    startAt: effectiveStartAt,
+    endAt: Math.min(effectiveEndAt, Math.max(effectiveStartAt, input.referenceAt) + 1),
+    conditionsMet,
+  }) : null;
+  const completedTripsForCampaign = guarantee ? guarantee.completedDeliveries : activitySummary.completedTrips;
+  const currentUnlockedRewardPaise = guarantee ? guarantee.topUpPaise :
+    unlockedMilestoneRewardPaise(input.campaign, activitySummary.completedTrips);
+  const potentialRewardPaise = milestonePotentialRewardPaise(input.campaign);
+  const credited = creditedRewardPaiseForPeriod(input.riderJournals, input.riderId, input.campaign.campaignId, period.key);
+  // A guarantee is "qualified" once a tier is reached with every condition
+  // met, even when the rider out-earned it and the top-up is zero.
+  const qualified = conditionsMet && (guarantee ? guarantee.tierTarget > 0 : currentUnlockedRewardPaise > 0);
   const anyProgress = activitySummary.completedTrips > 0 ||
     activitySummary.acceptedOrders > 0 ||
     activitySummary.rejectedOrderCount > 0 ||
@@ -2455,8 +2742,12 @@ function computeCampaignProgressSnapshot(input: {
   } else if (staticEligibility.status === "UPCOMING") {
     status = "UPCOMING";
   } else if (periodEnded) {
-    status = credited.creditedRewardPaise > 0 ? "COMPLETED" : qualified ? "QUALIFIED" : "EXPIRED";
-  } else if (qualified && currentUnlockedRewardPaise >= potentialRewardPaise && potentialRewardPaise > 0) {
+    status = credited.creditedRewardPaise > 0 ? "COMPLETED" :
+      guarantee && qualified && guarantee.topUpPaise === 0 ? "COMPLETED" :
+        qualified ? "QUALIFIED" : "EXPIRED";
+  } else if (guarantee && qualified && guarantee.nextTarget === 0) {
+    status = "QUALIFIED";
+  } else if (!guarantee && qualified && currentUnlockedRewardPaise >= potentialRewardPaise && potentialRewardPaise > 0) {
     status = "QUALIFIED";
   } else if (anyProgress) {
     status = "IN_PROGRESS";
@@ -2470,7 +2761,7 @@ function computeCampaignProgressSnapshot(input: {
     ...groupProgress.map((group) => `${group.title}: ${group.completedSlots}/${group.minimumSlotsRequired} completed`),
     ...otherConditions.map((condition) => `${condition.title}: ${condition.message}`),
     input.campaign.milestones.length
-      ? `Trips completed: ${activitySummary.completedTrips} / ${input.campaign.milestones[input.campaign.milestones.length - 1]?.target ?? 0}`
+      ? `Trips completed: ${completedTripsForCampaign} / ${input.campaign.milestones[input.campaign.milestones.length - 1]?.target ?? 0}`
       : "",
   ].filter(Boolean);
   return {
@@ -2488,7 +2779,7 @@ function computeCampaignProgressSnapshot(input: {
     failed,
     activeNow: input.referenceAt >= input.campaign.startAt && input.referenceAt < input.campaign.endAt,
     offerActive: staticEligibility.status !== "locked" && staticEligibility.status !== "CANCELLED",
-    tripsCompleted: activitySummary.completedTrips,
+    tripsCompleted: completedTripsForCampaign,
     acceptedOrders: activitySummary.acceptedOrders,
     rejectedOrders: activitySummary.rejectedOrderCount,
     currentUnlockedRewardPaise,
@@ -2504,6 +2795,7 @@ function computeCampaignProgressSnapshot(input: {
     generatedAt: input.referenceAt,
     settlementJournalId: credited.journalId,
     conditionsSummary,
+    guarantee,
   };
 }
 
@@ -2651,6 +2943,34 @@ function rewardProgressSnapshot(value: unknown): RiderRewardProgressSnapshot | n
     conditionsSummary: Array.isArray(source.conditionsSummary)
       ? source.conditionsSummary.map((entry) => text(entry, 240)).filter(Boolean)
       : [],
+    guarantee: parseGuaranteeProgress(source.guarantee),
+  };
+}
+
+function parseGuaranteeProgress(value: unknown): RiderGuaranteeProgress | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = record(value);
+  const breakdown = record(source.breakdown);
+  const status = ["open", "seats_full", "budget_exhausted", "paused"].includes(String(source.status)) ?
+    source.status as RiderGuaranteeProgress["status"] : "open";
+  return {
+    tierTarget: integer(source.tierTarget, 0, 0),
+    guaranteedPaise: integer(source.guaranteedPaise, 0, 0),
+    eligibleEarningsPaise: integer(source.eligibleEarningsPaise, 0, 0),
+    topUpPaise: integer(source.topUpPaise, 0, 0),
+    finalEarningsPaise: integer(source.finalEarningsPaise, 0, 0),
+    nextTarget: integer(source.nextTarget, 0, 0),
+    nextGuaranteedPaise: integer(source.nextGuaranteedPaise, 0, 0),
+    completedDeliveries: integer(source.completedDeliveries, 0, 0),
+    components: normalizeGuaranteeComponents(source.components),
+    breakdown: {
+      tripPayPaise: integer(breakdown.tripPayPaise, 0, 0),
+      perOrderIncentivesPaise: integer(breakdown.perOrderIncentivesPaise, 0, 0),
+      tipsPaise: integer(breakdown.tipsPaise, 0, 0),
+      referralRewardsPaise: integer(breakdown.referralRewardsPaise, 0, 0),
+      otherGuaranteesPaise: integer(breakdown.otherGuaranteesPaise, 0, 0),
+    },
+    status,
   };
 }
 
@@ -3107,6 +3427,7 @@ function buildRiderRewardJournal(input: {
   orderId?: string;
   actorId?: string;
   metadata?: Record<string, string | number | boolean | null>;
+  expenseAccountId?: string;
 }): LedgerJournal {
   return createLedgerJournal({
     eventType: "rider_incentive",
@@ -3122,7 +3443,7 @@ function buildRiderRewardJournal(input: {
     },
     postings: [
       {
-        accountId: `expense:rider-rewards:${input.campaign.displayType}`,
+        accountId: input.expenseAccountId ?? `expense:rider-rewards:${input.campaign.displayType}`,
         side: "debit",
         amountPaise: input.amountPaise,
         memo: `${input.campaign.title} accrued`,
@@ -3140,20 +3461,27 @@ function buildRiderRewardJournal(input: {
 function buildReferralRewardJournal(input: {
   riderId: string;
   relatedRiderId: string;
+  /** The rider whose deliveries unlocked the reward (identifies the referral). */
+  referredRiderId: string;
   amountPaise: number;
   occurredAt: number;
   beneficiaryRole: "inviter" | "invitee";
   thresholdTrips: number;
+  attribution?: Readonly<Record<string, string>>;
 }): LedgerJournal {
   return createLedgerJournal({
     eventType: "rider_referral_reward",
-    eventId: `referral:${input.relatedRiderId}:${input.beneficiaryRole}:${input.thresholdTrips}`,
+    // One referral = one referred rider; keyed by them, so a changed trip
+    // threshold or an inviter with many invitees can never double-pay.
+    eventId: `rider-referral:${input.referredRiderId}:${input.beneficiaryRole}`,
     occurredAt: input.occurredAt,
     actorId: "system:rider-referral",
     metadata: {
       beneficiaryRole: input.beneficiaryRole,
       relatedRiderId: input.relatedRiderId,
       thresholdTrips: input.thresholdTrips,
+      campaignId: "rider_referral_program",
+      ...(input.attribution ?? {}),
     },
     postings: [
       {
@@ -3248,6 +3576,7 @@ function buildRiderRewardSettlementJournal(input: {
   periodStartAt: number;
   periodEndAt: number;
   amountPaise: number;
+  cityKey?: string;
 }): LedgerJournal {
   const scopeHash = createHash("sha1")
     .update(`${input.campaign.campaignId}|${input.riderId}|${input.periodKey}`)
@@ -3267,8 +3596,250 @@ function buildRiderRewardSettlementJournal(input: {
       payoutMode: input.campaign.milestonePayoutMode,
       window: input.campaign.window,
       settlementType: "period_close",
+      ...(input.cityKey ? {cityKey: input.cityKey} : {}),
+      riderId: input.riderId,
     },
   });
+}
+
+function guaranteeScopeHash(campaignId: string, riderId: string, periodKey: string): string {
+  return createHash("sha1").update(`${campaignId}|${riderId}|${periodKey}`).digest("hex").slice(0, 32);
+}
+
+function guaranteeSettlementRef(database: FirestoreLike, scopeHash: string): DocumentReferenceLike {
+  return database.collection("riderGuaranteeSettlements").doc(scopeHash);
+}
+
+function guaranteeBudgetRef(database: FirestoreLike, campaignId: string): DocumentReferenceLike {
+  return database.collection("riderGuaranteeBudgets").doc(campaignId);
+}
+
+function guaranteeEnrollmentRef(database: FirestoreLike, campaignId: string, periodKey: string): DocumentReferenceLike {
+  const periodHash = createHash("sha1").update(periodKey).digest("hex").slice(0, 16);
+  return database.collection("riderGuaranteeEnrollments").doc(`${campaignId}_${periodHash}`);
+}
+
+/**
+ * Fixes the top-up amount exactly once per rider, campaign and period, and
+ * draws it from the campaign budget in the same transaction. A retry reuses
+ * the stored amount, so the immutable settlement journal is always written
+ * with the same value, and two riders settling at once can never push the
+ * campaign past its budget.
+ */
+async function reserveGuaranteeSettlement(
+  database: RiderRewardsDatabase,
+  input: {
+    campaign: RiderRewardCampaign;
+    riderId: string;
+    periodKey: string;
+    scopeHash: string;
+    computedPaise: number;
+    eligibleEarningsPaise: number;
+    guaranteedPaise: number;
+    tierTarget: number;
+    cityKey: string;
+    at: number;
+  },
+): Promise<{amountPaise: number; cappedByBudget: boolean; eligibleEarningsPaise: number; guaranteedPaise: number; tierTarget: number; cityKey: string}> {
+  const settlementRef = guaranteeSettlementRef(database, input.scopeHash);
+  const budgetRef = guaranteeBudgetRef(database, input.campaign.campaignId);
+  return database.runTransaction(async (transaction: TransactionLike) => {
+    const [existing, budgetSnapshot] = await Promise.all([
+      transaction.get(settlementRef),
+      input.campaign.budgetPaise > 0 ? transaction.get(budgetRef) : Promise.resolve(null),
+    ]);
+    if (existing.exists) {
+      const stored = record(existing.data());
+      return {
+        amountPaise: integer(stored.amountPaise, 0, 0),
+        cappedByBudget: stored.cappedByBudget === true,
+        eligibleEarningsPaise: integer(stored.eligibleEarningsPaise, 0, 0),
+        guaranteedPaise: integer(stored.guaranteedPaise, 0, 0),
+        tierTarget: integer(stored.tierTarget, 0, 0),
+        cityKey: text(stored.cityKey, 80),
+      };
+    }
+    let amountPaise = input.computedPaise;
+    let cappedByBudget = false;
+    if (input.campaign.budgetPaise > 0) {
+      const spent = integer(record(budgetSnapshot?.exists ? budgetSnapshot.data() : null).spentPaise, 0, 0);
+      const remaining = Math.max(0, input.campaign.budgetPaise - spent);
+      if (amountPaise > remaining) {
+        amountPaise = remaining;
+        cappedByBudget = true;
+      }
+      transaction.set(budgetRef, {
+        campaignId: input.campaign.campaignId,
+        budgetPaise: input.campaign.budgetPaise,
+        spentPaise: spent + amountPaise,
+        updatedAt: input.at,
+      }, {merge: true});
+    }
+    transaction.set(settlementRef, {
+      campaignId: input.campaign.campaignId,
+      riderId: input.riderId,
+      periodKey: input.periodKey,
+      amountPaise,
+      computedPaise: input.computedPaise,
+      cappedByBudget,
+      eligibleEarningsPaise: input.eligibleEarningsPaise,
+      guaranteedPaise: input.guaranteedPaise,
+      tierTarget: input.tierTarget,
+      cityKey: input.cityKey,
+      reservedAt: input.at,
+    });
+    return {
+      cityKey: input.cityKey,
+      amountPaise,
+      cappedByBudget,
+      eligibleEarningsPaise: input.eligibleEarningsPaise,
+      guaranteedPaise: input.guaranteedPaise,
+      tierTarget: input.tierTarget,
+    };
+  });
+}
+
+async function riderCityKey(database: RiderRewardsDatabase, riderId: string): Promise<string> {
+  const profile = await readRiderProfile(database, riderId);
+  return String(profile.city ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function settleGuaranteeSnapshot(
+  campaign: RiderRewardCampaign,
+  snapshot: RiderRewardProgressSnapshot,
+  database: RiderRewardsDatabase,
+  settlementAt: number,
+): Promise<{journalId: string; amountPaise: number} | null> {
+  const control = await loadEconomicsControl(settlementAt, database);
+  if (!control.flags.riderGuarantee) {
+    // Paused, not forfeited: the qualified period settles once re-enabled.
+    logger.warn("RIDER_GUARANTEE_SETTLEMENT_PAUSED", {campaignId: campaign.campaignId, riderId: snapshot.riderId});
+    return null;
+  }
+  if (snapshot.guarantee?.status === "seats_full") return null;
+  // Recomputed from the ledger at settlement time, so bonuses credited for the
+  // period's last deliveries are counted before deciding the top-up.
+  const journals = (await readRecentLedgerJournals(2_000, database))
+    .filter((journal) => relevantRiderJournal(journal, snapshot.riderId));
+  const breakdown = guaranteeBreakdownFromJournals(journals, snapshot.riderId, campaign, snapshot.periodStartAt, snapshot.periodEndAt);
+  const tier = qualifiedGuaranteeTier(
+    campaign.milestones.map((milestone) => ({target: milestone.target, guaranteedPaise: milestone.rewardAmountPaise})),
+    snapshot.tripsCompleted,
+  );
+  if (!tier) return null;
+  const eligibleEarningsPaise = eligibleGuaranteeEarningsPaise(breakdown, campaign.guaranteeComponents);
+  const computedPaise = guaranteeTopUpPaise(tier.guaranteedPaise, eligibleEarningsPaise);
+  if (computedPaise <= 0) return null;
+  const scopeHash = guaranteeScopeHash(campaign.campaignId, snapshot.riderId, snapshot.periodKey);
+  const reserved = await reserveGuaranteeSettlement(database, {
+    campaign,
+    riderId: snapshot.riderId,
+    periodKey: snapshot.periodKey,
+    scopeHash,
+    computedPaise,
+    eligibleEarningsPaise,
+    guaranteedPaise: tier.guaranteedPaise,
+    tierTarget: tier.target,
+    cityKey: await riderCityKey(database, snapshot.riderId),
+    at: settlementAt,
+  });
+  if (reserved.cappedByBudget) {
+    logger.warn("RIDER_GUARANTEE_BUDGET_CAPPED", {
+      campaignId: campaign.campaignId,
+      riderId: snapshot.riderId,
+      computedPaise,
+      paidPaise: reserved.amountPaise,
+    });
+  }
+  if (reserved.amountPaise <= 0) return null;
+  const persisted = await persistLedgerJournalIfAbsent(buildRiderRewardJournal({
+    campaign,
+    riderId: snapshot.riderId,
+    occurredAt: snapshot.periodEndAt,
+    eventId: `reward:settlement:${scopeHash}`,
+    amountPaise: reserved.amountPaise,
+    actorId: "system:rider-reward-settlement",
+    expenseAccountId: "expense:rider-guarantee-topups",
+    metadata: {
+      periodKey: snapshot.periodKey,
+      periodStartAt: snapshot.periodStartAt,
+      periodEndAt: snapshot.periodEndAt,
+      payoutMode: "earnings_guarantee",
+      window: campaign.window,
+      settlementType: "period_close",
+      eligibleEarningsPaise: reserved.eligibleEarningsPaise,
+      guaranteedPaise: reserved.guaranteedPaise,
+      tierTarget: reserved.tierTarget,
+      cappedByBudget: reserved.cappedByBudget,
+      ...(reserved.cityKey ? {cityKey: reserved.cityKey} : {}),
+      riderId: snapshot.riderId,
+    },
+  }), database);
+  logger.info("RIDER_GUARANTEE_TOPUP_SETTLED", {
+    campaignId: campaign.campaignId,
+    riderId: snapshot.riderId,
+    periodKey: snapshot.periodKey,
+    eligibleEarningsPaise: reserved.eligibleEarningsPaise,
+    guaranteedPaise: reserved.guaranteedPaise,
+    topUpPaise: reserved.amountPaise,
+  });
+  return {journalId: persisted.journal.journalId, amountPaise: reserved.amountPaise};
+}
+
+/**
+ * Caps how many riders a guarantee can cover per period. A rider takes a place
+ * the first time they do any work in the period; once every place is taken,
+ * later riders see the offer as full instead of working toward money that
+ * would not be paid. Also reflects a paused programme or an exhausted budget.
+ */
+async function applyGuaranteeAvailability(
+  campaign: RiderRewardCampaign,
+  snapshot: RiderRewardProgressSnapshot,
+  database: RiderRewardsDatabase,
+  guaranteesEnabled: boolean,
+  referenceAt: number,
+): Promise<RiderRewardProgressSnapshot> {
+  if (!isGuaranteeCampaign(campaign) || !snapshot.guarantee) return snapshot;
+  if (!guaranteesEnabled) return {...snapshot, guarantee: {...snapshot.guarantee, status: "paused"}};
+  if (campaign.budgetPaise > 0) {
+    const budget = await guaranteeBudgetRef(database, campaign.campaignId).get();
+    const spent = integer(record(budget.exists ? budget.data() : null).spentPaise, 0, 0);
+    if (spent >= campaign.budgetPaise && snapshot.creditedRewardPaise === 0) {
+      return {...snapshot, guarantee: {...snapshot.guarantee, status: "budget_exhausted", topUpPaise: 0}, currentUnlockedRewardPaise: 0};
+    }
+  }
+  if (campaign.maxEligibleRiders <= 0) return snapshot;
+  const working = snapshot.tripsCompleted > 0 || snapshot.acceptedOrders > 0 ||
+    snapshot.groups.some((group) => group.slots.some((slot) => slot.qualifiedOnlineMs > 0));
+  const ref = guaranteeEnrollmentRef(database, campaign.campaignId, snapshot.periodKey);
+  const enrolled = await database.runTransaction(async (transaction: TransactionLike) => {
+    const current = await transaction.get(ref);
+    const data = record(current.exists ? current.data() : null);
+    const riders = record(data.riderIds);
+    if (riders[snapshot.riderId] !== undefined) return true;
+    const count = Object.keys(riders).length;
+    if (!working || snapshot.periodEndAt <= referenceAt) return count < campaign.maxEligibleRiders ? null : false;
+    if (count >= campaign.maxEligibleRiders) return false;
+    transaction.set(ref, {
+      campaignId: campaign.campaignId,
+      periodKey: snapshot.periodKey,
+      maxEligibleRiders: campaign.maxEligibleRiders,
+      riderIds: {...riders, [snapshot.riderId]: referenceAt},
+      count: count + 1,
+      updatedAt: referenceAt,
+    }, {merge: true});
+    return true;
+  });
+  if (enrolled === false) {
+    return {
+      ...snapshot,
+      status: "unavailable",
+      qualified: false,
+      currentUnlockedRewardPaise: 0,
+      guarantee: {...snapshot.guarantee, status: "seats_full", topUpPaise: 0},
+    };
+  }
+  return snapshot;
 }
 
 async function settleSnapshotIfNeeded(
@@ -3279,14 +3850,20 @@ async function settleSnapshotIfNeeded(
 ): Promise<{journalId: string; amountPaise: number} | null> {
   if (campaign.kind !== "milestone_bonus") return null;
   if (!snapshot.qualified || snapshot.periodEndAt > settlementAt) return null;
+  if (isGuaranteeCampaign(campaign)) {
+    if (snapshot.creditedRewardPaise > 0) return null;
+    return settleGuaranteeSnapshot(campaign, snapshot, database, settlementAt);
+  }
   if (snapshot.currentUnlockedRewardPaise <= 0 || snapshot.creditedRewardPaise > 0) return null;
-  const persisted = await persistLedgerJournal(buildRiderRewardSettlementJournal({
+  const cityKey = await riderCityKey(database, snapshot.riderId);
+  const persisted = await persistLedgerJournalIfAbsent(buildRiderRewardSettlementJournal({
     campaign,
     riderId: snapshot.riderId,
     periodKey: snapshot.periodKey,
     periodStartAt: snapshot.periodStartAt,
     periodEndAt: snapshot.periodEndAt,
     amountPaise: snapshot.currentUnlockedRewardPaise,
+    cityKey,
   }), database);
   return {
     journalId: persisted.journal.journalId,
@@ -3314,7 +3891,7 @@ export async function refreshRiderRewardProgress(
   const completedTripsLifetime = completedTripsLifetimeForRider(riderProfile, riderJournals, riderId);
   const activityWindow = rewardActivityWindow(campaigns, referenceAt);
   const activityEvents = await readActivityEvents(database, riderId, activityWindow.startAt, activityWindow.endAt);
-  const snapshots = campaigns.map((campaign) => computeCampaignProgressSnapshot({
+  const computedSnapshots = campaigns.map((campaign) => computeCampaignProgressSnapshot({
     campaign,
     riderId,
     riderProfile,
@@ -3324,6 +3901,14 @@ export async function refreshRiderRewardProgress(
     riderJournals,
     completedTripsLifetime,
   }));
+  const guaranteesEnabled = campaigns.some(isGuaranteeCampaign) ?
+    (await loadEconomicsControl(referenceAt, database)).flags.riderGuarantee : true;
+  const snapshots: RiderRewardProgressSnapshot[] = [];
+  for (const snapshot of computedSnapshots) {
+    const campaign = campaigns.find((candidate) => candidate.campaignId === snapshot.campaignId);
+    snapshots.push(campaign ?
+      await applyGuaranteeAvailability(campaign, snapshot, database, guaranteesEnabled, referenceAt) : snapshot);
+  }
   const settledSnapshots: RiderRewardProgressSnapshot[] = [];
   for (const snapshot of snapshots) {
     const campaign = campaigns.find((candidate) => candidate.campaignId === snapshot.campaignId);
@@ -3577,8 +4162,12 @@ export async function readRiderRewardsAdminDashboard(
             groupsRequired: snapshot.groups.length,
             nextMilestone: nextMilestoneFor(campaign, snapshot.tripsCompleted),
             conditionsSummary: snapshot.conditionsSummary,
+            guarantee: snapshot.guarantee ?? null,
           };
         });
+      const guaranteeBudgetSpentPaise = isGuaranteeCampaign(campaign) ?
+        integer(record(await guaranteeBudgetRef(database, campaign.campaignId).get().then((doc) =>
+          doc.exists ? doc.data() : null)).spentPaise, 0, 0) : 0;
       const currentlyEligibleCount = snapshots.filter((snapshot) =>
         ["ACTIVE", "IN_PROGRESS", "QUALIFIED", "COMPLETED", "PAID"].includes(snapshot.status) &&
         !snapshot.failed
@@ -3604,6 +4193,7 @@ export async function readRiderRewardsAdminDashboard(
           total + Math.max(snapshot.creditedRewardPaise, snapshot.qualified ? snapshot.currentUnlockedRewardPaise : 0), 0),
         rewardsPaidPaise: snapshots.reduce((total, snapshot) => total + snapshot.creditedRewardPaise, 0),
         riderProgressPreview,
+        guaranteeBudgetSpentPaise,
       };
     })),
   };
@@ -3701,6 +4291,18 @@ export async function updateRiderRewardSettings(
     if (current !== null && input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
       throw new DomainError("aborted", "Reward settings changed; refresh and retry.");
     }
+    const nextTerms: RiderReferralTerms = {
+      inviterRewardPaise: input.inviterRewardPaise ?? existing.inviterRewardPaise,
+      inviteeRewardPaise: input.inviteeRewardPaise ?? existing.inviteeRewardPaise,
+      qualifyingDeliveredOrders: input.referralMinCompletedTrips ?? existing.referralMinCompletedTrips,
+      qualificationDays: input.referralQualificationDays ?? existing.referralQualificationDays,
+    };
+    const termsChanged = nextTerms.inviterRewardPaise !== existing.inviterRewardPaise ||
+      nextTerms.inviteeRewardPaise !== existing.inviteeRewardPaise ||
+      nextTerms.qualifyingDeliveredOrders !== existing.referralMinCompletedTrips ||
+      nextTerms.qualificationDays !== existing.referralQualificationDays;
+    // A new version only applies to referrals accepted from now on.
+    const programmeVersion = existing.referralProgrammeVersion + (termsChanged ? 1 : 0);
     const next = {
       schemaVersion: 1,
       payoutMinimumPaise: input.payoutMinimumPaise ?? existing.payoutMinimumPaise,
@@ -3709,6 +4311,13 @@ export async function updateRiderRewardSettings(
       inviteeRewardPaise: input.inviteeRewardPaise ?? existing.inviteeRewardPaise,
       referralMinCompletedTrips: input.referralMinCompletedTrips ?? existing.referralMinCompletedTrips,
       referralMaxRewardsPerRider: input.referralMaxRewardsPerRider ?? existing.referralMaxRewardsPerRider,
+      referralProgramStartAt: input.referralProgramStartAt ?? existing.referralProgramStartAt,
+      referralProgramEndAt: input.referralProgramEndAt ?? existing.referralProgramEndAt,
+      referralCityNames: input.referralCityNames ?? existing.referralCityNames,
+      referralBudgetPaise: input.referralBudgetPaise ?? existing.referralBudgetPaise,
+      referralQualificationDays: nextTerms.qualificationDays,
+      referralProgrammeVersion: programmeVersion,
+      referralLegacyTerms: existing.referralLegacyTerms,
       updatedAt: now(),
       updatedBy: uid,
       updatedByRole: actorRole,
@@ -3716,6 +4325,21 @@ export async function updateRiderRewardSettings(
       lastRequestHash: requestHash,
     };
     transaction.set(ref, next);
+    if (termsChanged || !integer(raw.referralProgrammeVersion, 0, 0)) {
+      transaction.set(database.collection("riderReferralProgrammeVersions").doc(String(programmeVersion)), {
+        programmeId: RIDER_REFERRAL_PROGRAMME_ID,
+        version: programmeVersion,
+        ...nextTerms,
+        startAt: next.referralProgramStartAt,
+        endAt: next.referralProgramEndAt,
+        cityNames: next.referralCityNames,
+        budgetPaise: next.referralBudgetPaise,
+        maxRewardsPerInviter: next.referralMaxRewardsPerRider,
+        createdAt: now(),
+        createdBy: uid,
+        createdByRole: actorRole,
+      }, {merge: true});
+    }
     return normalizeRewardSettings(next);
   });
 }
@@ -3900,6 +4524,8 @@ export async function readRiderRewardsDashboard(
         otherConditionProgress: snapshot?.otherConditions ?? [],
         liabilityRewardPaise: snapshot?.qualified ? currentUnlockedRewardPaise : 0,
         periodLabel,
+        payoutMode: campaign.milestonePayoutMode,
+        guarantee: snapshot?.guarantee ?? null,
       };
     })
     .sort((left, right) => {
@@ -3928,9 +4554,60 @@ export async function readRiderRewardsDashboard(
       nextRunDayKey: payoutAutomation.nextRunDayKey,
     },
   };
-  const referredRiderCount = Object.values(riders).filter((candidate) =>
-    referralInputMatchesRider(candidate.referredByCode, referralIdentity)
-  ).length;
+  const [referralRecords, referralBudgetSnapshot] = await Promise.all([
+    readInviterReferralRows(database, riderId),
+    referralBudgetRef(database).get(),
+  ]);
+  const recordedIds = new Set(referralRecords.map((referral) => referral.referredRiderId));
+  const invitedOnly = Object.entries(riders).filter(([candidateId, candidate]) =>
+    !recordedIds.has(candidateId) && referralInputMatchesRider(candidate.referredByCode, referralIdentity));
+  const referralTerms = currentReferralTerms(settings);
+  const referralBudget = referralBudgetFrom(settings, referralBudgetSnapshot.exists ? referralBudgetSnapshot.data() : null);
+  const programmeState = riderReferralProgrammeState({
+    active: settings.referralProgramActive, startAt: settings.referralProgramStartAt, endAt: settings.referralProgramEndAt,
+    terms: referralTerms, budget: referralBudget,
+  }, referenceAt);
+  const friends: RiderReferralFriend[] = [
+    ...referralRecords.filter((referral) => referral.status !== "not_eligible" || referral.statusReason !== "self_referral")
+      .map((referral): RiderReferralFriend => {
+        const progress = riderReferralProgress(referral.deliveredCount, referral.terms.qualifyingDeliveredOrders);
+        return {
+          name: referral.referredDisplayName,
+          joinedAt: referral.acceptedAt,
+          delivered: progress.delivered,
+          target: progress.target,
+          remaining: progress.remaining,
+          percent: progress.percent,
+          status: referral.status,
+          statusReason: referral.statusReason,
+          rewardPaise: referral.terms.inviterRewardPaise,
+          deadlineAt: referral.qualificationDeadlineAt,
+          qualifiedAt: referral.qualifiedAt,
+          paidAt: referral.paidAt,
+        };
+      }),
+    ...invitedOnly.slice(0, 50).map(([, candidate]): RiderReferralFriend => ({
+      name: safeDisplayName(candidate as Record<string, unknown>),
+      joinedAt: integer((candidate as Record<string, unknown>).createdAt, 0, 0),
+      delivered: 0,
+      target: referralTerms.qualifyingDeliveredOrders,
+      remaining: referralTerms.qualifyingDeliveredOrders,
+      percent: 0,
+      status: "invited",
+      statusReason: "application_not_submitted",
+      rewardPaise: referralTerms.inviterRewardPaise,
+      deadlineAt: 0,
+      qualifiedAt: 0,
+      paidAt: 0,
+    })),
+  ];
+  const referredRiderCount = friends.length;
+  const inviterCounts = referralRecords.reduce((counts, referral) => ({
+    awarded: counts.awarded + (referral.status === "paid" || referral.status === "qualified" ? 1 : 0),
+    open: counts.open + (referral.status === "in_progress" || referral.status === "review" ? 1 : 0),
+  }), {awarded: 0, open: 0});
+  const paidFromRecords = referralRecords.reduce((total, referral) =>
+    total + (referral.status === "paid" ? referral.terms.inviterRewardPaise : 0), 0);
   return {
     generatedAt: now(),
     riderId,
@@ -3942,17 +4619,965 @@ export async function readRiderRewardsDashboard(
     payout,
     offers,
     referral: {
-      active: settings.referralProgramActive,
+      active: programmeState === "active",
+      programmeState,
+      programmeVersion: settings.referralProgrammeVersion,
       referralCode: referralIdentity.referralCode,
-      inviterRewardPaise: settings.inviterRewardPaise,
-      inviteeRewardPaise: settings.inviteeRewardPaise,
-      minCompletedTrips: settings.referralMinCompletedTrips,
+      inviterRewardPaise: referralTerms.inviterRewardPaise,
+      inviteeRewardPaise: referralTerms.inviteeRewardPaise,
+      minCompletedTrips: referralTerms.qualifyingDeliveredOrders,
+      qualificationDays: referralTerms.qualificationDays,
       maxRewardsPerRider: settings.referralMaxRewardsPerRider,
+      remainingInviterSlots: settings.referralMaxRewardsPerRider > 0
+        ? Math.max(0, settings.referralMaxRewardsPerRider - inviterCounts.awarded - inviterCounts.open)
+        : null,
       referredRiderCount,
-      earnedRewardPaise: positiveReferralRewardInWindow(Array.from(rewardJournals.values()), riderId),
+      earnedRewardPaise: Math.max(paidFromRecords, positiveReferralRewardInWindow(Array.from(rewardJournals.values()), riderId)),
+      pendingRewardPaise: referralRecords.reduce((total, referral) =>
+        total + (OPEN_REFERRAL_STATUSES.includes(referral.status) ? referral.terms.inviterRewardPaise : 0), 0),
+      referrals: friends,
     },
     loginSessionTracker: buildLoginSessionTracker(campaigns, progressSnapshots, referenceAt),
   };
+}
+
+function riderReferralOpen(settings: RiderRewardSettings, riderProfile: Record<string, unknown>, at: number): boolean {
+  return riderReferralClosedReason(settings, riderProfile, at) === "";
+}
+
+function riderReferralClosedReason(settings: RiderRewardSettings, riderProfile: Record<string, unknown>, at: number): string {
+  if (!settings.referralProgramActive) return "programme_paused";
+  if (settings.referralProgramStartAt && at < settings.referralProgramStartAt) return "programme_not_started";
+  if (settings.referralProgramEndAt && at >= settings.referralProgramEndAt) return "programme_closed";
+  if (settings.referralCityNames.length) {
+    const city = searchKey(riderProfile.city ?? "");
+    if (!settings.referralCityNames.some((name) => searchKey(name) === city)) return "city_not_eligible";
+  }
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Rider referral records
+//
+// riderReferrals/{referredRiderId} is the referral. It is created once, when
+// the referred rider applies, with the programme terms of that moment frozen
+// on it; the inviter cannot change afterwards. Every qualifying delivered
+// order is counted once through riderReferrals/{id}/countedOrders/{orderId}.
+// The reward is reserved from the programme budget at acceptance, moved to
+// spent at qualification, and credited once through a deterministic journal.
+// ---------------------------------------------------------------------------
+
+export interface RiderReferralRecord {
+  schemaVersion: 1;
+  referralId: string;
+  programmeId: string;
+  programmeVersion: number;
+  inviterId: string;
+  inviterDisplayName: string;
+  referredRiderId: string;
+  referredDisplayName: string;
+  referralCode: string;
+  terms: RiderReferralTerms;
+  acceptedAt: number;
+  qualificationDeadlineAt: number;
+  programmeStartAt: number;
+  programmeEndAt: number;
+  countryKey: string;
+  stateKey: string;
+  cityKey: string;
+  cityName: string;
+  zoneKey: string;
+  status: RiderReferralStatus;
+  statusReason: string;
+  legacy: boolean;
+  reservedPaise: number;
+  deliveredCount: number;
+  riskFlags: string[];
+  reviewRequired: boolean;
+  reviewDecision: "" | "approved" | "rejected";
+  reviewedBy: string;
+  reviewedAt: number;
+  reviewNote: string;
+  qualifyingOrderId: string;
+  qualifiedAt: number;
+  paidAt: number;
+  journalIds: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+const REFERRAL_STATUSES: readonly RiderReferralStatus[] = [
+  "in_progress", "review", "qualified", "paid", "expired", "rejected", "not_eligible",
+];
+
+function riderReferralRef(database: RiderRewardsDatabase, referredRiderId: string): DocumentReferenceLike {
+  return database.collection("riderReferrals").doc(referredRiderId);
+}
+
+function referralBudgetRef(database: RiderRewardsDatabase): DocumentReferenceLike {
+  return database.collection("programBudgets").doc("rider_referral");
+}
+
+function referralInviterCountRef(database: RiderRewardsDatabase, inviterId: string): DocumentReferenceLike {
+  return database.collection("riderReferralInviterCounts").doc(inviterId);
+}
+
+function referralCountedOrderRef(database: RiderRewardsDatabase, referredRiderId: string, orderId: string): DocumentReferenceLike {
+  return riderReferralRef(database, referredRiderId).collection("countedOrders").doc(orderId);
+}
+
+function currentReferralTerms(settings: RiderRewardSettings): RiderReferralTerms {
+  return {
+    inviterRewardPaise: settings.inviterRewardPaise,
+    inviteeRewardPaise: settings.inviteeRewardPaise,
+    qualifyingDeliveredOrders: settings.referralMinCompletedTrips,
+    qualificationDays: settings.referralQualificationDays,
+  };
+}
+
+function cityKeyFromName(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** First name and last initial: enough to recognise a friend, nothing more. */
+function safeDisplayName(profile: Record<string, unknown>): string {
+  const parts = text(profile.fullName ?? profile.name, 120).split(/\s+/).filter(Boolean);
+  if (!parts.length) return "Delivery partner";
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1]!.charAt(0).toUpperCase()}.` : parts[0]!;
+}
+
+function normalizeReferralRecord(value: unknown): RiderReferralRecord | null {
+  const source = record(value);
+  const referredRiderId = identifier(source.referredRiderId);
+  const inviterId = identifier(source.inviterId);
+  if (!referredRiderId || !inviterId) return null;
+  const status = REFERRAL_STATUSES.includes(source.status as RiderReferralStatus)
+    ? source.status as RiderReferralStatus
+    : "in_progress";
+  const decision = source.reviewDecision === "approved" || source.reviewDecision === "rejected" ? source.reviewDecision : "";
+  return {
+    schemaVersion: 1,
+    referralId: referredRiderId,
+    programmeId: text(source.programmeId, 80) || RIDER_REFERRAL_PROGRAMME_ID,
+    programmeVersion: integer(source.programmeVersion, 1, 0),
+    inviterId,
+    inviterDisplayName: text(source.inviterDisplayName, 80),
+    referredRiderId,
+    referredDisplayName: text(source.referredDisplayName, 80),
+    referralCode: text(source.referralCode, 200),
+    terms: normalizeReferralTerms(source.terms, LEGACY_RIDER_REFERRAL_TERMS),
+    acceptedAt: integer(source.acceptedAt, 0, 0),
+    qualificationDeadlineAt: integer(source.qualificationDeadlineAt, 0, 0),
+    programmeStartAt: integer(source.programmeStartAt, 0, 0),
+    programmeEndAt: integer(source.programmeEndAt, 0, 0),
+    countryKey: text(source.countryKey, 40),
+    stateKey: text(source.stateKey, 80),
+    cityKey: text(source.cityKey, 80),
+    cityName: text(source.cityName, 80),
+    zoneKey: text(source.zoneKey, 120),
+    status,
+    statusReason: text(source.statusReason, 120),
+    legacy: source.legacy === true,
+    reservedPaise: integer(source.reservedPaise, 0, 0),
+    deliveredCount: integer(source.deliveredCount, 0, 0),
+    riskFlags: Array.isArray(source.riskFlags) ? source.riskFlags.map((flag) => text(flag, 40)).filter(Boolean) : [],
+    reviewRequired: source.reviewRequired === true,
+    reviewDecision: decision,
+    reviewedBy: text(source.reviewedBy, 128),
+    reviewedAt: integer(source.reviewedAt, 0, 0),
+    reviewNote: text(source.reviewNote, 300),
+    qualifyingOrderId: text(source.qualifyingOrderId, 128),
+    qualifiedAt: integer(source.qualifiedAt, 0, 0),
+    paidAt: integer(source.paidAt, 0, 0),
+    journalIds: Array.isArray(source.journalIds) ? source.journalIds.map((id) => text(id, 200)).filter(Boolean) : [],
+    createdAt: integer(source.createdAt, 0, 0),
+    updatedAt: integer(source.updatedAt, 0, 0),
+  };
+}
+
+function referralBudgetFrom(settings: RiderRewardSettings, value: unknown): RiderReferralBudget {
+  const source = record(value);
+  return {
+    budgetPaise: settings.referralBudgetPaise,
+    spentPaise: integer(source.spentPaise, 0, 0),
+    reservedPaise: integer(source.reservedPaise, 0, 0),
+  };
+}
+
+function inviterCountsFrom(value: unknown): {awarded: number; open: number} {
+  const source = record(value);
+  return {
+    // `count` is what the first release wrote: rewards already paid.
+    awarded: Math.max(integer(source.awardedCount, 0, 0), integer(source.count, 0, 0)),
+    open: integer(source.openCount, 0, 0),
+  };
+}
+
+function qualifyingReferralOrder(order: Record<string, unknown>, riderId: string): boolean {
+  if (order.status !== "Delivered") return false;
+  if (identifier(order.riderId) !== riderId) return false;
+  if (order.paymentState === "refunded") return false;
+  if (order.testOrder === true || order.isTest === true) return false;
+  if (order.fraudReversed === true || order.referralIneligible === true) return false;
+  return true;
+}
+
+async function readReferralRecord(database: RiderRewardsDatabase, referredRiderId: string): Promise<RiderReferralRecord | null> {
+  const snapshot = await riderReferralRef(database, referredRiderId).get();
+  return normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+}
+
+async function readRewardSettings(database: RiderRewardsDatabase): Promise<RiderRewardSettings> {
+  const snapshot = await riderRewardSettingsRef(database).get();
+  return normalizeRewardSettings(snapshot.exists ? snapshot.data() : null);
+}
+
+/**
+ * Creates the referral the first time a referred rider is seen (application,
+ * approval, or first delivery for riders who applied before this existed).
+ * Returns the existing record unchanged if there already is one, so the
+ * inviter and the terms can never be switched later.
+ */
+async function ensureRiderReferralRecord(
+  referredRiderId: string,
+  profile: Record<string, unknown>,
+  settings: RiderRewardSettings,
+  database: RiderRewardsDatabase,
+  at: number,
+): Promise<RiderReferralRecord | null> {
+  const existing = await readReferralRecord(database, referredRiderId);
+  if (existing) return existing;
+  const referralCode = text(profile.referredByCode, 200);
+  if (!referralCode) return null;
+  const profileStatus = text(profile.status, 40);
+  if (!profileStatus || profileStatus === "draft" || profileStatus === "rejected") return null;
+  const inviterId = await inviterIdFromReferralInput(referralCode, database);
+  if (!inviterId) return null;
+  const inviterProfile = inviterId === referredRiderId ? profile : await readRiderProfile(database, inviterId);
+  const appliedAt = integer(profile.submittedAt ?? profile.createdAt, 0, 0);
+  const legacy = appliedAt > 0 && appliedAt < RIDER_REFERRAL_FROZEN_TERMS_SINCE;
+  const terms = legacy ? settings.referralLegacyTerms : currentReferralTerms(settings);
+  const cityKey = cityKeyFromName(profile.city);
+  const control = await loadEconomicsControl(at, database);
+  const location = control.cities[cityKey];
+  const [oldGuard, oldJournalAtLegacyTarget, oldJournalAtCurrentTarget, currentJournal] = await Promise.all([
+    database.collection("riderReferralAwards").doc(referredRiderId).get(),
+    database.collection(LEDGER_JOURNALS_COLLECTION).doc(deterministicJournalId(
+      "rider_referral_reward", `referral:${referredRiderId}:inviter:${settings.referralLegacyTerms.qualifyingDeliveredOrders}`)).get(),
+    database.collection(LEDGER_JOURNALS_COLLECTION).doc(deterministicJournalId(
+      "rider_referral_reward", `referral:${referredRiderId}:inviter:${settings.referralMinCompletedTrips}`)).get(),
+    database.collection(LEDGER_JOURNALS_COLLECTION).doc(deterministicJournalId(
+      "rider_referral_reward", `rider-referral:${referredRiderId}:inviter`)).get(),
+  ]);
+  const alreadyPaid = oldGuard.exists || oldJournalAtLegacyTarget.exists || oldJournalAtCurrentTarget.exists || currentJournal.exists;
+  let notEligibleReason = "";
+  if (inviterId === referredRiderId) notEligibleReason = "self_referral";
+  else if (isTestAccount(profile) || isTestAccount(inviterProfile)) notEligibleReason = "test_account";
+  else if (!Object.keys(inviterProfile).length) notEligibleReason = "inviter_not_found";
+  else if (!legacy) notEligibleReason = riderReferralClosedReason(settings, profile, at);
+  const riskFlags = inviterId === referredRiderId ? [] : riderReferralRiskFlags(inviterProfile, profile);
+  const acceptedAt = legacy ? appliedAt : at;
+  const base: RiderReferralRecord = {
+    schemaVersion: 1,
+    referralId: referredRiderId,
+    programmeId: RIDER_REFERRAL_PROGRAMME_ID,
+    programmeVersion: legacy ? 1 : settings.referralProgrammeVersion,
+    inviterId,
+    inviterDisplayName: safeDisplayName(inviterProfile),
+    referredRiderId,
+    referredDisplayName: safeDisplayName(profile),
+    referralCode,
+    terms,
+    acceptedAt,
+    qualificationDeadlineAt: referralDeadline(acceptedAt, terms.qualificationDays),
+    programmeStartAt: settings.referralProgramStartAt,
+    programmeEndAt: settings.referralProgramEndAt,
+    countryKey: location?.countryKey ?? "",
+    stateKey: location?.stateKey ?? "",
+    cityKey,
+    cityName: text(profile.city, 80),
+    zoneKey: "",
+    status: "in_progress",
+    statusReason: "",
+    legacy,
+    reservedPaise: 0,
+    deliveredCount: 0,
+    riskFlags,
+    reviewRequired: riskFlags.length > 0,
+    reviewDecision: "",
+    reviewedBy: "",
+    reviewedAt: 0,
+    reviewNote: "",
+    qualifyingOrderId: "",
+    qualifiedAt: 0,
+    paidAt: 0,
+    journalIds: [],
+    createdAt: at,
+    updatedAt: at,
+  };
+  const ref = riderReferralRef(database, referredRiderId);
+  const budgetRef = referralBudgetRef(database);
+  const countRef = referralInviterCountRef(database, inviterId);
+  const created = await database.runTransaction(async (transaction: TransactionLike): Promise<{record: RiderReferralRecord; fresh: boolean}> => {
+    const [snapshot, budgetSnapshot, countSnapshot] = await Promise.all([
+      transaction.get(ref), transaction.get(budgetRef), transaction.get(countRef),
+    ]);
+    const current = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+    if (current) return {record: current, fresh: false};
+    if (alreadyPaid) {
+      // Paid by an earlier release: recorded as paid, budget already spent.
+      const guard = record(oldGuard.exists ? oldGuard.data() : null);
+      const paid: RiderReferralRecord = {
+        ...base,
+        legacy: true,
+        programmeVersion: 1,
+        terms: {
+          ...terms,
+          inviterRewardPaise: integer(guard.inviterRewardPaise, terms.inviterRewardPaise, 0),
+          inviteeRewardPaise: integer(guard.inviteeRewardPaise, terms.inviteeRewardPaise, 0),
+          qualifyingDeliveredOrders: integer(guard.thresholdTrips, terms.qualifyingDeliveredOrders, 0),
+        },
+        status: "paid",
+        statusReason: "paid_by_earlier_release",
+        paidAt: integer(guard.awardedAt, at, 0),
+        qualifiedAt: integer(guard.awardedAt, at, 0),
+      };
+      transaction.set(ref, paid);
+      return {record: paid, fresh: false};
+    }
+    if (notEligibleReason) {
+      const refused = {...base, status: "not_eligible" as const, statusReason: notEligibleReason};
+      transaction.set(ref, refused);
+      return {record: refused, fresh: false};
+    }
+    const counts = inviterCountsFrom(countSnapshot.exists ? countSnapshot.data() : null);
+    if (settings.referralMaxRewardsPerRider > 0 && counts.awarded + counts.open >= settings.referralMaxRewardsPerRider) {
+      const refused = {...base, status: "not_eligible" as const, statusReason: "inviter_limit_reached"};
+      transaction.set(ref, refused);
+      return {record: refused, fresh: false};
+    }
+    const budget = referralBudgetFrom(settings, budgetSnapshot.exists ? budgetSnapshot.data() : null);
+    const total = referralRewardTotal(terms);
+    const remaining = referralBudgetRemaining(budget);
+    if (remaining !== null && remaining < total) {
+      const refused = {...base, status: "not_eligible" as const, statusReason: "budget_exhausted"};
+      transaction.set(ref, refused);
+      return {record: refused, fresh: false};
+    }
+    // Promise the reward now, so a rider never works toward money that is
+    // not there. The reservation is released if the referral ends unpaid.
+    const accepted = {...base, reservedPaise: total};
+    transaction.set(ref, accepted);
+    transaction.set(budgetRef, {
+      program: "rider_referral", reservedPaise: budget.reservedPaise + total, spentPaise: budget.spentPaise, updatedAt: at,
+    }, {merge: true});
+    transaction.set(countRef, {inviterId, openCount: counts.open + 1, awardedCount: counts.awarded, updatedAt: at}, {merge: true});
+    return {record: accepted, fresh: true};
+  });
+  if (created.fresh) {
+    await backfillReferralDeliveries(created.record, database);
+    void notifyReferralEvent(created.record, "joined");
+  }
+  return readReferralRecord(database, referredRiderId);
+}
+
+/** Counts the referred rider's delivered orders that already exist (riders who
+ * applied before referral records did). Each order is counted once. */
+async function backfillReferralDeliveries(referral: RiderReferralRecord, database: RiderRewardsDatabase): Promise<void> {
+  const page = await database.collection("orders")
+    .where("riderId", "==", referral.referredRiderId)
+    .where("status", "==", "Delivered")
+    .get();
+  const orders = page.docs
+    .map((doc): Record<string, unknown> & {id: string} => ({...record(doc.data()), id: doc.id}))
+    .filter((order) => qualifyingReferralOrder(order, referral.referredRiderId))
+    .filter((order) => !referral.qualificationDeadlineAt ||
+      integer(order.deliveredAt ?? order.updatedAt, 0, 0) < referral.qualificationDeadlineAt);
+  for (let start = 0; start < orders.length; start += 100) {
+    const chunk = orders.slice(start, start + 100);
+    await database.runTransaction(async (transaction: TransactionLike) => {
+      const ref = riderReferralRef(database, referral.referredRiderId);
+      const snapshot = await transaction.get(ref);
+      const markers = await Promise.all(chunk.map((order) =>
+        transaction.get(referralCountedOrderRef(database, referral.referredRiderId, order.id))));
+      const current = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+      if (!current || current.status !== "in_progress") return;
+      let added = 0;
+      chunk.forEach((order, index) => {
+        if (markers[index]!.exists) return;
+        added += 1;
+        transaction.set(referralCountedOrderRef(database, referral.referredRiderId, order.id), {
+          orderId: order.id, deliveredAt: integer(order.deliveredAt ?? order.updatedAt, 0, 0), source: "backfill",
+        });
+      });
+      if (added) transaction.set(ref, {deliveredCount: current.deliveredCount + added}, {merge: true});
+    });
+  }
+}
+
+type ReferralTransition = {record: RiderReferralRecord; changed: boolean};
+
+/**
+ * Moves a referral to its next status inside a transaction that has already
+ * read the referral, the budget and the inviter's counts, and keeps all three
+ * consistent: reserved money becomes spent on qualification and is released
+ * when the referral ends unpaid.
+ */
+function applyReferralTransition(
+  transaction: TransactionLike,
+  database: RiderRewardsDatabase,
+  settings: RiderRewardSettings,
+  current: RiderReferralRecord,
+  next: RiderReferralStatus,
+  context: {at: number; orderId?: string; budget: RiderReferralBudget; counts: {awarded: number; open: number}; reason?: string},
+): ReferralTransition {
+  if (next === current.status) return {record: current, changed: false};
+  const updated: RiderReferralRecord = {...current, status: next, updatedAt: context.at};
+  if (next === "review") {
+    updated.qualifiedAt = current.qualifiedAt || context.at;
+    updated.qualifyingOrderId = current.qualifyingOrderId || (context.orderId ?? "");
+    updated.statusReason = "held_for_review";
+  }
+  if (next === "qualified") {
+    const total = referralRewardTotal(current.terms);
+    updated.qualifiedAt = current.qualifiedAt || context.at;
+    updated.qualifyingOrderId = current.qualifyingOrderId || (context.orderId ?? "");
+    updated.reservedPaise = 0;
+    updated.statusReason = "";
+    transaction.set(referralBudgetRef(database), {
+      program: "rider_referral",
+      reservedPaise: Math.max(0, context.budget.reservedPaise - current.reservedPaise),
+      spentPaise: context.budget.spentPaise + total,
+      updatedAt: context.at,
+    }, {merge: true});
+    transaction.set(referralInviterCountRef(database, current.inviterId), {
+      inviterId: current.inviterId,
+      openCount: Math.max(0, context.counts.open - 1),
+      awardedCount: context.counts.awarded + 1,
+      updatedAt: context.at,
+    }, {merge: true});
+  }
+  if (next === "expired" || next === "rejected") {
+    updated.reservedPaise = 0;
+    updated.statusReason = context.reason ?? (next === "expired" ? "deadline_passed" : "rejected");
+    transaction.set(referralBudgetRef(database), {
+      program: "rider_referral",
+      reservedPaise: Math.max(0, context.budget.reservedPaise - current.reservedPaise),
+      updatedAt: context.at,
+    }, {merge: true});
+    transaction.set(referralInviterCountRef(database, current.inviterId), {
+      inviterId: current.inviterId,
+      openCount: Math.max(0, context.counts.open - 1),
+      updatedAt: context.at,
+    }, {merge: true});
+  }
+  void settings;
+  transaction.set(riderReferralRef(database, current.referredRiderId), updated);
+  return {record: updated, changed: true};
+}
+
+/**
+ * Counts one delivered order (once, however often it is retried) and moves
+ * the referral forward. `countOrder` false only re-checks the status.
+ */
+async function advanceRiderReferral(
+  referredRiderId: string,
+  input: {order?: Record<string, unknown> & {id: string}; at: number; reviewDecision?: {decision: "approved" | "rejected"; by: string; note: string}},
+  settings: RiderRewardSettings,
+  database: RiderRewardsDatabase,
+): Promise<ReferralTransition | null> {
+  const ref = riderReferralRef(database, referredRiderId);
+  const snapshot = await ref.get();
+  const initial = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+  if (!initial) return null;
+  const budgetRef = referralBudgetRef(database);
+  const countRef = referralInviterCountRef(database, initial.inviterId);
+  const markerRef = input.order ? referralCountedOrderRef(database, referredRiderId, input.order.id) : null;
+  return database.runTransaction(async (transaction: TransactionLike): Promise<ReferralTransition | null> => {
+    const [referralSnapshot, budgetSnapshot, countSnapshot, markerSnapshot] = await Promise.all([
+      transaction.get(ref), transaction.get(budgetRef), transaction.get(countRef),
+      markerRef ? transaction.get(markerRef) : Promise.resolve(null),
+    ]);
+    let current = normalizeReferralRecord(referralSnapshot.exists ? referralSnapshot.data() : null);
+    if (!current) return null;
+    if (!OPEN_REFERRAL_STATUSES.includes(current.status)) return {record: current, changed: false};
+    let changed = false;
+    if (input.reviewDecision) {
+      current = {
+        ...current,
+        reviewDecision: input.reviewDecision.decision,
+        reviewedBy: input.reviewDecision.by,
+        reviewedAt: input.at,
+        reviewNote: input.reviewDecision.note,
+      };
+      changed = true;
+    }
+    if (input.order && markerRef && markerSnapshot && !markerSnapshot.exists && current.status !== "qualified") {
+      const deliveredAt = integer(input.order.deliveredAt ?? input.order.updatedAt, input.at, 0);
+      const beforeDeadline = !current.qualificationDeadlineAt || deliveredAt < current.qualificationDeadlineAt;
+      if (qualifyingReferralOrder(input.order, referredRiderId) && beforeDeadline) {
+        transaction.set(markerRef, {orderId: input.order.id, deliveredAt, source: "delivery"});
+        current = {...current, deliveredCount: current.deliveredCount + 1};
+        changed = true;
+      }
+    }
+    if (current.status === "qualified") return {record: current, changed: false};
+    const next = nextReferralStatus({
+      status: current.status,
+      deliveredCount: current.deliveredCount,
+      target: current.terms.qualifyingDeliveredOrders,
+      deadlineAt: current.qualificationDeadlineAt,
+      at: input.at,
+      reviewRequired: current.reviewRequired,
+      reviewDecision: current.reviewDecision,
+    });
+    const transition = applyReferralTransition(transaction, database, settings, current, next, {
+      at: input.at,
+      orderId: input.order?.id,
+      budget: referralBudgetFrom(settings, budgetSnapshot.exists ? budgetSnapshot.data() : null),
+      counts: inviterCountsFrom(countSnapshot.exists ? countSnapshot.data() : null),
+      reason: input.reviewDecision?.decision === "rejected" ? "rejected_by_admin" : undefined,
+    });
+    if (!transition.changed && changed) {
+      transaction.set(ref, {...current, updatedAt: input.at});
+      return {record: current, changed: true};
+    }
+    return transition;
+  });
+}
+
+function buildReferralJournals(referral: RiderReferralRecord): LedgerJournal[] {
+  const occurredAt = referral.qualifiedAt || referral.updatedAt || referral.acceptedAt || 1;
+  const attribution: Record<string, string> = {
+    riderId: referral.referredRiderId,
+    referralId: referral.referralId,
+    programmeId: referral.programmeId,
+    programmeVersion: String(referral.programmeVersion),
+    inviterRiderId: referral.inviterId,
+    referredRiderId: referral.referredRiderId,
+    costCategory: "rider_acquisition",
+    budget: "rider_supply",
+    reason: "rider_referral_qualified",
+    ...(referral.cityKey ? {cityKey: referral.cityKey} : {}),
+    ...(referral.stateKey ? {stateKey: referral.stateKey} : {}),
+    ...(referral.countryKey ? {countryKey: referral.countryKey} : {}),
+    ...(referral.zoneKey ? {zoneKey: referral.zoneKey} : {}),
+    ...(referral.qualifyingOrderId ? {qualifyingOrderId: referral.qualifyingOrderId} : {}),
+  };
+  const journals: LedgerJournal[] = [];
+  const threshold = referral.terms.qualifyingDeliveredOrders;
+  if (referral.terms.inviterRewardPaise > 0) {
+    journals.push(buildReferralRewardJournal({
+      riderId: referral.inviterId, relatedRiderId: referral.referredRiderId, referredRiderId: referral.referredRiderId,
+      amountPaise: referral.terms.inviterRewardPaise, occurredAt, beneficiaryRole: "inviter", thresholdTrips: threshold, attribution,
+    }));
+  }
+  if (referral.terms.inviteeRewardPaise > 0) {
+    journals.push(buildReferralRewardJournal({
+      riderId: referral.referredRiderId, relatedRiderId: referral.inviterId, referredRiderId: referral.referredRiderId,
+      amountPaise: referral.terms.inviteeRewardPaise, occurredAt, beneficiaryRole: "invitee", thresholdTrips: threshold, attribution,
+    }));
+  }
+  return journals;
+}
+
+/** Credits a qualified referral. Safe to repeat: journal ids are fixed per
+ * referred rider, and only a "qualified" record moves to "paid". */
+async function creditQualifiedReferral(
+  referral: RiderReferralRecord,
+  database: RiderRewardsDatabase,
+  at: number,
+): Promise<RiderReferralRecord> {
+  if (referral.status !== "qualified") return referral;
+  const journalIds: string[] = [];
+  for (const journal of buildReferralJournals(referral)) {
+    const persisted = await persistLedgerJournalIfAbsent(journal, database);
+    journalIds.push(persisted.journal.journalId);
+  }
+  const ref = riderReferralRef(database, referral.referredRiderId);
+  const paid = await database.runTransaction(async (transaction: TransactionLike): Promise<{record: RiderReferralRecord; changed: boolean}> => {
+    const snapshot = await transaction.get(ref);
+    const current = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+    if (!current || current.status !== "qualified") return {record: current ?? referral, changed: false};
+    const next: RiderReferralRecord = {...current, status: "paid", paidAt: at, journalIds, updatedAt: at};
+    transaction.set(ref, next);
+    return {record: next, changed: true};
+  });
+  if (paid.changed) {
+    logger.info("RIDER_REFERRAL_PAID", {referralId: referral.referralId, inviterId: referral.inviterId, journalIds});
+    void notifyReferralEvent(paid.record, "paid");
+  }
+  return paid.record;
+}
+
+function referralRupees(paise: number): string {
+  return `₹${Math.round(paise / 100).toLocaleString("en-IN")}`;
+}
+
+async function notifyReferralEvent(
+  referral: RiderReferralRecord,
+  event: "joined" | "halfway" | "paid" | "review",
+): Promise<void> {
+  const reward = referralRupees(referral.terms.inviterRewardPaise);
+  const target = referral.terms.qualifyingDeliveredOrders;
+  const name = referral.referredDisplayName || "Your friend";
+  const copy = {
+    joined: {title: "Referral accepted", body: `${name} joined with your code. You earn ${reward} when they complete ${target} successful deliveries.`},
+    halfway: {title: "Referral halfway there", body: `${name} has completed ${referral.deliveredCount} of ${target} deliveries toward your ${reward} reward.`},
+    review: {title: "Referral reward under review", body: `${name} reached ${target} deliveries. Your ${reward} reward is being checked and will be added soon.`},
+    paid: {title: `${reward} referral reward added`, body: `${name} completed ${target} successful deliveries. ${reward} is in your earnings and will be paid with your next payout.`},
+  }[event];
+  if (referral.status === "not_eligible") return;
+  try {
+    await notifyRiderRewardUpdate({
+      riderId: referral.inviterId,
+      eventType: `RIDER_REFERRAL_${event.toUpperCase()}`,
+      deduplicationKey: `rider-referral:${referral.referralId}:${event}`,
+      title: copy.title,
+      body: copy.body,
+      campaignId: RIDER_REFERRAL_PROGRAMME_ID,
+      data: {referralId: referral.referralId, referralEvent: event},
+    });
+  } catch (error) {
+    logger.warn("RIDER_REFERRAL_NOTIFICATION_FAILED", {referralId: referral.referralId, event, error});
+  }
+}
+
+/** One delivered order by a referred rider. Returns journal ids credited
+ * because of this order (empty on repeats and for every other order). */
+async function processRiderReferralDelivery(
+  order: SavrivoOrder,
+  riderProfile: Record<string, unknown>,
+  settings: RiderRewardSettings,
+  database: RiderRewardsDatabase,
+  deliveredAt: number,
+): Promise<string[]> {
+  const riderId = identifier(order.riderId);
+  const referral = await ensureRiderReferralRecord(riderId, riderProfile, settings, database, deliveredAt);
+  if (!referral) return [];
+  const before = referral.deliveredCount;
+  const result = await advanceRiderReferral(riderId, {
+    order: order as unknown as Record<string, unknown> & {id: string}, at: deliveredAt,
+  }, settings, database);
+  if (!result) return [];
+  let current = result.record;
+  const half = Math.ceil(current.terms.qualifyingDeliveredOrders / 2);
+  if (current.status === "in_progress" && before < half && current.deliveredCount >= half) void notifyReferralEvent(current, "halfway");
+  if (result.changed && current.status === "review") {
+    void notifyReferralEvent(current, "review");
+    logger.warn("RIDER_REFERRAL_HELD_FOR_REVIEW", {referralId: current.referralId, riskFlags: current.riskFlags});
+  }
+  if (current.status === "qualified") current = await creditQualifiedReferral(current, database, deliveredAt);
+  return current.status === "paid" && current.qualifyingOrderId === order.id ? current.journalIds : [];
+}
+
+/** A refunded (or fraud-reversed) order stops counting while the referral is
+ * still open. After payment it is only logged; the reward is not clawed back. */
+export async function reverseRiderReferralDelivery(
+  order: SavrivoOrder,
+  database: RiderRewardsDatabase = defaultDatabase(),
+  now: () => number = Date.now,
+): Promise<void> {
+  const riderId = identifier(order.riderId);
+  if (!riderId) return;
+  const ref = riderReferralRef(database, riderId);
+  const markerRef = referralCountedOrderRef(database, riderId, order.id);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const [snapshot, marker] = await Promise.all([transaction.get(ref), transaction.get(markerRef)]);
+    const current = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+    if (!current || !marker.exists || record(marker.data()).reversed === true) return;
+    if (current.status !== "in_progress" && current.status !== "review") {
+      logger.warn("RIDER_REFERRAL_ORDER_REVERSED_AFTER_QUALIFYING", {referralId: current.referralId, orderId: order.id});
+      return;
+    }
+    const deliveredCount = Math.max(0, current.deliveredCount - 1);
+    const stillReached = deliveredCount >= current.terms.qualifyingDeliveredOrders;
+    transaction.set(markerRef, {reversed: true, reversedAt: now()}, {merge: true});
+    transaction.set(ref, {
+      ...current,
+      deliveredCount,
+      ...(current.status === "review" && !stillReached ? {status: "in_progress", statusReason: "", qualifiedAt: 0, qualifyingOrderId: ""} : {}),
+      updatedAt: now(),
+    });
+  });
+}
+
+/** Rider profile written: create the referral at application, and end it if
+ * the application is rejected before any delivery. */
+export async function syncRiderReferralForProfile(
+  riderIdInput: string,
+  database: RiderRewardsDatabase = defaultDatabase(),
+  now: () => number = Date.now,
+): Promise<RiderReferralRecord | null> {
+  const riderId = identifier(riderIdInput);
+  if (!riderId) return null;
+  const profile = await readRiderProfile(database, riderId);
+  if (!text(profile.referredByCode, 200)) return null;
+  const settings = await readRewardSettings(database);
+  if (profile.status === "rejected") {
+    const existing = await readReferralRecord(database, riderId);
+    if (!existing || existing.status !== "in_progress" || existing.deliveredCount > 0) return existing;
+    const budgetRef = referralBudgetRef(database);
+    const countRef = referralInviterCountRef(database, existing.inviterId);
+    const ref = riderReferralRef(database, riderId);
+    return database.runTransaction(async (transaction: TransactionLike) => {
+      const [snapshot, budgetSnapshot, countSnapshot] = await Promise.all([
+        transaction.get(ref), transaction.get(budgetRef), transaction.get(countRef),
+      ]);
+      const current = normalizeReferralRecord(snapshot.exists ? snapshot.data() : null);
+      if (!current || current.status !== "in_progress") return current;
+      return applyReferralTransition(transaction, database, settings, current, "rejected", {
+        at: now(),
+        budget: referralBudgetFrom(settings, budgetSnapshot.exists ? budgetSnapshot.data() : null),
+        counts: inviterCountsFrom(countSnapshot.exists ? countSnapshot.data() : null),
+        reason: "application_rejected",
+      }).record;
+    });
+  }
+  return ensureRiderReferralRecord(riderId, profile, settings, database, now());
+}
+
+/** Ends open referrals whose deadline has passed and releases their budget. */
+export async function expireRiderReferrals(
+  database: RiderRewardsDatabase = defaultDatabase(),
+  now: () => number = Date.now,
+): Promise<number> {
+  const at = now();
+  const settings = await readRewardSettings(database);
+  const page = await database.collection("riderReferrals").where("status", "==", "in_progress").get();
+  let expired = 0;
+  for (const doc of page.docs) {
+    const referral = normalizeReferralRecord(doc.data());
+    if (!referral || !referral.qualificationDeadlineAt || at < referral.qualificationDeadlineAt) continue;
+    const result = await advanceRiderReferral(referral.referredRiderId, {at}, settings, database);
+    if (result?.record.status === "expired") expired += 1;
+  }
+  return expired;
+}
+
+export async function reviewRiderReferralForAdmin(
+  uid: string,
+  token: DecodedIdToken,
+  input: {referredRiderId: string; decision: "approved" | "rejected"; note?: string},
+  database: RiderRewardsDatabase = defaultDatabase(),
+  now: () => number = Date.now,
+): Promise<RiderReferralRecord> {
+  requirePlatformConfigAdminClaim(token);
+  const referredRiderId = identifier(input.referredRiderId);
+  const existing = referredRiderId ? await readReferralRecord(database, referredRiderId) : null;
+  if (!existing) throw new DomainError("not-found", "Referral not found.");
+  if (existing.status !== "in_progress" && existing.status !== "review") {
+    throw new DomainError("failed-precondition", "Only an open referral can be approved or rejected.");
+  }
+  const settings = await readRewardSettings(database);
+  const at = now();
+  const result = await advanceRiderReferral(referredRiderId, {
+    at, reviewDecision: {decision: input.decision, by: uid, note: text(input.note, 300)},
+  }, settings, database);
+  let current = result?.record ?? existing;
+  if (current.status === "qualified") current = await creditQualifiedReferral(current, database, at);
+  logger.info("RIDER_REFERRAL_REVIEWED", {referralId: referredRiderId, decision: input.decision, by: uid, status: current.status});
+  return current;
+}
+
+export interface RiderReferralAdminRow {
+  referralId: string;
+  inviterId: string;
+  inviterName: string;
+  referredRiderId: string;
+  referredName: string;
+  referralCode: string;
+  programmeVersion: number;
+  legacy: boolean;
+  delivered: number;
+  target: number;
+  inviterRewardPaise: number;
+  inviteeRewardPaise: number;
+  cityKey: string;
+  status: RiderReferralStatus;
+  statusReason: string;
+  riskFlags: string[];
+  reviewDecision: string;
+  acceptedAt: number;
+  deadlineAt: number;
+  qualifiedAt: number;
+  paidAt: number;
+  journalIds: string[];
+}
+
+export interface RiderReferralOverview {
+  generatedAt: number;
+  programme: {
+    state: RiderReferralProgrammeState;
+    version: number;
+    terms: RiderReferralTerms;
+    startAt: number;
+    endAt: number;
+    cityNames: readonly string[];
+    maxRewardsPerInviter: number;
+    maxExposurePerInviterPaise: number | null;
+  };
+  budget: RiderReferralBudget & {remainingPaise: number | null};
+  counts: Record<RiderReferralStatus, number> & {total: number; active: number};
+  potentialLiabilityPaise: number;
+  qualifiedUnpaidPaise: number;
+  paidRewardsPaise: number;
+  spendThisMonthPaise: number;
+  activatedReferredRiders: number;
+  averageCostPerActivatedRiderPaise: number | null;
+  averageCostPerQualifiedRiderPaise: number | null;
+  rows: RiderReferralAdminRow[];
+}
+
+function istMonthStart(at: number): number {
+  const offset = 330 * 60 * 1000;
+  const local = new Date(at + offset);
+  return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), 1) - offset;
+}
+
+export async function readRiderReferralOverviewForAdmin(
+  token: DecodedIdToken,
+  input: {cityKey?: string; status?: string; limit?: number},
+  database: RiderRewardsDatabase = defaultDatabase(),
+  now: () => number = Date.now,
+): Promise<RiderReferralOverview> {
+  requirePlatformConfigAdminClaim(token);
+  const at = now();
+  const [settings, budgetSnapshot, page] = await Promise.all([
+    readRewardSettings(database),
+    referralBudgetRef(database).get(),
+    database.collection("riderReferrals").get(),
+  ]);
+  const budget = referralBudgetFrom(settings, budgetSnapshot.exists ? budgetSnapshot.data() : null);
+  const cityKey = cityKeyFromName(input.cityKey ?? "");
+  const all = page.docs
+    .map((doc) => normalizeReferralRecord(doc.data()))
+    .filter((referral): referral is RiderReferralRecord => Boolean(referral))
+    .filter((referral) => !cityKey || referral.cityKey === cityKey);
+  const counts = Object.fromEntries(REFERRAL_STATUSES.map((status) => [status, 0])) as Record<RiderReferralStatus, number>;
+  let potentialLiabilityPaise = 0;
+  let qualifiedUnpaidPaise = 0;
+  let paidRewardsPaise = 0;
+  let paidCount = 0;
+  let spendThisMonthPaise = 0;
+  let activated = 0;
+  const monthStart = istMonthStart(at);
+  for (const referral of all) {
+    counts[referral.status] += 1;
+    const total = referralRewardTotal(referral.terms);
+    if (referral.status === "in_progress") potentialLiabilityPaise += total;
+    if (referral.status === "review" || referral.status === "qualified") qualifiedUnpaidPaise += total;
+    if (referral.status === "paid") {
+      paidRewardsPaise += total;
+      paidCount += 1;
+      if (referral.paidAt >= monthStart && referral.paidAt <= at) spendThisMonthPaise += total;
+    }
+    if (referral.status !== "not_eligible" && referral.deliveredCount > 0) activated += 1;
+  }
+  const rows = all
+    .filter((referral) => !input.status || referral.status === input.status)
+    .sort((left, right) => right.acceptedAt - left.acceptedAt)
+    .slice(0, Math.min(Math.max(integer(input.limit, 200, 1), 1), 500))
+    .map((referral): RiderReferralAdminRow => ({
+      referralId: referral.referralId,
+      inviterId: referral.inviterId,
+      inviterName: referral.inviterDisplayName,
+      referredRiderId: referral.referredRiderId,
+      referredName: referral.referredDisplayName,
+      referralCode: referral.referralCode,
+      programmeVersion: referral.programmeVersion,
+      legacy: referral.legacy,
+      delivered: referral.deliveredCount,
+      target: referral.terms.qualifyingDeliveredOrders,
+      inviterRewardPaise: referral.terms.inviterRewardPaise,
+      inviteeRewardPaise: referral.terms.inviteeRewardPaise,
+      cityKey: referral.cityKey,
+      status: referral.status,
+      statusReason: referral.statusReason,
+      riskFlags: referral.riskFlags,
+      reviewDecision: referral.reviewDecision,
+      acceptedAt: referral.acceptedAt,
+      deadlineAt: referral.qualificationDeadlineAt,
+      qualifiedAt: referral.qualifiedAt,
+      paidAt: referral.paidAt,
+      journalIds: referral.journalIds,
+    }));
+  const terms = currentReferralTerms(settings);
+  return {
+    generatedAt: at,
+    programme: {
+      state: riderReferralProgrammeState({
+        active: settings.referralProgramActive, startAt: settings.referralProgramStartAt, endAt: settings.referralProgramEndAt,
+        terms, budget,
+      }, at),
+      version: settings.referralProgrammeVersion,
+      terms,
+      startAt: settings.referralProgramStartAt,
+      endAt: settings.referralProgramEndAt,
+      cityNames: settings.referralCityNames,
+      maxRewardsPerInviter: settings.referralMaxRewardsPerRider,
+      maxExposurePerInviterPaise: settings.referralMaxRewardsPerRider > 0
+        ? settings.referralMaxRewardsPerRider * terms.inviterRewardPaise
+        : null,
+    },
+    budget: {...budget, remainingPaise: referralBudgetRemaining(budget)},
+    counts: {...counts, total: all.length, active: counts.in_progress + counts.review},
+    potentialLiabilityPaise,
+    qualifiedUnpaidPaise,
+    paidRewardsPaise,
+    spendThisMonthPaise,
+    activatedReferredRiders: activated,
+    averageCostPerActivatedRiderPaise: activated ? Math.round(paidRewardsPaise / activated) : null,
+    averageCostPerQualifiedRiderPaise: paidCount ? Math.round(paidRewardsPaise / paidCount) : null,
+    rows,
+  };
+}
+
+/** Cost of a batch of new referrals at the configured reward. City figures
+ * (a month of operating profit and expansion fund) come from the caller. */
+export async function simulateRiderReferralForAdmin(
+  token: DecodedIdToken,
+  input: {
+    expectedReferredRiders: number;
+    qualificationRatePercent: number;
+    monthlyOperatingProfitPaise?: number | null;
+    monthlyExpansionFundPaise?: number | null;
+  },
+  database: RiderRewardsDatabase = defaultDatabase(),
+): Promise<RiderReferralSimulation & {terms: RiderReferralTerms; remainingBudgetPaise: number | null; reservedPaise: number}> {
+  requirePlatformConfigAdminClaim(token);
+  const [settings, budgetSnapshot] = await Promise.all([readRewardSettings(database), referralBudgetRef(database).get()]);
+  const budget = referralBudgetFrom(settings, budgetSnapshot.exists ? budgetSnapshot.data() : null);
+  const terms = currentReferralTerms(settings);
+  const remaining = referralBudgetRemaining(budget);
+  return {
+    ...simulateRiderReferralCost({
+      expectedReferredRiders: input.expectedReferredRiders,
+      qualificationRateBps: Math.round(input.qualificationRatePercent * 100),
+      terms,
+      maxRewardsPerInviter: settings.referralMaxRewardsPerRider,
+      remainingBudgetPaise: remaining,
+      reservedPaise: budget.reservedPaise,
+      monthlyOperatingProfitPaise: input.monthlyOperatingProfitPaise ?? null,
+      monthlyExpansionFundPaise: input.monthlyExpansionFundPaise ?? null,
+    }),
+    terms,
+    remainingBudgetPaise: remaining,
+    reservedPaise: budget.reservedPaise,
+  };
+}
+
+/** The inviter's own view: programme terms and every rider they referred. */
+async function readInviterReferralRows(
+  database: RiderRewardsDatabase,
+  inviterId: string,
+): Promise<RiderReferralRecord[]> {
+  const page = await database.collection("riderReferrals").where("inviterId", "==", inviterId).get();
+  return page.docs
+    .map((doc) => normalizeReferralRecord(doc.data()))
+    .filter((referral): referral is RiderReferralRecord => Boolean(referral))
+    .sort((left, right) => right.acceptedAt - left.acceptedAt)
+    .slice(0, 100);
 }
 
 export async function evaluateRiderRewardsForDeliveredOrder(
@@ -3993,7 +5618,11 @@ export async function evaluateRiderRewardsForDeliveredOrder(
           orderId: order.id,
           eventId: campaignRewardEventId(campaign.campaignId, order.id),
           amountPaise: campaign.rewardAmountPaise,
-          metadata: {periodKey: periodBounds(campaign.window, deliveredAt, campaign).key},
+          metadata: {
+            periodKey: periodBounds(campaign.window, deliveredAt, campaign).key,
+            ...(order.economics ? {cityKey: order.economics.cityKey, zoneKey: order.economics.zoneKey,
+              restaurantId: order.restaurantId, riderId} : {}),
+          },
         }),
         amountPaise: campaign.rewardAmountPaise,
         stacking: campaign.stacking,
@@ -4013,40 +5642,14 @@ export async function evaluateRiderRewardsForDeliveredOrder(
 
   const awardedJournalIds: string[] = [];
   for (const candidate of chosen) {
-    const persisted = await persistLedgerJournal(candidate.journal, database);
+    const persisted = await persistLedgerJournalIfAbsent(candidate.journal, database);
     awardedJournalIds.push(persisted.journal.journalId);
   }
 
-  if (settings.referralProgramActive && settings.referralMinCompletedTrips > 0) {
-    const referredByCode = text(riderProfile.referredByCode, 200);
-    const inviterId = await inviterIdFromReferralInput(referredByCode, database);
-    if (inviterId && inviterId !== riderId && completedTripsAfter >= settings.referralMinCompletedTrips) {
-      const referralJournals: LedgerJournal[] = [];
-      if (settings.inviterRewardPaise > 0) {
-        referralJournals.push(buildReferralRewardJournal({
-          riderId: inviterId,
-          relatedRiderId: riderId,
-          amountPaise: settings.inviterRewardPaise,
-          occurredAt: deliveredAt,
-          beneficiaryRole: "inviter",
-          thresholdTrips: settings.referralMinCompletedTrips,
-        }));
-      }
-      if (settings.inviteeRewardPaise > 0) {
-        referralJournals.push(buildReferralRewardJournal({
-          riderId,
-          relatedRiderId: inviterId,
-          amountPaise: settings.inviteeRewardPaise,
-          occurredAt: deliveredAt,
-          beneficiaryRole: "invitee",
-          thresholdTrips: settings.referralMinCompletedTrips,
-        }));
-      }
-      for (const journal of referralJournals) {
-        const persisted = await persistLedgerJournal(journal, database);
-        awardedJournalIds.push(persisted.journal.journalId);
-      }
-    }
+  // Rider referral: counted from the referral's own per-order record, never
+  // from a count the app sends or a window of recent journals.
+  if (text(riderProfile.referredByCode, 200)) {
+    awardedJournalIds.push(...await processRiderReferralDelivery(order, riderProfile, settings, database, deliveredAt));
   }
 
   if (awardedJournalIds.length) {

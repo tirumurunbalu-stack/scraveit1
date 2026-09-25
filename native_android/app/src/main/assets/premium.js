@@ -38,6 +38,7 @@
     minimize: '<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>',
     orders: '<path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/>',
     offers: '<path d="M20 13 13 20 4 11V4h7z"/><circle cx="8.5" cy="8.5" r="1"/>',
+    wallet: '<path d="M4 7h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4z"/><path d="M4 7V6a2 2 0 0 1 2-2h10v3M15 13.5h2"/>',
     account: '<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
     back: '<path d="m15 18-6-6 6-6"/>',
     chevron: '<path d="m9 18 6-6-6-6"/>',
@@ -393,6 +394,10 @@
           FeastlyNative.createOrder(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "getCheckoutConfiguration") {
           FeastlyNative.getCheckoutConfiguration(requestId, firebaseIdToken, JSON.stringify(payload || {}));
+        } else if (operation === "getCustomerWallet") {
+          FeastlyNative.getCustomerWallet(requestId, firebaseIdToken, JSON.stringify(payload || {}));
+        } else if (operation === "applyCustomerReferral") {
+          FeastlyNative.applyCustomerReferral(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "createPaymentIntent") {
           FeastlyNative.createPaymentIntent(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "createPhonePeIntent") {
@@ -1651,11 +1656,17 @@
   // and a promotion saved with maxDiscount:0 showed a discount here while the
   // server correctly gave none.
   function roundMoney(value){return Math.round((Number(value)+Number.EPSILON)*100)/100;}
+  function promotionMinimum(promotion){return promotion&&promotion.minimumOrderPaise!=null?Number(promotion.minimumOrderPaise)/100:Number(promotion&&promotion.minimumOrder||0)}
   function promotionDiscount(promotion,subtotal){
     if(!promotion)return 0;
-    const cap=Number(promotion.maxDiscount);
-    return roundMoney(Math.min(subtotal*Number(promotion.percent||0)/100,Number.isFinite(cap)?cap:subtotal));
+    // Same maths as the server: flat or percentage, capped, never more than the food.
+    const capPaise=promotion.maxDiscountPaise!=null?Number(promotion.maxDiscountPaise):Math.round(Number(promotion.maxDiscount)*100);
+    const raw=promotion.kind==="flat"?Number(promotion.flatAmountPaise||0)/100:subtotal*Number(promotion.percent||0)/100;
+    const capped=Number.isFinite(capPaise)&&capPaise>0?Math.min(raw,capPaise/100):raw;
+    return roundMoney(Math.max(0,Math.min(subtotal,capped)));
   }
+  /** Who pays for the offer, in the customer's words. */
+  function promotionSponsor(promotion){if(!promotion)return"";const f=promotion.fundingSource||"restaurant";if(f==="platform")return"Scraveit offer";if(f==="shared")return"Scraveit and restaurant offer";const rid=(promotion.restaurantIds||[])[0],r=rid&&restaurant(rid);return r?"Offer from "+r.name:"Restaurant offer"}
   /** Whether this account can still claim a first-order offer. Fails closed:
    *  until the order list has actually been read back for THIS account, a
    *  returning customer on a fresh install looks identical to a new one, and
@@ -1668,9 +1679,12 @@
   }
   function promotionEligible(promotion,restaurantId,subtotal,now){
     if(!promotion||promotion.active!==true)return false;
+    if(promotion.approvalStatus==="pending"||promotion.approvalStatus==="rejected")return false;
+    if(promotion.startsAt&&Number(now)<Number(promotion.startsAt))return false;
     if(promotion.expiresAt&&Number(now)>Number(promotion.expiresAt))return false;
     if(promotion.firstOrderOnly===true&&!firstOrderOfferAvailable())return false;
-    if(promotion.minimumOrder&&subtotal<Number(promotion.minimumOrder))return false;
+    if(promotionMinimum(promotion)&&subtotal<promotionMinimum(promotion))return false;
+    if(promotion.budgetPaise&&promotion.fundingSource!=="restaurant"&&Number(promotion.usedBudgetPaise||0)>=Number(promotion.budgetPaise))return false;
     // An empty restaurantIds list means "every restaurant", which is how the
     // server reads it. Treating it as "no restaurant" silently hid offers.
     const scoped=Array.isArray(promotion.restaurantIds)?promotion.restaurantIds:[];
@@ -1714,7 +1728,10 @@
     if(!state.coupon||!state.cart.length)return null;
     return promotionEligible(state.coupon,state.cart[0].restaurantId,cartSubtotal(),Date.now())?state.coupon:null;
   }
-  function discount(){return promotionDiscount(eligibleCoupon(),cartSubtotal());}
+  /** The server's own answer for this exact cart and code, when it has one:
+   *  it applies the profitability cap and who-pays split the order will get. */
+  function serverOffer(){const coupon=eligibleCoupon(),p=state.dynamicPricing&&state.dynamicPricing.offer;if(!coupon||!p||p.valid!==true||String(p.code)!==String(coupon.code)||Math.abs(Number(p.subtotal)-cartSubtotal())>0.001)return null;return p}
+  function discount(){const server=serverOffer();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(eligibleCoupon(),cartSubtotal());}
   function tax(){return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
   function smallOrderFee(){return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
   function lateNightFee(){if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
@@ -1722,7 +1739,9 @@
   function surgeFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.surgeFee||0));}
   function riderIncentiveFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.riderIncentiveFee||0));}
   function riderIncentiveItems(){return(state.dynamicPricing&&Array.isArray(state.dynamicPricing.riderIncentiveItems))?state.dynamicPricing.riderIncentiveItems:[];}
-  function orderTotal(){return Math.max(0,cartSubtotal()+deliveryFee()+platformFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()+Number(state.tip||0)+tax()-discount());}
+  /** The server-computed bill, but only while it still matches this exact cart. */
+  function serverCheckout(){const c=state.dynamicPricing&&state.dynamicPricing.checkout,coupon=eligibleCoupon();if(!c||c.serverAuthoritative!==true)return null;if(Math.abs(Number(c.subtotalAtRequest)-cartSubtotal())>0.001||String(c.couponAtRequest)!==String(coupon?coupon.code||"":"")||Number(c.tipAtRequest)!==Number(state.tip||0)||c.walletAtRequest!==(state.useWallet===true))return null;return c}
+  function orderTotal(){const server=serverCheckout();if(server)return Math.max(0,Number(server.total||0));return Math.max(0,cartSubtotal()+deliveryFee()+platformFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()+Number(state.tip||0)+tax()-discount());}
   // Dynamic weather/demand/rider-incentive pricing is calculated only by the
   // trusted backend - the APK never contains a Weather API server key and
   // never authorizes these fees itself. This calls the live preview on
@@ -1738,15 +1757,20 @@
     const r=cartRestaurant(),addr=currentAddress();
     if(!state.session||!r||!addr||!state.cart.length||!nativeAvailable("getCheckoutConfiguration")){state.dynamicPricing=fallback;return fallback}
     try{
-      const raw=await nativeInvoke("getCheckoutConfiguration",{restaurantId:r.id,addressId:addr.id,items:callableCartItems()},{idToken:state.session.idToken,timeoutMs:15000});
+      const coupon=eligibleCoupon(),subtotalAtRequest=cartSubtotal();
+      const raw=await nativeInvoke("getCheckoutConfiguration",{restaurantId:r.id,addressId:addr.id,items:callableCartItems(),couponCode:coupon?String(coupon.code||""):"",tip:Number(state.tip||0),paymentMethod:state.checkout&&["cod","upi","card"].includes(state.checkout.payment)?state.checkout.payment:"cod",useWallet:state.useWallet===true},{idToken:state.session.idToken,timeoutMs:15000});
       const preview=raw&&typeof raw==="object"&&raw.feePreview&&typeof raw.feePreview==="object"?raw.feePreview:null;
+      const offerRaw=raw&&typeof raw==="object"&&raw.offerPreview&&typeof raw.offerPreview==="object"?raw.offerPreview:null;
+      const offer=offerRaw?{valid:offerRaw.valid===true,code:String(offerRaw.code||""),subtotal:subtotalAtRequest,discount:Math.max(0,Number(offerRaw.discount||0)),restaurantFunded:Math.max(0,Number(offerRaw.restaurantFunded||0)),platformFunded:Math.max(0,Number(offerRaw.platformFunded||0)),limited:Number(offerRaw.withheldPlatformPaise||0)>0,message:String(offerRaw.message||"")}:null;
       const next=preview?{
         rainFee:Math.max(0,Number(preview.rainFee||0)),
         surgeFee:Math.max(0,Number(preview.surgeFee||0)),
         riderIncentiveFee:Math.max(0,Number(preview.riderIncentiveFee||0)),
         riderIncentiveItems:Array.isArray(preview.riderIncentiveItems)?preview.riderIncentiveItems.map(x=>({label:String(x&&x.label||"Surge fee"),amount:Math.max(0,Number(x&&x.amount||0))})).filter(x=>x.amount>0):[],
         weatherSeverity:String(preview.weatherSeverity||""),weatherChecked:true,activeOrders:Math.max(0,Number(preview.activeOrders||0)),
-        serverAuthoritative:true,checkedAt:Date.now()
+        serverAuthoritative:true,checkedAt:Date.now(),offer,
+        // The server's own bill for exactly this cart, coupon, tip and wallet choice.
+        checkout:raw&&raw.checkoutPreview&&typeof raw.checkoutPreview==="object"?Object.assign({},raw.checkoutPreview,{subtotalAtRequest:subtotalAtRequest,couponAtRequest:coupon?String(coupon.code||""):"",tipAtRequest:Number(state.tip||0),walletAtRequest:state.useWallet===true}):null
       }:fallback;
       state.dynamicPricing=next;
       return next;
@@ -2522,7 +2546,14 @@
   function cartItemMarkup(item) {
     return '<article class="cart-item"><img class="cart-thumb" src="'+h(safeUrl(item.image,"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><h3 class="card-title">'+h(item.name)+'</h3><p class="caption">'+h([item.variant,(item.addOns||[]).map(x=>x.name).join(", ")].filter(Boolean).join(" · ")||item.restaurantName)+'</p><strong>'+money((item.price+item.variantPrice+item.addOnTotal)*item.quantity)+'</strong></div><div class="quantity-control"><button data-action="cart-quantity" data-key="'+h(item.key)+'" data-delta="-1" aria-label="Remove one">−</button><span>'+item.quantity+'</span><button data-action="cart-quantity" data-key="'+h(item.key)+'" data-delta="1" aria-label="Add one">+</button></div></article>';
   }
-  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?'<div class="price-row success-text"><span>'+h(state.coupon.code)+' discount</span><span>−'+money(discount())+'</span></div>':'')+'<div class="price-row"><span>Estimated delivery fee</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>Estimated small-order fee</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>Estimated late-night fee</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>Estimated taxes</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip</span><span>'+money(state.tip)+'</span></div>':'')+(includeTotal?'<div class="price-row total"><span>Estimated total</span><span>'+money(orderTotal())+'</span></div>':'')+'</div>'}
+  /** One line per funder, so a saving is never shown as Scraveit's when the
+   *  restaurant is paying for it, or the other way round. */
+  function discountRows(){const server=serverOffer(),code=h(state.coupon.code);if(server&&server.restaurantFunded>0&&server.platformFunded>0)return'<div class="price-row success-text"><span>'+code+' · restaurant offer</span><span>−'+money(server.restaurantFunded)+'</span></div><div class="price-row success-text"><span>'+code+' · Scraveit offer</span><span>−'+money(server.platformFunded)+'</span></div>'+(server.limited?limitedOfferNote():'');const label=server?(server.platformFunded>0?"Scraveit offer":"Restaurant offer"):promotionSponsor(state.coupon);return'<div class="price-row success-text"><span>'+code+' · '+h(label)+'</span><span>−'+money(discount())+'</span></div>'+(server&&server.limited?limitedOfferNote():'')}
+  function walletRows(){const server=serverCheckout();const used=server?Number(server.walletRedeem||0):0;return used>0?'<div class="price-row success-text"><span>Paid from wallet</span><span>−'+money(used)+'</span></div>':''}
+  function cashbackRow(){const server=serverCheckout(),c=server&&server.cashbackEstimate;return c&&Number(c.amount)>0?'<p class="caption success-text">You will get '+money(c.amount)+' cashback ('+h(c.title)+') in your wallet after delivery.</p>':''}
+  function walletToggle(){const server=serverCheckout(),balance=server?Number(server.walletBalance||0):walletBalance()/100,max=server?Number(server.walletMaxForOrder||0):0;if(balance<=0)return"";return'<section class="card"><button class="settings-row" data-action="toggle-wallet"><span class="settings-icon">'+icon("wallet")+'</span><span class="grow"><strong>Use wallet balance</strong><span class="supporting">'+money(balance)+' available'+(server&&max<=0?' · this order is below the minimum for wallet use':'')+'</span></span><span class="switch '+(state.useWallet?'on':'')+'" aria-hidden="true"></span></button></section>'}
+  function limitedOfferNote(){return'<p class="caption">This offer is capped on this order. The discount shown is exactly what you will get.</p>'}
+  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?discountRows():'')+'<div class="price-row"><span>Estimated delivery fee</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>Estimated small-order fee</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>Estimated late-night fee</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>Estimated taxes</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption" style="display:block">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')+walletRows()+(includeTotal?'<div class="price-row total"><span>'+(serverCheckout()?'To pay':'Estimated total')+'</span><span>'+money(orderTotal())+'</span></div>'+cashbackRow():'')+'</div>'}
   function screenCart() {
     const r=cartRestaurant();
     if(state.cart.length&&!r){
@@ -2614,7 +2645,7 @@
       +'<section class="card stack"><div><h2 class="section-title">Tip your delivery partner</h2><p class="supporting">Choose an optional amount for your Scraveit Partner.</p></div><div class="segmented"><button class="segment '+(Number(state.tip||0)===0?'active':'')+'" data-action="set-tip" data-value="0">No tip</button><button class="segment '+(Number(state.tip)===20?'active':'')+'" data-action="set-tip" data-value="20">₹20</button><button class="segment '+(Number(state.tip)===30?'active':'')+'" data-action="set-tip" data-value="30">₹30</button><button class="segment '+(Number(state.tip)===50?'active':'')+'" data-action="set-tip" data-value="50">₹50</button></div><div class="cluster"><input id="custom-tip" class="input grow" type="number" min="0" max="1000" step="1" placeholder="Custom tip"><button class="button secondary" data-action="apply-custom-tip">Apply</button></div></section>'
       +'<section class="card settings-list"><div style="padding:18px 16px 8px"><h2 class="section-title">Payment</h2><p class="supporting">Only verified payment methods can be selected.</p></div>'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>'
       +paymentWarning
-      +'<section class="card">'+priceBreakdown(true)+'</section><div class="notice info">'+icon("shield","small")+'<span>The secure Scraveit server validates menu prices, discounts, distance and any weather or demand fee. The server-confirmed order total replaces this estimate in your final receipt.</span></div>'
+      +walletToggle()+'<section class="card">'+priceBreakdown(true)+'</section><div class="notice info">'+icon("shield","small")+'<span>The secure Scraveit server validates menu prices, discounts, distance and any weather or demand fee. The server-confirmed order total replaces this estimate in your final receipt.</span></div>'
       +'<button class="button primary full" data-action="place-order" '+(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Placing order…':checkoutPrimaryLabel())+'</button></div>'+nav()+'</main>';
   }
 
@@ -3586,12 +3617,14 @@
   }
 
   function promoCard(promo) {
-    const eligibility=promo.minimumOrder?"Minimum order "+money(promo.minimumOrder):"See terms before checkout";
-    return '<article class="card brand-card stack"><div class="cluster between"><span class="eyebrow" style="color:#bfe9ff">'+h(promo.label||"LIVE OFFER")+'</span><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(promo.code||"Offer")+'</span></div><h2 class="section-title" style="font-size:25px">'+h(promo.title||((promo.percent||0)+"% off"))+'</h2><p class="supporting">'+h(promo.description||eligibility)+'</p><button class="button" style="background:white;color:#155eef" data-action="use-promo" data-promo-id="'+h(promo.id)+'">Use '+h(promo.code||"offer")+'</button></article>';
+    const eligibility=(promotionMinimum(promo)?"Minimum order "+money(promotionMinimum(promo)):"No minimum order")+" · "+promotionSponsor(promo);
+    return '<article class="card brand-card stack"><div class="cluster between"><span class="eyebrow" style="color:#bfe9ff">'+h(promo.label||"LIVE OFFER")+'</span><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(promo.code||"Offer")+'</span></div><h2 class="section-title" style="font-size:25px">'+h(promo.title||(promo.kind==="flat"?money(Number(promo.flatAmountPaise||0)/100)+" off":(promo.percent||0)+"% off"))+'</h2><p class="supporting">'+h(promo.description||eligibility)+'</p>'+(promo.description?'<p class="caption" style="color:#dbeafe">'+h(eligibility)+'</p>':'')+'<button class="button" style="background:white;color:#155eef" data-action="use-promo" data-promo-id="'+h(promo.id)+'">Use '+h(promo.code||"offer")+'</button></article>';
   }
+  function offersCashbackSection(){if(!state.walletData&&!state.walletLoading)setTimeout(()=>loadWallet(false),0);const w=state.walletData&&state.walletData.wallet;if(!w)return"";return(w.cashbackCampaigns.length?'<section class="stack"><h2 class="section-title">Cashback</h2>'+w.cashbackCampaigns.map(cashbackOfferCard).join("")+'</section>':'')+'<button class="settings-row card" data-action="go" data-route="wallet"><span class="settings-icon">'+icon("wallet")+'</span><span class="grow"><strong>Wallet '+paise(w.balancePaise)+'</strong><span class="supporting">Cashback, referral rewards and expiry dates</span></span>'+icon("chevron","small")+'</button>'}
   function screenOffers() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Savings</p><h1 class="page-title">Offers with clear terms.</h1><p class="supporting" style="margin-top:7px">Only active promotions published by Scraveit Control appear here.</p></header>'
       +(state.promotions.length?'<section class="stack-lg">'+state.promotions.map(promoCard).join("")+'</section>':emptyState("offers","No live offers right now","We will show a promotion here only when its eligibility and discount are actually active.","go-home","Browse restaurants"))
+      +offersCashbackSection()
       +'<section class="card stack"><h2 class="section-title">How offers work</h2><div class="notice info">'+icon("info","small")+'<span>Eligibility is checked again against the live promotion at checkout. Expired or restaurant-limited codes are never shown as applied.</span></div></section></div>'+nav()+'</main>';
   }
 
@@ -3601,7 +3634,7 @@
   function screenAccount() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></header>'
       +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18)">'+h(initials())+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
-      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+'</section>'
+      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
       +'<section class="card settings-list">'+settingsRow("settings","Preferences","Theme, dietary and notifications","preferences")+settingsRow("help","Help and support","Order issues and account help","support")+settingsRow("shield","Privacy and terms","Data use, rights and service terms","legal")+'</section>'
       +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account request","Request permanent account and data deletion",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
       +'<p class="caption" style="text-align:center">Scraveit Customer<br>Your account and orders sync securely across sessions.</p></div>'+nav()+'</main>';
@@ -3835,7 +3868,7 @@
       idempotencyKey:idempotencyKey,restaurantId:r.id,addressId:address.id,items:callableCartItems(),
       couponCode:String(eligibleCoupon()&&state.coupon.code||"").trim().toUpperCase(),tip:Number(state.tip||0),
       deliveryMode:"asap",instructions:String(state.checkout.instructions||"").slice(0,500),contactless:state.checkout.contactless===true,
-      paymentMethod:String(state.checkout.payment||"cod"),
+      paymentMethod:String(state.checkout.payment||"cod"),useWallet:state.useWallet===true&&walletBalance()>0,
       ...(isOnlinePaymentMethod(state.checkout.payment)?{paymentProvider:paymentMethodProvider(state.checkout.payment)}:{})
     };
     try{
@@ -3954,12 +3987,34 @@
     finally{state.loading=false;if(state.route!=="cart")render({preserveScroll:true});}
   }
 
+  // ---- Wallet, cashback and referrals. Balances, rewards and eligibility all
+  // come from the server (getCustomerWallet); this screen only shows them.
+  function installId(){try{let id=localStorage.getItem("scraveit.installId");if(!id){id=uid("inst_").replace(/[^A-Za-z0-9_-]/g,"").slice(0,40);localStorage.setItem("scraveit.installId",id)}return id}catch(_){return""}}
+  function paise(v){return money(Number(v||0)/100)}
+  async function loadWallet(force){if(!state.session||state.walletLoading||!nativeAvailable("getCustomerWallet"))return;if(!force&&state.walletData&&Date.now()-state.walletLoadedAt<60000)return;state.walletLoading=true;state.walletError="";try{const raw=await nativeInvoke("getCustomerWallet",{installId:installId()},{timeoutMs:15000});state.walletData=raw&&raw.wallet?raw:null;state.walletLoadedAt=Date.now()}catch(e){state.walletError=friendlyError(e)}finally{state.walletLoading=false;if(["wallet","checkout","offers","account"].includes(state.route))render({preserveScroll:true})}}
+  function walletBalance(){return Number(state.walletData&&state.walletData.wallet&&state.walletData.wallet.balancePaise||0)}
+  function walletEntryLabel(type){return({cashback:"Cashback earned",customer_referral:"Referral reward",redeem:"Used on an order",restore:"Returned (order cancelled)",cashback_reversal:"Cashback reversed",expiry:"Expired"})[type]||"Wallet update"}
+  function cashbackOfferCard(c){const amount=c.kind==="flat"?paise(c.flatAmountPaise)+" cashback":c.percent+"% cashback"+(c.maxCashbackPaise?" up to "+paise(c.maxCashbackPaise):"");return'<article class="card stack wallet-offer"><div class="cluster between"><span class="eyebrow">'+(c.funding==="restaurant"?"Restaurant cashback":"Scraveit cashback")+'</span><span class="status-pill">'+h(amount)+'</span></div><h3 class="card-title">'+h(c.title)+'</h3><p class="caption">'+(c.minimumOrderPaise?"On orders above "+paise(c.minimumOrderPaise)+" · ":"")+'Added to your wallet after delivery · usable for '+h(c.expiryDays)+' days</p></article>'}
+  function screenWallet(){if(!state.walletData&&!state.walletLoading&&!state.walletError)setTimeout(()=>loadWallet(false),0);const data=state.walletData,w=data&&data.wallet,ref=data&&data.referral;
+    const head='<main class="screen"><div class="screen-content page-stack">'+topbar("Wallet & rewards","Cashback, referral rewards and when they expire.")+networkBanner()+(state.walletError?'<div class="notice warning">'+icon("warning","small")+'<span>'+h(state.walletError)+'</span></div>':'');
+    if(!w)return head+(state.walletLoading?loadingRow("Loading your wallet…"):emptyState("card","Wallet unavailable","Try again in a moment.","wallet-refresh","Retry"))+'</div>'+nav()+'</main>';
+    const soon=w.lots.find(l=>l.expiresAt-Date.now()<7*86400000);
+    const balance='<section class="card brand-card stack"><p class="eyebrow" style="color:#bfe9ff">Wallet balance</p><strong class="page-title" style="color:white">'+paise(w.balancePaise)+'</strong><p class="supporting" style="color:rgba(255,255,255,.8)">Use up to '+(w.rules.maxRedeemBpsOfSubtotal/100)+'% of an order (max '+paise(w.rules.maxRedeemPerOrderPaise)+') on orders above '+paise(w.rules.minOrderForRedeemPaise)+'.</p>'+(soon?'<p class="caption" style="color:#ffe7b3">'+paise(soon.remainingPaise)+' expires on '+h(new Date(soon.expiresAt).toLocaleDateString("en-IN",{day:"numeric",month:"short"}))+'</p>':'')+'</section>';
+    const lots=w.lots.length?'<section class="card stack"><h2 class="section-title">Money in your wallet</h2>'+w.lots.map(l=>'<div class="price-row"><span>'+h(l.source==="customer_referral"?"Referral reward":"Cashback")+'<small class="caption" style="display:block">Use by '+h(new Date(l.expiresAt).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}))+'</small></span><span>'+paise(l.remainingPaise)+'</span></div>').join("")+'</section>':'';
+    const offers=w.cashbackCampaigns.length?'<section class="stack"><h2 class="section-title">Cashback offers</h2>'+w.cashbackCampaigns.map(cashbackOfferCard).join("")+'</section>':'';
+    let refCard="";if(ref){const p=ref.program;refCard='<section class="card stack"><h2 class="section-title">Invite friends</h2>'+(p.active?'<p class="supporting">Your friend gets '+paise(p.refereeRewardPaise)+' and you get '+paise(p.referrerRewardPaise)+' in your wallets after their first delivered order'+(p.minOrderValuePaise?' above '+paise(p.minOrderValuePaise):'')+'.</p><div class="referral-code"><span>Your code</span><strong>'+h(ref.code)+'</strong></div><button class="button primary full" data-action="share-referral">'+icon("chat")+' Share invite</button><p class="caption">'+h(ref.invited.total)+' invited · '+h(ref.invited.rewarded)+' rewarded · '+h(ref.invited.waiting)+' waiting for their first order</p>':'<p class="supporting">The referral programme is not running right now.</p>')+'</section>';
+      if(p.active&&!ref.myReferral&&!state.orders.length)refCard+='<form id="referral-form" class="card stack"><h2 class="section-title">Got a code from a friend?</h2><label class="field"><span>Referral code</span><input id="referral-code" class="input" name="code" placeholder="SCXXXXXX" maxlength="120" required></label><button class="button secondary full" type="submit">Apply code</button><p class="caption">Rewards arrive after your first delivered order, not at signup.</p></form>';
+      else if(ref.myReferral)refCard+='<div class="notice info">'+icon("info","small")+'<span>'+h(({pending:"Your friend's code is linked. Your reward arrives after your first qualifying delivered order.",review:"Your referral is being checked by Scraveit.",approved:"Your referral is approved. Your reward arrives after your first qualifying delivered order.",rewarded:"Referral reward received.",rejected:"This referral could not be approved.",expired:"This referral expired before a qualifying order."})[ref.myReferral.status]||"Referral linked.")+'</span></div>'}
+    const history=w.entries.length?'<section class="card stack"><h2 class="section-title">History</h2>'+w.entries.map(e=>'<div class="price-row"><span>'+h(walletEntryLabel(e.type))+'<small class="caption" style="display:block">'+h(new Date(Number(e.at)).toLocaleDateString("en-IN",{day:"numeric",month:"short"}))+(e.orderId?' · '+h(e.orderId):'')+'</small></span><span class="'+(Number(e.amountPaise)>=0?'success-text':'')+'">'+(Number(e.amountPaise)>=0?'+':'−')+paise(Math.abs(Number(e.amountPaise)))+'</span></div>').join("")+'</section>':'';
+    return head+balance+lots+offers+refCard+history+'</div>'+nav()+'</main>'}
+  async function applyReferral(form){const code=String(new FormData(form).get("code")||"").trim();if(!code)return;try{const res=await nativeInvoke("applyCustomerReferral",{code,installId:installId()},{timeoutMs:15000});toast(res&&res.status==="review"?"Code linked. Scraveit will check it before rewarding.":"Code linked. Your reward arrives after your first delivered order.","success");await loadWallet(true)}catch(e){toast(friendlyError(e),"danger")}}
+  function shareReferral(){const ref=state.walletData&&state.walletData.referral;if(!ref)return;const text=ref.shareText;if(navigator.share){navigator.share({text}).catch(()=>{});return}try{navigator.clipboard.writeText(text);toast("Invite copied. Paste it in any chat.","success")}catch(_){toast(text,"info")}}
   Object.assign(SCREENS, {
     launch:screenLaunch, welcome:screenWelcome, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
-    support:screenSupport, legal:screenLegal, review:screenReview
+    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet
   });
 
   async function refreshAll() {
@@ -4081,12 +4136,13 @@
       const code=String((document.getElementById("coupon-input")||{}).value||"").trim().toUpperCase();const promo=state.promotions.find(p=>String(p.code||"").toUpperCase()===code&&p.active===true);
       if(!promo){state.coupon=null;toast("That code is not an active Scraveit offer.","danger");render({preserveScroll:true});return;}
       if(promo.expiresAt&&Date.now()>Number(promo.expiresAt)){toast("That offer has expired.","danger");return;}
-      if(promo.minimumOrder&&cartSubtotal()<Number(promo.minimumOrder)){toast("This offer needs a minimum item total of "+money(promo.minimumOrder)+".","danger");return;}
-      if(Array.isArray(promo.restaurantIds)&&!promo.restaurantIds.includes(state.cart[0].restaurantId)){toast("That offer is not eligible for this restaurant.","danger");return;}
+      if(promotionMinimum(promo)&&cartSubtotal()<promotionMinimum(promo)){toast("This offer needs a minimum item total of "+money(promotionMinimum(promo))+".","danger");return;}
+      if(Array.isArray(promo.restaurantIds)&&promo.restaurantIds.length&&!promo.restaurantIds.includes(state.cart[0].restaurantId)){toast("That offer is not eligible for this restaurant.","danger");return;}
+      if(!promotionEligible(promo,state.cart[0].restaurantId,cartSubtotal(),Date.now())){toast("That offer is not available on this order.","danger");return;}
       // A code the customer typed is theirs, not ours: it must never be
       // replaced by an automatically chosen one, even a larger one.
       state.coupon=promo;state.couponAuto=false;state.couponDismissedFor="";
-      toast("Offer applied.","success");render({preserveScroll:true});return;
+      toast("Offer applied.","success");render({preserveScroll:true});refreshDynamicPricing().then(()=>render({preserveScroll:true})).catch(()=>{});return;
     }
     if(action==="load-more-restaurants"){loadMoreRestaurants();return;}
     if(action==="remove-coupon"){
@@ -4094,9 +4150,13 @@
       state.coupon=null;state.couponAuto=false;
       toast("Offer removed.","success");render({preserveScroll:true});return;
     }
+    if(action==="toggle-wallet"){state.useWallet=!state.useWallet;render({preserveScroll:true});refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});return;}
+    if(action==="wallet-refresh"){loadWallet(true);return;}
+    if(action==="share-referral"){shareReferral();return;}
     if(action==="set-tip"){
       state.tip=Math.max(0,Math.min(1000,Number(control.dataset.value||0)));
       render({preserveScroll:true});
+      if(state.route==="checkout")refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});
       return;
     }
     if(action==="apply-custom-tip"){
@@ -4289,7 +4349,8 @@
 
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
-    if(form.id==="login-form")submitLogin(form);
+    if(form.id==="referral-form")applyReferral(form);
+    else if(form.id==="login-form")submitLogin(form);
     else if(form.id==="signup-form")submitSignup(form);
     else if(form.id==="reset-form")submitReset(form);
     else if(form.id==="item-form")submitItem(form);

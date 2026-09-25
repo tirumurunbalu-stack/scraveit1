@@ -66,3 +66,8 @@ img,svg,video,canvas{max-width:100%}
 .rain-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--brand-soft);color:var(--brand);font-size:12px;font-weight:800}
 .row-card{border:1px dashed var(--border2);border-radius:14px;padding:12px;display:grid;gap:10px;background:var(--raised)}
 .row-card .row-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+/* Economics: label/value rows, zone table */
+.econ-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:14px;font-variant-numeric:tabular-nums}.econ-row>span{display:grid;gap:2px;min-width:0;color:var(--ink)}.econ-row small{font-size:11px;color:var(--muted)}.econ-row>strong{white-space:nowrap;font-weight:820}
+.econ-table{display:grid;gap:2px;overflow-x:auto}.econ-tr{display:grid;grid-template-columns:minmax(96px,1.4fr) repeat(5,minmax(64px,1fr));gap:8px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;font-variant-numeric:tabular-nums;min-width:500px}.econ-tr.head{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.econ-tr span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.econ-pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--muted);background:var(--raised);border-radius:10px;padding:10px;margin-top:8px;max-height:220px;overflow:auto}
+.tax-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--raised)}.tax-row strong{grid-column:1/-1;font-size:13px}.tax-row .cluster{gap:6px}
