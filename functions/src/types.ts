@@ -193,6 +193,10 @@ export interface SavrivoOrder {
   riderId?: string;
   riderName?: string;
   riderPhone?: string;
+  /** Shown on the customer's rider card: average rating (once rated) and
+   *  delivered orders, copied from the rider profile at assignment. */
+  riderRating?: number;
+  riderDeliveredCount?: number;
   riderAssignedAt?: number;
   deliveredAt?: number;
   cancelReason?: string;

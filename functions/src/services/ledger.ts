@@ -1,5 +1,5 @@
 import {firestoreDb} from "../admin";
-import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
+import type {DocumentReferenceLike, DocumentSnapshotLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {
   createLedgerJournal,
   deterministicJournalId,
@@ -578,6 +578,112 @@ export async function persistCodEarningsOffsetLedger(
   return persistLedgerJournal(buildCodEarningsOffsetJournal(input), database);
 }
 
+
+// ---------------------------------------------------------------------------
+// Per-party journal index
+//
+// ledgerPartyJournals/{party}__{journalId} holds a copy of every journal under
+// each rider and restaurant it involves, so a rider's or restaurant's finances
+// are read from its own journals instead of the latest N journals of the
+// whole platform (which stops being complete once the platform grows). Written
+// in the same transaction as the journal; journals are immutable, so the
+// copies never go stale.
+// ---------------------------------------------------------------------------
+export const LEDGER_PARTY_JOURNALS_COLLECTION = "ledgerPartyJournals";
+export const LEDGER_PARTY_INDEX_STATE_DOC = "ledgerPartyIndex";
+
+const RIDER_ACCOUNT = /^(?:liability:rider-earnings|liability:rider-tips|asset:cod-receivable):(.+)$/;
+const RESTAURANT_ACCOUNT = /^liability:restaurant-payable:(.+)$/;
+
+/** Parties named by the journal itself (its accounts and metadata). */
+export function ledgerJournalParties(journal: Pick<LedgerJournal, "entries" | "metadata">): string[] {
+  const parties = new Set<string>();
+  for (const entry of journal.entries) {
+    const rider = RIDER_ACCOUNT.exec(entry.accountId);
+    if (rider?.[1]) parties.add(`rider:${rider[1]}`);
+    const restaurant = RESTAURANT_ACCOUNT.exec(entry.accountId);
+    if (restaurant?.[1]) parties.add(`restaurant:${restaurant[1]}`);
+  }
+  const metadata = journal.metadata ?? {};
+  if (typeof metadata.restaurantId === "string" && metadata.restaurantId) parties.add(`restaurant:${metadata.restaurantId}`);
+  if (typeof metadata.riderId === "string" && metadata.riderId) parties.add(`rider:${metadata.riderId}`);
+  return [...parties].sort();
+}
+
+export function ledgerPartyEntryId(party: string, journalId: string): string {
+  return `${party.replace(/[^A-Za-z0-9:_.-]/g, "_")}__${journalId}`;
+}
+
+type PartyTransaction = {
+  get(ref: DocumentReferenceLike): Promise<DocumentSnapshotLike>;
+  set(ref: DocumentReferenceLike, data: unknown): unknown;
+};
+
+/** Reads (before any write) what the index needs: a refund or receipt names
+ * only its order, so its restaurant is taken from the order. */
+async function partiesForInsert(
+  transaction: PartyTransaction,
+  database: LedgerFirestore,
+  journal: LedgerJournal,
+): Promise<string[]> {
+  const parties = ledgerJournalParties(journal);
+  if (journal.orderId && !parties.some((party) => party.startsWith("restaurant:"))) {
+    const order = await transaction.get(database.collection("orders").doc(journal.orderId));
+    const restaurantId = order.exists ? String((order.data() as {restaurantId?: unknown}).restaurantId ?? "") : "";
+    if (restaurantId) parties.push(`restaurant:${restaurantId}`);
+  }
+  return parties;
+}
+
+function writePartyEntries(
+  transaction: PartyTransaction,
+  database: LedgerFirestore,
+  journal: LedgerJournal,
+  parties: readonly string[],
+): void {
+  for (const party of parties) {
+    transaction.set(database.collection(LEDGER_PARTY_JOURNALS_COLLECTION).doc(ledgerPartyEntryId(party, journal.journalId)),
+      {party, journalId: journal.journalId, occurredAt: journal.occurredAt, journal});
+  }
+}
+
+/** Index a journal that was written before the index existed. Safe to repeat. */
+export async function indexExistingLedgerJournal(
+  journal: LedgerJournal,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
+): Promise<number> {
+  return database.runTransaction(async (transaction) => {
+    const parties = await partiesForInsert(transaction, database, journal);
+    writePartyEntries(transaction, database, journal, parties);
+    return parties.length;
+  });
+}
+
+/** Whether every journal written before the index existed has been indexed. */
+export async function ledgerPartyIndexReady(database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore): Promise<boolean> {
+  const snapshot = await database.collection("private").doc(LEDGER_PARTY_INDEX_STATE_DOC).get();
+  return snapshot.exists && (snapshot.data() as {complete?: unknown}).complete === true;
+}
+
+/** A party's journals, newest first, from the index. */
+export async function readPartyLedgerJournals(
+  party: string,
+  limit: number,
+  database: LedgerFirestore = firestoreDb as unknown as LedgerFirestore,
+): Promise<Record<string, unknown>> {
+  const page = await database.collection(LEDGER_PARTY_JOURNALS_COLLECTION)
+    .where("party", "==", party)
+    .orderBy("occurredAt", "desc")
+    .limit(limit)
+    .get();
+  const out: Record<string, unknown> = {};
+  for (const doc of page.docs) {
+    const data = doc.data() as {journalId?: unknown; journal?: unknown};
+    if (typeof data.journalId === "string") out[data.journalId] = data.journal;
+  }
+  return out;
+}
+
 /** Validates the deterministic id shape; callers needing a document
  * reference build it themselves via firestoreDb.collection(LEDGER_JOURNALS_COLLECTION).doc(id). */
 export function validatedLedgerJournalId(journal: Pick<LedgerJournal, "journalId">): string {
@@ -616,7 +722,9 @@ export async function persistLedgerJournalIfAbsent(
   const {outcome, stored} = await database.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(ref);
     if (snapshot.exists) return {outcome: "idempotent" as const, stored: snapshot.data()};
+    const parties = await partiesForInsert(transaction, database, candidateValue);
     transaction.set(ref, candidateValue);
+    writePartyEntries(transaction, database, candidateValue, parties);
     return {outcome: "insert" as const, stored: candidateValue};
   });
   return {outcome, journal: persistedJournal(stored), journalId};
@@ -639,7 +747,9 @@ export async function persistLedgerJournal(
   const {outcome, stored} = await database.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(ref);
     if (!snapshot.exists) {
+      const parties = await partiesForInsert(transaction, database, candidateValue);
       transaction.set(ref, candidateValue);
+      writePartyEntries(transaction, database, candidateValue, parties);
       return {outcome: "insert" as const, stored: candidateValue};
     }
     const existing = persistedJournal(snapshot.data());

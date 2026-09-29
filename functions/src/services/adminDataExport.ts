@@ -12,6 +12,7 @@ import {
   type AdminAuthAccount,
 } from "../domain/adminDataExport";
 import {requireOwnerClaim} from "./authz";
+import {withPrivatePayoutProfiles} from "./restaurantPayoutProfiles";
 
 // A defensive ceiling only - a runaway account count should fail loudly
 // rather than let this scan run unbounded.
@@ -94,7 +95,8 @@ export async function exportPlatformDataWorkbook(
 
   const customers = filterRowsByCity(customerExportRows(asMap(usersSnapshot.docs)), cityFilter);
   const riders = filterRowsByCity(riderExportRows(asMap(ridersSnapshot.docs)), cityFilter);
-  const restaurants = filterRowsByCity(restaurantExportRows(asMap(restaurantsSnapshot.docs)), cityFilter);
+  const restaurants = filterRowsByCity(restaurantExportRows(
+    await withPrivatePayoutProfiles(firestoreDb, asMap(restaurantsSnapshot.docs))), cityFilter);
   // Admin/ops-admin accounts are platform-wide, not tied to a city - a city
   // filter narrows the other three sheets only, never this one.
   const adminAccounts = adminAccountExportRows(adminAuthAccounts);

@@ -463,7 +463,11 @@ public class TrackingService extends Service implements LocationListener {
         // the doorstep instead of being artificially spaced 6.5 seconds apart.
         long uploadThrottleMs = isNearDestination() ? NEAR_UPLOAD_THROTTLE_MS : NORMAL_UPLOAD_THROTTLE_MS;
         if (now - lastUploadAt < uploadThrottleMs) return;
-        if (lastLocation != null && !fromLastKnown && now - lastUploadAt < STATIONARY_UPLOAD_CEILING_MS) {
+        // Near the door the backend needs two fresh fixes to confirm arrival,
+        // and the rider is standing still - skipping "unmoved" fixes there
+        // made them wait up to 20 s per fix.
+        if (!isNearDestination() && lastLocation != null && !fromLastKnown
+                && now - lastUploadAt < STATIONARY_UPLOAD_CEILING_MS) {
             float[] moved = new float[1];
             Location.distanceBetween(lastLocation.getLatitude(), lastLocation.getLongitude(),
                     location.getLatitude(), location.getLongitude(), moved);

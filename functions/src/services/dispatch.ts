@@ -77,6 +77,7 @@ import {reconcileRestaurantOrderProjection} from "./orderProjection";
 import {loadDispatchPolicy} from "./platformConfig";
 import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
+import {riderPublicStats} from "./riderDeliveryCount";
 
 export interface Presence {
   online?: boolean;
@@ -183,16 +184,7 @@ async function candidatesFor(
   const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
   const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as CatalogRestaurant : null;
   const cityKey = availabilityCityKey(restaurant?.city);
-  const [presenceSnapshot, eligibilitySnapshot] = await Promise.all([
-    riderAvailabilityCollectionRef(firestoreDb).where("cityKey", "==", cityKey).limit(500).get(),
-    riderDispatchEligibilityCollectionRef(firestoreDb).limit(500).get()
-      .catch((error) => {
-        // This cache must never become a dispatch dependency. Authoritative
-        // per-rider hydration below preserves the previously deployed path.
-        logger.warn("RIDER_ELIGIBILITY_PROJECTION_READ_FAILED", {orderId: order.id, error});
-        return null;
-      }),
-  ]);
+  const presenceSnapshot = await riderAvailabilityCollectionRef(firestoreDb).where("cityKey", "==", cityKey).limit(500).get();
   let presences: Record<string, Presence> = {};
   for (const doc of presenceSnapshot.docs) presences[doc.id] = doc.data() as Presence;
   // Compatibility fallback while the index is being populated by rider
@@ -205,11 +197,6 @@ async function candidatesFor(
     presences = objectMap<Presence>(fallbackSnapshot.val());
   }
   const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
-  if (eligibilitySnapshot) {
-    for (const doc of eligibilitySnapshot.docs) {
-      eligibilityByRider[doc.id] = doc.data() as RiderDispatchEligibilityProjection;
-    }
-  }
   const now = Date.now();
   const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0};
   let eligibilityProjectionHits = 0;
@@ -237,6 +224,17 @@ async function candidatesFor(
     }
     return [{riderId, presence, distanceKm}];
   }).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 100);
+  // Eligibility for just these nearest riders, not the first 500 riders of
+  // the whole platform. The cache must never become a dispatch dependency:
+  // a failed read falls back to authoritative per-rider hydration below.
+  await Promise.all(nearestPresence.map(async ({riderId}) => {
+    try {
+      const snapshot = await riderDispatchEligibilityCollectionRef(firestoreDb).doc(riderId).get();
+      if (snapshot.exists) eligibilityByRider[riderId] = snapshot.data() as RiderDispatchEligibilityProjection;
+    } catch (error) {
+      logger.warn("RIDER_ELIGIBILITY_PROJECTION_READ_FAILED", {orderId: order.id, riderId, error});
+    }
+  }));
   const hydrated = await Promise.all(nearestPresence.map(async ({riderId, presence, distanceKm}) => {
     const cachedEligibility = eligibilityByRider[riderId];
     const projectionUsable = isRiderDispatchEligibilityProjectionUsable(cachedEligibility, riderId, now);
@@ -687,6 +685,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
       riderId: uid,
       riderName: String(rider.fullName ?? presence.riderName ?? "Savrivo Partner"),
       ...(rider.phone ? {riderPhone: String(rider.phone).slice(0, 30)} : {}),
+      ...riderPublicStats(rider),
       riderAssignedAt: claimAt,
       ...(restaurant?.phone ? {restaurantPhone: String(restaurant.phone).slice(0, 30)} : {}),
       status: ready ? "Assigned" : orderValue.status,

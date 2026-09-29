@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "ledgerPartyJournals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "party", "order": "ASCENDING"},
+        {"fieldPath": "occurredAt", "order": "DESCENDING"}
+      ]
+    },
+    {
       "collectionGroup": "restaurants",
       "queryScope": "COLLECTION",
       "fields": [

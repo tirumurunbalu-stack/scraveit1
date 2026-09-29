@@ -1,5 +1,6 @@
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
+import {setGlobalOptions} from "firebase-functions/v2";
 import {onValueWritten} from "firebase-functions/v2/database";
 import {onDocumentCreated, onDocumentUpdated, onDocumentWritten} from "firebase-functions/v2/firestore";
 import {onCall, onRequest} from "firebase-functions/v2/https";
@@ -194,6 +195,9 @@ import {
   upsertRiderRewardCampaign,
 } from "./services/riderRewards";
 import {runWeeklyFinanceAutomation} from "./services/financeAutomation";
+import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
+import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
+import {backfillLedgerPartyIndex} from "./services/ledgerPartyIndex";
 import {
   applyVerifiedPayment,
   callbackHash,
@@ -201,6 +205,11 @@ import {
   UnconfiguredPhonePeGateway,
 } from "./services/payments";
 import type {SavrivoOrder} from "./types";
+
+// Each instance serves up to 80 requests at once, so 100 instances is room
+// for roughly 8,000 simultaneous requests per function. Instances only exist
+// (and cost) while traffic needs them; idle functions scale to zero.
+setGlobalOptions({maxInstances: 100});
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
@@ -305,6 +314,9 @@ export const updateOrderStatus = onCall({
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to update an order."));
+  // Sent by the restaurant app when a new order arrives, so the instance is
+  // already running when Accept is tapped (no ~3 s cold start).
+  if ((request.data as {warmup?: unknown} | null)?.warmup === true) return {warm: true};
   try {
     const input = parse(transitionOrderSchema, request.data);
     const result = await transitionOrder(request.auth.uid, request.auth.token, input);
@@ -430,6 +442,9 @@ export const markRiderArrivedRestaurant = onCall({
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to record arrival."));
+  // The rider app sends this while heading to the restaurant, so the
+  // instance is already running when "I have arrived" is tapped.
+  if ((request.data as {orderId?: unknown} | null)?.orderId === "__warmup__") return {warm: true};
   try {
     const input = parse(markRiderArrivedRestaurantSchema, request.data);
     return await recordRiderRestaurantArrival(request.auth.uid, input.orderId);
@@ -1150,6 +1165,20 @@ export const expireCustomerWalletLots = onSchedule({
   logger.info("RIDER_REFERRAL_EXPIRY_RUN_COMPLETED", {expiredReferrals});
 });
 
+// Copies older ledger journals into the per-rider / per-restaurant index.
+// New journals are indexed as they are written; once the backlog is done,
+// finance screens read only their own party's journals and this run is a
+// single state-document read.
+export const backfillLedgerPartyJournals = onSchedule({
+  schedule: "every 15 minutes",
+  region: REGION,
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  const result = await backfillLedgerPartyIndex();
+  if (result.indexed > 0 || !result.complete) logger.info("LEDGER_PARTY_INDEX_BACKFILL", result);
+});
+
 export const settleRiderIncentivePeriods = onSchedule({
   schedule: "every 15 minutes",
   region: REGION,
@@ -1385,6 +1414,9 @@ export const onOrderUpdated = onDocumentUpdated({
     await sideEffectLease(`rider-rewards:${order.id}`, async () => {
       await evaluateRiderRewardsForDeliveredOrder(order);
     });
+    await sideEffectLease(`rider-delivered-count:${order.id}`, async () => {
+      await recordRiderDeliveredOrder(order);
+    });
     const batch: WriteBatchLike = firestoreDb.batch();
     batch.delete(trackingEvidenceRef(firestoreDb, order.id));
     batch.delete(deliveryOtpRef(firestoreDb, order.id));
@@ -1480,6 +1512,13 @@ export const onCatalogRestaurantWritten = onDocumentWritten({
   }
 
   if (!after) return;
+  // Bank details must never stay on the public listing.
+  const legacyPayout = (after as {payoutProfile?: unknown}).payoutProfile;
+  if (legacyPayout && typeof legacyPayout === "object") {
+    await movePayoutProfileToPrivate(firestoreDb, restaurantId, legacyPayout, FieldValue.delete());
+    logger.info("RESTAURANT_PAYOUT_PROFILE_MADE_PRIVATE", {restaurantId});
+    return;
+  }
   const restaurant = after as {
     name?: unknown; city?: unknown; lat?: unknown; lng?: unknown;
     citySort?: unknown; geoSort?: unknown; geoSortGlobal?: unknown;

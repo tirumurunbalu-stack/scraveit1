@@ -14,7 +14,7 @@ import {
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike} from "../firestoreTypes";
 import {legacyStaffRef, restaurantMemberRef} from "../firestorePaths";
-import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION, ledgerPartyIndexReady, readPartyLedgerJournals} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
 
 export const RESTAURANT_SETTLEMENT_DEFAULT_LEDGER_LIMIT = 1_000;
@@ -196,16 +196,24 @@ export async function getRestaurantSettlementSummary(
   await authorizeRestaurantFinanceRead(uid, token, restaurantId, database);
   const referenceAt = Date.now();
 
-  const [snapshot, coverageSnapshot, financePolicy] = await Promise.all([
-    database.collection(LEDGER_JOURNALS_COLLECTION)
-      .orderBy("occurredAt", "desc")
-      .limit(ledgerLimit + 1)
-      .get(),
+  // With the per-party index only this restaurant's journals are read, instead
+  // of the latest journals of the whole platform.
+  const indexed = await ledgerPartyIndexReady(database as never).catch(() => false);
+  const [ledgerPage, coverageSnapshot, financePolicy] = await Promise.all([
+    indexed
+      ? readPartyLedgerJournals(`restaurant:${restaurantId}`, ledgerLimit + 1, database as never)
+      : database.collection(LEDGER_JOURNALS_COLLECTION)
+        .orderBy("occurredAt", "desc")
+        .limit(ledgerLimit + 1)
+        .get()
+        .then((snapshot) => {
+          const page: Record<string, unknown> = {};
+          for (const doc of snapshot.docs) page[doc.id] = doc.data();
+          return page;
+        }),
     restaurantLedgerCoverageRef(database).get(),
     loadFinancePolicy(referenceAt),
   ]);
-  const ledgerPage: Record<string, unknown> = {};
-  for (const doc of snapshot.docs) ledgerPage[doc.id] = doc.data();
   const page = parseJournalPage(ledgerPage, ledgerLimit);
   const coverageMap = (coverageSnapshot.exists ? coverageSnapshot.data() : null) as Record<string, unknown> | null;
   const coverageVerified = coverageMarker(coverageMap?.[restaurantId] ?? null, restaurantId) !== null;

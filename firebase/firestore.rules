@@ -103,10 +103,21 @@ service cloud.firestore {
     // ---------------------------------------------------------------
     match /restaurants/{restaurantId} {
       allow read: if true; // Restaurant listings are public browsing, same as any food-delivery app's menu pages.
-      allow create, delete: if isPrivileged();
-      allow update: if isPrivileged()
+      // Bank details never go on the public listing (see restaurantPayoutProfiles below).
+      allow create: if isPrivileged() && !('payoutProfile' in request.resource.data);
+      allow delete: if isPrivileged();
+      allow update: if (isPrivileged()
         || canManageRestaurant(restaurantId, 'profile')
-        || canManageRestaurant(restaurantId, 'availability');
+        || canManageRestaurant(restaurantId, 'availability'))
+        // Removing them (the one-time clean-up) is the only allowed change.
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['payoutProfile'])
+          || !('payoutProfile' in request.resource.data));
+    }
+
+    // A restaurant's bank account, IFSC, UPI, PAN and GSTIN: only its
+    // bank-permitted staff and Scraveit admins can read or change them.
+    match /restaurantPayoutProfiles/{restaurantId} {
+      allow read, write: if canManageRestaurant(restaurantId, 'bank');
     }
 
     // menus/{restaurantId} is a document (not itself readable content - the
@@ -194,11 +205,11 @@ service cloud.firestore {
         || canManageRestaurant(resource.data.restaurantId, 'handover')
         || canManageRestaurant(resource.data.restaurantId, 'tracking');
 
-      // Only the server (Cloud Functions, Admin SDK) transitions order status
-      // after creation. Client creation stays allowed for the initial
-      // "Order placed" write, matching the RTDB rule's create-only path.
-      allow create: if isOwnUser(request.resource.data.customerId)
-        && request.resource.data.status == 'Order placed';
+      // Orders are created only by the createOrder / createCodOrder callables
+      // (Admin SDK), which price them on the server. A client-written order
+      // could carry any price and would still reach the restaurant as a new
+      // order, so clients cannot create one directly.
+      allow create: if false;
       allow update, delete: if isPrivileged();
     }
 

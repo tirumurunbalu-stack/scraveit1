@@ -128,6 +128,23 @@ public class MainActivity extends ComponentActivity {
 
     final FrameLayout root = new FrameLayout(this);
     root.setBackgroundColor(Color.rgb(246, 249, 253));
+    // Draw behind the status bar on every Android version (Android 15+ does
+    // this anyway), so a screen's own colour - such as the live-order ad hero -
+    // fills it. The page pads itself by the insets published below; the
+    // keyboard still resizes the page through the bottom padding.
+    androidx.core.view.WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+    getWindow().setStatusBarColor(Color.TRANSPARENT);
+    androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root, (insetView, insets) -> {
+      androidx.core.graphics.Insets bars = insets.getInsets(
+          androidx.core.view.WindowInsetsCompat.Type.systemBars()
+              | androidx.core.view.WindowInsetsCompat.Type.displayCutout());
+      androidx.core.graphics.Insets ime = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime());
+      insetView.setPadding(0, 0, 0, ime.bottom);
+      safeTopPx = bars.top;
+      safeBottomPx = ime.bottom > 0 ? 0 : bars.bottom;
+      publishSafeArea();
+      return androidx.core.view.WindowInsetsCompat.CONSUMED;
+    });
 
     final WebView view = new WebView(this);
     webView = view;
@@ -180,6 +197,7 @@ public class MainActivity extends ComponentActivity {
         handler.postDelayed(new Runnable() {
           @Override public void run() {
             if (!isTrustedPageLoaded()) return;
+            publishSafeArea();
             view.setVisibility(View.VISIBLE);
             splash.setVisibility(View.GONE);
             deliverPendingPushEvent();
@@ -345,10 +363,26 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  private int safeTopPx;
+  private int safeBottomPx;
+
+  /** Hands the status/navigation bar sizes to the page as CSS variables. */
+  private void publishSafeArea() {
+    final WebView target = webView;
+    if (target == null || !isTrustedPageLoaded()) return;
+    float density = getResources().getDisplayMetrics().density;
+    final String script = "(function(s){s.setProperty('--native-top','" + Math.round(safeTopPx / density)
+        + "px');s.setProperty('--android-bottom-inset','" + Math.round(safeBottomPx / density)
+        + "px');})(document.documentElement.style)";
+    target.post(() -> target.evaluateJavascript(script, null));
+  }
+
   private void applyStatusBarStyle(final String hex, final boolean darkIcons) {
     runOnUiThread(new Runnable() {
       @Override public void run() {
-        try { getWindow().setStatusBarColor(Color.parseColor(hex)); } catch (Exception ignored) { }
+        // The bar stays transparent (the page draws beneath it); only the
+        // icon colour follows the screen.
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
         android.view.View decor = getWindow().getDecorView();
         new androidx.core.view.WindowInsetsControllerCompat(getWindow(), decor)
             .setAppearanceLightStatusBars(darkIcons);
@@ -357,10 +391,14 @@ public class MainActivity extends ComponentActivity {
   }
 
   private class NativeBridge {
-    @JavascriptInterface public void setStatusBarStyle(String hex, boolean darkIcons) {
-      if (isTrustedPageLoaded() && hex != null && hex.matches("#[0-9a-fA-F]{6}")) {
-        applyStatusBarStyle(hex, darkIcons);
-      }
+    @JavascriptInterface public void setStatusBarStyle(final String hex, final boolean darkIcons) {
+      if (hex == null || !hex.matches("#[0-9a-fA-F]{6}")) return;
+      // WebView.getUrl() (inside isTrustedPageLoaded) may only be called on
+      // the UI thread; checking it here on the JavaBridge thread threw and
+      // silently dropped every status-bar update.
+      runOnUiThread(() -> {
+        if (isTrustedPageLoaded()) applyStatusBarStyle(hex, darkIcons);
+      });
     }
     @JavascriptInterface public void requestCurrentLocation() {
       runOnUiThread(new Runnable() {

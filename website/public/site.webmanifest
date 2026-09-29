@@ -1,0 +1,17 @@
+{
+  "name": "SCRAVEIT",
+  "short_name": "SCRAVEIT",
+  "description": "Food delivery platform operated by SCRAVEIT PRIVATE LIMITED.",
+  "start_url": "https://www.scraveit.in/",
+  "scope": "https://www.scraveit.in/",
+  "display": "standalone",
+  "background_color": "#f9f7f2",
+  "theme_color": "#391e32",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "64x64",
+      "type": "image/svg+xml"
+    }
+  ]
+}

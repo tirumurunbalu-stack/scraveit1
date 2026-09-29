@@ -25,7 +25,7 @@
   --radius-md: 16px;
   --radius-lg: 24px;
   --page-gutter: 20px;
-  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--native-top, 0px));
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
@@ -503,6 +503,8 @@ h1, h2, h3, .display, .brand-word {
 .map-route polyline { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .map-route-casing { stroke: rgba(255,255,255,.9); stroke-width: 9; }
 .map-route-line { stroke: var(--brand); stroke-width: 5; }
+.map-plan { position: absolute; overflow: visible; pointer-events: none; max-width: none; }
+.map-plan polyline { fill: none; stroke: var(--brand); stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 0.5 8; opacity: .9; }
 .map-card-empty .map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; gap: 8px; text-align: center; padding: 24px; color: var(--ink-soft); }
 .map-overlay { position: absolute; top: 14px; right: 14px; left: auto; bottom: auto; display: flex; align-items: center; gap: 6px; z-index: 4; }
 .map-attribution { font-size: 10px; color: var(--ink-soft); background: color-mix(in srgb, var(--surface), transparent 12%); backdrop-filter: blur(8px); padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
@@ -513,9 +515,9 @@ h1, h2, h3, .display, .brand-word {
 /* An illustration, not a glyph-on-a-badge like the restaurant/home pins -
    drop the circular badge chrome entirely and let the artwork's own shape
    and shadow read directly on the map. */
-.map-pin.rider { background: none; border: 0; border-radius: 0; box-shadow: none; width: 66px; height: 79px; margin: -39.5px 0 0 -33px; z-index: 3; transition: transform 2600ms linear; }
-.map-pin.rider img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0,0,0,.35)); }
-.map-pin.rider.live::after { content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); width: 30px; height: 12px; border-radius: 50%; border: 2px solid var(--brand); animation: map-pulse 1.8s ease-out infinite; }
+.map-pin.rider { --w: var(--rider-w, 46px); background: none; border: 0; border-radius: 0; box-shadow: none; width: var(--w); height: calc(var(--w) * 1.2); margin: calc(var(--w) * -0.6) 0 0 calc(var(--w) * -0.5); z-index: 3; transition: transform 2600ms linear; }
+.map-pin.rider img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 4px 7px rgba(0,0,0,.35)); transition: transform .5s ease; transform-origin: 50% 60%; }
+.map-pin.rider.live::after { content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); width: calc(var(--w) * .55); height: calc(var(--w) * .2); border-radius: 50%; border: 2px solid var(--brand); animation: map-pulse 1.8s ease-out infinite; }
 @keyframes map-pulse { from { transform: scale(.6); opacity: .6; } to { transform: scale(1.9); opacity: 0; } }
 .map-minimize { position: absolute; left: 14px; top: 14px; z-index: 5; }
 .map-controls { position: absolute; right: 14px; top: 58px; display: grid; gap: 8px; z-index: 5; }
@@ -552,8 +554,8 @@ h1, h2, h3, .display, .brand-word {
    280x420 viewport minimum (trackingViewportSize()), so scaling is what
    actually brings the surrounding streets into view instead of cropping to
    the rider pin alone. */
-.map-thumb { position: relative; flex: 0 0 auto; width: 104px; height: 96px; border-radius: 16px; overflow: hidden; background: #dcebf3; cursor: pointer; }
-.live-module #tracking-map-card.compact, #tracking-map-card.compact { width: 189px; height: 175px; min-height: 0; border-radius: 0; box-shadow: none; transform: scale(.55); transform-origin: top left; pointer-events: none; }
+.map-thumb { position: relative; flex: 0 0 auto; width: 92px; height: 85px; border-radius: 16px; overflow: hidden; background: #dcebf3; cursor: pointer; }
+.live-module #tracking-map-card.compact, #tracking-map-card.compact { width: 189px; height: 175px; min-height: 0; border-radius: 0; box-shadow: none; transform: scale(.487); transform-origin: top left; pointer-events: none; }
 .map-thumb-expand { position: absolute; right: 6px; top: 6px; width: 25px; height: 25px; border-radius: 50%; background: rgba(8,20,40,.62); display: grid; place-items: center; z-index: 3; }
 .map-thumb-expand svg { width: 13px; height: 13px; color: #fff; }
 
@@ -562,6 +564,31 @@ h1, h2, h3, .display, .brand-word {
    sections, and 22px between every one of them is what made it feel mostly
    air. */
 .order-screen { gap: 14px; }
+/* Dark theme: a quiet backdrop so the space around the cards is not flat -
+   the hero's blue glowing down, a faint dot grid and a dotted route winding
+   down the side, fading out toward the bottom. Light theme is unchanged. */
+.order-screen { position: relative; isolation: isolate; }
+[data-theme="dark"] .order-screen::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none;
+  left: calc(var(--page-gutter) * -1); right: calc(var(--page-gutter) * -1); top: 0; bottom: -140px;
+  background:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='900' viewBox='0 0 220 900'><path d='M190 0 C 60 120, 210 260, 110 380 S 40 620, 150 740 S 200 860, 120 900' fill='none' stroke='%237fb6ff' stroke-opacity='.22' stroke-width='3' stroke-linecap='round' stroke-dasharray='0.5 11'/><circle cx='110' cy='380' r='5' fill='%237fb6ff' fill-opacity='.28'/><circle cx='150' cy='740' r='5' fill='%237fb6ff' fill-opacity='.22'/></svg>") right -34px top 340px / 200px auto no-repeat,
+    radial-gradient(70% 34% at 50% 30%, rgba(23,111,240,.34), transparent 72%),
+    radial-gradient(48% 26% at 104% 58%, rgba(46,170,255,.16), transparent 70%),
+    radial-gradient(44% 24% at -4% 82%, rgba(110,99,241,.14), transparent 70%),
+    url("doodles-dark.svg") 0 0 / 360px 360px repeat;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 82%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 82%, transparent 100%);
+}
+/* Light theme: the same doodles, very faint, on the canvas colour. */
+:root:not([data-theme="dark"]) .order-screen::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none;
+  left: calc(var(--page-gutter) * -1); right: calc(var(--page-gutter) * -1); top: 0; bottom: -140px;
+  background: url("doodles-light.svg") 0 0 / 360px 360px repeat;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 82%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 82%, transparent 100%);
+}
+[data-theme="dark"] .order-screen > .card { background: rgba(14, 30, 54, .78); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border-color: rgba(127,182,255,.16); }
 .order-topbar { display: flex; align-items: center; gap: 12px; }
 .order-topbar-title { min-width: 0; flex: 1; display: grid; }
 .order-topbar-title strong { font-size: 18px; font-weight: 850; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -571,24 +598,34 @@ h1, h2, h3, .display, .brand-word {
    to the screen edges. */
 .order-screen > .live-module:first-child { margin-top: calc((var(--safe-top) + 20px) * -1); }
 /* Meets the status bar colour so the two read as one surface. */
-.live-hero::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 88px; z-index: 4; pointer-events: none; background: linear-gradient(to bottom, rgba(11,63,150,.92) 0%, rgba(11,63,150,.42) 42%, rgba(11,63,150,0) 100%); }
-.live-module { margin-inline: calc(var(--page-gutter) * -1); overflow: hidden; background: linear-gradient(135deg, #0d4fd0 0%, #176ff0 58%, #2eaaff 100%); color: #fff; box-shadow: 0 16px 38px rgba(21,94,239,.22); }
+.live-hero::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: calc(88px + var(--safe-top)); z-index: 4; pointer-events: none; background: linear-gradient(to bottom, rgba(11,63,150,.92) 0%, rgba(11,63,150,.42) 42%, rgba(11,63,150,0) 100%); }
+.live-module { margin-inline: calc(var(--page-gutter) * -1); color: #fff; }
 .live-module .tracking-ad-hero { margin-inline: 0; }
-.live-module #tracking-map-card { border-radius: 0; box-shadow: none; height: 48dvh; min-height: 340px; max-height: 480px; }
+/* As the live hero, the ad runs up behind the status bar and is the larger
+   part of the block; its copy starts below the status bar and the floating
+   back/refresh buttons. */
+.live-module .tracking-ad-slide { height: calc(clamp(410px, 61dvh, 610px) + var(--safe-top)); padding-top: calc(var(--safe-top) + 64px); padding-bottom: 56px; }
+.live-module .tracking-ad-dots { bottom: 40px; }
+.live-module .tracking-ad-hero.is-fallback .tracking-ad-slide { padding: calc(var(--safe-top) + 64px) 24px 48px; }
+.live-module #tracking-map-card { border-radius: 0; box-shadow: none; height: calc(clamp(410px, 61dvh, 610px) + var(--safe-top)); min-height: 0; max-height: none; }
 .live-module.no-hero { border-radius: 0; }
-.live-hero { position: relative; }
+.live-hero { position: relative; overflow: hidden; }
 /* Back and refresh ride on the hero rather than in a bar above it. */
-.hero-float { position: absolute; top: 14px; z-index: 6; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; background: rgba(8,20,40,.5); color: #fff; backdrop-filter: blur(8px); cursor: pointer; }
+.hero-float { position: absolute; top: calc(var(--safe-top) + 10px); z-index: 6; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; background: rgba(8,20,40,.5); color: #fff; backdrop-filter: blur(8px); cursor: pointer; }
 .hero-float.back { left: 14px; }
 .hero-float.refresh { right: 14px; }
 .hero-float svg { width: 20px; height: 20px; }
 /* Map chrome moves clear of the two floating controls. */
-.live-module .map-overlay { top: auto; bottom: 12px; left: 12px; right: auto; }
-.live-module .map-controls { top: auto; bottom: 64px; right: 12px; }
-.live-module .map-minimize { top: auto; left: auto; right: 12px; bottom: 12px; }
+.live-module .map-overlay { top: auto; bottom: 42px; left: 12px; right: auto; }
+.live-module .map-controls { top: auto; bottom: 94px; right: 12px; }
+.live-module .map-minimize { top: auto; left: auto; right: 12px; bottom: 42px; }
 
-.live-status { display: flex; align-items: center; gap: 12px; padding: 13px 20px 15px; }
-.live-status .grow { min-width: 0; display: grid; gap: 6px; justify-items: start; }
+/* The status is its own card lifted over the bottom edge of the hero - a
+   rounded, raised rectangle rather than a strip glued to the ad - and lines
+   up with the cards below it. */
+.live-status { position: relative; z-index: 7; display: flex; align-items: center; gap: 12px; padding: 14px 16px 15px; margin: -24px var(--page-gutter) 0; border-radius: 22px; background: linear-gradient(135deg, #0d4fd0 0%, #176ff0 58%, #2eaaff 100%); border: 1px solid rgba(255,255,255,.22); box-shadow: 0 1px 0 rgba(255,255,255,.28) inset, 0 18px 36px -12px rgba(8,42,120,.55), 0 6px 14px rgba(13,63,158,.18); }
+.live-module.no-hero .live-status { margin-top: 0; }
+.live-status .grow { min-width: 0; display: grid; gap: 7px; justify-items: start; }
 .live-place { font-size: 12px; font-weight: 700; color: rgba(255,255,255,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 /* Deliberately NOT .chip - that is the filter control, with a 44px tap
    target and nowrap, which turned these read-only status labels into two
@@ -596,8 +633,10 @@ h1, h2, h3, .display, .brand-word {
 .live-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .live-chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 4px 9px; font-size: 11px; line-height: 1.35; font-weight: 800; background: rgba(255,255,255,.2); color: #fff; }
 .live-chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
-.live-chip.eta { background: #fff; color: #0d3f9e; }
-.live-headline { font-size: 17px; line-height: 1.25; font-weight: 850; text-wrap: balance; }
+.live-chip.eta { background: #fff; color: #0d3f9e; font-variant-numeric: tabular-nums; }
+.live-chip.eta.late { color: #b45309; }
+@media (prefers-reduced-motion: reduce) { .map-pin.rider img { transition: none; } }
+.live-headline { font-size: 16.5px; line-height: 1.25; font-weight: 850; text-wrap: balance; }
 .live-meta { font-size: 11.5px; color: rgba(255,255,255,.78); }
 
 .contact-card { display: grid; gap: 4px; padding: 8px 12px; }
@@ -880,3 +919,9 @@ html.keyboard-open select:focus {
 /* Wallet & rewards */
 .referral-code{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-radius:14px;border:1px dashed var(--brand, #155eef);background:color-mix(in srgb, var(--brand, #155eef), transparent 92%)}.referral-code span{font-size:12px;color:var(--muted)}.referral-code strong{font-size:22px;letter-spacing:.12em;font-variant-numeric:tabular-nums}
 .wallet-offer .status-pill{white-space:nowrap}
+
+/* Status-bar scrim: appears only once the page scrolls under the clock. */
+#status-scrim { position: fixed; left: 0; right: 0; top: 0; height: var(--safe-top); z-index: 200; pointer-events: none; opacity: 0; transition: opacity .2s ease; background: rgba(246,249,253,.86); background: color-mix(in srgb, var(--canvas) 84%, transparent); -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3); }
+#status-scrim.hero { background: rgba(11,63,150,.8); }
+#status-scrim.visible { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #status-scrim { transition: none; } }

@@ -24,8 +24,8 @@ android {
         applicationId "com.feastly.app"
         minSdk 23
         targetSdk 36
-        versionCode 72
-        versionName "3.7.0"
+        versionCode 81
+        versionName "3.9.7"
         manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
         buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
     }

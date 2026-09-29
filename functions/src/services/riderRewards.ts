@@ -24,7 +24,13 @@ import {
   requirePlatformConfigAdminClaim,
   type PlatformConfigAdminRole,
 } from "./authz";
-import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal, persistLedgerJournalIfAbsent} from "./ledger";
+import {
+  LEDGER_JOURNALS_COLLECTION,
+  ledgerPartyIndexReady,
+  persistLedgerJournal,
+  persistLedgerJournalIfAbsent,
+  readPartyLedgerJournals,
+} from "./ledger";
 import {notifyRiderRewardUpdate} from "./notifications";
 import {loadFinancePolicy} from "./platformConfig";
 import {readRiderFinancialSummary, type RiderFinancialSummary} from "./riderFinance";
@@ -3216,6 +3222,19 @@ async function readRecentLedgerJournals(
   return validJournalPage(source);
 }
 
+/** One rider's journals: from the per-party index once it is complete,
+ * otherwise from the latest journals of the whole platform (the old way). */
+async function readRiderLedgerJournals(
+  riderId: string,
+  limit: number,
+  database: RiderRewardsDatabase,
+): Promise<readonly LedgerJournal[]> {
+  if (await ledgerPartyIndexReady(database as never).catch(() => false)) {
+    return validJournalPage(await readPartyLedgerJournals(`rider:${riderId}`, limit, database as never));
+  }
+  return readRecentLedgerJournals(limit, database);
+}
+
 function relevantRiderJournal(journal: LedgerJournal, riderId: string): boolean {
   const movement = riderLedgerMovement(journal, riderId);
   return movement.earningsMovementPaise !== 0 || movement.tipMovementPaise !== 0 || movement.codMovementPaise !== 0;
@@ -3509,6 +3528,18 @@ async function readRiderProfile(database: RiderRewardsDatabase, riderId: string)
   return record(snapshot.exists ? snapshot.data() : null);
 }
 
+async function readRidersReferredBy(
+  database: RiderRewardsDatabase,
+  identity: RiderReferralIdentity,
+): Promise<Record<string, Record<string, unknown>>> {
+  const codes = [identity.referralCode, legacyReferralCodeForRider(identity.riderId),
+    `https://join.scraveit.app/rider?ref=${identity.referralCode}`];
+  const snapshot = await database.collection("riders").where("referredByCode", "in", codes).limit(200).get();
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const doc of snapshot.docs) out[doc.id] = record(doc.data());
+  return out;
+}
+
 async function readAllRiders(database: RiderRewardsDatabase): Promise<Record<string, Record<string, unknown>>> {
   const snapshot = await database.collection("riders").get();
   const out: Record<string, Record<string, unknown>> = {};
@@ -3719,7 +3750,7 @@ async function settleGuaranteeSnapshot(
   if (snapshot.guarantee?.status === "seats_full") return null;
   // Recomputed from the ledger at settlement time, so bonuses credited for the
   // period's last deliveries are counted before deciding the top-up.
-  const journals = (await readRecentLedgerJournals(2_000, database))
+  const journals = (await readRiderLedgerJournals(snapshot.riderId, 2_000, database))
     .filter((journal) => relevantRiderJournal(journal, snapshot.riderId));
   const breakdown = guaranteeBreakdownFromJournals(journals, snapshot.riderId, campaign, snapshot.periodStartAt, snapshot.periodEndAt);
   const tier = qualifiedGuaranteeTier(
@@ -3885,7 +3916,7 @@ export async function refreshRiderRewardProgress(
   const [riderProfile, riderSessionKeys, recentJournals] = await Promise.all([
     readRiderProfile(database, riderId),
     readSessionDayKeys(database, riderId),
-    readRecentLedgerJournals(2_000, database),
+    readRiderLedgerJournals(riderId, 2_000, database),
   ]);
   const riderJournals = recentJournals.filter((journal) => relevantRiderJournal(journal, riderId));
   const completedTripsLifetime = completedTripsLifetimeForRider(riderProfile, riderJournals, riderId);
@@ -4420,9 +4451,9 @@ export async function readRiderRewardsDashboard(
     riderRewardSettingsRef(database).get(),
     readCampaigns(database, input.campaignLimit),
     readRiderProfile(database, riderId),
-    readAllRiders(database),
+    Promise.resolve(null),
     readSessionDayKeys(database, riderId),
-    readRecentLedgerJournals(Math.min(Math.max(input.ledgerLimit, 500), 2_000), database),
+    readRiderLedgerJournals(riderId, Math.min(Math.max(input.ledgerLimit, 500), 2_000), database),
     loadFinancePolicy(referenceAt),
     ensureRiderReferralIdentity(riderId, database, now),
   ]);
@@ -4559,7 +4590,10 @@ export async function readRiderRewardsDashboard(
     referralBudgetRef(database).get(),
   ]);
   const recordedIds = new Set(referralRecords.map((referral) => referral.referredRiderId));
-  const invitedOnly = Object.entries(riders).filter(([candidateId, candidate]) =>
+  void riders;
+  // Only riders who signed up with this rider's code, not every rider.
+  const referredRiders = await readRidersReferredBy(database, referralIdentity);
+  const invitedOnly = Object.entries(referredRiders).filter(([candidateId, candidate]) =>
     !recordedIds.has(candidateId) && referralInputMatchesRider(candidate.referredByCode, referralIdentity));
   const referralTerms = currentReferralTerms(settings);
   const referralBudget = referralBudgetFrom(settings, referralBudgetSnapshot.exists ? referralBudgetSnapshot.data() : null);
@@ -5598,7 +5632,7 @@ export async function evaluateRiderRewardsForDeliveredOrder(
     readCampaigns(database, 250),
     riderRewardSettingsRef(database).get(),
     readRiderProfile(database, riderId),
-    readRecentLedgerJournals(1_000, database),
+    readRiderLedgerJournals(riderId, 2_000, database),
     readSessionDayKeys(database, riderId),
   ]);
   const settings = normalizeRewardSettings(settingsSnapshot.exists ? settingsSnapshot.data() : null);

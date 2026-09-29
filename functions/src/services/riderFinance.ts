@@ -7,9 +7,11 @@ import type {DocumentReferenceLike, FirestoreLike} from "../firestoreTypes";
 import {riderWalletRef} from "../firestorePaths";
 import type {RiderFinancialSummaryQueryInput} from "../schemas";
 import {requireApprovedRider, requirePlatformConfigAdminClaim} from "./authz";
-import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
+import {LEDGER_JOURNALS_COLLECTION, ledgerPartyIndexReady, readPartyLedgerJournals} from "./ledger";
 
 export const RIDER_FINANCE_LEDGER_MAX_PAGE = 250;
+/** Journals read per rider once the per-party index is ready. */
+const RIDER_PARTY_LEDGER_WINDOW = 1_000;
 export const RIDER_FINANCE_HISTORY_MAX_PAGE = 100;
 
 export type RiderFinanceDatabase = FirestoreLike;
@@ -418,18 +420,28 @@ export async function readRiderFinancialSummary(
   if (riderId === requesterId) await authorization.requireRider(requesterId);
   else authorization.requireAdmin(token);
 
-  const journalLimit = bounded(input.ledgerLimit, RIDER_FINANCE_LEDGER_MAX_PAGE);
   const historyLimit = bounded(input.historyLimit, RIDER_FINANCE_HISTORY_MAX_PAGE);
-  const [ledgerSnapshot, walletSnapshot, coverageSnapshot] = await Promise.all([
-    database.collection(LEDGER_JOURNALS_COLLECTION)
-      .orderBy("occurredAt", "desc")
-      .limit(journalLimit + 1)
-      .get(),
+  // With the per-party index, only this rider's journals are read, so the
+  // window can be much larger than when it was shared with the whole platform.
+  const indexed = await ledgerPartyIndexReady(database as unknown as FirestoreLike).catch(() => false);
+  const journalLimit = indexed
+    ? Math.max(bounded(input.ledgerLimit, RIDER_FINANCE_LEDGER_MAX_PAGE), RIDER_PARTY_LEDGER_WINDOW)
+    : bounded(input.ledgerLimit, RIDER_FINANCE_LEDGER_MAX_PAGE);
+  const [ledgerPage, walletSnapshot, coverageSnapshot] = await Promise.all([
+    indexed
+      ? readPartyLedgerJournals(`rider:${riderId}`, journalLimit + 1, database as unknown as FirestoreLike)
+      : database.collection(LEDGER_JOURNALS_COLLECTION)
+        .orderBy("occurredAt", "desc")
+        .limit(journalLimit + 1)
+        .get()
+        .then((snapshot) => {
+          const page: Record<string, unknown> = {};
+          for (const doc of snapshot.docs) page[doc.id] = doc.data();
+          return page;
+        }),
     riderWalletRef(database, riderId).get(),
     riderLedgerCoverageRef(database).get(),
   ]);
-  const ledgerPage: Record<string, unknown> = {};
-  for (const doc of ledgerSnapshot.docs) ledgerPage[doc.id] = doc.data();
   const page = parseLedgerPage(ledgerPage, journalLimit);
   const wallet = parseWallet(walletSnapshot.exists ? walletSnapshot.data() : null);
   const coverageMap = record(coverageSnapshot.exists ? coverageSnapshot.data() : null) ?? {};

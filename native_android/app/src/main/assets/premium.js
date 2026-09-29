@@ -2135,13 +2135,44 @@
   // disappears without touching the keyboard behaviour.
   const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#F6F9FD";
   let statusBarApplied="";
+  // The live map (restaurant, home, dotted plan line, then the partner) shows
+  // from the moment an order is placed, not only once a partner is assigned.
+  function orderShowsLiveMap(order){
+    if(!order||TERMINAL_STATES.has(order.status))return false;
+    const points=trackingGeoPoints(order,state.tracking[order.id]||{});
+    return !!(points.restaurantPoint&&points.customerPoint);
+  }
   function syncStatusBar(){
     const order=liveOrderRoute()?orderById():null;
-    const hero=!!(order&&["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status));
-    const next=hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS;
+    const hero=orderShowsLiveMap(order);
+    const dark=document.documentElement.dataset.theme==="dark";
+    // The app draws beneath the status bar, so its icons follow what is
+    // behind them: white on the blue live hero and on the dark theme.
+    const darkIcons=!hero&&!dark;
+    const next=(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS)+(darkIcons?":dark":":light");
+    updateStatusScrim(hero);
     if(next===statusBarApplied)return;
     statusBarApplied=next;
-    try{ if(window.FeastlyNative&&FeastlyNative.setStatusBarStyle)FeastlyNative.setStatusBarStyle(next,!hero); }catch(_){}
+    try{ if(window.FeastlyNative&&FeastlyNative.setStatusBarStyle)FeastlyNative.setStatusBarStyle(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS,darkIcons); }catch(_){}
+  }
+  // A blurred strip behind the status bar that fades in once the page is
+  // scrolled, so the clock and battery never sit on top of moving content.
+  let statusScrimHero=false, statusScrimFrame=0;
+  function statusScrimElement(){
+    let el=document.getElementById("status-scrim");
+    if(!el&&document.body){
+      el=document.createElement("div");el.id="status-scrim";el.setAttribute("aria-hidden","true");document.body.appendChild(el);
+      window.addEventListener("scroll",()=>{if(!statusScrimFrame)statusScrimFrame=requestAnimationFrame(()=>{statusScrimFrame=0;updateStatusScrim(statusScrimHero)})},{passive:true});
+    }
+    return el;
+  }
+  function updateStatusScrim(hero){
+    statusScrimHero=!!hero;
+    const el=statusScrimElement();
+    if(!el)return;
+    const y=window.scrollY||(document.documentElement&&document.documentElement.scrollTop)||0;
+    el.classList.toggle("hero",statusScrimHero);
+    el.classList.toggle("visible",y>12);
   }
   function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
 
@@ -2704,14 +2735,22 @@
    */
   function orderLiveModule(order,live,canTrack){
     const collapsed=!!state.trackingMapCollapsed;
-    const headline=order.status==="Arrived"?'Your partner is at your door.'
-      :order.status==="Near you"?'Your partner is nearby.'
-      :order.status==="Delivered"?'Delivered with care.'
-      :order.status==="Cancelled"?'This order was cancelled.'
-      :canTrack?'Your meal is on the way.':'Your order is being prepared.';
+    const headline=({
+      "Order placed":"Order received. Sending it to the kitchen.",
+      "Accepted":"The kitchen has your order.",
+      "Preparing":"Your meal is being freshly prepared.",
+      "Ready for pickup":"Packed and waiting for your partner.",
+      "Assigned":"Your partner is heading to the restaurant.",
+      "Handed to rider":"Your meal is on its way.",
+      "Out for delivery":"Your meal is on its way.",
+      "Near you":"Almost there. Your partner is close by.",
+      "Arrived":"Your partner is at your door.",
+      "Delivered":"Delivered with care.",
+      "Cancelled":"This order was cancelled.",
+    })[order.status]||(canTrack?'Your meal is on its way.':'Your order is being prepared.');
     const hero=!canTrack?"":(collapsed?trackingAdCarouselMarkup():trackingMapMarkup(order,live,false));
-    const meta=canTrack&&live.updatedAt?'Location updated '+timeAgo(live.updatedAt)
-      :'Last updated '+timeAgo(order.updatedAt||order.createdAt);
+    const meta=(order.restaurant?order.restaurant+' · ':'')+(live.updatedAt&&order.riderId?'Location updated '+timeAgo(live.updatedAt)
+      :'Updated '+timeAgo(order.updatedAt||order.createdAt));
     // With a hero to sit on, back and refresh float over it instead of
     // occupying a bar of their own above the fold, and the restaurant this
     // order came from moves down to head the status it belongs to.
@@ -2721,15 +2760,22 @@
       +'</div>':"";
     return '<section class="live-module'+(hero?'':' no-hero')+'">'+heroBlock
       +'<div class="live-status"><div class="grow">'
-      +'<p class="live-place">'+h(order.restaurant||order.id)+'</p>'
       +'<h1 class="live-headline">'+headline+'</h1>'
-      +'<div class="live-chips"><span class="live-chip">'+h(order.status)+'</span><span class="live-chip eta">'+h(etaText(order))+'</span></div>'
+      +'<div class="live-chips"><span class="live-chip">'+h(order.status)+'</span>'+arrivalPillMarkup(order,live)+'</div>'
       +'<p class="live-meta">'+h(meta)+'</p></div>'
       +(canTrack&&collapsed?trackingMapThumbMarkup(order,live):'')
       +'</div></section>';
   }
   /** One row builder for both people. The restaurant's row is rendered with
    *  its own order content further down, not beside the delivery partner. */
+  function riderCardCaption(order){
+    const parts=[];
+    const rating=Number(order.riderRating);
+    if(rating>=1&&rating<=5)parts.push('★ '+rating.toFixed(1));
+    const delivered=Number(order.riderDeliveredCount);
+    if(Number.isFinite(delivered)&&delivered>0)parts.push(delivered.toLocaleString("en-IN")+(delivered===1?' delivery':' deliveries'));
+    return parts.length?'Your delivery partner · '+parts.join(' · '):'Your delivery partner';
+  }
   function orderContactRow(order,who){
     if(TERMINAL_STATES.has(order.status))return"";
     const rider=who==="rider";
@@ -2737,19 +2783,20 @@
     const name=rider?(order.riderName||"Delivery partner"):(order.restaurant||"Restaurant");
     const phone=rider?order.riderPhone:order.restaurantPhone;
     return '<div class="contact-row"><span class="avatar">'+h(String(name).slice(0,1).toUpperCase())+'</span>'
-      +'<div class="grow"><strong>'+h(name)+'</strong><span class="caption">'+(rider?'Your delivery partner':'Restaurant')+'</span></div>'
+      +'<div class="grow"><strong>'+h(name)+'</strong><span class="caption">'+(rider?riderCardCaption(order):'Restaurant')+'</span></div>'
       +(phone?'<a class="icon-button" href="tel:'+h(phone)+'" aria-label="Call '+h(name)+'">'+icon("phone")+'</a>':'')
       +'<button class="icon-button" data-action="open-order-chat" data-channel="'+(rider?'customerRider':'customerRestaurant')+'" data-order-id="'+h(order.id)+'" aria-label="Chat with '+h(name)+'">'+icon("chat")+'</button></div>';
   }
   function screenOrder() {
     const order=orderById();if(!order)return'<main class="screen"><div class="screen-content">'+topbar("Order unavailable","This order is not in your account cache.")+emptyState("orders","Order not found","Refresh your orders and try again.","refresh","Refresh orders")+'</div>'+nav()+'</main>';
-    const canTrack=["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status);
+    const canTrack=orderShowsLiveMap(order);
+    const riderLive=["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status);
     const showDeliveryOtp=["Out for delivery","Near you","Arrived"].includes(order.status),deliveryOtp=state.deliveryOtps[order.id];
     const savedReview=state.reviews[order.id]||null,restaurantReviewRating=Number(savedReview&&savedReview.rating||0),riderReviewRating=Number(savedReview&&savedReview.riderRating||0);
     const submittedReviewMarkup=savedReview?'<section class="card stack"><div><p class="eyebrow">Your feedback</p><h2 class="section-title">Ratings submitted</h2></div><div class="price-row"><span>Restaurant & food</span><strong>'+h(restaurantReviewRating.toFixed(1))+' / 5</strong></div>'+(riderReviewRating>0?'<div class="price-row"><span>Delivery partner</span><strong>'+h(riderReviewRating.toFixed(1))+' / 5</strong></div>':'')+'<p class="caption">Saved to this delivered order.</p></section>':'';
     const reviewAction=order.status!=="Delivered"?'':savedReview?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' View your rating</button>':reviewStateReady()?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' Rate order</button>':'<button class="button tonal grow" disabled><span class="spinner"></span> Checking feedback…</button>';
     const live=state.tracking[order.id]||{};
-    if(canTrack)ensureTrackingRoute(order,live);
+    if(riderLive)ensureTrackingRoute(order,live);
     return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
       +orderLiveModule(order,live,canTrack)
       +(orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
@@ -2892,7 +2939,7 @@
     // The rider marker is a full illustration (its own colors/shadow), not a
     // small glyph on a solid badge like the restaurant/home pins - it gets an
     // <img> instead of the shared icon-in-circle treatment.
-    const content=variant==="rider"?'<img src="rider-marker.png" alt="" draggable="false">':icon(iconName);
+    const content=variant==="rider"?'<img src="rider-marker.png" alt="" draggable="false" style="transform:'+trackingRiderTransform(ms)+'">':icon(iconName);
     if(!point)return '<span class="map-pin '+variant+'" style="display:none" aria-label="'+h(label)+'">'+content+'</span>';
     const local=trackingLocalPoint(ms,point);
     return '<span class="map-pin '+variant+(isLive?' live':'')+'" style="transform:translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)" aria-label="'+h(label)+'">'+content+'</span>';
@@ -3186,6 +3233,120 @@
     if(ms&&ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
     if(ms)ms.routeAnim=null;
   }
+  // ---- rider marker: size and direction ------------------------------------
+  // The marker shrinks as the map zooms out so it never covers the streets it
+  // is travelling along, and stays modest even fully zoomed in.
+  function trackingRiderWidth(zoom){
+    return ({16:46,15:40,14:34,13:30})[zoom]||26;
+  }
+  function trackingBearing(a,b){
+    const r=Math.PI/180,dLng=(b.lng-a.lng)*r;
+    const y=Math.sin(dLng)*Math.cos(b.lat*r);
+    const x=Math.cos(a.lat*r)*Math.sin(b.lat*r)-Math.sin(a.lat*r)*Math.cos(b.lat*r)*Math.cos(dLng);
+    return (Math.atan2(y,x)/r+360)%360;
+  }
+  // The marker art is a three-quarter view riding toward the lower right, so
+  // it cannot simply spin: it mirrors to face left or right and tilts up to
+  // 30 degrees toward the road. Due north/south keeps the last facing, so a
+  // rider on a straight road never flips back and forth.
+  function trackingRiderTransform(ms){
+    const heading=ms&&ms.riderHeading;
+    if(!Number.isFinite(heading))return"";
+    let left=!!ms.riderFacingLeft;
+    if(heading>=195&&heading<=345)left=true;else if(heading>=15&&heading<=165)left=false;
+    ms.riderFacingLeft=left;
+    const base=left?235:125;
+    const tilt=Math.max(-30,Math.min(30,((heading-base+540)%360)-180));
+    return "rotate("+tilt.toFixed(0)+"deg)"+(left?" scaleX(-1)":"");
+  }
+  function updateTrackingHeading(ms,routeView,riderPoint){
+    if(!ms||!riderPoint)return;
+    if(routeView&&routeView.snapped&&routeView.route.total>0){
+      const at=Math.min(routeView.progress,Math.max(0,routeView.route.total-20));
+      const a=trackingPointAtProgress(routeView.route,at),b=trackingPointAtProgress(routeView.route,at+20);
+      if(trackingMetres(a,b)>3)ms.riderHeading=trackingBearing(a,b);
+      ms.headingFrom=riderPoint;
+      return;
+    }
+    const from=ms.headingFrom;
+    if(from&&trackingMetres(from,riderPoint)>=8){ms.riderHeading=trackingBearing(from,riderPoint);ms.headingFrom=riderPoint;}
+    else if(!from)ms.headingFrom=riderPoint;
+  }
+  function applyTrackingRiderHeading(card,ms){
+    const img=card&&card.querySelector(".map-pin.rider img");
+    if(img)img.style.transform=trackingRiderTransform(ms);
+  }
+  // Before pickup there is no road route yet, only the plan: a dotted line
+  // from the kitchen to the door, so the customer sees where it is all going.
+  function trackingPlannedLineMarkup(ms,points){
+    if(!points.restaurantPoint||!points.customerPoint)return"";
+    const a=trackingLocalPoint(ms,points.restaurantPoint),b=trackingLocalPoint(ms,points.customerPoint),pad=8;
+    const minX=Math.min(a.x,b.x)-pad,minY=Math.min(a.y,b.y)-pad;
+    const width=Math.max(1,Math.abs(a.x-b.x))+pad*2,height=Math.max(1,Math.abs(a.y-b.y))+pad*2;
+    return '<svg class="map-plan" aria-hidden="true" width="'+width.toFixed(0)+'" height="'+height.toFixed(0)+'" viewBox="0 0 '+width.toFixed(0)+' '+height.toFixed(0)+'" style="left:'+minX.toFixed(1)+'px;top:'+minY.toFixed(1)+'px">'
+      +'<polyline points="'+(a.x-minX).toFixed(1)+','+(a.y-minY).toFixed(1)+' '+(b.x-minX).toFixed(1)+','+(b.y-minY).toFixed(1)+'"/></svg>';
+  }
+  // ---- arrival estimate -------------------------------------------------------
+  // Minutes to the door from where the partner actually is: the road still
+  // ahead on the delivery leg, or partner -> kitchen -> door before pickup, at
+  // an average town speed. Before the kitchen is done the promised window is
+  // the floor, since the partner cannot leave before the food does.
+  const ARRIVAL_METRES_PER_MIN=300, ARRIVAL_ROAD_FACTOR=1.3;
+  function liveArrivalMinutes(order,live){
+    const status=String(order&&order.status||"");
+    if(status==="Arrived")return 0;
+    const promisedMax=Number(order.etaMax||0);
+    const promiseLeft=promisedMax>0?Math.ceil((Number(order.createdAt||Date.now())+promisedMax*60000-Date.now())/60000):null;
+    const points=trackingGeoPoints(order,live||{});
+    let metres=null,extra=0;
+    if(points.customerPoint&&points.riderPoint){
+      if(trackingDeliveryLegActive(order,live||{})){
+        const ms=state.trackingMap,view=ms&&ms.orderId===order.id?trackingRouteView(order,live||{}):null;
+        metres=view&&view.snapped?Math.max(0,view.route.total-(Number.isFinite(ms.routeProgress)?ms.routeProgress:view.progress))
+          :trackingMetres(points.riderPoint,points.customerPoint)*ARRIVAL_ROAD_FACTOR;
+        extra=1;
+      }else if(points.restaurantPoint){
+        metres=(trackingMetres(points.riderPoint,points.restaurantPoint)+trackingMetres(points.restaurantPoint,points.customerPoint))*ARRIVAL_ROAD_FACTOR;
+        extra=2;
+      }
+    }
+    let minutes=metres==null?null:Math.max(1,Math.ceil(metres/ARRIVAL_METRES_PER_MIN+extra));
+    const kitchenBusy=["Order placed","Accepted","Preparing"].includes(status);
+    if(promiseLeft!=null&&(minutes==null||kitchenBusy))minutes=Math.max(minutes||0,promiseLeft);
+    return minutes;
+  }
+  // The countdown only moves down on small wobbles; a genuine delay of two
+  // minutes or more is shown as it is, together with an honest "running late".
+  function arrivalPill(order,live){
+    if(!order||TERMINAL_STATES.has(order.status))return null;
+    if(order.status==="Arrived")return {text:"At your door",tone:"now"};
+    const computed=liveArrivalMinutes(order,live);
+    if(computed==null)return null;
+    state.arrivalShown=state.arrivalShown||{};
+    const previous=state.arrivalShown[order.id];
+    let minutes=computed;
+    if(previous&&computed>previous.minutes&&computed-previous.minutes<2)minutes=previous.minutes;
+    state.arrivalShown[order.id]={minutes};
+    const promisedMax=Number(order.etaMax||0);
+    const promisedBy=promisedMax>0?Number(order.createdAt||0)+promisedMax*60000:0;
+    const overBy=promisedBy?Math.round((Date.now()+Math.max(0,minutes)*60000-promisedBy)/60000):0;
+    const timing=!promisedBy||overBy<=1?"On time":overBy<=10?"Running a little late":"Running late";
+    if(minutes<=0)return {text:"Arriving any moment",tone:overBy>1?"late":"now"};
+    if(minutes<=1&&["Near you","Out for delivery"].includes(order.status))return {text:"Arriving now · "+timing,tone:overBy>1?"late":"now"};
+    return {text:"Arriving in "+minutes+" min · "+timing,tone:overBy>1?"late":"ok"};
+  }
+  function arrivalPillMarkup(order,live){
+    const pill=arrivalPill(order,live);
+    if(!pill)return '<span class="live-chip eta" id="tracking-eta">'+h(etaText(order))+'</span>';
+    return '<span class="live-chip eta'+(pill.tone==="late"?' late':'')+'" id="tracking-eta">'+h(pill.text)+'</span>';
+  }
+  function patchArrivalPill(order,live){
+    const chip=document.getElementById("tracking-eta");
+    const pill=arrivalPill(order,live);
+    if(!chip||!pill)return;
+    chip.textContent=pill.text;
+    chip.classList.toggle("late",pill.tone==="late");
+  }
   function trackingMapMarkup(order,live,compact){
     const points=trackingGeoPoints(order,live);
     const ms=trackingMapState(order,points);
@@ -3211,10 +3372,10 @@
     // tapping it back open shows the map already current, not stale.
     // In compact mode the tap target is the .map-thumb wrapper around this,
     // not the card itself - see trackingMapThumbMarkup().
-    return '<section class="card map-card'+(compact?' compact':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'">'
+    return '<section class="card map-card'+(compact?' compact':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'" style="--rider-w:'+trackingRiderWidth(ms.zoom)+'px">'
       +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
       +'<div class="map-tiles">'+trackingTileMarkup(ms)+'</div>'
-      +trackingRouteMarkup(ms,order,live)
+      +(trackingDeliveryLegActive(order,live)?trackingRouteMarkup(ms,order,live):trackingPlannedLineMarkup(ms,points))
       +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
       +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","bike",fresh)
@@ -3308,6 +3469,19 @@
     // trackingCameraFocus), so what actually matters is only whether the
     // rider is still on screen at the current zoom - a genuinely rare event,
     // not a per-tick one.
+    // Close to the door the map moves in, once, so the last few streets are
+    // easy to follow. A customer who has zoomed or panned keeps their view.
+    const nearDoor=["Near you","Arrived"].includes(order.status)||(points.riderPoint&&points.customerPoint
+      &&trackingDeliveryLegActive(order,live)&&trackingMetres(points.riderPoint,points.customerPoint)<350);
+    if(nearDoor&&!ms.arrivalZoomed&&!ms.userPanned&&!ms.userZoomed&&points.riderPoint&&points.customerPoint){
+      ms.arrivalZoomed=true;
+      if(ms.zoom<TRACKING_MAP_MAX_ZOOM){
+        ms.zoom=TRACKING_MAP_MAX_ZOOM;
+        ms.anchorLat=(points.riderPoint.lat+points.customerPoint.lat)/2;ms.anchorLng=(points.riderPoint.lng+points.customerPoint.lng)/2;
+        ms.panX=0;ms.panY=0;ms.tileKey="";
+        return false;
+      }
+    }
     if(!ms.userPanned&&!ms.userZoomed&&points.riderPoint){
       const size=trackingViewportSize(),margin=48;
       const above=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100),below=size.height-above;
@@ -3333,6 +3507,9 @@
     // On the delivery leg the scooter is driven along the route itself, which
     // both keeps it on the road and lets the line retract in step with it.
     const routeView=trackingRouteView(order,live);
+    updateTrackingHeading(ms,routeView,points.riderPoint);
+    applyTrackingRiderHeading(card,ms);
+    patchArrivalPill(order,live);
     if(routeView&&routeView.snapped){
       let target=routeView.progress;
       // GPS noise must not make the line grow back; only real backtracking does.

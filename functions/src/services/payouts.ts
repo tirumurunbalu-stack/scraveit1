@@ -16,6 +16,7 @@ import type {
 } from "../schemas";
 import {riderPayoutLockRef, restaurantSettlementLockRef} from "./financeAutomation";
 import {persistLedgerJournal} from "./ledger";
+import {withPrivatePayoutProfile} from "./restaurantPayoutProfiles";
 import {loadFinancePolicy} from "./platformConfig";
 import {
   readRiderFinancialSummary,
@@ -846,7 +847,7 @@ async function loadRestaurantRecord(database: FinancePayoutDatabase, restaurantI
   if (!Object.keys(restaurant).length) {
     throw new DomainError("not-found", "The restaurant record could not be found for settlement.");
   }
-  return restaurant;
+  return withPrivatePayoutProfile(database as unknown as FirestoreLike, restaurantId, restaurant) as Promise<UnknownRecord>;
 }
 
 export async function recordRiderPayout(

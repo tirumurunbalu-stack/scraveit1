@@ -19,6 +19,7 @@ import {
 import {DomainError} from "../errors";
 import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
+import {withPrivatePayoutProfiles} from "./restaurantPayoutProfiles";
 import {riderLedgerCoverageRef} from "./riderFinance";
 import {riderRewardSettingsRef, normalizeRewardSettings} from "./riderRewards";
 import {buildRestaurantSettlementJournal, restaurantLedgerCoverageRef} from "./restaurantSettlements";
@@ -1323,8 +1324,10 @@ export async function runWeeklyFinanceAutomation(
 
     const riderRecords: UnknownRecord = {};
     for (const doc of ridersSnapshot.docs) riderRecords[doc.id] = doc.data();
-    const restaurantRecords: UnknownRecord = {};
-    for (const doc of restaurantsSnapshot.docs) restaurantRecords[doc.id] = doc.data();
+    const publicRestaurantRecords: UnknownRecord = {};
+    for (const doc of restaurantsSnapshot.docs) publicRestaurantRecords[doc.id] = doc.data();
+    const restaurantRecords = await withPrivatePayoutProfiles(
+      database as unknown as FirestoreLike, publicRestaurantRecords) as UnknownRecord;
     const coveredRiders = riderCoverageSet(riderCoverageSnapshot.exists ? riderCoverageSnapshot.data() : null);
     const coveredRestaurants = restaurantCoverageSet(
       restaurantCoverageSnapshot.exists ? restaurantCoverageSnapshot.data() : null,

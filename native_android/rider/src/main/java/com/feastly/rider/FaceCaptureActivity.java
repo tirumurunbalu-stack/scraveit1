@@ -299,10 +299,12 @@ public final class FaceCaptureActivity extends ComponentActivity {
             lowLightOnStreak = 0;
             lowLightOffStreak = 0;
         }
+        // Once on, the flash stays on for the rest of this capture: its own
+        // light brightens the face, so switching off on a bright reading
+        // turned it off mid-blink and the photo came out dark. The window
+        // brightness and the torch both reset when this screen closes.
         if (!lowLight && lowLightOnStreak >= LOW_LIGHT_STREAK_FRAMES) {
             setLowLight(true);
-        } else if (lowLight && lowLightOffStreak >= LOW_LIGHT_STREAK_FRAMES) {
-            setLowLight(false);
         }
     }
 

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order food, groceries and dairy | SCRAVEIT</title>
+  <meta name="description" content="Order from restaurants, grocery and dairy partners on SCRAVEIT, operated by SCRAVEIT PRIVATE LIMITED. Every product page shows its full FSSAI label information.">
+  <meta name="theme-color" content="#f9f7f2">
+  <link rel="canonical" href="https://www.scraveit.in/shop">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/shop/shop.v3.css">
+</head>
+<body>
+  <a class="skip" href="#app">Skip to content</a>
+  <header class="s-header">
+    <a class="s-wordmark" href="/" aria-label="SCRAVEIT home">scraveit<span>*</span></a>
+    <nav class="s-nav" aria-label="Shop">
+      <a href="/shop" data-link>Shop</a>
+      <a href="/how-it-works">How it works</a>
+      <a href="/shop/orders" data-link>My orders</a>
+    </nav>
+    <div class="s-header-actions">
+      <a class="s-account" href="/shop/signin" data-link id="account-link">Sign in</a>
+      <a class="s-cart" href="/shop/cart" data-link aria-label="Cart"><span aria-hidden="true">Cart</span><b id="cart-count">0</b></a>
+    </div>
+  </header>
+
+  <main id="app" tabindex="-1" aria-live="polite">
+    <p class="s-loading">Loading the shop…</p>
+  </main>
+
+  <footer class="s-footer">
+    <div class="s-footer-grid">
+      <div>
+        <a class="s-wordmark small" href="/">scraveit<span>*</span></a>
+        <p>Food delivery and e-commerce platform operated by SCRAVEIT PRIVATE LIMITED.</p>
+      </div>
+      <nav aria-label="Policies">
+        <a href="/how-it-works">How SCRAVEIT works</a>
+        <a href="/fssai">FSSAI &amp; food safety</a>
+        <a href="/grievance">Grievance officer</a>
+        <a href="/refunds">Refunds &amp; cancellation</a>
+        <a href="/delivery-policy">Delivery policy</a>
+        <a href="/terms">Terms of use</a>
+        <a href="/privacy">Privacy policy</a>
+        <a href="/about">About</a>
+      </nav>
+    </div>
+    <p class="s-legal" id="footer-legal"></p>
+  </footer>
+
+  <nav class="kind-bar" id="kind-bar" aria-label="Browse by store type">
+    <a href="/shop?type=restaurant" data-kind="restaurant"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v8m-3-8v5a3 3 0 0 0 6 0V3M7 11v10M17 21V3c-2.5 1.5-4 4.5-4 8h4"/></svg><span>Restaurants</span></a>
+    <a href="/shop?type=grocery" data-kind="grocery"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1.4 11.2a2 2 0 0 1-2 1.8H8.4a2 2 0 0 1-2-1.8z"/><path d="M9 8a3 3 0 0 1 6 0"/></svg><span>Groceries</span></a>
+    <a href="/shop?type=dairy" data-kind="dairy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v3l2 3v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9l2-3z"/><path d="M7 12h10"/></svg><span>Dairy</span></a>
+  </nav>
+
+  <div class="s-toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/shop/web-config.js"></script>
+  <script src="/shop/samples.v3.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-functions-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-check-compat.js"></script>
+  <script src="/shop/shop.v3.js"></script>
+</body>
+</html>

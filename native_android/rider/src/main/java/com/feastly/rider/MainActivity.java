@@ -707,8 +707,16 @@ public class MainActivity extends ComponentActivity {
             publishLocationResult(true, true, null);
             return;
         }
+        // Ask every enabled source at once and use the first accurate fix.
+        // Waiting on GPS alone meant a cold satellite fix (often 30 s+
+        // indoors) before a rider could go online; the network and fused
+        // sources usually answer within a second or two.
+        java.util.List<String> providers = new java.util.ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) providers.add(LocationManager.FUSED_PROVIDER);
+        providers.add(LocationManager.NETWORK_PROVIDER);
+        providers.add(LocationManager.GPS_PROVIDER);
         Location best = null;
-        for (String provider : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+        for (String provider : providers) {
             try {
                 Location candidate = manager.getLastKnownLocation(provider);
                 if (isUsableAvailabilityFix(candidate)
@@ -716,18 +724,24 @@ public class MainActivity extends ComponentActivity {
             } catch (Exception ignored) { }
         }
         publishLocationResult(true, true, best);
-        try {
-            String provider = manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-                    ? LocationManager.GPS_PROVIDER : LocationManager.NETWORK_PROVIDER;
-            manager.requestSingleUpdate(provider, new LocationListener() {
-                @Override public void onLocationChanged(Location location) {
-                    if (isUsableAvailabilityFix(location)) publishLocationResult(true, true, location);
-                }
-                @Override public void onProviderDisabled(String providerName) { }
-                @Override public void onProviderEnabled(String providerName) { }
-                @Override public void onStatusChanged(String providerName, int status, Bundle extras) { }
-            }, Looper.getMainLooper());
-        } catch (Exception ignored) { }
+        if (best != null && best.hasAccuracy() && best.getAccuracy() <= 50f
+                && System.currentTimeMillis() - best.getTime() <= 30_000L) return;
+        final boolean[] answered = {false};
+        for (String provider : providers) {
+            try {
+                if (!manager.isProviderEnabled(provider)) continue;
+                manager.requestSingleUpdate(provider, new LocationListener() {
+                    @Override public void onLocationChanged(Location location) {
+                        if (answered[0] || !isUsableAvailabilityFix(location)) return;
+                        answered[0] = true;
+                        publishLocationResult(true, true, location);
+                    }
+                    @Override public void onProviderDisabled(String providerName) { }
+                    @Override public void onProviderEnabled(String providerName) { }
+                    @Override public void onStatusChanged(String providerName, int status, Bundle extras) { }
+                }, Looper.getMainLooper());
+            } catch (Exception ignored) { }
+        }
     }
 
     private boolean isUsableAvailabilityFix(Location location) {

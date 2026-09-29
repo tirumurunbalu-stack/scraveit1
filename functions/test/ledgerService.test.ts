@@ -217,7 +217,15 @@ describe("backend ledger persistence", () => {
     expect(result.outcome).toBe("insert");
     expect(result.journalId).toBe(journal.journalId);
     expect(result.journalId).toBe(validatedLedgerJournalId(journal));
-    expect((database as InMemoryFirestore).paths()).toEqual([`${LEDGER_JOURNALS_COLLECTION}/${journal.journalId}`]);
+    // The journal, plus one copy under each party it involves (the per-party
+    // index riders' and restaurants' finances are read from).
+    expect((database as InMemoryFirestore).paths().sort()).toEqual([
+      `${LEDGER_JOURNALS_COLLECTION}/${journal.journalId}`,
+      `ledgerPartyJournals/restaurant:restaurant-1__${journal.journalId}`,
+      `ledgerPartyJournals/rider:rider-1__${journal.journalId}`,
+    ].sort());
+    expect((database as InMemoryFirestore).read(`ledgerPartyJournals/rider:rider-1__${journal.journalId}`))
+      .toMatchObject({party: "rider:rider-1", journalId: journal.journalId, occurredAt: journal.occurredAt});
     expect((database as InMemoryFirestore).paths().every((path) => !path.includes("riderWallets"))).toBe(true);
   });
 
