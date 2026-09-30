@@ -111,7 +111,9 @@ service cloud.firestore {
         || canManageRestaurant(restaurantId, 'availability'))
         // Removing them (the one-time clean-up) is the only allowed change.
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['payoutProfile'])
-          || !('payoutProfile' in request.resource.data));
+          || !('payoutProfile' in request.resource.data))
+        // Restaurant, grocery store or dairy is set by Scraveit at approval.
+        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType']));
     }
 
     // A restaurant's bank account, IFSC, UPI, PAN and GSTIN: only its

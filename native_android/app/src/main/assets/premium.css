@@ -925,3 +925,24 @@ html.keyboard-open select:focus {
 #status-scrim.hero { background: rgba(11,63,150,.8); }
 #status-scrim.visible { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { #status-scrim { transition: none; } }
+
+/* Floating Restaurants / Groceries / Dairy bar (same shape as www.scraveit.in/shop). */
+:root{--kind-nav-bg:rgba(15,23,42,.94);--kind-nav-ink:rgba(255,255,255,.72);--kind-nav-active:#bfe3ff;--kind-nav-active-ink:#0f172a}
+[data-theme="dark"]{--kind-nav-bg:rgba(30,52,80,.94);--kind-nav-ink:rgba(226,236,248,.72);--kind-nav-active:#38bdf8;--kind-nav-active-ink:#06182b}
+.bottom-nav.kind-nav{left:50%!important;right:auto!important;bottom:calc(12px + var(--safe-bottom))!important;transform:translateX(-50%)!important;width:min(520px,calc(100% - 24px));min-height:0;padding:6px;gap:4px;grid-template-columns:repeat(3,1fr);border:0;border-radius:22px;background:var(--kind-nav-bg);backdrop-filter:blur(16px) saturate(1.4);-webkit-backdrop-filter:blur(16px) saturate(1.4);box-shadow:0 18px 40px -16px rgba(15,23,42,.6)}
+.kind-nav .nav-button{min-height:58px;gap:3px;color:var(--kind-nav-ink);font-size:12.5px;font-weight:700;letter-spacing:.01em}
+.kind-nav .nav-button .icon{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.kind-nav .nav-button.active{background:var(--kind-nav-active);color:var(--kind-nav-active-ink)}
+.floating-cart{bottom:calc(90px + var(--safe-bottom))!important}
+.home-header-actions .cart-shortcut{width:42px;height:42px;border-radius:13px}
+.home-header-actions .avatar{width:42px;height:42px;border-radius:13px}
+.kind-soon{display:flex;align-items:center;gap:16px}
+.kind-soon-icon{flex:0 0 auto;width:56px;height:56px;border-radius:18px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand)}
+.kind-soon-icon .icon{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.screen:has(.kind-nav){padding-bottom:calc(110px + var(--safe-bottom))}
+.mrp s{opacity:.8}
+.pack-label{border:1px solid var(--border);border-radius:14px;padding:12px 14px}
+.pack-label summary{cursor:pointer}
+.pack-label dl{display:grid;gap:10px;margin:12px 0 0}
+.pack-label dt{font-size:12px;font-weight:750;color:var(--ink-soft)}
+.pack-label dd{margin:2px 0 0;font-size:14px}

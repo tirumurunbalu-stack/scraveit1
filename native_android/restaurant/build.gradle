@@ -17,6 +17,28 @@ android {
         versionName "3.4.2"
     }
 
+    // One codebase, three store apps. Each flavor is its own install and
+    // Firebase app; only its name, icon colour and store-config.js differ.
+    flavorDimensions "store"
+    productFlavors {
+        restaurant {
+            dimension "store"
+            applicationId "com.feastly.restaurant"
+        }
+        grocery {
+            dimension "store"
+            applicationId "com.feastly.grocery"
+            versionCode 1
+            versionName "1.0.0"
+        }
+        dairy {
+            dimension "store"
+            applicationId "com.feastly.dairy"
+            versionCode 1
+            versionName "1.0.0"
+        }
+    }
+
     buildTypes {
         debug { minifyEnabled false }
         release {
