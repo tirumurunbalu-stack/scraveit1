@@ -13,8 +13,8 @@ android {
         applicationId "com.feastly.admin"
         minSdk 24
         targetSdk 36
-        versionCode 57
-        versionName "3.4.4"
+        versionCode 58
+        versionName "3.4.5"
     }
 
     buildTypes {

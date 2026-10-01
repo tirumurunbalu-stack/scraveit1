@@ -71,3 +71,42 @@ img,svg,video,canvas{max-width:100%}
 .econ-table{display:grid;gap:2px;overflow-x:auto}.econ-tr{display:grid;grid-template-columns:minmax(96px,1.4fr) repeat(5,minmax(64px,1fr));gap:8px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;font-variant-numeric:tabular-nums;min-width:500px}.econ-tr.head{color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}.econ-tr span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .econ-pre{white-space:pre-wrap;word-break:break-word;font-size:11px;color:var(--muted);background:var(--raised);border-radius:10px;padding:10px;margin-top:8px;max-height:220px;overflow:auto}
 .tax-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--raised)}.tax-row strong{grid-column:1/-1;font-size:13px}.tax-row .cluster{gap:6px}
+
+/* =====================================================================
+   Scraveit 2026 look (same as the Customer app): calm blue and white,
+   navy ink, hairline cards, pill controls, Manrope + DM Sans.
+   Dark stays the default; light follows the theme switch.
+   ===================================================================== */
+:root{--canvas:#08121f;--surface:#0e1c30;--raised:#142741;--soft:#0b1728;--ink:#edf2fa;--muted:#a3b1c7;--faint:#74839c;--border:#1d3150;--border2:#2b4468;--brand:#5b95ff;--brand2:#5b95ff;--brand-soft:#13294b;--shadow:0 18px 40px -26px rgba(0,0,0,.75);
+  --kind-restaurant:#5b95ff;--kind-restaurant-soft:#13294b;--kind-grocery:#3ccf8e;--kind-grocery-soft:#0f3a2a;--kind-dairy:#3cc3e0;--kind-dairy-soft:#0d3440}
+[data-theme="light"]{--canvas:#f7f9fc;--surface:#fff;--raised:#eef2f8;--soft:#f2f5fa;--ink:#0b1b3a;--muted:#56637d;--faint:#8a96ad;--border:#e3e8f0;--border2:#cdd6e3;--brand:#155eef;--brand2:#155eef;--brand-soft:#e8f0ff;--shadow:0 16px 34px -26px rgba(11,27,58,.35);
+  --kind-restaurant:#155eef;--kind-restaurant-soft:#e8f0ff;--kind-grocery:#12805c;--kind-grocery-soft:#e3f5ed;--kind-dairy:#0e7490;--kind-dairy-soft:#e1f4f8}
+body{font-family:"DM Sans",ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+.title,.display,.section-title,.card-title,h1,h2,h3{font-family:Manrope,"DM Sans",sans-serif;letter-spacing:-.025em;text-wrap:balance}
+.title{font-weight:700}.section-title,.card-title{font-weight:700}
+.eyebrow{color:var(--muted)!important;letter-spacing:.16em;font-weight:700}
+.card{border-radius:14px;box-shadow:none}
+.card.hero{background:var(--raised);color:var(--ink);border:1px solid var(--border2);box-shadow:var(--shadow)}
+.card.hero .caption,.card.hero .supporting{color:var(--muted)!important}
+.card.hero .status{background:var(--brand-soft)!important;color:var(--brand)!important}
+.button{border-radius:999px}.chip{border-radius:999px}.icon-button{border-radius:999px}
+.input,.select,.textarea{border-radius:12px}
+
+/* Category switch: All / Restaurants / Groceries / Dairy. */
+.kind-switch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:4px;border:1px solid var(--border);border-radius:999px;background:var(--soft);position:sticky;top:calc(var(--safe-top) + 6px);z-index:20;backdrop-filter:blur(14px)}
+.kind-tab{min-height:40px;border:0;border-radius:999px;background:transparent;color:var(--muted);font:700 13px/1 "DM Sans",sans-serif;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;white-space:nowrap}
+.kind-tab.active{background:var(--ink);color:var(--canvas)}
+.kind-tab b{min-width:18px;height:18px;padding:0 5px;border-radius:999px;display:inline-grid;place-items:center;background:#e5484d;color:#fff;font-size:11px}
+.kind-badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:3px 9px;font:700 11.5px/1.4 "DM Sans",sans-serif;letter-spacing:.02em}
+.kind-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.kind-restaurant.kind-badge{color:var(--kind-restaurant);background:var(--kind-restaurant-soft)}
+.kind-grocery.kind-badge{color:var(--kind-grocery);background:var(--kind-grocery-soft)}
+.kind-dairy.kind-badge{color:var(--kind-dairy);background:var(--kind-dairy-soft)}
+.kind-banner{display:grid;gap:2px;border-left:4px solid var(--kind-restaurant)}
+.kind-banner strong{font:700 22px/1.2 Manrope,sans-serif;letter-spacing:-.02em}
+.kind-banner.kind-grocery{border-left-color:var(--kind-grocery)}.kind-banner.kind-grocery strong{color:var(--kind-grocery)}
+.kind-banner.kind-dairy{border-left-color:var(--kind-dairy)}.kind-banner.kind-dairy strong{color:var(--kind-dairy)}
+.kind-banner.kind-restaurant strong{color:var(--kind-restaurant)}
+.apps-alert{display:flex;align-items:center;gap:14px;width:100%;text-align:left;color:var(--ink);cursor:pointer;border-color:color-mix(in srgb,var(--warning),transparent 55%);background:color-mix(in srgb,var(--warning-soft),var(--surface) 40%)}
+.apps-alert-count{min-width:40px;height:40px;border-radius:999px;display:grid;place-items:center;background:var(--warning);color:#1a1200;font:800 17px/1 Manrope,sans-serif}
+.apps-alert .caption{display:block;margin-top:2px}
