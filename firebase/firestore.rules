@@ -167,10 +167,15 @@ service cloud.firestore {
       allow read, write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
     }
 
-    // Doc id is the applicant's own uid - a direct 1:1 port of the RTDB path.
-    match /restaurantApplications/{uid} {
-      allow read: if isPrivileged() || isOwnUser(uid);
-      allow create: if isOwnUser(uid) && request.resource.data.uid == uid;
+    // Restaurant applications use the applicant's uid; grocery and dairy
+    // applications use "<uid>_grocery" / "<uid>_dairy" with a matching storeType.
+    match /restaurantApplications/{appId} {
+      allow read: if isPrivileged() || (signedIn() &&
+        appId in [request.auth.uid, request.auth.uid + '_grocery', request.auth.uid + '_dairy']);
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid && (
+        (appId == request.auth.uid && request.resource.data.get('storeType', 'restaurant') == 'restaurant')
+        || (appId == request.auth.uid + '_grocery' && request.resource.data.storeType == 'grocery')
+        || (appId == request.auth.uid + '_dairy' && request.resource.data.storeType == 'dairy'));
       allow update, delete: if isPrivileged();
     }
 
