@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId "com.feastly.rider"
-        minSdk 23
+        minSdk 24
         targetSdk 36
         versionCode 73
         versionName "3.6.5"

@@ -20,6 +20,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -67,6 +70,7 @@ import org.json.JSONObject;
 public class MainActivity extends ComponentActivity {
   private static final int FILE_CHOOSER_REQUEST = 7301;
   private static final int LOCATION_REQUEST = 7302;
+  private WebView billPrintView;
   private static final String TRUSTED_HOST = "appassets.androidplatform.net";
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
   private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
@@ -338,6 +342,31 @@ public class MainActivity extends ComponentActivity {
           @Override public void onIdToken(String token) { publishGoogleToken(token); }
           @Override public void onFailure(String message) { publishGoogleFailure(message); }
         });
+      });
+    }
+    // Prints an order bill through Android's print screen: Wi-Fi printers,
+    // Bluetooth thermal-printer services, or "Save as PDF" to share it.
+    // The bill is rendered in its own WebView with JavaScript off.
+    @JavascriptInterface public void printBill(String jobName, String html) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || html == null || html.length() > 200_000) return;
+        WebView printView = new WebView(MainActivity.this);
+        printView.getSettings().setJavaScriptEnabled(false);
+        printView.getSettings().setAllowFileAccess(false);
+        printView.setWebViewClient(new WebViewClient() {
+          @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) { return true; }
+          @Override public void onPageFinished(WebView view, String url) {
+            PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+            if (printManager == null) { billPrintView = null; return; }
+            String name = jobName == null || jobName.isEmpty() ? "Scraveit bill" : jobName;
+            PrintDocumentAdapter adapter = view.createPrintDocumentAdapter(name);
+            // The print job keeps reading from this WebView, so it stays
+            // referenced (billPrintView) until the next bill replaces it.
+            printManager.print(name, adapter, new PrintAttributes.Builder().build());
+          }
+        });
+        billPrintView = printView;
+        printView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
       });
     }
     @JavascriptInterface public void vibrateSuccess() {

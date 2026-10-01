@@ -946,3 +946,105 @@ html.keyboard-open select:focus {
 .pack-label dl{display:grid;gap:10px;margin:12px 0 0}
 .pack-label dt{font-size:12px;font-weight:750;color:var(--ink-soft)}
 .pack-label dd{margin:2px 0 0;font-size:14px}
+
+/* =====================================================================
+   Scraveit 2026 look: the calm, editorial style of www.scraveit.in in the
+   app's own blue and white. Cool white paper, deep navy ink, one blue
+   accent, hairline rules instead of heavy shadows, pill controls,
+   Manrope headings, DM Sans text, one serif italic word per headline.
+   ===================================================================== */
+:root {
+  --canvas: #f7f9fc;
+  --surface: #ffffff;
+  --surface-raised: #eef2f8;
+  --surface-soft: #f2f5fa;
+  --ink: #0b1b3a;
+  --ink-soft: #56637d;
+  --ink-faint: #8a96ad;
+  --border: #e3e8f0;
+  --border-strong: #cdd6e3;
+  --brand: #155eef;
+  --brand-strong: #0e4ccc;
+  --brand-soft: #e8f0ff;
+  --accent: #155eef;
+  --shadow: 0 18px 40px -24px rgba(11, 27, 58, .35);
+  --shadow-soft: 0 14px 30px -24px rgba(11, 27, 58, .30);
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --font-head: Manrope, "DM Sans", ui-sans-serif, sans-serif;
+  --font-body: "DM Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --kind-nav-bg: rgba(11, 27, 58, .95);
+  --kind-nav-ink: rgba(255, 255, 255, .7);
+  --kind-nav-active: #d6e4ff;
+  --kind-nav-active-ink: #0b1b3a;
+}
+[data-theme="dark"] {
+  --canvas: #08121f;
+  --surface: #0e1c30;
+  --surface-raised: #142741;
+  --surface-soft: #0b1728;
+  --ink: #edf2fa;
+  --ink-soft: #a3b1c7;
+  --ink-faint: #74839c;
+  --border: #1d3150;
+  --border-strong: #2b4468;
+  --brand: #5b95ff;
+  --brand-strong: #86b0ff;
+  --brand-soft: #13294b;
+  --accent: #5b95ff;
+  --shadow: 0 20px 44px -24px rgba(0, 0, 0, .7);
+  --shadow-soft: 0 14px 30px -22px rgba(0, 0, 0, .6);
+  --kind-nav-bg: rgba(20, 39, 65, .95);
+  --kind-nav-ink: rgba(237, 242, 250, .7);
+  --kind-nav-active: #5b95ff;
+  --kind-nav-active-ink: #06101f;
+}
+
+body { font-family: var(--font-body); font-size: 16px; line-height: 1.55; }
+.display, .page-title, .section-title, .card-title, h1, h2, h3 { font-family: var(--font-head); letter-spacing: -.03em; text-wrap: balance; }
+.display { font-weight: 700; line-height: 1.04; }
+.page-title { font-weight: 700; font-size: 28px; line-height: 1.12; }
+.section-title { font-weight: 700; font-size: 20px; }
+.card-title { font-weight: 700; letter-spacing: -.02em; }
+em, .display em, .page-title em { font-family: var(--font-serif); font-style: italic; font-weight: 400; letter-spacing: -.01em; }
+.eyebrow { color: var(--ink-soft); font-weight: 700; letter-spacing: .16em; font-size: 11.5px; }
+.supporting { color: var(--ink-soft); }
+.home-lead { gap: 8px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.home-lead .display { font-size: clamp(30px, 9vw, 40px); }
+
+/* Controls: pills, like the website. */
+.button { border-radius: 999px; font-weight: 700; letter-spacing: -.005em; }
+.button.primary { background: var(--ink); color: var(--canvas); box-shadow: none; }
+.button.secondary { background: var(--brand-soft); color: var(--brand); }
+.button.tonal { background: var(--surface); border: 1px solid var(--border); }
+.text-button { font-weight: 700; }
+.chip { border-radius: 999px; background: var(--surface); border-color: var(--border); color: var(--ink); font-weight: 600; }
+.chip.active { background: var(--ink); border-color: var(--ink); color: var(--canvas); }
+.icon-button, .cart-shortcut { border-radius: 999px; background: var(--surface); border: 1px solid var(--border); box-shadow: none; color: var(--ink); }
+.avatar { border-radius: 999px; background: var(--brand); }
+.input, .select, .textarea { border-radius: 12px; border-color: var(--border-strong); background: var(--surface); }
+
+/* Surfaces: hairlines, not heavy shadows or gradients. */
+.card { border-radius: var(--radius-md); box-shadow: none; }
+.card.brand-card { background: var(--ink); color: var(--canvas); box-shadow: var(--shadow); }
+[data-theme="dark"] .card.brand-card { background: var(--brand-soft); color: var(--ink); }
+.card.brand-card::after { border-color: rgba(255, 255, 255, .06); }
+.notice { border-radius: 14px; border: 0; }
+.search-trigger { border-radius: 999px; box-shadow: none; min-height: 52px; }
+.location-dot { border-radius: 999px; }
+
+.active-order { background: var(--ink); color: var(--canvas); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+[data-theme="dark"] .active-order { background: var(--surface-raised); color: var(--ink); border: 1px solid var(--border-strong); }
+.active-order .supporting, .active-order .muted { color: color-mix(in srgb, currentColor, transparent 25%); }
+.status-progress { background: color-mix(in srgb, currentColor, transparent 80%); }
+.status-progress span { background: #7fb0ff; }
+
+.restaurant-card { border-radius: var(--radius-md); box-shadow: none; transition: transform .18s ease, box-shadow .18s ease; }
+.restaurant-card:hover { box-shadow: var(--shadow); }
+.rating.compact { border-radius: 999px; }
+.menu-item .card-title { font-size: 16px; }
+.add-button { border-radius: 999px; color: var(--brand); font-weight: 750; }
+.settings-row strong { font-weight: 650; }
+.sheet { border-radius: 22px 22px 0 0; }
+.floating-cart .button.primary { background: var(--brand); color: #fff; box-shadow: var(--shadow); }
