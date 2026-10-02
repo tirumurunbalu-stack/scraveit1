@@ -422,6 +422,8 @@ export const riderRewardCampaignSchema = z.object({
   timezone: z.string().trim().min(1).max(80).default("Asia/Kolkata"),
   tripAttribution: rewardTripAttributionSchema.default("delivered_at"),
   allowOverlappingSlotCredit: z.boolean().default(false),
+  // Minutes after midnight a daily campaign's rider day begins (240 = 4 AM).
+  dayStartMinute: z.number().int().min(0).max(1_439).default(0),
   eligibleRiderTypes: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   vehicleTypes: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   minimumAccountAgeDays: z.number().int().min(0).max(10_000).optional(),

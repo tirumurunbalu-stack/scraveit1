@@ -259,6 +259,7 @@ export function normalizeCheckoutCampaign(campaignId: string, raw: unknown): Rid
     timezone: String(source.timezone ?? DEFAULT_TIMEZONE),
     tripAttribution: "delivered_at",
     allowOverlappingSlotCredit: source.allowOverlappingSlotCredit === true,
+    dayStartMinute: Math.max(0, Math.min(1_439, Math.round(nullableNumber(source.dayStartMinute) ?? 0))),
     eligibleRiderTypes: stringArray(source.eligibleRiderTypes),
     vehicleTypes: stringArray(source.vehicleTypes),
     minimumAccountAgeDays: nullableNumber(source.minimumAccountAgeDays),

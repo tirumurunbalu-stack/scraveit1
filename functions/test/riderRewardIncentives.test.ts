@@ -797,6 +797,97 @@ describe("rider reward incentives engine", () => {
     expect(snapshot.qualified).toBe(true);
   });
 
+  // The live daily target: a 4 AM – 4 AM rider day, one slot from each group.
+  function fourAmDailyOffer(): RiderRewardCampaign {
+    return campaign({
+      window: "daily",
+      dayStartMinute: 240,
+      startAt: at("2026-10-01T04:00:00"),
+      endAt: at("2026-10-10T04:00:00"),
+      requireDailyLoginSession: true,
+      minimumCompletedSessionsPerDay: 2,
+      conditionGroups: [
+        group("meal_rush", "Meal rush", 1, [
+          slot("breakfast", "Breakfast", "07:00", "11:00"),
+          slot("lunch", "Lunch", "11:00", "15:00"),
+          slot("dinner", "Dinner", "19:00", "22:00"),
+        ]),
+        group("extra_pay", "Extra-pay hours", 1, [
+          slot("early_morning", "Early morning", "04:00", "07:00"),
+          slot("snacks", "Snacks", "15:00", "19:00"),
+          slot("late_night", "Late night", "22:00", "01:00"),
+          slot("night_owl", "Night owl", "01:00", "04:00"),
+        ]),
+      ],
+      milestones: [{target: 2, rewardAmountPaise: 5_000, label: "2 orders"}],
+    });
+  }
+
+  it("counts a 10 PM – 1 AM slot in full on a 4 AM rider day", () => {
+    const snapshot = progressSnapshot({
+      campaign: fourAmDailyOffer(),
+      events: [
+        ...sessionEvents("lunch", at("2026-10-03T11:00:00"), at("2026-10-03T15:00:00")),
+        ...sessionEvents("late", at("2026-10-03T22:00:00"), at("2026-10-04T01:00:00")),
+        ...deliveryEvents([at("2026-10-03T13:00:00"), at("2026-10-04T00:30:00")]),
+      ],
+      referenceAt: at("2026-10-04T01:30:00"),
+    });
+
+    expect(snapshot.groups.map((entry) => entry.qualified)).toEqual([true, true]);
+    expect(snapshot.completedSessionsByDay["2026-10-03"]).toBe(2);
+    expect(snapshot.tripsCompleted).toBe(2);
+    expect(snapshot.currentUnlockedRewardPaise).toBe(5_000);
+    expect(snapshot.loginSessionRequirementStatus).toBe("ELIGIBLE");
+  });
+
+  it("puts the 1 AM – 4 AM slot at the end of the rider day it follows", () => {
+    const snapshot = progressSnapshot({
+      campaign: fourAmDailyOffer(),
+      events: [
+        ...sessionEvents("breakfast", at("2026-10-03T07:00:00"), at("2026-10-03T11:00:00")),
+        ...sessionEvents("owl", at("2026-10-04T01:00:00"), at("2026-10-04T03:59:00")),
+        ...deliveryEvents([at("2026-10-03T08:00:00"), at("2026-10-04T02:00:00")], "day3"),
+      ],
+      referenceAt: at("2026-10-04T03:59:00"),
+    });
+
+    expect(snapshot.groups.map((entry) => entry.qualified)).toEqual([true, true]);
+    expect(snapshot.completedSessionsByDay["2026-10-03"]).toBe(2);
+    expect(snapshot.tripsCompleted).toBe(2);
+  });
+
+  it("starts a fresh rider day at 4 AM, not at midnight", () => {
+    const snapshot = progressSnapshot({
+      campaign: fourAmDailyOffer(),
+      events: [
+        ...sessionEvents("lunch", at("2026-10-03T11:00:00"), at("2026-10-03T15:00:00")),
+        ...sessionEvents("late", at("2026-10-03T22:00:00"), at("2026-10-04T01:00:00")),
+        ...deliveryEvents([at("2026-10-03T13:00:00"), at("2026-10-04T00:30:00")], "prev"),
+      ],
+      referenceAt: at("2026-10-04T05:00:00"),
+    });
+
+    expect(snapshot.tripsCompleted).toBe(0);
+    expect(snapshot.completedSessionsByDay["2026-10-04"] ?? 0).toBe(0);
+    expect(snapshot.currentUnlockedRewardPaise).toBe(0);
+  });
+
+  it("needs a slot from both groups: two meal-rush slots alone do not qualify", () => {
+    const snapshot = progressSnapshot({
+      campaign: fourAmDailyOffer(),
+      events: [
+        ...sessionEvents("breakfast", at("2026-10-03T07:00:00"), at("2026-10-03T11:00:00")),
+        ...sessionEvents("lunch", at("2026-10-03T11:00:00"), at("2026-10-03T15:00:00")),
+        ...deliveryEvents([at("2026-10-03T08:00:00"), at("2026-10-03T12:00:00")], "meals"),
+      ],
+      referenceAt: at("2026-10-03T16:00:00"),
+    });
+
+    expect(snapshot.groups.map((entry) => entry.qualified)).toEqual([true, false]);
+    expect(snapshot.qualified).toBe(false);
+  });
+
   it("deduplicates duplicate delivered order events by order id", () => {
     const offer = campaign({
       milestones: [{target: 2, rewardAmountPaise: 17_500, label: "2 trips"}],

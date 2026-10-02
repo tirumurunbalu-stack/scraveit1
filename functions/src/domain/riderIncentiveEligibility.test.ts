@@ -54,6 +54,7 @@ function campaign(overrides: Partial<RiderRewardCampaign> = {}): RiderRewardCamp
     timezone: "Asia/Kolkata",
     tripAttribution: "delivered_at",
     allowOverlappingSlotCredit: false,
+    dayStartMinute: 0,
     eligibleRiderTypes: [],
     vehicleTypes: [],
     minimumAccountAgeDays: null,

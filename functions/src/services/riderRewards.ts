@@ -317,6 +317,12 @@ export interface RiderRewardCampaign {
   readonly timezone: string;
   readonly tripAttribution: RewardTripAttribution;
   readonly allowOverlappingSlotCredit: boolean;
+  /**
+   * When a daily campaign's day begins, in minutes after midnight (0 = midnight).
+   * A rider day of 4 AM to 4 AM (240) lets night slots such as 10 PM – 1 AM
+   * count toward the same day as that day's daytime slots.
+   */
+  readonly dayStartMinute: number;
   readonly eligibleRiderTypes: readonly string[];
   readonly vehicleTypes: readonly string[];
   readonly minimumAccountAgeDays: number | null;
@@ -393,6 +399,8 @@ export interface RiderRewardOffer {
   readonly otherConditionProgress?: readonly RiderRewardOtherConditionProgress[];
   readonly selectedDayGroups?: readonly RiderRewardConditionGroupProgress[];
   readonly liabilityRewardPaise?: number;
+  /** Minutes after midnight the rider day starts for a daily offer (0 = midnight). */
+  readonly dayStartMinute?: number;
   readonly periodLabel?: string;
   readonly payoutMode?: RewardMilestonePayoutMode;
   readonly guarantee?: RiderGuaranteeProgress | null;
@@ -1144,6 +1152,7 @@ function normalizeRewardCampaign(campaignId: string, value: unknown): RiderRewar
     timezone,
     tripAttribution,
     allowOverlappingSlotCredit: truthy(source.allowOverlappingSlotCredit, false),
+    dayStartMinute: integer(source.dayStartMinute, 0, 0, 1_439),
     eligibleRiderTypes: normalizeTextList(source.eligibleRiderTypes, 20, 80),
     vehicleTypes: normalizeTextList(source.vehicleTypes, 20, 80),
     minimumAccountAgeDays: source.minimumAccountAgeDays == null ? null :
@@ -1432,17 +1441,18 @@ function rewardRequiredDayEntries(
   timeZone: string,
 ): readonly {dayKey: string; startAt: number}[] {
   const entries: Array<{dayKey: string; startAt: number}> = [];
+  const shiftMs = campaignDayShiftMs(campaign);
   const effectiveStartReferenceAt = Math.max(periodStartAt, campaign.startAt, campaign.updatedAt || campaign.startAt);
-  let cursor = startOfZonedDay(effectiveStartReferenceAt, timeZone);
+  let cursor = startOfCampaignDay(effectiveStartReferenceAt, timeZone, shiftMs);
   while (cursor < periodEndAt) {
-    const dayReferenceAt = cursor + 12 * 60 * 60 * 1_000;
+    const dayReferenceAt = cursor - shiftMs + 12 * 60 * 60 * 1_000;
     if (matchesDay(campaign, dayReferenceAt)) {
       entries.push({
         dayKey: referenceDayKeyAtTimeZone(dayReferenceAt, timeZone),
         startAt: cursor,
       });
     }
-    cursor = startOfZonedDay(cursor + 36 * 60 * 60 * 1_000, timeZone);
+    cursor = startOfCampaignDay(cursor + 36 * 60 * 60 * 1_000, timeZone, shiftMs);
   }
   return entries;
 }
@@ -1465,7 +1475,8 @@ function evaluateCompletedSessionRequirement(input: {
   const requiredSessionsPerDay = Math.max(0, requiredCompletedSessionsPerDay(input.campaign));
   const effectiveEndAt = Math.min(input.periodEndAt, input.campaign.endAt);
   const effectiveReferenceAt = Math.max(input.periodStartAt, Math.min(input.referenceAt, Math.max(input.periodStartAt, effectiveEndAt - 1)));
-  const todayDayKey = referenceDayKeyAtTimeZone(effectiveReferenceAt, input.timeZone);
+  const dayShiftMs = campaignDayShiftMs(input.campaign);
+  const todayDayKey = campaignDayKey(effectiveReferenceAt, input.timeZone, dayShiftMs);
   const todayCompletedSessions = Math.max(0, Number(input.completedSessionsByDay[todayDayKey] ?? 0));
   if (!input.campaign.requireDailyLoginSession || requiredSessionsPerDay <= 0 || !campaignHasConfiguredSessionSlots(input.campaign)) {
     return {
@@ -1478,7 +1489,7 @@ function evaluateCompletedSessionRequirement(input: {
     };
   }
   const requiredDays = rewardRequiredDayEntries(input.campaign, input.periodStartAt, effectiveEndAt, input.timeZone);
-  const currentDayStartAt = startOfZonedDay(effectiveReferenceAt, input.timeZone);
+  const currentDayStartAt = startOfCampaignDay(effectiveReferenceAt, input.timeZone, dayShiftMs);
   const periodEnded = input.referenceAt >= effectiveEndAt;
   for (const day of requiredDays) {
     const completedSessions = Math.max(0, Number(input.completedSessionsByDay[day.dayKey] ?? 0));
@@ -1761,6 +1772,21 @@ function timeZoneOffsetMinutes(referenceAt: number, timeZone: string): number {
   }
 }
 
+/** How far a daily campaign's day is shifted past midnight, in ms (0 for other windows). */
+function campaignDayShiftMs(campaign: Pick<RiderRewardCampaign, "window" | "dayStartMinute">): number {
+  return campaign.window === "daily" ? Math.max(0, campaign.dayStartMinute || 0) * 60 * 1_000 : 0;
+}
+
+/** Start of the campaign day containing referenceAt (midnight, or dayStartMinute after it). */
+function startOfCampaignDay(referenceAt: number, timeZone: string, shiftMs: number): number {
+  return startOfZonedDay(referenceAt - shiftMs, timeZone) + shiftMs;
+}
+
+/** The calendar date a campaign day is named after (the date it starts on). */
+function campaignDayKey(referenceAt: number, timeZone: string, shiftMs: number): string {
+  return referenceDayKeyAtTimeZone(referenceAt - shiftMs, timeZone);
+}
+
 function startOfZonedDay(referenceAt: number, timeZone: string): number {
   const parts = zonedParts(referenceAt, timeZone);
   const approxUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
@@ -1809,10 +1835,12 @@ function periodBoundsAtTimeZone(
       timezone: timeZone,
     };
   }
-  const startAt = startOfZonedDay(referenceAt, timeZone);
+  const shiftMs = campaignDayShiftMs(campaign);
+  const startAt = startOfCampaignDay(referenceAt, timeZone, shiftMs);
   return {
     startAt,
     endAt: startAt + 24 * 60 * 60 * 1_000,
+    // Unshifted campaigns keep their existing period key (and stored progress).
     key: `day:${startAt}`,
     timezone: timeZone,
   };
@@ -2058,7 +2086,9 @@ function buildSlotInstances(
   riderProfile: Record<string, unknown>,
 ): readonly RiderRewardSlotInstance[] {
   const timeZone = safeTimeZone(period.timezone);
-  const periodStartDay = startOfZonedDay(Math.max(period.startAt, campaign.startAt), timeZone);
+  const shiftMs = campaignDayShiftMs(campaign);
+  const dayStartMinute = shiftMs / 60_000;
+  const periodStartDay = startOfZonedDay(Math.max(period.startAt, campaign.startAt) - shiftMs, timeZone);
   const periodEndAt = Math.min(period.endAt, campaign.endAt);
   const riderCity = searchKey(riderProfile.city ?? "");
   const instances: RiderRewardSlotInstance[] = [];
@@ -2073,8 +2103,10 @@ function buildSlotInstances(
           slot.disabledCityNames.some((name) => searchKey(name) === riderCity)) {
           continue;
         }
-        const startAt = cursor + slot.startMinute * 60 * 1_000;
-        let endAt = cursor + slot.endMinute * 60 * 1_000;
+        // With a 4 AM day, a 1 AM – 4 AM slot is the last slot of the day, not the first.
+        const dayOffset = shiftMs > 0 && slot.startMinute < dayStartMinute ? 24 * 60 * 60 * 1_000 : 0;
+        const startAt = cursor + dayOffset + slot.startMinute * 60 * 1_000;
+        let endAt = cursor + dayOffset + slot.endMinute * 60 * 1_000;
         if (slot.endMinute <= slot.startMinute) endAt += 24 * 60 * 60 * 1_000;
         if (endAt <= campaign.startAt || startAt >= periodEndAt || endAt <= period.startAt) continue;
         instances.push({
@@ -2550,7 +2582,7 @@ function computeCampaignProgressSnapshot(input: {
   const effectiveStartAt = Math.max(period.startAt, input.campaign.startAt);
   const effectiveEndAt = Math.min(period.endAt, input.campaign.endAt);
   const effectiveReferenceAt = Math.max(effectiveStartAt, Math.min(input.referenceAt, effectiveEndAt));
-  const selectedDayKey = referenceDayKeyAtTimeZone(input.referenceAt, period.timezone);
+  const selectedDayKey = campaignDayKey(input.referenceAt, period.timezone, campaignDayShiftMs(input.campaign));
   const activeProgressGroups = progressConditionGroups(input.campaign);
   const progressId = createHash("sha1")
     .update(`${input.campaign.campaignId}|${input.riderId}|${period.key}`)
@@ -4554,6 +4586,7 @@ export async function readRiderRewardsDashboard(
         selectedDayGroups: snapshot?.selectedDayGroups ?? [],
         otherConditionProgress: snapshot?.otherConditions ?? [],
         liabilityRewardPaise: snapshot?.qualified ? currentUnlockedRewardPaise : 0,
+        dayStartMinute: campaignDayShiftMs(campaign) / 60_000,
         periodLabel,
         payoutMode: campaign.milestonePayoutMode,
         guarantee: snapshot?.guarantee ?? null,
