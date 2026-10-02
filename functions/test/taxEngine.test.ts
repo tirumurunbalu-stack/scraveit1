@@ -10,12 +10,17 @@ import type {FirestoreLike} from "../src/firestoreTypes";
 import {
   recordDeliveredOrderTax,
   reverseOrderTaxWithholding,
+  deliveryGstSettlementJournal,
+  lawBasedCheckoutTax,
+  deliverySettlementFor,
   deliverySupplierFor,
+  riderRegistrationRequired,
   deliveryTaxTreatmentOf,
   normalizeTaxSettings,
   sellerTaxProfile,
   withholdingJournal,
 } from "../src/services/taxEngine";
+import {riderCredits} from "../src/services/riderTds";
 import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
 const at = Date.parse("2026-10-10T12:00:00+05:30");
@@ -134,9 +139,47 @@ describe("tax on delivery", () => {
     expect(registered!.taxHeads).toMatchObject({local_delivery_gst_9_5: 0, gst_tcs_section_52: 100 + 20});
     expect(withholdingJournal(registered!)!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:rider-earnings:r9", side: "debit", amountPaise: 20})]));
+    // The rider's own 18% is collected for the rider and settled separately - never SCRAVEIT revenue.
+    expect(registered!.deliverySettlement).toEqual({supplier: "rider", supplierId: "r9", deliveryTaxableValue: 3_900,
+      deliveryGstCollectedForSupplier: 702, deliveryTcs: 20, deliveryTds: 0, deliveryNetSettlement: 3_900 + 702 - 20});
+    const settlementJournal = deliveryGstSettlementJournal("o1", at, registered!.deliverySettlement!);
+    expect(settlementJournal.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({accountId: "liability:tax-payable", side: "debit", amountPaise: 702}),
+      expect.objectContaining({accountId: "liability:rider-earnings:r9", side: "credit", amountPaise: 702})]));
+    expect(db.read(`ledgerJournals/${settlementJournal.journalId}`)).toBeTruthy();
+    // Contractor TDS never runs on that GST.
+    expect(riderCredits(JSON.parse(JSON.stringify(settlementJournal)))).toEqual([]);
     const unregistered = await recordDeliveredOrderTax({id: "o2", restaurantId: "dairy-1", riderId: "r1", deliveredAt: at}, database);
     expect(unregistered!.localDelivery).toMatchObject({basis: "section_9_5", gstPaise: 702});
     expect(unregistered!.taxHeads!.local_delivery_gst_9_5).toBe(702);
+  });
+
+  it("works out a GST-registered store's delivery settlement, including its TCS and TDS share", () => {
+    const line = {component: "delivery_fee", supplier: "seller" as const, basis: "store_registered" as const, basePaise: 4_000,
+      rateBps: 1_800, gstPaise: 720, chargedTo: "customer" as const, cgstPaise: 360, sgstPaise: 360, igstPaise: 0};
+    expect(deliverySettlementFor(line, "dairy-1", 50, {orderTdsPaise: 34, orderTdsBasePaise: 34_000})).toEqual({
+      supplier: "store", supplierId: "dairy-1", deliveryTaxableValue: 4_000, deliveryGstCollectedForSupplier: 720,
+      deliveryTcs: 20, deliveryTds: 4, deliveryNetSettlement: 4_000 + 720 - 20 - 4});
+    // SCRAVEIT's own 9(5) liability is no supplier settlement.
+    expect(deliverySettlementFor({...line, supplier: "scraveit_9_5", basis: "store_section_9_5"}, "dairy-1", 50,
+      {orderTdsPaise: 0, orderTdsBasePaise: 0})).toBeUndefined();
+  });
+
+  it("refuses checkout for a self-delivering store that must register first, with GST_LIVE and TDS_LIVE both off", async () => {
+    const db = new InMemoryFirestore();
+    db.seed("restaurantPayoutProfiles/store-1", {taxProfile: {registrationType: "unregistered", registrationLiable: true}});
+    db.seed("restaurantPayoutProfiles/store-2", {taxProfile: {registrationType: "unregistered"}});
+    const checkout = (id: string) => lawBasedCheckoutTax({restaurant: {id, storeType: "grocery", selfDelivery: true},
+      plan: {engineEnabled: true}, items: [], menuById: {}, fees: {}, subtotal: 0, at} as never, db as unknown as FirestoreLike);
+    await expect(checkout("store-1")).rejects.toThrow(/GST registration/);
+    // Genuinely not liable: allowed (SCRAVEIT's 9(5) case); nothing recorded while both switches are off.
+    await expect(checkout("store-2")).resolves.toBeNull();
+  });
+
+  it("blocks a rider liable to register but not registered from taking deliveries", () => {
+    expect(riderRegistrationRequired({riderRegistrationLiable: true})).toBe(true);
+    expect(riderRegistrationRequired({riderRegistrationLiable: true, riderGstRegistered: true, riderGstin: "37ABCPR1234K1Z5"})).toBe(false);
+    expect(riderRegistrationRequired({})).toBe(false);
   });
 
   it("does nothing for an order priced before the tax engine was switched on", async () => {

@@ -16,6 +16,8 @@ import {
   isScraveitLocalDeliveryGst,
   isStoreSelfDelivery,
   type DeliveryTaxTreatment,
+  type CompositeClassification,
+  type ServiceTaxLine,
   type DeliveryServiceSupplier,
   type DeliveryTaxContext,
 } from "../domain/orderTax";
@@ -25,6 +27,7 @@ import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import type {CatalogItem, PricedOrderItem} from "../types";
 import type {TaxComputation} from "../domain/taxRules";
 import type {CheckoutEconomicsPlan, ServerFees} from "./economics";
+import {DomainError} from "../errors";
 import {persistLedgerJournalIfAbsent} from "./ledger";
 import {RESTAURANT_PAYOUT_PROFILES_COLLECTION} from "./restaurantPayoutProfiles";
 
@@ -164,6 +167,19 @@ export function deliverySupplierFor(settings: TaxSettings, restaurant: {selfDeli
 }
 
 /** A self-delivering store's GST treatment: separate local delivery unless deliberately set composite. */
+/** A store's approved composite-supply classification (admin-only fields). */
+export function compositeClassificationOf(store: object): CompositeClassification | undefined {
+  const restaurant = record(store);
+  if (restaurant.compositeTreatmentApproved !== true) return undefined;
+  return {
+    compositeTreatmentApproved: true,
+    compositeTreatmentEffectiveFrom: String(restaurant.compositeTreatmentEffectiveFrom ?? ""),
+    principalSupplyTaxCode: String(restaurant.principalSupplyTaxCode ?? "").replace(/[^0-9]/g, "").slice(0, 8),
+    principalSupplyType: restaurant.principalSupplyType === "RESTAURANT_SERVICE" ? "RESTAURANT_SERVICE" : "GOODS",
+    principalSupplyGstRateBps: Math.max(0, Math.min(4_000, Math.round(Number(restaurant.principalSupplyGstRateBps) || 0))),
+  };
+}
+
 export function deliveryTaxTreatmentOf(restaurant: {deliveryTaxTreatment?: unknown}): DeliveryTaxTreatment {
   return restaurant.deliveryTaxTreatment === "COMPOSITE_WITH_PRINCIPAL_SUPPLY" ? "COMPOSITE_WITH_PRINCIPAL_SUPPLY" : "SEPARATE_LOCAL_DELIVERY";
 }
@@ -189,6 +205,7 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
     ...computeOrderTax(context.settings.law, {
       at: context.at,
       gstApplies: context.settings.gstActive,
+      ...(compositeClassificationOf(context.restaurant) ? {composite: compositeClassificationOf(context.restaurant)} : {}),
       delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant),
         deliveryTaxTreatmentOf(context.restaurant)),
       storeKind: storeKindOf(context.restaurant),
@@ -223,6 +240,59 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
 // On delivery: withholding and invoice numbers
 // ---------------------------------------------------------------------------
 
+export interface DeliverySettlement {
+  supplier: "rider" | "store";
+  supplierId: string;
+  deliveryTaxableValue: number;
+  /** 18% (or the composite rate) the supplier charged; SCRAVEIT only collects it. */
+  deliveryGstCollectedForSupplier: number;
+  deliveryTcs: number;
+  /** Store: its share of e-commerce TDS. Rider: 0 here - contractor TDS is on credits, GST excluded. */
+  deliveryTds: number;
+  deliveryNetSettlement: number;
+}
+
+/** What a GST-registered supplier is owed for its own delivery service. */
+export function deliverySettlementFor(line: ServiceTaxLine | undefined, supplierId: string, tcsRateBps: number,
+  storeTds: {orderTdsPaise: number; orderTdsBasePaise: number}): DeliverySettlement | undefined {
+  if (!line || !supplierId || line.gstPaise <= 0) return undefined;
+  const supplier = line.basis === "rider_registered" ? "rider" :
+    line.basis === "store_registered" || line.basis === "composite_goods" ? "store" : null;
+  if (!supplier) return undefined;
+  const deliveryTcs = Math.round(line.basePaise * tcsRateBps / 10_000);
+  const deliveryTds = supplier === "store" && storeTds.orderTdsBasePaise > 0
+    ? Math.round(storeTds.orderTdsPaise * line.basePaise / storeTds.orderTdsBasePaise) : 0;
+  return {supplier, supplierId, deliveryTaxableValue: line.basePaise, deliveryGstCollectedForSupplier: line.gstPaise,
+    deliveryTcs, deliveryTds, deliveryNetSettlement: line.basePaise + line.gstPaise - deliveryTcs - deliveryTds};
+}
+
+/** Passes the supplier's own delivery GST from the tax collected to what it is owed. */
+export function deliveryGstSettlementJournal(orderId: string, at: number, settlement: DeliverySettlement): LedgerJournal {
+  const payable = settlement.supplier === "rider"
+    ? `liability:rider-earnings:${settlement.supplierId}` : `liability:restaurant-payable:${settlement.supplierId}`;
+  return createLedgerJournal({
+    eventType: "delivery_gst_settlement",
+    eventId: `order:${orderId}:delivery-gst`,
+    occurredAt: at,
+    orderId,
+    metadata: {supplier: settlement.supplier, supplierId: settlement.supplierId,
+      ...(settlement.supplier === "rider" ? {riderId: settlement.supplierId} : {restaurantId: settlement.supplierId}),
+      deliveryTaxableValue: settlement.deliveryTaxableValue},
+    postings: [
+      {accountId: "liability:tax-payable", side: "debit", amountPaise: settlement.deliveryGstCollectedForSupplier,
+        memo: "Delivery GST collected for the supplier"},
+      {accountId: payable, side: "credit", amountPaise: settlement.deliveryGstCollectedForSupplier,
+        memo: "Supplier's own delivery GST passed on"},
+    ],
+  });
+}
+
+/** A rider liable to register under s.22(1) but not registered may not take deliveries. */
+export function riderRegistrationRequired(rider: unknown): boolean {
+  const context = riderDeliveryContext(rider, "RIDER");
+  return context.riderRegistrationLiable && !context.riderGstRegistered;
+}
+
 export interface WithholdingRecord {
   orderId: string;
   restaurantId: string;
@@ -241,7 +311,9 @@ export interface WithholdingRecord {
   /** TDS_LIVE was on at delivery (seller TDS). */
   tdsApplied?: boolean;
   /** Local delivery GST, settled once the rider is known. */
-  localDelivery?: {riderId: string; basis: string; gstPaise: number; complianceFlag?: string};
+  localDelivery?: {riderId: string; basis: string; gstPaise: number; taxComplianceStatus?: string};
+  /** A GST-registered rider/store's own delivery service: what it is owed for it, kept apart. */
+  deliverySettlement?: DeliverySettlement;
   /** GST TCS u/s 52 withheld from a GST-registered rider's delivery service. */
   riderDeliveryTcsPaise?: number;
   invoices: {series: string; invoiceNo: string; kind: string}[];
@@ -366,11 +438,15 @@ export async function recordDeliveredOrderTax(
       return {series: item.series, invoiceNo, kind: item.kind};
     });
     const sellerTcs = gstApplied ? tax.gstTcs.totalPaise : 0;
+    const deliverySettlement = gstApplied ? deliverySettlementFor(deliveryLine,
+      deliveryLine?.supplier === "rider" ? riderId : order.restaurantId, rateAt(settings.law.gstTcs, tax.pricedAt ?? recordedAt),
+      {orderTdsPaise: tds.tdsPaise, orderTdsBasePaise: tax.incomeTaxTds.basePaise}) : undefined;
     const value: WithholdingRecord = {
       orderId: order.id, restaurantId: order.restaurantId, financialYear: tax.financialYear!,
       gstApplied, tdsApplied, riderDeliveryTcsPaise,
       ...(deliveryLine ? {localDelivery: {riderId, basis: deliveryLine.basis ?? "", gstPaise: deliveryLine.gstPaise,
-        ...(deliveryLine.complianceFlag ? {complianceFlag: deliveryLine.complianceFlag} : {})}} : {}),
+        ...(deliveryLine.taxComplianceStatus ? {taxComplianceStatus: deliveryLine.taxComplianceStatus} : {})}} : {}),
+      ...(deliverySettlement ? {deliverySettlement} : {}),
       gstTcsPaise: sellerTcs,
       gstTcs: {cgstPaise: tax.gstTcs.cgstPaise, sgstPaise: tax.gstTcs.sgstPaise, igstPaise: tax.gstTcs.igstPaise, basePaise: tax.gstTcs.basePaise},
       incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: tax.incomeTaxTds.basePaise,
@@ -388,6 +464,12 @@ export async function recordDeliveredOrderTax(
   });
   const journal = withholdingJournal(entry);
   if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
+  if (entry.deliverySettlement) {
+    await persistLedgerJournalIfAbsent(deliveryGstSettlementJournal(order.id, entry.recordedAt, entry.deliverySettlement), database as never);
+  }
+  if (entry.localDelivery?.taxComplianceStatus === "REGISTRATION_REQUIRED") {
+    logger.error("DELIVERY_SUPPLIER_REGISTRATION_REQUIRED", {orderId: order.id, riderId, basis: entry.localDelivery.basis});
+  }
   return entry;
 }
 
@@ -437,6 +519,15 @@ export async function lawBasedCheckoutTax(input: {
   const settings = await loadTaxSettings(database);
   if (settings.gstLive && !settings.gstActive) logger.warn("GST_LIVE_WAITING_FOR_GSTIN", {gstinSaved: Boolean(settings.scraveitGstin)});
   if (settings.tdsLive && !settings.tdsActive) logger.warn("TDS_LIVE_WAITING_FOR_TAN", {tanSaved: Boolean(settings.scraveitTan), tanVerified: settings.tanVerified});
+  // A self-delivering store that must register first is blocked whatever the switches say.
+  if (input.restaurant.selfDelivery === true &&
+    deliveryTaxTreatmentOf(input.restaurant) === "SEPARATE_LOCAL_DELIVERY") {
+    const store = await loadSellerTaxProfile(input.restaurant.id, settings.defaultStateCode, database);
+    if (store.registrationLiable && !(store.gstin.length === 15 && settings.law.gstTcsRegistrationTypes.includes(store.registrationType))) {
+      throw new DomainError("failed-precondition", "This store must add valid GST registration details before it can deliver orders itself.",
+        {taxComplianceStatus: "REGISTRATION_REQUIRED"});
+    }
+  }
   // Neither switch on: nothing to record. TDS alone still needs the order's TDS base kept.
   if (!settings.gstActive && !settings.tdsActive) return null;
   const seller = await loadSellerTaxProfile(input.restaurant.id, settings.defaultStateCode, database);

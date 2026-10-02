@@ -1,5 +1,12 @@
 import {describe, expect, it} from "vitest";
-import {checkoutDeliveryContext, computeOrderTax, incomeTaxTdsAtDelivery, type OrderTaxInput, type SellerTaxProfile} from "../src/domain/orderTax";
+import {
+  checkoutDeliveryContext,
+  computeOrderTax,
+  incomeTaxTdsAtDelivery,
+  type CompositeClassification,
+  type OrderTaxInput,
+  type SellerTaxProfile,
+} from "../src/domain/orderTax";
 import {BASELINE_TAX_LAW, financialYearLabel, normalizeTaxLaw, type ProductTaxRule} from "../src/domain/taxLaw";
 
 const law = normalizeTaxLaw({});
@@ -158,9 +165,12 @@ describe("seven taxes kept apart", () => {
     expect(registered.taxHeads.local_delivery_gst_9_5).toBe(0);
     expect(registered.riderDeliveryTcs).toMatchObject({basePaise: 3_900, rateBps: 50, totalPaise: 20});
     expect(registered.taxHeads.gst_tcs_section_52).toBe(20);
+    // Liable to register but not registered: blocked, SCRAVEIT does not take on the GST u/s 9(5).
     const liable = computeOrderTax(law, order({fees: fee,
       delivery: {deliveryServiceSupplier: "RIDER", riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: true}}));
-    expect(liable.services[0]).toMatchObject({basis: "section_9_5", complianceFlag: "RIDER_MUST_REGISTER"});
+    expect(liable.services[0]).toMatchObject({basis: "registration_required", taxComplianceStatus: "REGISTRATION_REQUIRED", gstPaise: 0});
+    expect(liable.taxComplianceStatus).toBe("REGISTRATION_REQUIRED");
+    expect(liable.taxHeads.local_delivery_gst_9_5).toBe(0);
   });
 
   it("has no local delivery GST before 22 September 2025", () => {
@@ -191,9 +201,8 @@ describe("store self-delivery (selfDelivery, admin only)", () => {
     const tax = computeOrderTax(law, order({storeKind: "restaurant", seller: unregisteredStore, items: meals, fees: fee, delivery: separate}));
     expect(deliveryLine(tax)).toMatchObject({supplier: "scraveit_9_5", basis: "store_section_9_5", rateBps: 1_800, gstPaise: 720});
     expect(tax.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700, local_delivery_gst_9_5: 720});
-    const liable = computeOrderTax(law, order({storeKind: "restaurant", seller: {...unregisteredStore, registrationLiable: true},
-      items: meals, fees: fee, delivery: separate}));
-    expect(deliveryLine(liable)).toMatchObject({basis: "store_section_9_5", complianceFlag: "STORE_MUST_REGISTER"});
+    // The store owes nothing to register for: SCRAVEIT pays u/s 9(5), and none of it enters the s.52 TCS base.
+    expect(tax.gstTcs.basePaise).toBe(0);
   });
 
   it("3. grocery, GST-registered, separate delivery fee: the store pays 18%, SCRAVEIT nothing", () => {
@@ -211,15 +220,57 @@ describe("store self-delivery (selfDelivery, admin only)", () => {
     }
   });
 
-  it("5. goods + delivery as a genuine composite supply: the principal goods' rate, owed by the seller", () => {
-    const tax = computeOrderTax(law, order({storeKind: "grocery", items: ghee, fees: fee, delivery: composite}));
-    expect(deliveryLine(tax)).toMatchObject({supplier: "seller", basis: "composite_goods", rateBps: 500, gstPaise: 200});
-    expect(tax.taxHeads).toMatchObject({local_delivery_gst_9_5: 0, product_gst: 1_500 + 200});
-    // Only when set deliberately: selfDelivery alone means separate local delivery.
+  const approved = (overrides: Partial<CompositeClassification> = {}): CompositeClassification => ({
+    compositeTreatmentApproved: true, compositeTreatmentEffectiveFrom: "2026-10-01", principalSupplyTaxCode: "0405",
+    principalSupplyType: "GOODS", principalSupplyGstRateBps: 500, ...overrides});
+
+  it("5. composite supply only with an explicit, approved, dated principal supply - never inferred from item values", () => {
+    const tax = computeOrderTax(law, order({storeKind: "grocery", items: ghee, fees: fee, delivery: composite,
+      composite: approved({principalSupplyTaxCode: "0401", principalSupplyGstRateBps: 0})}));
+    // The approved principal (nil-rated milk, the cheaper item) decides, not the ₹315 ghee.
+    expect(deliveryLine(tax)).toMatchObject({supplier: "seller", basis: "composite_goods", principalSupplyTaxCode: "0401", rateBps: 0});
+    const restaurant = computeOrderTax(law, order({storeKind: "restaurant", seller: unregisteredStore, items: meals, fees: fee,
+      delivery: composite, composite: approved({principalSupplyType: "RESTAURANT_SERVICE", principalSupplyTaxCode: "996331"})}));
+    expect(deliveryLine(restaurant)).toMatchObject({basis: "composite_restaurant_service", rateBps: 500});
+    expect(restaurant.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700 + 200, local_delivery_gst_9_5: 0});
+    // Not approved, not yet in force, or no principal named: treated as a separate local-delivery service.
+    for (const notReady of [undefined, approved({compositeTreatmentApproved: false}), approved({compositeTreatmentEffectiveFrom: "2026-12-01"}),
+      approved({principalSupplyTaxCode: ""})]) {
+      const fallback = computeOrderTax(law, order({storeKind: "grocery", items: ghee, fees: fee, delivery: composite,
+        ...(notReady ? {composite: notReady} : {})}));
+      expect(deliveryLine(fallback)).toMatchObject({basis: "store_registered", rateBps: 1_800});
+    }
     expect(checkoutDeliveryContext("RESTAURANT").deliveryTaxTreatment).toBe("SEPARATE_LOCAL_DELIVERY");
-    const food = computeOrderTax(law, order({storeKind: "restaurant", seller: unregisteredStore, items: meals, fees: fee, delivery: composite}));
-    expect(deliveryLine(food)).toMatchObject({basis: "composite_restaurant_service", rateBps: 500});
-    expect(food.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700 + 200, local_delivery_gst_9_5: 0});
+  });
+
+  it("keeps every SKU of an individually priced basket at its own rate (no merging)", () => {
+    const basket = [
+      {productId: "ghee", name: "Ghee", quantity: 1, linePaise: 31_500, taxRules: [rule(500, "taxable", "0405", true)]},
+      {productId: "milk", name: "Milk", quantity: 1, linePaise: 6_600, taxRules: [rule(0, "nil", "0401")]},
+      {productId: "soap", name: "Soap", quantity: 1, linePaise: 11_800, taxRules: [rule(1_800, "taxable", "3401", true)]},
+    ];
+    for (const delivery of [separate, composite, undefined]) {
+      const tax = computeOrderTax(law, order({storeKind: "grocery", items: basket, fees: fee, ...(delivery ? {delivery} : {}),
+        composite: approved()}));
+      expect(tax.items.map((item) => item.gstRateBps)).toEqual([500, 0, 1_800]);
+      expect(tax.goodsGst.totalPaise).toBe(1_500 + 0 + 1_800);
+    }
+  });
+
+  it("taxes a declared mixed supply sold for one price at its highest component rate", () => {
+    const hamper = {productId: "hamper", name: "Festival hamper", quantity: 1, linePaise: 11_800, taxRules: [{
+      ...rule(0, "taxable", "9803"), supplyType: "MIXED_SUPPLY" as const,
+      mixedComponents: [{hsnCode: "0401", gstRateBps: 0}, {hsnCode: "1704", gstRateBps: 500}, {hsnCode: "3401", gstRateBps: 1_800}]}]};
+    const tax = computeOrderTax(law, order({storeKind: "grocery", items: [hamper]}));
+    expect(tax.items[0]).toMatchObject({gstRateBps: 1_800, taxability: "taxable", taxableValuePaise: 10_000});
+  });
+
+  it("blocks a store liable to register but not registered; SCRAVEIT does not assume 9(5)", () => {
+    const liable = computeOrderTax(law, order({storeKind: "grocery", seller: {...unregisteredStore, registrationLiable: true},
+      items: ghee, fees: fee, delivery: separate}));
+    expect(deliveryLine(liable)).toMatchObject({basis: "registration_required", taxComplianceStatus: "REGISTRATION_REQUIRED", gstPaise: 0});
+    expect(liable.taxComplianceStatus).toBe("REGISTRATION_REQUIRED");
+    expect(liable.taxHeads.local_delivery_gst_9_5).toBe(0);
   });
 
   it("6. RIDER stays the default and unchanged", () => {

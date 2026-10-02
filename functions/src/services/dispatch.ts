@@ -78,6 +78,7 @@ import {loadDispatchPolicy} from "./platformConfig";
 import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 import {riderPublicStats} from "./riderDeliveryCount";
+import {riderRegistrationRequired} from "./taxEngine";
 
 export interface Presence {
   online?: boolean;
@@ -593,6 +594,10 @@ async function releaseQueueClaim(queueRef: DocumentReferenceLike, uid: string): 
 
 export async function claimDispatchOffer(uid: string, orderId: string): Promise<SavrivoOrder> {
   const rider = await requireApprovedRider(uid);
+  // Liable to register for GST but not registered: no deliveries (SCRAVEIT does not take on its GST).
+  if (riderRegistrationRequired(rider)) {
+    throw new DomainError("failed-precondition", "Add valid GST registration details before accepting deliveries.");
+  }
   const queueRef = dispatchQueueRef(firestoreDb, orderId);
   const [presenceSnapshot, walletSnapshot, jobsSnapshot, queueSnapshot] = await Promise.all([
     db.ref(`${ROOT}/riderPresence/${uid}`).get(),

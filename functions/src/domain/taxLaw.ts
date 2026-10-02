@@ -69,6 +69,13 @@ export interface ProductTaxRule {
   gstRateBps: number;
   taxability: "taxable" | "nil" | "exempt";
   prepackagedLabelled: boolean;
+  /**
+   * MIXED_SUPPLY: independent goods sold together for one price (e.g. a gift
+   * hamper) that are not a composite supply: GST follows the component with
+   * the highest rate. Normal SKUs are SINGLE and keep their own rate.
+   */
+  supplyType?: "SINGLE" | "MIXED_SUPPLY";
+  mixedComponents?: {hsnCode: string; gstRateBps: number}[];
 }
 
 export interface HsnGuide {
@@ -226,6 +233,13 @@ export function normalizeProductTaxRules(value: unknown): ProductTaxRule[] {
       gstRateBps: taxability === "taxable" ? int(input.gstRateBps, 0, 0, 4_000) : 0,
       taxability,
       prepackagedLabelled: input.prepackagedLabelled === true,
+      ...(input.supplyType === "MIXED_SUPPLY" && Array.isArray(input.mixedComponents) ? {
+        supplyType: "MIXED_SUPPLY",
+        mixedComponents: input.mixedComponents.slice(0, 20).map((component) => ({
+          hsnCode: String(record(component).hsnCode ?? "").replace(/[^0-9]/g, "").slice(0, 8),
+          gstRateBps: int(record(component).gstRateBps, 0, 0, 4_000),
+        })),
+      } : {}),
     } as ProductTaxRule;
   }).sort((left, right) => left.effectiveFrom - right.effectiveFrom);
 }

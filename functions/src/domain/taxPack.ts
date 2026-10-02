@@ -36,6 +36,8 @@ export interface TaxPackWithholding {
   reversedAt?: number;
   /** Local delivery GST settled once the rider was known (0 when a registered rider charges it). */
   taxHeads?: {local_delivery_gst_9_5: number};
+  deliverySettlement?: {supplier: string; supplierId: string; deliveryTaxableValue: number; deliveryGstCollectedForSupplier: number;
+    deliveryTcs: number; deliveryTds: number; deliveryNetSettlement: number};
 }
 
 export interface TaxPackPartner {
@@ -384,6 +386,17 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {header: "Tips TDS treatment", key: "tipTreatment", width: 16}, {header: "TDS deducted", key: "tds", money: true},
     {header: "Flags", key: "flags", width: 40},
   ], rows: [...riderTdsByRider.values()].sort((a, b) => String(a.rider).localeCompare(String(b.rider)))};
+  // GST-registered riders/stores supplying their own delivery: their GST, collected for them, not Scraveit's.
+  const deliverySettlementSheet: PackSheet = {name: "Supplier delivery GST", columns: [
+    {header: "Order", key: "order", width: 24}, {header: "Supplier", key: "supplier", width: 10}, {header: "Supplier id", key: "id", width: 24},
+    {header: "Delivery taxable value", key: "taxable", money: true}, {header: "GST collected for supplier", key: "gst", money: true},
+    {header: "TCS u/s 52", key: "tcs", money: true}, {header: "TDS", key: "tds", money: true}, {header: "Net settlement", key: "net", money: true},
+  ], rows: input.withholdings.filter((entry) => entry.deliverySettlement && !entry.reversedAt).map((entry) => {
+    const d = entry.deliverySettlement!;
+    return {order: entry.orderId, supplier: d.supplier, id: d.supplier === "rider" ? input.riders[d.supplierId] ?? d.supplierId :
+      partners.get(d.supplierId)?.name ?? d.supplierId, taxable: rupees(d.deliveryTaxableValue), gst: rupees(d.deliveryGstCollectedForSupplier),
+      tcs: rupees(d.deliveryTcs), tds: rupees(d.deliveryTds), net: rupees(d.deliveryNetSettlement)};
+  })};
   const productGst = sumBy(delivered, (order) => order.orderTax?.goodsGst.totalPaise ?? 0) / 100;
 
   const summary: PackSheet = {name: "Summary", columns: [
@@ -408,7 +421,7 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "CHECK: payouts not found in bank statement", value: matchRows.filter((row) => row.status !== "Matched" && row.status !== "No bank statement uploaded").length,
       note: input.bankStatement ? "Bank match sheet" : "Upload a bank statement to check"},
   ]};
-  return [summary, sales, income, sellerGst, tds, riderTdsSheet, partnerSheet, riderSheet, codSheet, refundSheet, invoices, bankSheet];
+  return [summary, sales, income, sellerGst, tds, riderTdsSheet, deliverySettlementSheet, partnerSheet, riderSheet, codSheet, refundSheet, invoices, bankSheet];
 }
 
 function safeText(value: string): string {

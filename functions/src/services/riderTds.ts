@@ -120,7 +120,9 @@ export function riderTdsJournal(credit: RiderTdsCredit): LedgerJournal | null {
 
 /** What one journal credits to riders: earnings and customer tips kept apart. */
 export function riderCredits(journal: {eventType?: unknown; entries?: unknown}): {riderId: string; component: RiderCreditComponent; amountPaise: number}[] {
-  if (journal.eventType === "rider_contractor_tds" || !Array.isArray(journal.entries)) return [];
+  // Own TDS journals, and GST passed on to a registered rider (TDS is on the value excluding GST).
+  if (journal.eventType === "rider_contractor_tds" || journal.eventType === "delivery_gst_settlement" ||
+    !Array.isArray(journal.entries)) return [];
   const totals = new Map<string, {riderId: string; component: RiderCreditComponent; amountPaise: number}>();
   for (const raw of journal.entries) {
     const entry = record(raw);
