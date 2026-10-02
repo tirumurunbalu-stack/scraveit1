@@ -116,6 +116,23 @@ describe("customer delivery fee and rider trip pay are separate", () => {
     expect(amounts.platformFeePaise).toBe(700 + 900);
   });
 
+  it("pays the rider 70% of rain and the restaurant 70% of the busy-kitchen fee at delivery", () => {
+    const snapshot = computeOrderEconomics({
+      cityKey: "nellore", zoneKey: "z", restaurantId: "r1", paymentMethod: "cod", itemSubtotalPaise: 35_000,
+      restaurantDiscountPaise: 0, platformDiscountPaise: 0, deliveryFeePaise: 3_900, platformFeePaise: 1_499,
+      smallOrderFeePaise: 0, lateNightFeePaise: 0, rainFeePaise: 2_900, surgeFeePaise: 1_900, riderIncentiveFeePaise: 0,
+      taxPaise: 0, tipPaise: 0, commissionBps: 1_500, riderDeliveryPayPaise: 2_800, riderIncentivePayPaise: 0,
+    }, economicsPolicy);
+    const pricing = buildPricing({subtotal: 350, discount: 0, deliveryFee: 39, platformFee: 14.99, taxRate: 0, tip: 0,
+      rainFee: 29, surgeFee: 19});
+    const amounts = orderDeliveryAmounts({...pricing, economics: settlementTerms(snapshot)}, 1_500);
+    expect(amounts.riderDeliveryEarningPaise).toBe(2_800 + 2_030);
+    expect(amounts.restaurantPayablePaise).toBe(35_000 - 5_250 + 1_330);
+    expect(amounts.riderTripSubsidyPaise ?? 0).toBe(0);
+    // Scraveit: commission ₹52.50 + platform ₹14.99 + delivery margin ₹11 + 30% of rain ₹8.70 + 30% of kitchen ₹5.70.
+    expect(amounts.platformCommissionPaise + amounts.platformFeePaise).toBe(5_250 + 1_499 + 1_100 + 870 + 570);
+  });
+
   it("pays the rider correctly on free delivery", () => {
     const snapshot = order(0, 3_400);
     const pricing = buildPricing({subtotal: 350, discount: 0, deliveryFee: 0, platformFee: 7, taxRate: 0, tip: 0});

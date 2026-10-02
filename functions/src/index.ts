@@ -618,8 +618,14 @@ export const getCheckoutConfiguration = onCall({
           lateNightFee: fees.lateNightFee,
           rainFee: fees.rainFee,
           surgeFee: fees.surgeFee,
-          riderIncentiveFee: fees.riderIncentiveFee,
-          riderIncentiveItems: fees.riderIncentiveItems,
+          // The customer app lists these as bill lines and adds them up, so the
+          // rider surge fee rides along as its own line (no app update needed).
+          riderIncentiveFee: fees.riderIncentiveFee + fees.riderSurgeFee,
+          riderIncentiveItems: [
+            ...fees.riderIncentiveItems,
+            ...(fees.riderSurgeFee > 0 ? [{label: "Rider surge fee", amount: fees.riderSurgeFee}] : []),
+          ],
+          riderSurgeFee: fees.riderSurgeFee,
           weatherSeverity: fees.rainFee > 0 ? "verified_rain" : "",
           activeOrders: fees.activeOrders,
         },

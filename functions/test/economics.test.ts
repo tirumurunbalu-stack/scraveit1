@@ -107,13 +107,40 @@ describe("order economics", () => {
     expect(free.rider.deliveryPayPaise).toBe(2_500);
   });
 
-  it("accounts for rain on both sides separately", () => {
-    // Customer pays Rs 20 rain fee; rider receives Rs 25 rain incentive: Scraveit is Rs 5 worse off.
+  it("pays the rider 70% of the rain fee; Scraveit keeps 30%", () => {
     const plain = computeOrderEconomics(baseOrder(), policy);
-    const rain = computeOrderEconomics(baseOrder({rainFeePaise: 2_000, riderIncentivePayPaise: 2_500}), policy);
-    expect(rain.platform.contributionPaise - plain.platform.contributionPaise).toBe(-500);
-    const profitableRain = computeOrderEconomics(baseOrder({rainFeePaise: 3_000, riderIncentivePayPaise: 2_000}), policy);
-    expect(profitableRain.platform.contributionPaise - plain.platform.contributionPaise).toBe(1_000);
+    const rain = computeOrderEconomics(baseOrder({rainFeePaise: 2_000}), policy);
+    expect(rain.rider.feeSharePaise).toBe(1_400);
+    expect(rain.rider.totalPaise - plain.rider.totalPaise).toBe(1_400);
+    // Scraveit keeps ₹6 (this policy has no refund reserve).
+    expect(rain.platform.contributionPaise - plain.platform.contributionPaise).toBe(600);
+    expect(economicsImbalancePaise(rain)).toBe(0);
+  });
+
+  it("pays the restaurant 70% of the busy-kitchen fee with its food money", () => {
+    const plain = computeOrderEconomics(baseOrder(), policy);
+    const rush = computeOrderEconomics(baseOrder({surgeFeePaise: 1_900}), policy);
+    expect(rush.restaurant.rushFeeSharePaise).toBe(1_330);
+    expect(rush.restaurant.receivablePaise - plain.restaurant.receivablePaise).toBe(1_330);
+    expect(rush.platform.contributionPaise - plain.platform.contributionPaise).toBe(570);
+    expect(economicsImbalancePaise(rush)).toBe(0);
+  });
+
+  it("charges the rider surge fee and pays the rider 70% of it", () => {
+    const plain = computeOrderEconomics(baseOrder(), policy);
+    const surge = computeOrderEconomics(baseOrder({riderSurgeFeePaise: 2_000}), policy);
+    expect(surge.customer.payablePaise - plain.customer.payablePaise).toBe(2_000);
+    expect(surge.rider.feeSharePaise).toBe(1_400);
+    expect(economicsImbalancePaise(surge)).toBe(0);
+  });
+
+  it("keeps the margin when the customer fee is above the rider bonus, and pays a bonus Scraveit funds", () => {
+    const plain = computeOrderEconomics(baseOrder(), policy);
+    const lateNight = computeOrderEconomics(baseOrder({riderIncentiveFeePaise: 2_000, riderIncentivePayPaise: 1_500}), policy);
+    expect(lateNight.platform.contributionPaise - plain.platform.contributionPaise).toBe(500);
+    const scraveitBonus = computeOrderEconomics(baseOrder({riderIncentiveFeePaise: 0, riderIncentivePayPaise: 1_000}), policy);
+    expect(scraveitBonus.customer.payablePaise).toBe(plain.customer.payablePaise);
+    expect(scraveitBonus.platform.contributionPaise - plain.platform.contributionPaise).toBe(-1_000);
   });
 
   it("uses gateway cost for online orders and handling cost for cash", () => {

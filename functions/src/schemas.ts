@@ -396,6 +396,8 @@ export const riderRewardCampaignSchema = z.object({
   displayType: rewardDisplayTypeSchema,
   section: rewardSectionSchema.default("special"),
   rewardAmountPaise: z.number().int().positive().max(1_000_000_000).optional(),
+  // Customer's charge for a per-order campaign; 0 = Scraveit pays the bonus.
+  customerFeePaise: z.number().int().min(0).max(10_000_000).default(0),
   milestones: z.array(rewardMilestoneSchema).max(20).default([]),
   window: rewardWindowSchema.default("daily"),
   startAt: z.number().int().positive(),

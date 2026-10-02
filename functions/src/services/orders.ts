@@ -479,6 +479,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     rainFee: fees.rainFee,
     surgeFee: fees.surgeFee,
     riderIncentiveFee: fees.riderIncentiveFee,
+    riderSurgeFee: fees.riderSurgeFee,
     ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
   };
   // Wallet money (cashback / referral credit) is a way of paying, used only

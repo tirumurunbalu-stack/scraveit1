@@ -68,6 +68,8 @@ function campaign(overrides: Partial<RiderRewardCampaign> = {}): RiderRewardCamp
     updatedByRole: "owner",
     lastOperationId: "seed_campaign",
     ...overrides,
+    // Older tests describe a customer charge equal to the rider bonus.
+    customerFeePaise: overrides.customerFeePaise ?? (overrides.rewardAmountPaise ?? 0),
   };
 }
 
@@ -177,6 +179,25 @@ describe("checkout rider incentive fee (customer checkout mirror of per-order bo
     },
   );
 
+  it("charges the customer nothing for a bonus Scraveit pays", () => {
+    const bonus = perOrderBonus({campaignId: "busy-hour", rewardAmountPaise: 1_000, customerFeePaise: 0});
+    const result = resolveCheckoutRiderIncentiveFeePaise([bonus]);
+    expect(result.amountPaise).toBe(0);
+    expect(result.riderPaise).toBe(1_000);
+    expect(resolveCheckoutRiderIncentiveLineItems([bonus])).toEqual([]);
+  });
+
+  it("charges the customer the late-night fee and pays the rider the bonus", () => {
+    const night = perOrderBonus({
+      campaignId: "night-1", rewardAmountPaise: 1_500, customerFeePaise: 2_000,
+      timeSlots: [{label: "11 PM – 12:30 AM", startMinute: 23 * 60, endMinute: 30}],
+    });
+    const result = resolveCheckoutRiderIncentiveFeePaise([night]);
+    expect(result.amountPaise).toBe(2_000);
+    expect(result.riderPaise).toBe(1_500);
+    expect(resolveCheckoutRiderIncentiveLineItems([night])).toEqual([{label: "Late-night fee", amountPaise: 2_000}]);
+  });
+
   it("sums every stack-mode match independently", () => {
     const a = perOrderBonus({campaignId: "a", rewardAmountPaise: 1_000, stacking: "stack"});
     const b = perOrderBonus({campaignId: "b", rewardAmountPaise: 1_500, stacking: "stack"});
@@ -222,15 +243,16 @@ describe("checkout rider incentive fee (customer checkout mirror of per-order bo
     expect(result.campaignIds).toEqual([]);
   });
 
-  it("labels each of the four live production campaign windows correctly", () => {
-    // Mirrors the real campaigns currently in production (functions/src/domain
-    // /riderIncentiveEligibility.ts's label buckets are derived from these).
+  it("labels the late-night bands and the early-morning band", () => {
+    // The live bands: 11 PM, 12:30 AM and 2:30 AM are late night; 4 AM – 7 AM is early morning.
+    for (const start of ["23:00", "00:30", "02:30"]) {
+      expect(labelForRiderIncentiveCampaign(perOrderBonus({
+        timeSlots: [{label: "Late night", startMinute: minute(start), endMinute: minute("04:00")}],
+      }))).toBe("Late-night fee");
+    }
     expect(labelForRiderIncentiveCampaign(perOrderBonus({
-      timeSlots: [{label: "Early morning", startMinute: minute("02:00"), endMinute: minute("06:00")}],
+      timeSlots: [{label: "Early morning", startMinute: minute("04:00"), endMinute: minute("07:00")}],
     }))).toBe("Early-morning fee");
-    expect(labelForRiderIncentiveCampaign(perOrderBonus({
-      timeSlots: [{label: "Late night", startMinute: minute("23:00"), endMinute: minute("02:00")}],
-    }))).toBe("Late-night surge fee");
     expect(labelForRiderIncentiveCampaign(perOrderBonus({
       timeSlots: [{label: "Lunch", startMinute: minute("12:00"), endMinute: minute("15:00")}],
     }))).toBe("Surge fee");
@@ -246,7 +268,7 @@ describe("checkout rider incentive fee (customer checkout mirror of per-order bo
   it("groups line items by label and sums same-label matches", () => {
     const morning = perOrderBonus({
       campaignId: "morning", rewardAmountPaise: 1_000,
-      timeSlots: [{label: "Early morning", startMinute: minute("02:00"), endMinute: minute("06:00")}],
+      timeSlots: [{label: "Early morning", startMinute: minute("04:00"), endMinute: minute("07:00")}],
     });
     const lunch = perOrderBonus({
       campaignId: "lunch", rewardAmountPaise: 1_000,

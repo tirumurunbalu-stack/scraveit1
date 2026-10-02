@@ -287,6 +287,9 @@ export interface ServerFees {
   rainFee: number;
   surgeFee: number;
   riderIncentiveFee: number;
+  /** What riders earn for the matched per-order campaigns; defaults to riderIncentiveFee. */
+  riderIncentivePay?: number;
+  riderSurgeFee?: number;
   smallOrderThreshold: number;
   smallOrderFee: number;
   riderIncentiveCampaignIds?: string[];
@@ -303,6 +306,8 @@ export interface CheckoutEconomicsPlan {
   commissionBps: number;
   commercialPlanId: string;
   riderTripPayPaise: number;
+  /** Per-order campaign bonuses the rider will be paid (customer fee may differ). */
+  riderIncentivePayPaise: number;
   /** Estimated at checkout; replaced by the final figure at delivery. */
   tripPay: RiderTripPayBreakdown | null;
   tripPayPolicy: RiderTripPayPolicy | null;
@@ -379,11 +384,12 @@ export function planCheckoutEconomics(input: {
     rainFeePaise: rupeesToPaise(input.fees.rainFee),
     surgeFeePaise: rupeesToPaise(input.fees.surgeFee),
     riderIncentiveFeePaise: rupeesToPaise(input.fees.riderIncentiveFee),
+    riderSurgeFeePaise: rupeesToPaise(input.fees.riderSurgeFee ?? 0),
     taxPaise: 0,
     tipPaise: rupeesToPaise(input.tip),
     commissionBps,
     riderDeliveryPayPaise: riderTripPayPaise,
-    riderIncentivePayPaise: rupeesToPaise(input.fees.riderIncentiveFee),
+    riderIncentivePayPaise: rupeesToPaise(input.fees.riderIncentivePay ?? input.fees.riderIncentiveFee),
   }, policy, appliedScopes);
 
   const promotionBudgetRemaining = terms && terms.budgetPaise > 0 ?
@@ -406,6 +412,7 @@ export function planCheckoutEconomics(input: {
     commissionBps,
     commercialPlanId: plan?.planId ?? "",
     riderTripPayPaise,
+    riderIncentivePayPaise: rupeesToPaise(input.fees.riderIncentivePay ?? input.fees.riderIncentiveFee),
     tripPay,
     tripPayPolicy,
     discount,
@@ -455,11 +462,12 @@ export function finalizeOrderEconomics(
     rainFeePaise: rupeesToPaise(pricing.rainFee),
     surgeFeePaise: rupeesToPaise(pricing.surgeFee),
     riderIncentiveFeePaise: rupeesToPaise(pricing.riderIncentiveFee),
+    riderSurgeFeePaise: rupeesToPaise(pricing.riderSurgeFee ?? 0),
     taxPaise: rupeesToPaise(pricing.tax),
     tipPaise: rupeesToPaise(pricing.tip),
     commissionBps: plan.commissionBps,
     riderDeliveryPayPaise: plan.riderTripPayPaise,
-    riderIncentivePayPaise: rupeesToPaise(pricing.riderIncentiveFee),
+    riderIncentivePayPaise: plan.riderIncentivePayPaise,
     ...(plan.tripPay ? {tripPay: {
       basePickupPaise: plan.tripPay.basePickupPaise,
       pickupDistancePaise: plan.tripPay.pickupDistancePaise,

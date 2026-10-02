@@ -2,7 +2,9 @@ import {firestoreDb} from "../admin";
 import {haversineKm, roundMoney} from "../domain/order";
 import {trustedActiveOrderCount} from "../domain/workload";
 import {DomainError} from "../errors";
-import {campaignsCollectionRef, menuItemsCollectionRef, restaurantRef} from "../firestorePaths";
+import {campaignsCollectionRef, menuItemsCollectionRef, restaurantRef, riderAvailabilityCollectionRef} from "../firestorePaths";
+import {availabilityCityKey} from "../domain/dispatch";
+import {riderSurgeFee, type RiderSurgeSettings} from "../domain/riderSurge";
 import {
   checkoutEligibleRiderIncentiveCampaigns,
   normalizeCheckoutCampaign,
@@ -90,6 +92,20 @@ export async function loadCustomerAddress(uid: string, addressId: string): Promi
   return {address, profile};
 }
 
+/** Rider surge for the restaurant's city; a failed read never blocks checkout (no fee). */
+async function cityRiderSurgeFee(settings: RiderSurgeSettings, city: unknown): Promise<number> {
+  if (settings.riderSurgeEnabled !== true) return 0;
+  try {
+    const snapshot = await riderAvailabilityCollectionRef(firestoreDb)
+      .where("cityKey", "==", availabilityCityKey(city)).limit(500).get();
+    const riders = snapshot.docs.map((doc) => doc.data() as {online?: unknown; activeOrderId?: unknown});
+    const online = riders.filter((rider) => rider.online === true);
+    return riderSurgeFee(settings, {onlineRiders: online.length, busyRiders: online.filter((rider) => Boolean(rider.activeOrderId)).length});
+  } catch {
+    return 0;
+  }
+}
+
 export async function loadServerFees(
   restaurant: CatalogRestaurant,
   address: Address,
@@ -104,6 +120,9 @@ export async function loadServerFees(
   rainFee: number;
   surgeFee: number;
   riderIncentiveFee: number;
+  /** What riders are paid for the matched per-order campaigns (may differ from the customer fee). */
+  riderIncentivePay: number;
+  riderSurgeFee: number;
   riderIncentiveCampaignIds: string[];
   riderIncentiveItems: {label: string; amount: number}[];
   distanceKm: number;
@@ -205,6 +224,8 @@ export async function loadServerFees(
     rainFee,
     surgeFee: Math.max(0, surgeFee),
     riderIncentiveFee: roundMoney(riderIncentive.amountPaise / 100),
+    riderIncentivePay: roundMoney(riderIncentive.riderPaise / 100),
+    riderSurgeFee: await cityRiderSurgeFee(settings as RiderSurgeSettings, restaurant.city),
     riderIncentiveCampaignIds: riderIncentive.campaignIds,
     riderIncentiveItems,
     distanceKm,

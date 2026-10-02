@@ -97,6 +97,8 @@ export interface PricingBreakdown {
   rainFee: number;
   surgeFee: number;
   riderIncentiveFee: number;
+  /** Charged when most of the city's online riders are already on orders. */
+  riderSurgeFee?: number;
   platformFee: number;
   tax: number;
   tip: number;

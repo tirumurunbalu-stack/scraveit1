@@ -288,6 +288,12 @@ export interface RiderRewardCampaign {
   readonly displayType: RewardDisplayType;
   readonly section: RewardSection;
   readonly rewardAmountPaise: number | null;
+  /**
+   * What the customer pays per order for a per-order campaign. 0 = Scraveit
+   * pays the rider bonus from its own margin (nothing on the customer's bill).
+   * Above rewardAmountPaise, Scraveit keeps the difference (late-night fees).
+   */
+  readonly customerFeePaise: number;
   readonly milestones: readonly RiderRewardMilestone[];
   readonly window: RewardWindow;
   readonly startAt: number;
@@ -1125,6 +1131,7 @@ function normalizeRewardCampaign(campaignId: string, value: unknown): RiderRewar
     displayType,
     section,
     rewardAmountPaise,
+    customerFeePaise: kind === "per_order_bonus" ? integer(source.customerFeePaise, 0, 0, 10_000_000) : 0,
     milestones,
     window,
     startAt,

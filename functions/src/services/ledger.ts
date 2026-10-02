@@ -166,11 +166,13 @@ function snapshotDeliveryAmounts(
   // The trip pay estimated at checkout is replaced by the final figure (real
   // pickup distance and waiting time) when the delivery is settled.
   const finalTrip = options.finalTripPayPaise;
-  const riderDeliveryEarningPaise = finalTrip !== undefined && Number.isSafeInteger(finalTrip) && finalTrip >= 0 ?
+  const riderTripPaise = finalTrip !== undefined && Number.isSafeInteger(finalTrip) && finalTrip >= 0 ?
     finalTrip : snapshot.rider.deliveryPayPaise;
+  // Rider's share of the rain and rider surge fees, paid with the trip.
+  const riderDeliveryEarningPaise = riderTripPaise + (snapshot.rider.feeSharePaise ?? 0);
   const platformPromotionPaise = snapshot.customer.platformDiscountPaise;
   const walletRedeemPaise = snapshot.customer.walletRedeemPaise ?? 0;
-  const riderTripSubsidyPaise = Math.max(0, riderDeliveryEarningPaise - snapshot.customer.deliveryFeePaise);
+  const riderTripSubsidyPaise = Math.max(0, riderTripPaise - snapshot.customer.deliveryFeePaise);
   const platformFeePaise = grossAmountPaise + platformPromotionPaise + riderTripSubsidyPaise + walletRedeemPaise -
     restaurantPayablePaise - platformCommissionPaise - taxPayablePaise - riderDeliveryEarningPaise - riderTipPaise;
   if (platformFeePaise < 0) fail("LEDGER_ORDER_ALLOCATION_NEGATIVE_PLATFORM_RESIDUAL");

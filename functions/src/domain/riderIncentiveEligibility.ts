@@ -114,9 +114,19 @@ export function checkoutEligibleRiderIncentiveCampaigns(
  * priority) - so the customer charge always equals what the platform will actually
  * end up paying out for this order.
  */
+function customerFeeOf(campaign: RiderRewardCampaign): number {
+  return Math.max(0, Number(campaign.customerFeePaise) || 0);
+}
+
+/**
+ * amountPaise: what the customer pays (each campaign's customer fee).
+ * riderPaise: what the delivering rider is paid (each campaign's reward).
+ * The difference is Scraveit's: positive for late-night fees, negative for
+ * bonuses Scraveit pays from its own margin.
+ */
 export function resolveCheckoutRiderIncentiveFeePaise(
   campaigns: readonly RiderRewardCampaign[],
-): {amountPaise: number; campaignIds: string[]} {
+): {amountPaise: number; riderPaise: number; campaignIds: string[]} {
   const stack = campaigns.filter((campaign) => campaign.stacking === "stack");
   const highestOnly = campaigns
     .filter((campaign) => campaign.stacking === "highest_only")
@@ -124,9 +134,10 @@ export function resolveCheckoutRiderIncentiveFeePaise(
   const chosen = highestOnly[0] ? [...stack, highestOnly[0]] : stack;
   const amountPaise = Math.min(
     CHECKOUT_RIDER_INCENTIVE_MAX_PAISE,
-    chosen.reduce((total, campaign) => total + (campaign.rewardAmountPaise ?? 0), 0),
+    chosen.reduce((total, campaign) => total + customerFeeOf(campaign), 0),
   );
-  return {amountPaise, campaignIds: chosen.map((campaign) => campaign.campaignId)};
+  const riderPaise = chosen.reduce((total, campaign) => total + (campaign.rewardAmountPaise ?? 0), 0);
+  return {amountPaise, riderPaise, campaignIds: chosen.map((campaign) => campaign.campaignId)};
 }
 
 /**
@@ -142,8 +153,8 @@ export function labelForRiderIncentiveCampaign(campaign: RiderRewardCampaign): s
   const slot = campaign.timeSlots[0];
   if (!slot) return "Surge fee";
   const startHour = Math.floor(slot.startMinute / 60);
-  if (startHour >= 21 || startHour === 0) return "Late-night surge fee";
-  if (startHour >= 1 && startHour < 6) return "Early-morning fee";
+  if (startHour >= 21 || startHour < 4) return "Late-night fee";
+  if (startHour >= 4 && startHour < 7) return "Early-morning fee";
   return "Surge fee";
 }
 
@@ -170,7 +181,8 @@ export function resolveCheckoutRiderIncentiveLineItems(
   const totalsByLabel = new Map<string, number>();
   for (const campaign of chosen) {
     const label = labelForRiderIncentiveCampaign(campaign);
-    totalsByLabel.set(label, (totalsByLabel.get(label) ?? 0) + (campaign.rewardAmountPaise ?? 0));
+    if (customerFeeOf(campaign) <= 0) continue;
+    totalsByLabel.set(label, (totalsByLabel.get(label) ?? 0) + customerFeeOf(campaign));
   }
   const combinedTotal = Array.from(totalsByLabel.values()).reduce((total, amount) => total + amount, 0);
   if (combinedTotal <= CHECKOUT_RIDER_INCENTIVE_MAX_PAISE || combinedTotal === 0) {
@@ -230,6 +242,7 @@ export function normalizeCheckoutCampaign(campaignId: string, raw: unknown): Rid
     displayType: (source.displayType as RiderRewardCampaign["displayType"]) ?? "special_campaign",
     section: (source.section as RiderRewardCampaign["section"]) ?? "special",
     rewardAmountPaise,
+    customerFeePaise: kind === "per_order_bonus" ? Math.max(0, Math.round(nullableNumber(source.customerFeePaise) ?? 0)) : 0,
     milestones: [],
     window: (source.window as RiderRewardCampaign["window"]) ?? "daily",
     startAt: nullableNumber(source.startAt) ?? 0,

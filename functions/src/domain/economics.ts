@@ -97,6 +97,12 @@ export interface EconomicsPolicy {
   maxPlatformSubsidyPerOrderPaise: number;
   /** Share of an order's positive contribution that may come back as cashback. */
   cashbackMaxShareOfContributionBps: number;
+  /** Rider's share of the rain fee (rest is Scraveit's). */
+  riderRainShareBps: number;
+  /** Rider's share of the rider surge fee (rest is Scraveit's). */
+  riderSurgeShareBps: number;
+  /** Restaurant's share of the busy-kitchen fee (rest is Scraveit's). */
+  restaurantRushShareBps: number;
 }
 
 export const DEFAULT_ECONOMICS_POLICY: Readonly<EconomicsPolicy> = Object.freeze({
@@ -114,6 +120,9 @@ export const DEFAULT_ECONOMICS_POLICY: Readonly<EconomicsPolicy> = Object.freeze
   otherVariableCostPaisePerOrder: 200,
   maxPlatformSubsidyPerOrderPaise: 10_000,
   cashbackMaxShareOfContributionBps: 2_000,
+  riderRainShareBps: 7_000,
+  riderSurgeShareBps: 7_000,
+  restaurantRushShareBps: 7_000,
 });
 
 const POLICY_BOUNDS: Readonly<Record<keyof EconomicsPolicy, readonly [number, number]>> = {
@@ -131,6 +140,9 @@ const POLICY_BOUNDS: Readonly<Record<keyof EconomicsPolicy, readonly [number, nu
   otherVariableCostPaisePerOrder: [0, 100_000],
   maxPlatformSubsidyPerOrderPaise: [0, 10_000_000],
   cashbackMaxShareOfContributionBps: [0, 10_000],
+  riderRainShareBps: [0, 10_000],
+  riderSurgeShareBps: [0, 10_000],
+  restaurantRushShareBps: [0, 10_000],
 };
 
 export const ECONOMICS_POLICY_FIELDS = Object.keys(POLICY_BOUNDS) as (keyof EconomicsPolicy)[];
@@ -395,6 +407,8 @@ export interface OrderEconomicsInput {
   rainFeePaise: number;
   surgeFeePaise: number;
   riderIncentiveFeePaise: number;
+  /** Rider surge fee charged to the customer (shared with the rider). */
+  riderSurgeFeePaise?: number;
   taxPaise: number;
   tipPaise: number;
   commissionBps: number;
@@ -446,6 +460,7 @@ export interface OrderEconomicsSnapshot {
     rainFeePaise: number;
     surgeFeePaise: number;
     riderIncentiveFeePaise: number;
+    riderSurgeFeePaise?: number;
     taxPaise: number;
     tipPaise: number;
     walletRedeemPaise?: number;
@@ -456,11 +471,15 @@ export interface OrderEconomicsSnapshot {
     commissionBasePaise: number;
     commissionPaise: number;
     commissionTaxPaise?: number;
+    /** Restaurant's share of the busy-kitchen fee, included in receivablePaise. */
+    rushFeeSharePaise?: number;
     receivablePaise: number;
   };
   rider: {
     deliveryPayPaise: number;
     incentivePayPaise: number;
+    /** Rider's share of the rain and rider surge fees, paid with the trip. */
+    feeSharePaise?: number;
     tipPaise: number;
     totalPaise: number;
     tripPay?: OrderEconomicsInput["tripPay"];
@@ -520,8 +539,8 @@ export function settlementTerms(snapshot: OrderEconomicsSnapshot): OrderSettleme
 function customerPayable(input: OrderEconomicsInput): number {
   return input.itemSubtotalPaise - input.restaurantDiscountPaise - input.platformDiscountPaise +
     input.deliveryFeePaise + input.platformFeePaise + input.smallOrderFeePaise + input.lateNightFeePaise +
-    input.rainFeePaise + input.surgeFeePaise + input.riderIncentiveFeePaise + input.taxPaise + input.tipPaise -
-    (input.walletRedeemPaise ?? 0);
+    input.rainFeePaise + input.surgeFeePaise + input.riderIncentiveFeePaise + (input.riderSurgeFeePaise ?? 0) +
+    input.taxPaise + input.tipPaise - (input.walletRedeemPaise ?? 0);
 }
 
 export function minimumContributionPaise(policy: EconomicsPolicy, payablePaise: number): number {
@@ -567,6 +586,7 @@ export function computeOrderEconomics(
     rainFeePaise: nonNegative(rawInput.rainFeePaise),
     surgeFeePaise: nonNegative(rawInput.surgeFeePaise),
     riderIncentiveFeePaise: nonNegative(rawInput.riderIncentiveFeePaise),
+    riderSurgeFeePaise: nonNegative(rawInput.riderSurgeFeePaise),
     taxPaise: nonNegative(rawInput.taxPaise),
     tipPaise: nonNegative(rawInput.tipPaise),
     commissionBps: boundedInt(rawInput.commissionBps, 0, 0, 5_000),
@@ -583,12 +603,18 @@ export function computeOrderEconomics(
   const commissionBasePaise = input.itemSubtotalPaise - input.restaurantDiscountPaise;
   const commissionPaise = bpsOf(commissionBasePaise, input.commissionBps);
   const commissionTaxPaise = input.commissionTaxPaise ?? 0;
-  const receivablePaise = commissionBasePaise - commissionPaise - commissionTaxPaise;
+  // Busy-kitchen fee: the restaurant's share is paid out with its food money.
+  const rushFeeSharePaise = bpsOf(input.surgeFeePaise, policy.restaurantRushShareBps);
+  const receivablePaise = commissionBasePaise - commissionPaise - commissionTaxPaise + rushFeeSharePaise;
+  // Rain and rider surge fees: the rider's share is paid with the trip.
+  const riderSurgeFeePaise = input.riderSurgeFeePaise ?? 0;
+  const riderFeeSharePaise = bpsOf(input.rainFeePaise, policy.riderRainShareBps) +
+    bpsOf(riderSurgeFeePaise, policy.riderSurgeShareBps);
 
   const grossRevenuePaise = commissionPaise + input.deliveryFeePaise + input.platformFeePaise +
-    input.smallOrderFeePaise + input.lateNightFeePaise + input.rainFeePaise + input.surgeFeePaise +
-    input.riderIncentiveFeePaise;
-  const riderPayPaise = input.riderDeliveryPayPaise + input.riderIncentivePayPaise;
+    input.smallOrderFeePaise + input.lateNightFeePaise + input.rainFeePaise + riderSurgeFeePaise +
+    (input.surgeFeePaise - rushFeeSharePaise) + input.riderIncentiveFeePaise;
+  const riderPayPaise = input.riderDeliveryPayPaise + input.riderIncentivePayPaise + riderFeeSharePaise;
   const onlinePayment = input.paymentMethod === "upi" || input.paymentMethod === "card";
   const paymentCostPaise = onlinePayment ? bpsOf(payablePaise, policy.paymentGatewayCostBps) : policy.codHandlingCostPaise;
   const refundReservePaise = bpsOf(payablePaise, policy.refundReserveBpsOfGmv);
@@ -629,6 +655,7 @@ export function computeOrderEconomics(
       rainFeePaise: input.rainFeePaise,
       surgeFeePaise: input.surgeFeePaise,
       riderIncentiveFeePaise: input.riderIncentiveFeePaise,
+      ...(riderSurgeFeePaise ? {riderSurgeFeePaise} : {}),
       taxPaise: input.taxPaise,
       tipPaise: input.tipPaise,
       ...(input.walletRedeemPaise ? {walletRedeemPaise: input.walletRedeemPaise} : {}),
@@ -639,11 +666,13 @@ export function computeOrderEconomics(
       commissionBasePaise,
       commissionPaise,
       ...(commissionTaxPaise ? {commissionTaxPaise} : {}),
+      ...(rushFeeSharePaise ? {rushFeeSharePaise} : {}),
       receivablePaise,
     },
     rider: {
       deliveryPayPaise: input.riderDeliveryPayPaise,
       incentivePayPaise: input.riderIncentivePayPaise,
+      ...(riderFeeSharePaise ? {feeSharePaise: riderFeeSharePaise} : {}),
       tipPaise: input.tipPaise,
       totalPaise: riderPayPaise + input.tipPaise,
       ...(input.tripPay ? {tripPay: input.tripPay} : {}),
@@ -686,7 +715,8 @@ export function economicsImbalancePaise(snapshot: OrderEconomicsSnapshot): numbe
     (snapshot.restaurant.commissionTaxPaise ?? 0) +
     snapshot.customer.deliveryFeePaise + snapshot.customer.platformFeePaise + snapshot.customer.smallOrderFeePaise +
     snapshot.customer.lateNightFeePaise + snapshot.customer.rainFeePaise + snapshot.customer.surgeFeePaise +
-    snapshot.customer.riderIncentiveFeePaise + snapshot.customer.taxPaise + snapshot.customer.tipPaise;
+    snapshot.customer.riderIncentiveFeePaise + (snapshot.customer.riderSurgeFeePaise ?? 0) +
+    snapshot.customer.taxPaise + snapshot.customer.tipPaise - (snapshot.restaurant.rushFeeSharePaise ?? 0);
   return sources - destinations;
 }
 
