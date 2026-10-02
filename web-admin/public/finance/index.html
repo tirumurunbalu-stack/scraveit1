@@ -109,6 +109,29 @@
         <section id="panel-statement" hidden>
           <div id="statement-body"></div>
         </section>
+
+        <section id="panel-taxPack" hidden>
+          <section class="card card-pad">
+            <h2 style="font-size:14px; margin-bottom:4px;">Tax pack for your CA</h2>
+            <p class="hint" style="margin-bottom:14px;">One Excel file with every sheet your CA needs: sales register, Scraveit income &amp; GST, seller GST &amp; TCS (GSTR-8), TDS register, partner settlements, rider payouts, cash on delivery, refunds, invoices and a bank match. Rows marked CHECK on the Summary sheet should read 0.</p>
+            <div class="chip-row" id="taxpack-presets" style="margin-bottom:12px;">
+              <button type="button" class="btn btn-secondary btn-sm" data-taxpack-preset="thisMonth">This month</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-taxpack-preset="lastMonth">Last month</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-taxpack-preset="thisFy">This financial year</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-taxpack-preset="lastFy">Last financial year</button>
+            </div>
+            <form id="taxpack-form" style="display:grid; gap:12px; max-width:520px;">
+              <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                <label style="flex:1; min-width:160px;">From<input type="date" id="taxpack-from" class="input" required></label>
+                <label style="flex:1; min-width:160px;">To (inclusive)<input type="date" id="taxpack-to" class="input" required></label>
+              </div>
+              <label>Bank statement CSV (optional)<input type="file" id="taxpack-bank" accept=".csv,text/csv" class="input"></label>
+              <p class="hint" style="margin:0;">Download the CSV from your bank's net banking. Every payout is matched against it by UTR and amount.</p>
+              <div><button type="submit" class="btn btn-primary" id="taxpack-submit">Create tax pack</button></div>
+            </form>
+          </section>
+          <div id="taxpack-result" style="margin-top:20px;"></div>
+        </section>
       </div>
     </main>
   </div>
@@ -117,6 +140,6 @@
 <div id="toast-stack"></div>
 <div id="drawer-root"></div>
 
-<script type="module" src="./dashboard.js?v=7"></script>
+<script type="module" src="./dashboard.js?v=8"></script>
 </body>
 </html>

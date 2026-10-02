@@ -35,6 +35,8 @@ describe("tax on delivery", () => {
     const profile = sellerTaxProfile({payoutProfile: {gstin: "37aaaaa0000a1z5", panNumber: "AAAAA0000A"}}, "37");
     expect(profile).toMatchObject({registrationType: "regular", stateCode: "37", panFurnished: true});
     expect(sellerTaxProfile({}, "37").registrationType).toBe("unregistered");
+    expect(sellerTaxProfile({gstin: "37BBBBB1111B1Z5", panNumber: "BBBBB1111B"}, "37"))
+      .toMatchObject({registrationType: "regular", panFurnished: true});
     // No PAN furnished: the higher no-PAN TDS rate applies.
     const noPan = computeOrderTax(law, {at, storeKind: "dairy", seller: sellerTaxProfile({taxProfile: {gstin: "37ABCDE1234F1Z5"}}, "37"),
       customerStateCode: "37", items: [curd], sellerDiscountPaise: 0, platformDiscountPaise: 0, fees: noFees, commissionPaise: 0});

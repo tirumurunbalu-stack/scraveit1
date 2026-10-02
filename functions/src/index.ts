@@ -55,6 +55,7 @@ import {
   createCodOrderSchema,
   declineOrderSchema,
   exportPlatformDataWorkbookSchema,
+  exportTaxPackSchema,
   initiatePaymentSchema,
   markRiderArrivedRestaurantSchema,
   recoverDeliveryOtpSchema,
@@ -198,6 +199,7 @@ import {runWeeklyFinanceAutomation} from "./services/financeAutomation";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
 import {lawBasedCheckoutTax, recordDeliveredOrderTax, reverseOrderTaxWithholding} from "./services/taxEngine";
+import {exportTaxPack as buildTaxPackExport} from "./services/taxPack";
 import {backfillLedgerPartyIndex} from "./services/ledgerPartyIndex";
 import {
   applyVerifiedPayment,
@@ -779,6 +781,24 @@ export const getFinanceStatement = onCall({
  * customers, riders and restaurants to that city; admin accounts are never
  * city-scoped.
  */
+// Tax pack for a CA: sales, Scraveit income and GST, seller GST and TCS,
+// TDS, settlements, rider payouts, cash, refunds, invoices and a bank match.
+export const exportTaxPack = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 300,
+  memory: "1GiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to download the tax pack."));
+  try {
+    const input = parse(exportTaxPackSchema, request.data ?? {});
+    return await buildTaxPackExport(request.auth.uid, request.auth.token, input);
+  } catch (error) {
+    logger.warn("exportTaxPack rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
 export const exportPlatformDataWorkbook = onCall({
   region: REGION,
   enforceAppCheck: true,

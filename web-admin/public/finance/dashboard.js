@@ -325,11 +325,12 @@ function render() {
   else if (state.tab === "statement") { renderStatementTab(); loadStatement(); }
 }
 function renderTabs() {
-  const tabs = [["overview", "Overview"], ["riderPayouts", "Rider payouts"], ["restaurantSettlements", "Restaurant settlements"], ["bankPayouts", "Bank & payouts"], ["statement", "Statement"]];
+  const tabs = [["overview", "Overview"], ["riderPayouts", "Rider payouts"], ["restaurantSettlements", "Restaurant settlements"], ["bankPayouts", "Bank & payouts"], ["statement", "Statement"], ["taxPack", "Tax pack"]];
   document.getElementById("tabs").innerHTML = tabs.map(([key, label]) => (
     '<div class="tab' + (state.tab === key ? " active" : "") + '" data-tab="' + key + '">' + h(label) + "</div>"
   )).join("");
   document.getElementById("panel-statement").hidden = state.tab !== "statement";
+  document.getElementById("panel-taxPack").hidden = state.tab !== "taxPack";
   document.getElementById("panel-overview").hidden = state.tab !== "overview";
   document.getElementById("panel-riderPayouts").hidden = state.tab !== "riderPayouts";
   document.getElementById("panel-restaurantSettlements").hidden = state.tab !== "restaurantSettlements";
@@ -1533,6 +1534,74 @@ function renderStatementTab() {
 // ---------------------------------------------------------------------------
 // wiring
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// tax pack - one Excel workbook for the CA, built on the server from the
+// ledger, tax withholdings and invoices; optional bank CSV for the bank match
+// ---------------------------------------------------------------------------
+const IST_MS = 19_800_000;
+function istDateInput(ms) { return new Date(ms + IST_MS).toISOString().slice(0, 10); }
+function istStartOf(dateText) { return Date.parse(dateText + "T00:00:00+05:30"); }
+function taxPackPreset(name) {
+  const now = new Date(Date.now() + IST_MS);
+  const y = now.getUTCFullYear(), m = now.getUTCMonth();
+  const monthStart = (yy, mm) => Date.UTC(yy, mm, 1) - IST_MS;
+  const fyStartYear = m >= 3 ? y : y - 1;
+  const ranges = {
+    thisMonth: [monthStart(y, m), Date.now()],
+    lastMonth: [monthStart(y, m - 1), monthStart(y, m) - 1],
+    thisFy: [monthStart(fyStartYear, 3), Date.now()],
+    lastFy: [monthStart(fyStartYear - 1, 3), monthStart(fyStartYear, 3) - 1],
+  };
+  const [from, to] = ranges[name];
+  document.getElementById("taxpack-from").value = istDateInput(from);
+  document.getElementById("taxpack-to").value = istDateInput(to);
+}
+function renderTaxPackResult(result) {
+  const box = document.getElementById("taxpack-result");
+  const rows = (result.summary || []).map((row) => {
+    const isCheck = String(row.item).startsWith("CHECK");
+    const ok = !isCheck || Number(row.value) === 0;
+    return '<tr><td>' + h(row.item) + '</td><td style="text-align:right; font-variant-numeric:tabular-nums;">'
+      + (isCheck ? '<span class="badge ' + (ok ? "badge-success" : "badge-danger") + '">' + h(row.value) + '</span>' : h(row.value)) + '</td></tr>';
+  }).join("");
+  const failed = (result.summary || []).some((row) => String(row.item).startsWith("CHECK") && Number(row.value) !== 0);
+  box.innerHTML = '<section class="card card-pad">'
+    + (failed ? '<div class="notice notice-warning">' + warningIcon() + '<span>Some checks are not 0. Open the matching sheet in the file to see which rows need attention.</span></div>' : "")
+    + '<p style="margin-bottom:12px;"><a class="btn btn-primary" href="' + h(result.downloadUrl) + '" download="' + h(result.fileName) + '">Download ' + h(result.fileName) + '</a>'
+    + ' <span class="hint">' + h(Math.round(result.sizeBytes / 1024)) + ' KB · download now, the file is deleted after 2 hours</span></p>'
+    + '<div class="table-wrap"><table class="data-table"><tbody>' + rows + '</tbody></table></div></section>';
+}
+document.getElementById("taxpack-presets").addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-taxpack-preset]");
+  if (btn) taxPackPreset(btn.dataset.taxpackPreset);
+});
+document.getElementById("taxpack-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const fromText = document.getElementById("taxpack-from").value;
+  const toText = document.getElementById("taxpack-to").value;
+  if (!fromText || !toText || toText < fromText) { toast("Choose a From date on or before the To date.", "error"); return; }
+  const payload = {from: istStartOf(fromText), to: istStartOf(toText) + 86_400_000};
+  const file = document.getElementById("taxpack-bank").files[0];
+  if (file) {
+    if (file.size > 3_000_000) { toast("That bank statement is over 3 MB. Upload one month at a time.", "error"); return; }
+    payload.bankStatementCsv = await file.text();
+  }
+  const submit = document.getElementById("taxpack-submit");
+  submit.disabled = true;
+  submit.textContent = "Creating…";
+  document.getElementById("taxpack-result").innerHTML = '<div class="loading-block"><span class="spinner dark"></span> Building the tax pack. A full year can take a minute…</div>';
+  try {
+    renderTaxPackResult(await callFunction("exportTaxPack", payload));
+    toast("Tax pack ready", "success");
+  } catch (error) {
+    document.getElementById("taxpack-result").innerHTML = '<div class="notice notice-danger">' + h(error.message || "Could not create the tax pack.") + '</div>';
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Create tax pack";
+  }
+});
+taxPackPreset("lastMonth");
+
 document.getElementById("tabs").addEventListener("click", (event) => {
   const tab = event.target.closest("[data-tab]");
   if (!tab) return;

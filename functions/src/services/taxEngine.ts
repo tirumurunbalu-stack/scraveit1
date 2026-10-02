@@ -69,7 +69,8 @@ const ENTITY_TYPES: readonly EntityType[] = ["individual", "huf", "company", "fi
 export function sellerTaxProfile(privateRecord: unknown, defaultStateCode: string): SellerTaxProfile {
   const input = record(privateRecord);
   const tax = record(input.taxProfile);
-  const payout = record(input.payoutProfile);
+  // The private record keeps payout fields at the top level (older ones nest them).
+  const payout = {...input, ...record(input.payoutProfile)};
   const gstin = String(tax.gstin ?? payout.gstin ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 15);
   const pan = String(tax.pan ?? payout.panNumber ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 10);
   const type = String(tax.registrationType ?? "");

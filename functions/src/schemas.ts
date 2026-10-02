@@ -187,6 +187,13 @@ export const financeStatementQuerySchema = z.object({
 export type FinanceStatementQueryInput = z.infer<typeof financeStatementQuerySchema>;
 
 /** An empty/omitted city exports every city; a non-empty one scopes customers, riders and restaurants to it. */
+export const exportTaxPackSchema = z.object({
+  from: z.number().int().min(0),
+  to: z.number().int().min(1),
+  /** Optional bank statement (CSV text) to match payouts against. */
+  bankStatementCsv: z.string().max(3_000_000).optional(),
+}).strict();
+
 export const exportPlatformDataWorkbookSchema = z.object({
   city: z.string().trim().max(120).optional(),
 }).strict();
