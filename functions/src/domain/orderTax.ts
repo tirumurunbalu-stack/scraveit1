@@ -29,6 +29,8 @@ export type EntityType = "individual" | "huf" | "company" | "firm" | "llp" | "tr
 export interface SellerTaxProfile {
   registrationType: GstRegistrationType;
   gstin: string;
+  /** Not registered although its turnover makes registration compulsory. */
+  registrationLiable?: boolean;
   /** Enrolment number for an unregistered seller under Notification 34/2023. */
   ecoEnrolmentNo: string;
   pan: string;
@@ -54,15 +56,24 @@ export interface TaxOrderItem {
  *   to the customer through SCRAVEIT as the facilitating ECO, which collects
  *   the charge on the partner's behalf. Rider not liable to register: SCRAVEIT
  *   pays 18% u/s 9(5); GST-registered rider: the rider pays it.
- * - RESTAURANT: the store delivers itself. Restaurant: part of the restaurant
- *   service, paid by SCRAVEIT u/s 9(5) at the restaurant rate. Goods store:
- *   part of the seller's own supply of goods, GST owed by the seller.
+ * - RESTAURANT: the store (restaurant, grocery, dairy, pharmacy, ...) delivers
+ *   itself (admin-only selfDelivery). Its GST depends on deliveryTaxTreatment:
+ *   - SEPARATE_LOCAL_DELIVERY (default with a customer delivery fee): an 18%
+ *     local-delivery service. GST-registered store: the store pays it.
+ *     Store not liable to register: SCRAVEIT pays it u/s 9(5).
+ *   - COMPOSITE_WITH_PRINCIPAL_SUPPLY (set deliberately, never implied by
+ *     selfDelivery): delivery follows the principal supply - goods: the
+ *     principal goods' rate, owed by the seller; restaurant: the restaurant
+ *     service, paid by SCRAVEIT u/s 9(5).
  * - SCRAVEIT: SCRAVEIT itself supplies delivery (not the current model).
  */
 export type DeliveryServiceSupplier = "RIDER" | "RESTAURANT" | "SCRAVEIT";
+export type DeliveryTaxTreatment = "SEPARATE_LOCAL_DELIVERY" | "COMPOSITE_WITH_PRINCIPAL_SUPPLY";
 
 export interface DeliveryTaxContext {
   deliveryServiceSupplier: DeliveryServiceSupplier;
+  /** Store self-delivery only. */
+  deliveryTaxTreatment?: DeliveryTaxTreatment;
   riderGstRegistered: boolean;
   riderGstin: string;
   /** Rider's turnover makes registration compulsory. */
@@ -70,8 +81,19 @@ export interface DeliveryTaxContext {
 }
 
 /** At checkout the rider is not known yet: an unregistered rider is assumed and settled on delivery. */
-export function checkoutDeliveryContext(supplier: DeliveryServiceSupplier): DeliveryTaxContext {
-  return {deliveryServiceSupplier: supplier, riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: false};
+export function checkoutDeliveryContext(supplier: DeliveryServiceSupplier,
+  deliveryTaxTreatment: DeliveryTaxTreatment = "SEPARATE_LOCAL_DELIVERY"): DeliveryTaxContext {
+  return {deliveryServiceSupplier: supplier, deliveryTaxTreatment, riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: false};
+}
+
+/** The store itself: who supplies a self-delivery and what the principal goods are. */
+export interface StoreDeliveryContext {
+  storeKind: StoreKind;
+  storeGstRegistered: boolean;
+  /** Store's turnover makes registration compulsory. */
+  storeRegistrationLiable: boolean;
+  /** GST rate of the principal goods (highest-value line), for a composite supply. */
+  principalGoodsRateBps: number;
 }
 
 export interface OrderTaxInput {
@@ -123,9 +145,10 @@ export interface ServiceTaxLine extends GstSplit {
   /** Who supplies it (and owes the GST). */
   supplier: "scraveit" | "scraveit_9_5" | "rider" | "seller";
   /** Local delivery only: why this supplier owes the GST. */
-  basis?: "scraveit_own_supply" | "section_9_5" | "rider_registered" | "restaurant_self_delivery" | "seller_self_delivery";
-  /** Local delivery only: the rider should be registered but is not (still taxed u/s 9(5)). */
-  complianceFlag?: "RIDER_MUST_REGISTER";
+  basis?: "scraveit_own_supply" | "section_9_5" | "rider_registered" | "store_registered" | "store_section_9_5" |
+    "composite_goods" | "composite_restaurant_service";
+  /** Local delivery only: the supplier should be registered but is not (still taxed u/s 9(5)). */
+  complianceFlag?: "RIDER_MUST_REGISTER" | "STORE_MUST_REGISTER";
   basePaise: number;
   rateBps: number;
   gstPaise: number;
@@ -190,27 +213,44 @@ export interface OrderTax {
 
 /** GST on the delivery fee, by who supplies the delivery. */
 export function deliveryGstLines(law: TaxLaw, at: number, deliveryFeePaise: number, delivery: DeliveryTaxContext,
-  intraState: boolean, storeKind: StoreKind = "restaurant"): ServiceTaxLine[] {
-  if (deliveryFeePaise > 0 && delivery.deliveryServiceSupplier === "RESTAURANT") {
-    if (storeKind !== "restaurant") {
-      // Part of the seller's own supply of goods: the seller's GST, nothing for SCRAVEIT.
-      return [{component: "delivery_fee", supplier: "seller", basis: "seller_self_delivery", basePaise: deliveryFeePaise,
-        rateBps: 0, gstPaise: 0, chargedTo: "customer", ...split(0, intraState)}];
+  intraState: boolean, store?: StoreDeliveryContext): ServiceTaxLine[] {
+  if (deliveryFeePaise <= 0) return [];
+  const line = (supplier: ServiceTaxLine["supplier"], basis: NonNullable<ServiceTaxLine["basis"]>, rateBps: number,
+    extra: Partial<ServiceTaxLine> = {}): ServiceTaxLine => {
+    const gstPaise = bps(deliveryFeePaise, rateBps);
+    return {component: "delivery_fee", supplier, basis, basePaise: deliveryFeePaise, rateBps, gstPaise, chargedTo: "customer",
+      ...split(gstPaise, intraState), ...extra};
+  };
+  if (delivery.deliveryServiceSupplier === "RESTAURANT" && store) {
+    if (delivery.deliveryTaxTreatment === "COMPOSITE_WITH_PRINCIPAL_SUPPLY") {
+      return [store.storeKind === "restaurant"
+        ? line("scraveit_9_5", "composite_restaurant_service", rateAt(law.restaurantServiceGst, at))
+        : line("seller", "composite_goods", store.principalGoodsRateBps)];
     }
-    const foodRate = rateAt(law.restaurantServiceGst, at);
-    const foodGst = bps(deliveryFeePaise, foodRate);
-    return [{component: "delivery_fee", supplier: "scraveit_9_5", basis: "restaurant_self_delivery", basePaise: deliveryFeePaise,
-      rateBps: foodRate, gstPaise: foodGst, chargedTo: "customer", ...split(foodGst, intraState)}];
+    const localRate = rateAt(law.deliveryServiceGst, at);
+    if (localRate <= 0) return [];
+    if (store.storeGstRegistered) return [line("seller", "store_registered", localRate)];
+    return [line("scraveit_9_5", "store_section_9_5", localRate,
+      store.storeRegistrationLiable ? {complianceFlag: "STORE_MUST_REGISTER"} : {})];
   }
   const rateBps = rateAt(law.deliveryServiceGst, at);
-  if (deliveryFeePaise <= 0 || rateBps <= 0) return [];
-  const gstPaise = bps(deliveryFeePaise, rateBps);
-  const base = {component: "delivery_fee", basePaise: deliveryFeePaise, rateBps, gstPaise, chargedTo: "customer" as const,
-    ...split(gstPaise, intraState)};
-  if (delivery.deliveryServiceSupplier === "SCRAVEIT") return [{...base, supplier: "scraveit", basis: "scraveit_own_supply"}];
-  if (delivery.riderGstRegistered && delivery.riderGstin.length === 15) return [{...base, supplier: "rider", basis: "rider_registered"}];
-  return [{...base, supplier: "scraveit_9_5", basis: "section_9_5",
-    ...(delivery.riderRegistrationLiable ? {complianceFlag: "RIDER_MUST_REGISTER" as const} : {})}];
+  if (rateBps <= 0) return [];
+  if (delivery.deliveryServiceSupplier === "SCRAVEIT") return [line("scraveit", "scraveit_own_supply", rateBps)];
+  if (delivery.riderGstRegistered && delivery.riderGstin.length === 15) return [line("rider", "rider_registered", rateBps)];
+  return [line("scraveit_9_5", "section_9_5", rateBps,
+    delivery.riderRegistrationLiable ? {complianceFlag: "RIDER_MUST_REGISTER"} : {})];
+}
+
+/** Local-delivery GST that SCRAVEIT itself pays (u/s 9(5) or as its own supply). */
+export function isScraveitLocalDeliveryGst(line: ServiceTaxLine): boolean {
+  return line.component === "delivery_fee" &&
+    (line.basis === "section_9_5" || line.basis === "store_section_9_5" || line.basis === "scraveit_own_supply");
+}
+
+/** Self-delivery treatments fixed at checkout (not re-settled on the rider). */
+export function isStoreSelfDelivery(line: ServiceTaxLine | undefined): boolean {
+  return !!line && (line.basis === "store_registered" || line.basis === "store_section_9_5" ||
+    line.basis === "composite_goods" || line.basis === "composite_restaurant_service");
 }
 
 function riderDeliveryTcsOf(law: TaxLaw, at: number, services: readonly ServiceTaxLine[], intraState: boolean) {
@@ -279,8 +319,11 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     service("restaurant_service", "scraveit_9_5", Math.max(0, food), rateAt(law.restaurantServiceGst, input.at), "customer");
   }
   const platformRate = rateAt(law.platformServiceGst, input.at);
+  const principal = [...items].sort((a, b) => b.valuePaise - a.valuePaise)[0];
+  const storeGstRegistered = law.gstTcsRegistrationTypes.includes(input.seller.registrationType) && input.seller.gstin.length === 15;
   services.push(...deliveryGstLines(law, input.at, input.fees.deliveryFeePaise,
-    input.delivery ?? checkoutDeliveryContext("RIDER"), intraState, input.storeKind));
+    input.delivery ?? checkoutDeliveryContext("RIDER"), intraState, {storeKind: input.storeKind, storeGstRegistered,
+      storeRegistrationLiable: input.seller.registrationLiable === true, principalGoodsRateBps: isGoods ? principal?.gstRateBps ?? 0 : 0}));
   service("platform_fee", "scraveit", input.fees.platformFeePaise, platformRate, "customer");
   service("small_order_fee", "scraveit", input.fees.smallOrderFeePaise, platformRate, "customer");
   service("late_night_fee", "scraveit", input.fees.lateNightFeePaise + input.fees.riderIncentiveFeePaise, platformRate, "customer");
@@ -292,9 +335,14 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
   const riderDeliveryTcs = riderDeliveryTcsOf(law, input.at, services, intraState);
   const tcsRegistered = law.gstTcsRegistrationTypes.includes(input.seller.registrationType);
   const tcsRate = rateAt(law.gstTcs, input.at);
-  const tcsApplies = isGoods && tcsRegistered && goodsTaxable > 0 && tcsRate > 0;
-  const tcsTotal = tcsApplies ? bps(goodsTaxable, tcsRate) : 0;
-  const reason = !isGoods ? "Restaurant service: GST paid by SCRAVEIT u/s 9(5), no TCS" :
+  // A registered store's own taxable delivery (separate, or composite with taxable goods) joins its TCS base.
+  const storeDelivery = services.find((line) => line.component === "delivery_fee" &&
+    (line.basis === "store_registered" || line.basis === "composite_goods") && line.gstPaise > 0);
+  const tcsBase = (isGoods ? goodsTaxable : 0) + (tcsRegistered && storeDelivery ? storeDelivery.basePaise : 0);
+  const tcsApplies = tcsRegistered && tcsBase > 0 && tcsRate > 0;
+  const tcsTotal = tcsApplies ? bps(tcsBase, tcsRate) : 0;
+  const reason = !isGoods ? (tcsApplies ? "Restaurant food: no TCS (9(5)); TCS on the restaurant's own delivery service"
+    : "Restaurant service: GST paid by SCRAVEIT u/s 9(5), no TCS") :
     !tcsRegistered ? (input.seller.registrationType === "unregistered_eco"
       ? "Unregistered seller (Notification 34/2023): no TCS, reported in GSTR-8" : "Seller not GST-registered: no TCS") :
       goodsTaxable <= 0 ? "Only nil/exempt goods: no TCS" : "Section 52 TCS on net taxable supplies";
@@ -309,11 +357,10 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
   const gstApplied = input.gstApplies !== false;
   const taxHeads: TaxHeads = gstApplied ? {
     ...NO_TAX,
-    restaurant_gst_9_5: serviceGst((line) => line.component === "restaurant_service" || line.basis === "restaurant_self_delivery"),
-    product_gst: goodsTotal,
+    restaurant_gst_9_5: serviceGst((line) => line.component === "restaurant_service" || line.basis === "composite_restaurant_service"),
+    product_gst: goodsTotal + serviceGst((line) => line.basis === "composite_goods"),
     scraveit_service_gst: serviceGst((line) => line.component !== "restaurant_service" && line.component !== "delivery_fee"),
-    local_delivery_gst_9_5: serviceGst((line) => line.component === "delivery_fee" && line.supplier !== "rider" &&
-      line.basis !== "restaurant_self_delivery" && line.basis !== "seller_self_delivery"),
+    local_delivery_gst_9_5: serviceGst(isScraveitLocalDeliveryGst),
     gst_tcs_section_52: tcsTotal + riderDeliveryTcs.totalPaise,
   } : {...NO_TAX};
   const customerLines = services.filter((line) => line.chargedTo === "customer");
@@ -334,7 +381,7 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     customerTaxPaise: gstApplied ? customerLines.reduce((sum, line) => sum + line.gstPaise, 0) : 0,
     partnerTaxPaise: gstApplied ? services.filter((line) => line.chargedTo === "partner").reduce((sum, line) => sum + line.gstPaise, 0) : 0,
     gstTcs: gstApplied
-      ? {basePaise: tcsApplies ? goodsTaxable : 0, rateBps: tcsApplies ? tcsRate : 0, totalPaise: tcsTotal,
+      ? {basePaise: tcsApplies ? tcsBase : 0, rateBps: tcsApplies ? tcsRate : 0, totalPaise: tcsTotal,
         applies: tcsApplies, reason, ...split(tcsTotal, intraState)}
       : {basePaise: 0, rateBps: 0, totalPaise: 0, applies: false, reason: "GST_LIVE off", ...split(0, intraState)},
     incomeTaxTds: {

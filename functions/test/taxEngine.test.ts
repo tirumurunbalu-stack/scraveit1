@@ -11,6 +11,7 @@ import {
   recordDeliveredOrderTax,
   reverseOrderTaxWithholding,
   deliverySupplierFor,
+  deliveryTaxTreatmentOf,
   normalizeTaxSettings,
   sellerTaxProfile,
   withholdingJournal,
@@ -96,6 +97,8 @@ describe("tax on delivery", () => {
     expect(normalizeTaxSettings({deliveryServiceSupplier: "RESTAURANT"}).deliveryServiceSupplier).toBe("RIDER");
     expect(deliverySupplierFor(normalizeTaxSettings({}), {selfDelivery: true})).toBe("RESTAURANT");
     expect(deliverySupplierFor(normalizeTaxSettings({}), {})).toBe("RIDER");
+    expect(deliveryTaxTreatmentOf({})).toBe("SEPARATE_LOCAL_DELIVERY");
+    expect(deliveryTaxTreatmentOf({deliveryTaxTreatment: "COMPOSITE_WITH_PRINCIPAL_SUPPLY"})).toBe("COMPOSITE_WITH_PRINCIPAL_SUPPLY");
   });
 
   it("with GST_LIVE off and TDS_LIVE on: seller TDS only, no TCS, no GST invoice", async () => {

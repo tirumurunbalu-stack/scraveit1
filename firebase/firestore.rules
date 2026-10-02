@@ -113,7 +113,7 @@ service cloud.firestore {
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['payoutProfile'])
           || !('payoutProfile' in request.resource.data))
         // Restaurant, grocery store or dairy is set by Scraveit at approval.
-        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery']));
+        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery', 'deliveryTaxTreatment']));
     }
 
     // A restaurant's bank account, IFSC, UPI, PAN and GSTIN: only its

@@ -13,6 +13,9 @@ import {
   type TaxHeads,
   checkoutDeliveryContext,
   deliveryGstLines,
+  isScraveitLocalDeliveryGst,
+  isStoreSelfDelivery,
+  type DeliveryTaxTreatment,
   type DeliveryServiceSupplier,
   type DeliveryTaxContext,
 } from "../domain/orderTax";
@@ -134,6 +137,7 @@ export function sellerTaxProfile(privateRecord: unknown, defaultStateCode: strin
       gstin.length === 15 ? "regular" : "unregistered",
     gstin,
     ecoEnrolmentNo: String(tax.ecoEnrolmentNo ?? "").slice(0, 40),
+    registrationLiable: tax.registrationLiable === true,
     pan,
     panFurnished: tax.panFurnished === true || pan.length === 10,
     entityType: (ENTITY_TYPES as readonly string[]).includes(String(tax.entityType)) ? tax.entityType as EntityType : "other",
@@ -159,9 +163,14 @@ export function deliverySupplierFor(settings: TaxSettings, restaurant: {selfDeli
   return restaurant.selfDelivery === true ? "RESTAURANT" : settings.deliveryServiceSupplier;
 }
 
+/** A self-delivering store's GST treatment: separate local delivery unless deliberately set composite. */
+export function deliveryTaxTreatmentOf(restaurant: {deliveryTaxTreatment?: unknown}): DeliveryTaxTreatment {
+  return restaurant.deliveryTaxTreatment === "COMPOSITE_WITH_PRINCIPAL_SUPPLY" ? "COMPOSITE_WITH_PRINCIPAL_SUPPLY" : "SEPARATE_LOCAL_DELIVERY";
+}
+
 export interface CheckoutTaxContext {
   settings: TaxSettings;
-  restaurant: {storeType?: unknown; selfDelivery?: unknown};
+  restaurant: {storeType?: unknown; selfDelivery?: unknown; deliveryTaxTreatment?: unknown};
   seller: SellerTaxProfile;
   items: readonly PricedOrderItem[];
   menuById: Record<string, CatalogItem>;
@@ -180,7 +189,8 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
     ...computeOrderTax(context.settings.law, {
       at: context.at,
       gstApplies: context.settings.gstActive,
-      delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant)),
+      delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant),
+        deliveryTaxTreatmentOf(context.restaurant)),
       storeKind: storeKindOf(context.restaurant),
       seller: context.seller,
       customerStateCode: context.settings.defaultStateCode,
@@ -319,12 +329,11 @@ export async function recordDeliveredOrderTax(
   const riderId = String(order.riderId ?? "");
   const riderSnap = riderId ? await database.collection("riders").doc(riderId).get() : null;
   const checkoutDelivery = tax.services.find((line) => line.component === "delivery_fee");
-  const selfDelivered = checkoutDelivery?.basis === "restaurant_self_delivery" || checkoutDelivery?.basis === "seller_self_delivery";
+  const selfDelivered = isStoreSelfDelivery(checkoutDelivery);
   // A store's own delivery is settled at checkout; a rider's depends on the rider who delivered.
   const deliveryLines = selfDelivered ? [checkoutDelivery!] : gstApplied ? deliveryGstLines(settings.law, tax.pricedAt ?? Number(order.deliveredAt ?? Date.now()),
     tax.services.find((line) => line.component === "delivery_fee")?.basePaise ?? 0,
-    riderDeliveryContext(riderSnap?.exists ? riderSnap.data() : {}, settings.deliveryServiceSupplier), tax.intraState,
-    tax.storeKind) : [];
+    riderDeliveryContext(riderSnap?.exists ? riderSnap.data() : {}, settings.deliveryServiceSupplier), tax.intraState) : [];
   const deliveryLine = deliveryLines[0];
   const riderDeliveryTcsPaise = deliveryLine?.supplier === "rider" && riderId
     ? Math.round(deliveryLine.basePaise * rateAt(settings.law.gstTcs, tax.pricedAt ?? Date.now()) / 10_000) : 0;
@@ -367,8 +376,7 @@ export async function recordDeliveredOrderTax(
       incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: tax.incomeTaxTds.basePaise,
       incomeTaxTdsCatchUpBasePaise: tds.catchUpBasePaise, incomeTaxTdsRequiredYtdPaise: tds.requiredYtdPaise,
       taxHeads: {...NO_TAX, ...(gstApplied ? tax.taxHeads ?? {} : {}),
-        ...(gstApplied ? {local_delivery_gst_9_5: deliveryLine && deliveryLine.supplier !== "rider" && !selfDelivered
-          ? deliveryLine.gstPaise : 0,
+        ...(gstApplied ? {local_delivery_gst_9_5: deliveryLine && isScraveitLocalDeliveryGst(deliveryLine) ? deliveryLine.gstPaise : 0,
           gst_tcs_section_52: sellerTcs + riderDeliveryTcsPaise} : {}),
         seller_income_tax_tds: tds.tdsPaise, rider_contractor_tds: 0},
       invoices, recordedAt,
@@ -417,7 +425,7 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
  * plus the full per-order breakdown kept with the order's economics.
  */
 export async function lawBasedCheckoutTax(input: {
-  restaurant: {id: string; storeType?: unknown; selfDelivery?: unknown};
+  restaurant: {id: string; storeType?: unknown; selfDelivery?: unknown; deliveryTaxTreatment?: unknown};
   items: readonly PricedOrderItem[];
   menuById: Record<string, CatalogItem>;
   plan: CheckoutEconomicsPlan;
