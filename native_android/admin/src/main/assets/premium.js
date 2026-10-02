@@ -665,11 +665,15 @@
   function rewardCampaignTemplates(){return[["surge","Surge"],["rain_surge","Rain surge"],["daily_incentive","Daily incentive"],["weekly_incentive","Weekly incentive"]].map(t=>'<button class="chip" type="button" data-action="reward-apply-template" data-template="'+t[0]+'">'+h(t[1])+'</button>').join("")}
   function rewardApplyTemplate(key){
     const now=Date.now();
+    // The rider login slot plan: one slot from each group; daily offers run 4 AM to 4 AM.
+    const LOGIN_SLOT_PLAN_GROUPS=()=>[
+      {title:"Group 1 · Meal rush",minimumSlotsRequired:1,slots:[{label:"Breakfast · 7 AM – 11 AM",startMinute:420,endMinute:660},{label:"Lunch · 11 AM – 3 PM",startMinute:660,endMinute:900},{label:"Dinner · 7 PM – 10 PM",startMinute:1140,endMinute:1320}]},
+      {title:"Group 2 · Extra-pay hours",minimumSlotsRequired:1,slots:[{label:"Early morning · 4 AM – 7 AM",startMinute:240,endMinute:420},{label:"Snacks · 3 PM – 7 PM",startMinute:900,endMinute:1140},{label:"Late night · 10 PM – 1 AM",startMinute:1320,endMinute:60},{label:"Night owl · 1 AM – 4 AM",startMinute:60,endMinute:240}]}];
     const templates={
       surge:{kind:"per_order_bonus",displayType:"surge",section:"special",rewardAmountPaise:1000,window:"daily"},
       rain_surge:{kind:"per_order_bonus",displayType:"rain_surge",section:"special",rewardAmountPaise:1500,window:"daily",rainOnly:true},
-      daily_incentive:{kind:"milestone_bonus",displayType:"daily_incentive",section:"special",window:"daily",milestones:[{target:8,rewardAmountPaise:5000,label:""},{target:13,rewardAmountPaise:8000,label:""}],conditionGroups:[{title:"Login Group 1",minimumSlotsRequired:1,slots:[{label:"Morning",startMinute:660,endMinute:960},{label:"Evening",startMinute:1140,endMinute:1380}]}]},
-      weekly_incentive:{kind:"milestone_bonus",displayType:"weekly_incentive",section:"special",window:"weekly",milestones:[{target:18,rewardAmountPaise:12500,label:""},{target:23,rewardAmountPaise:17500,label:""},{target:28,rewardAmountPaise:22500,label:""},{target:32,rewardAmountPaise:30000,label:""}],conditionGroups:[{title:"Login Group 1",minimumSlotsRequired:1,slots:[{label:"Morning",startMinute:660,endMinute:960},{label:"Evening",startMinute:1140,endMinute:1380}]}]}
+      daily_incentive:{kind:"milestone_bonus",displayType:"daily_incentive",section:"special",window:"daily",dayStartMinute:240,milestones:[{target:8,rewardAmountPaise:5000,label:""},{target:13,rewardAmountPaise:8000,label:""}],conditionGroups:LOGIN_SLOT_PLAN_GROUPS()},
+      weekly_incentive:{kind:"milestone_bonus",displayType:"weekly_incentive",section:"special",window:"weekly",milestones:[{target:18,rewardAmountPaise:12500,label:""},{target:23,rewardAmountPaise:17500,label:""},{target:28,rewardAmountPaise:22500,label:""},{target:32,rewardAmountPaise:30000,label:""}],conditionGroups:LOGIN_SLOT_PLAN_GROUPS()}
     };
     const base=rewardCampaignEditorSeed();
     const merged=Object.assign({},base,templates[key]||{},{startAt:base.startAt||now,endAt:base.endAt||now+7*86400000});
