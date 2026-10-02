@@ -23,6 +23,10 @@ export const LEDGER_EVENT_TYPES = [
   "cashback_reversed",
   "wallet_expired",
   "customer_referral_reward",
+  // GST TCS (s.52) and income-tax TDS withheld from a seller on delivery,
+  // and their reversal when the order is refunded.
+  "tax_withholding",
+  "tax_withholding_reversal",
 ] as const;
 
 export type LedgerEventType = typeof LEDGER_EVENT_TYPES[number];

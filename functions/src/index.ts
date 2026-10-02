@@ -197,6 +197,7 @@ import {
 import {runWeeklyFinanceAutomation} from "./services/financeAutomation";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
+import {lawBasedCheckoutTax, recordDeliveredOrderTax, reverseOrderTaxWithholding} from "./services/taxEngine";
 import {backfillLedgerPartyIndex} from "./services/ledgerPartyIndex";
 import {
   applyVerifiedPayment,
@@ -529,7 +530,7 @@ export const getCheckoutConfiguration = onCall({
         loadRestaurantAndMenu(input.restaurantId),
         loadCustomerAddress(request.auth.uid, input.addressId),
       ]);
-      const {subtotal} = priceCart(input.items, menuById);
+      const {items: pricedItems, subtotal} = priceCart(input.items, menuById);
       const now = Date.now();
       const [fees, control, financePolicy] = await Promise.all([
         loadServerFees(restaurant, address, subtotal),
@@ -574,7 +575,9 @@ export const getCheckoutConfiguration = onCall({
           platformFunded: plan.discount.platformDiscountPaise / 100,
         };
       }
-      const tax = checkoutTax(control, plan, fees, subtotal, now);
+      let tax = checkoutTax(control, plan, fees, subtotal, now);
+      const lawTax = await lawBasedCheckoutTax({restaurant, items: pricedItems, menuById, plan, fees, subtotal, at: now});
+      if (lawTax) tax = lawTax.tax;
       const feeInput = {
         subtotal,
         discount: (plan.discount.restaurantDiscountPaise + plan.discount.platformDiscountPaise) / 100,
@@ -1324,6 +1327,10 @@ export const onOrderUpdated = onDocumentUpdated({
     });
     // A refunded order no longer counts toward a rider referral target.
     if (order.riderId) await reverseRiderReferralDelivery(order);
+    // Returns reduce the seller's TCS base and yearly gross: give the withholding back.
+    await sideEffectLease(`tax-withholding:${order.id}:refund`, async () => {
+      await reverseOrderTaxWithholding(order.id, Number(order.updatedAt ?? Date.now()));
+    });
   }
   if (before.status === order.status) return;
   logger.info("ORDER_STATUS_CHANGED", {
@@ -1422,6 +1429,11 @@ export const onOrderUpdated = onDocumentUpdated({
     });
     await sideEffectLease(`rider-delivered-count:${order.id}`, async () => {
       await recordRiderDeliveredOrder(order);
+    });
+    // GST TCS and income-tax TDS withheld from the seller, and the order's
+    // invoice numbers (no-op for orders priced before the tax engine was on).
+    await sideEffectLease(`tax-withholding:${order.id}`, async () => {
+      await recordDeliveredOrderTax(order);
     });
     const batch: WriteBatchLike = firestoreDb.batch();
     batch.delete(trackingEvidenceRef(firestoreDb, order.id));

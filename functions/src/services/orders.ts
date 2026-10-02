@@ -51,6 +51,7 @@ import {persistCodOrderDeliveryLedger} from "./ledger";
 import {resolveDeliverySettlementOptions} from "./deliverySettlement";
 import {persistOnlineOrderDeliveryLedger} from "./onlineDeliveryLedger";
 import {loadFinancePolicy} from "./platformConfig";
+import {lawBasedCheckoutTax} from "./taxEngine";
 import {requireVerifiedRiderRestaurantArrival} from "./riderRestaurantArrival";
 
 function eventKey(now: number, actorId: string): string {
@@ -465,7 +466,10 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   const discount = (economicsPlan.discount.restaurantDiscountPaise + economicsPlan.discount.platformDiscountPaise) / 100;
   // CA-defined component tax rules replace the flat food tax only once a
   // version in component_rules mode is in force (see domain/taxRules.ts).
-  const tax = checkoutTax(economicsControl, economicsPlan, fees, subtotal, pricedAt);
+  let tax = checkoutTax(economicsControl, economicsPlan, fees, subtotal, pricedAt);
+  // Effective-dated tax law (services/taxEngine.ts) replaces it once switched on.
+  const lawTax = await lawBasedCheckoutTax({restaurant, items, menuById, plan: economicsPlan, fees, subtotal, at: pricedAt});
+  if (lawTax) tax = lawTax.tax;
   const feeInput = {
     subtotal,
     discount,
@@ -616,6 +620,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
         tripPayPolicy: economicsPlan.tripPayPolicy,
         distanceMeters: Math.round(fees.distanceKm * 1_000),
         taxLines: tax?.lines ?? [],
+        ...(lawTax ? {orderTax: lawTax.orderTax} : {}),
       }));
     }
     writeReservation?.();

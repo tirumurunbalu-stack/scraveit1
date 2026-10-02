@@ -555,9 +555,10 @@ export type OrderEconomicsOutcome = "open" | "delivered" | "cancelled";
 export function orderEconomicsRecord(
   order: Pick<SavrivoOrder, "id" | "restaurantId" | "customerId" | "createdAt">,
   snapshot: OrderEconomicsSnapshot,
-  extras: {tripPayPolicy?: RiderTripPayPolicy | null; distanceMeters?: number; taxLines?: unknown[]} = {},
+  extras: {tripPayPolicy?: RiderTripPayPolicy | null; distanceMeters?: number; taxLines?: unknown[]; orderTax?: unknown} = {},
 ): Record<string, unknown> {
   return {
+    ...(extras.orderTax ? {orderTax: extras.orderTax} : {}),
     ...(extras.tripPayPolicy ? {tripPayPolicy: extras.tripPayPolicy} : {}),
     ...(extras.distanceMeters !== undefined ? {distanceMeters: extras.distanceMeters} : {}),
     ...(extras.taxLines && extras.taxLines.length ? {taxLines: extras.taxLines} : {}),

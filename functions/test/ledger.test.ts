@@ -48,6 +48,8 @@ describe("immutable financial ledger primitives", () => {
       "cashback_reversed",
       "wallet_expired",
       "customer_referral_reward",
+      "tax_withholding",
+      "tax_withholding_reversal",
     ] satisfies LedgerEventType[]);
   });
 
