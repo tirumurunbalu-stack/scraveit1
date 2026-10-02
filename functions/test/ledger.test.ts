@@ -50,6 +50,7 @@ describe("immutable financial ledger primitives", () => {
       "customer_referral_reward",
       "tax_withholding",
       "tax_withholding_reversal",
+      "rider_contractor_tds",
     ] satisfies LedgerEventType[]);
   });
 

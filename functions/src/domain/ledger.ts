@@ -27,6 +27,8 @@ export const LEDGER_EVENT_TYPES = [
   // and their reversal when the order is refunded.
   "tax_withholding",
   "tax_withholding_reversal",
+  // Contractor TDS moved from a rider's earnings to the TDS liability.
+  "rider_contractor_tds",
 ] as const;
 
 export type LedgerEventType = typeof LEDGER_EVENT_TYPES[number];

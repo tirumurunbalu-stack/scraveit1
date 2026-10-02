@@ -114,6 +114,25 @@ describe("restaurant orders", () => {
   });
 });
 
+describe("six taxes kept apart", () => {
+  it("fills restaurant_gst_9_5, product_gst, scraveit_service_gst and gst_tcs_section_52 separately; TDS heads wait", () => {
+    const restaurant = computeOrderTax(law, order({storeKind: "restaurant", commissionPaise: 5_100,
+      items: [{productId: "meals", name: "Meals", quantity: 1, linePaise: 34_000, taxRules: []}],
+      fees: {...noFees, deliveryFeePaise: 3_900, platformFeePaise: 1_499}}));
+    const curd = computeOrderTax(law, order({items: [
+      {productId: "curd", name: "Curd", quantity: 1, linePaise: 10_500, taxRules: [rule(500, "taxable", "0403", true)]}]}));
+    expect(curd.taxHeads).toMatchObject({product_gst: 500, gst_tcs_section_52: 50, restaurant_gst_9_5: 0});
+    expect(Object.keys(restaurant.taxHeads).sort()).toEqual(["gst_tcs_section_52", "product_gst", "restaurant_gst_9_5",
+      "rider_contractor_tds", "scraveit_service_gst", "seller_income_tax_tds"]);
+    expect(restaurant.taxHeads.restaurant_gst_9_5).toBeGreaterThan(0);
+    expect(restaurant.taxHeads.product_gst).toBe(0);
+    expect(restaurant.taxHeads.restaurant_gst_9_5 + restaurant.taxHeads.scraveit_service_gst)
+      .toBe(restaurant.customerTaxPaise + restaurant.partnerTaxPaise);
+    expect(restaurant.taxHeads.seller_income_tax_tds).toBe(0);
+    expect(restaurant.taxHeads.rider_contractor_tds).toBe(0);
+  });
+});
+
 describe("income-tax TDS through the year", () => {
   const base = {section: "393", rateBps: 10, individualExemptUptoPaise: 5_00_000_00, thresholdApplies: true};
   it("charges nothing to an individual with PAN while the year stays within ₹5 lakh", () => {
@@ -122,7 +141,13 @@ describe("income-tax TDS through the year", () => {
   it("catches up the whole year on the order that crosses ₹5 lakh, then charges each order", () => {
     const crossing = incomeTaxTdsAtDelivery({...base, basePaise: 2_000_00}, 4_99_000_00);
     expect(crossing.tdsPaise).toBe(Math.round(5_01_000_00 * 10 / 10_000));
-    expect(incomeTaxTdsAtDelivery({...base, basePaise: 2_000_00}, 5_01_000_00).tdsPaise).toBe(200);
+    // required_TDS_YTD − TDS_already_deducted
+    expect(incomeTaxTdsAtDelivery({...base, basePaise: 2_000_00}, 5_01_000_00, crossing.tdsPaise).tdsPaise).toBe(200);
+    expect(incomeTaxTdsAtDelivery({...base, basePaise: 2_000_00}, 5_01_000_00, crossing.tdsPaise).requiredYtdPaise)
+      .toBe(Math.round(5_03_000_00 * 10 / 10_000));
+  });
+  it("never deducts twice when earlier TDS already covers the year", () => {
+    expect(incomeTaxTdsAtDelivery({...base, basePaise: 1_00}, 6_00_000_00, 60_000).tdsPaise).toBe(0);
   });
   it("has no threshold for a company or firm", () => {
     expect(incomeTaxTdsAtDelivery({...base, basePaise: 50_000, thresholdApplies: false}, 0).tdsPaise).toBe(50);

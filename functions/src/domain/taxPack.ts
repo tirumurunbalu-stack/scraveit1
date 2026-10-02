@@ -72,7 +72,21 @@ export interface TaxPackInput {
   partners: readonly TaxPackPartner[];
   riders: Readonly<Record<string, string>>;
   journals: readonly TaxPackJournal[];
+  /** Rider contractor TDS worked out on each earnings credit in the period. */
+  riderTdsCredits?: readonly TaxPackRiderTdsCredit[];
   bankStatement?: readonly BankStatementLine[];
+}
+
+export interface TaxPackRiderTdsCredit {
+  riderId: string;
+  financialYear: string;
+  occurredAt: number;
+  creditPaise: number;
+  classification: string;
+  section: string;
+  pan: string;
+  rateBps: number;
+  tdsPaise: number;
 }
 
 type Cell = string | number;
@@ -337,6 +351,25 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
 
   const total = (sheet: PackSheet, key: string) => Math.round(sumBy(sheet.rows, (row) => Number(row[key]) || 0) * 100) / 100;
   const tdsTotal = total(tds, "tds") - total(tds, "reversedTds");
+  // Rider contractor TDS, by rider (base excludes customer tips).
+  const riderTdsByRider = new Map<string, Record<string, Cell>>();
+  for (const credit of input.riderTdsCredits ?? []) {
+    const key = `${credit.riderId}|${credit.financialYear}`;
+    const row = riderTdsByRider.get(key) ?? {rider: input.riders[credit.riderId] ?? credit.riderId, pan: credit.pan || "Not furnished",
+      classification: credit.classification, section: credit.section, year: credit.financialYear, rate: "", credited: 0, tds: 0};
+    row.credited = Math.round(((row.credited as number) + credit.creditPaise / 100) * 100) / 100;
+    row.tds = Math.round(((row.tds as number) + credit.tdsPaise / 100) * 100) / 100;
+    if (credit.rateBps > 0) row.rate = `${credit.rateBps / 100}%`;
+    if (credit.pan) row.pan = credit.pan;
+    riderTdsByRider.set(key, row);
+  }
+  const riderTdsSheet: PackSheet = {name: "Rider TDS register", columns: [
+    {header: "Rider", key: "rider", width: 24}, {header: "PAN", key: "pan", width: 14}, {header: "Classification", key: "classification", width: 14},
+    {header: "Section", key: "section", width: 36}, {header: "FY", key: "year", width: 8}, {header: "Rate", key: "rate", width: 8},
+    {header: "Earnings credited (TDS base)", key: "credited", money: true}, {header: "TDS deducted", key: "tds", money: true},
+  ], rows: [...riderTdsByRider.values()].sort((a, b) => String(a.rider).localeCompare(String(b.rider)))};
+  const productGst = sumBy(delivered, (order) => order.orderTax?.goodsGst.totalPaise ?? 0) / 100;
+
   const summary: PackSheet = {name: "Summary", columns: [
     {header: "Item", key: "item", width: 48}, {header: "Amount (₹)", key: "value", money: true}, {header: "Note", key: "note", width: 60},
   ], rows: [
@@ -344,12 +377,14 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "Delivered orders", value: delivered.length, note: ""},
     {item: "Customers paid", value: total(sales, "paid"), note: "Sales register"},
     {item: "Scraveit net income (before running costs)", value: total(income, "net"), note: "Scraveit income & GST"},
-    {item: "GST payable by Scraveit: restaurant service u/s 9(5)", value: total(income, "gstRestaurant"), note: "GSTR-1 / GSTR-3B"},
-    {item: "GST payable by Scraveit: delivery u/s 9(5)", value: total(income, "gstDelivery"), note: "GSTR-1 / GSTR-3B"},
-    {item: "GST payable by Scraveit: own services to customers", value: total(income, "gstServices"), note: "GSTR-1 / GSTR-3B"},
-    {item: "GST payable by Scraveit: commission to stores", value: total(income, "gstCommission"), note: "B2B invoices"},
-    {item: "GST TCS collected u/s 52", value: Math.round((total(sellerGst, "tcsCgst") + total(sellerGst, "tcsSgst") + total(sellerGst, "tcsIgst")) * 100) / 100, note: "GSTR-8"},
-    {item: "Income-tax e-commerce TDS withheld (net of refunds)", value: Math.round(tdsTotal * 100) / 100, note: "TDS return; certificates to sellers"},
+    {item: "GST payable by Scraveit: restaurant service u/s 9(5)", value: total(income, "gstRestaurant"), note: "restaurant_gst_9_5 · GSTR-1 / GSTR-3B"},
+    {item: "GST payable by Scraveit: delivery u/s 9(5)", value: total(income, "gstDelivery"), note: "scraveit_service_gst · GSTR-1 / GSTR-3B"},
+    {item: "GST payable by Scraveit: own services to customers", value: total(income, "gstServices"), note: "scraveit_service_gst · GSTR-1 / GSTR-3B"},
+    {item: "GST payable by Scraveit: commission to stores", value: total(income, "gstCommission"), note: "scraveit_service_gst · B2B invoices"},
+    {item: "Product GST inside shelf prices (owed by the sellers)", value: Math.round(productGst * 100) / 100, note: "product_gst · seller's own returns, not Scraveit's"},
+    {item: "GST TCS collected u/s 52", value: Math.round((total(sellerGst, "tcsCgst") + total(sellerGst, "tcsSgst") + total(sellerGst, "tcsIgst")) * 100) / 100, note: "gst_tcs_section_52 · GSTR-8"},
+    {item: "Income-tax e-commerce TDS withheld (net of refunds)", value: Math.round(tdsTotal * 100) / 100, note: "seller_income_tax_tds · TDS return; certificates to sellers"},
+    {item: "Rider contractor TDS deducted", value: total(riderTdsSheet, "tds"), note: "rider_contractor_tds · TDS return; certificates to riders"},
     {item: "Paid to stores", value: total(partnerSheet, "paid") * -1, note: "Partner settlements"},
     {item: "Paid to riders", value: total(riderSheet, "amount"), note: "Rider payouts"},
     {item: "Refunds", value: total(refundSheet, "amount"), note: "Refunds"},
@@ -357,7 +392,7 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "CHECK: payouts not found in bank statement", value: matchRows.filter((row) => row.status !== "Matched" && row.status !== "No bank statement uploaded").length,
       note: input.bankStatement ? "Bank match sheet" : "Upload a bank statement to check"},
   ]};
-  return [summary, sales, income, sellerGst, tds, partnerSheet, riderSheet, codSheet, refundSheet, invoices, bankSheet];
+  return [summary, sales, income, sellerGst, tds, riderTdsSheet, partnerSheet, riderSheet, codSheet, refundSheet, invoices, bankSheet];
 }
 
 function safeText(value: string): string {

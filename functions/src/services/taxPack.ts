@@ -10,6 +10,7 @@ import {
   taxPackWorkbook,
   type TaxPackInput,
   type TaxPackJournal,
+  type TaxPackRiderTdsCredit,
   type TaxPackWithholding,
 } from "../domain/taxPack";
 import {DomainError} from "../errors";
@@ -17,6 +18,7 @@ import type {FirestoreLike} from "../firestoreTypes";
 import {requireOwnerClaim} from "./authz";
 import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
 import {RESTAURANT_PAYOUT_PROFILES_COLLECTION} from "./restaurantPayoutProfiles";
+import {RIDER_TDS_CREDITS_COLLECTION} from "./riderTds";
 import {sellerTaxProfile, storeKindOf, TAX_WITHHOLDINGS_COLLECTION} from "./taxEngine";
 
 const MAX_DAYS = 400;
@@ -31,13 +33,14 @@ function record(value: unknown): Record<string, unknown> {
 /** Everything the tax pack needs for [from, to), read only from server records. */
 export async function loadTaxPackInput(from: number, to: number, bankStatementCsv: string | undefined,
   database: FirestoreLike = firestoreDb, now = Date.now()): Promise<TaxPackInput> {
-  const [ordersSnap, withholdingSnap, journalSnap, restaurantSnap, profileSnap, riderSnap] = await Promise.all([
+  const [ordersSnap, withholdingSnap, journalSnap, restaurantSnap, profileSnap, riderSnap, riderTdsSnap] = await Promise.all([
     database.collection("orders").where("deliveredAt", ">=", from).where("deliveredAt", "<", to).limit(MAX_ROWS).get(),
     database.collection(TAX_WITHHOLDINGS_COLLECTION).where("recordedAt", ">=", from).where("recordedAt", "<", to).limit(MAX_ROWS).get(),
     database.collection(LEDGER_JOURNALS_COLLECTION).where("occurredAt", ">=", from).where("occurredAt", "<", to).limit(MAX_ROWS).get(),
     database.collection("restaurants").get(),
     database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).get(),
     database.collection("riders").get(),
+    database.collection(RIDER_TDS_CREDITS_COLLECTION).where("occurredAt", ">=", from).where("occurredAt", "<", to).limit(MAX_ROWS).get(),
   ]);
   if (ordersSnap.docs.length >= MAX_ROWS || journalSnap.docs.length >= MAX_ROWS) {
     throw new DomainError("failed-precondition", "That period is too large for one file. Download one month at a time.");
@@ -75,6 +78,7 @@ export async function loadTaxPackInput(from: number, to: number, bankStatementCs
       return [doc.id, String(rider.fullName ?? rider.name ?? doc.id)];
     })),
     journals: journalSnap.docs.map((doc) => doc.data() as TaxPackJournal),
+    riderTdsCredits: riderTdsSnap.docs.map((doc) => doc.data() as TaxPackRiderTdsCredit),
     ...(bankStatementCsv ? {bankStatement: parseBankStatementCsv(bankStatementCsv)} : {}),
   };
 }

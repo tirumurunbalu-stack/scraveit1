@@ -10,6 +10,7 @@ import {
 import {platformConfigHash, platformConfigOperationKey} from "../domain/platformConfigControl";
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {sweepRiderContractorTds} from "./riderTds";
 import type {
   RecordRestaurantSettlementInput,
   RecordRiderPayoutInput,
@@ -892,6 +893,8 @@ export async function recordRiderPayout(
   );
 
   try {
+    // Deduct contractor TDS on every credit first, so the payable read below is net of it.
+    await sweepRiderContractorTds(database as unknown as FirestoreLike, now);
     const [policy, riderRecord, summary] = await Promise.all([
       loadPolicy(now),
       loadRiderRecord(database, riderId),

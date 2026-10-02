@@ -4,11 +4,13 @@ import {createLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {
   computeOrderTax,
   incomeTaxTdsAtDelivery,
+  NO_TAX,
   type EntityType,
   type GstRegistrationType,
   type OrderTax,
   type SellerTaxProfile,
   type StoreKind,
+  type TaxHeads,
 } from "../domain/orderTax";
 import {financialYearLabel, normalizeProductTaxRules, normalizeTaxLaw, type TaxLaw} from "../domain/taxLaw";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
@@ -25,7 +27,9 @@ import {RESTAURANT_PAYOUT_PROFILES_COLLECTION} from "./restaurantPayoutProfiles"
  *   separate liabilities, deducted from what the seller is owed;
  * - invoice numbers in the right series (seller's own for goods, SCRAVEIT's
  *   9(5) series for restaurant food, SCRAVEIT's own for its fees and commission).
- * Off until private/taxLaw.enabled is true; checkout then keeps its old tax.
+ * Off until private/taxLaw.gstLive is true AND SCRAVEIT's GSTIN is saved
+ * there: until then no GST is charged by law, no tax invoice is numbered, no
+ * TCS/TDS is withheld, and checkout keeps its old tax.
  */
 
 export const TAX_LAW_DOC = "taxLaw";
@@ -34,13 +38,31 @@ export const TAX_PARTNER_YEARS_COLLECTION = "taxPartnerYears";
 export const INVOICES_COLLECTION = "invoices";
 export const INVOICE_SERIES_COLLECTION = "invoiceSeries";
 
+export type RiderTaxClassification = "CONTRACTOR" | "EMPLOYEE";
+
 export interface TaxSettings {
-  enabled: boolean;
+  /** GST_LIVE: the switch for the whole tax engine. Needs a valid GSTIN to take effect. */
+  gstLive: boolean;
+  /** gstLive and a valid GSTIN: the engine actually runs. */
+  live: boolean;
   law: TaxLaw;
   /** GST state code used when an address or partner has none (37 = Andhra Pradesh). */
   defaultStateCode: string;
   /** SCRAVEIT's GSTIN, printed on its invoices. */
   scraveitGstin: string;
+  /** Default for riders without their own classification. */
+  riderTaxClassification: RiderTaxClassification;
+}
+
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+
+export function validGstin(value: string): boolean {
+  return GSTIN_PATTERN.test(value);
+}
+
+export function riderTaxClassificationOf(value: unknown, fallback: RiderTaxClassification): RiderTaxClassification {
+  const text = String(value ?? "").toUpperCase();
+  return text === "EMPLOYEE" || text === "CONTRACTOR" ? text : fallback;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -49,11 +71,15 @@ function record(value: unknown): Record<string, unknown> {
 
 export function normalizeTaxSettings(value: unknown): TaxSettings {
   const input = record(value);
+  const scraveitGstin = String(input.scraveitGstin ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 15);
+  const gstLive = input.gstLive === true;
   return {
-    enabled: input.enabled === true,
+    gstLive,
+    live: gstLive && validGstin(scraveitGstin),
     law: normalizeTaxLaw(input.law),
     defaultStateCode: String(input.defaultStateCode || "37").replace(/[^0-9]/g, "").slice(0, 2) || "37",
-    scraveitGstin: String(input.scraveitGstin ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 15),
+    scraveitGstin,
+    riderTaxClassification: riderTaxClassificationOf(input.riderTaxClassification, "CONTRACTOR"),
   };
 }
 
@@ -159,6 +185,10 @@ export interface WithholdingRecord {
   incomeTaxTdsPaise: number;
   incomeTaxTdsBasePaise: number;
   incomeTaxTdsCatchUpBasePaise: number;
+  /** The seller's year-to-date TDS that should have been deducted after this order. */
+  incomeTaxTdsRequiredYtdPaise?: number;
+  /** Each tax on its own; the withholding heads are what was actually deducted. */
+  taxHeads?: TaxHeads;
   invoices: {series: string; invoiceNo: string; kind: string}[];
   recordedAt: number;
   reversedAt?: number;
@@ -236,8 +266,10 @@ export async function recordDeliveredOrderTax(
     const seriesRefs = plan.map((item) => database.collection(INVOICE_SERIES_COLLECTION).doc(item.series));
     const seriesSnaps = await Promise.all(seriesRefs.map((ref) => transaction.get(ref)));
     const year = await transaction.get(yearRef);
-    const before = Number(record(year.exists ? year.data() : {}).grossPaise ?? 0) || 0;
-    const tds = incomeTaxTdsAtDelivery(tax.incomeTaxTds, before);
+    const yearData = record(year.exists ? year.data() : {});
+    const before = Number(yearData.grossPaise ?? 0) || 0;
+    const deductedBefore = Number(yearData.tdsDeductedPaise ?? 0) || 0;
+    const tds = incomeTaxTdsAtDelivery(tax.incomeTaxTds, before, deductedBefore);
     const invoices = plan.map((item, index) => {
       const next = (Number(record(seriesSnaps[index]!.exists ? seriesSnaps[index]!.data() : {}).last ?? 0) || 0) + 1;
       transaction.set(seriesRefs[index]!, {series: item.series, prefix: item.prefix, last: next, updatedAt: recordedAt}, {merge: true});
@@ -253,10 +285,12 @@ export async function recordDeliveredOrderTax(
       gstTcsPaise: tax.gstTcs.totalPaise,
       gstTcs: {cgstPaise: tax.gstTcs.cgstPaise, sgstPaise: tax.gstTcs.sgstPaise, igstPaise: tax.gstTcs.igstPaise, basePaise: tax.gstTcs.basePaise},
       incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: tax.incomeTaxTds.basePaise,
-      incomeTaxTdsCatchUpBasePaise: tds.catchUpBasePaise, invoices, recordedAt,
+      incomeTaxTdsCatchUpBasePaise: tds.catchUpBasePaise, incomeTaxTdsRequiredYtdPaise: tds.requiredYtdPaise,
+      taxHeads: {...(tax.taxHeads ?? NO_TAX), seller_income_tax_tds: tds.tdsPaise, rider_contractor_tds: 0},
+      invoices, recordedAt,
     };
     transaction.set(yearRef, {restaurantId: order.restaurantId, financialYear: tax.financialYear,
-      grossPaise: tds.yearGrossAfterPaise, updatedAt: recordedAt}, {merge: true});
+      grossPaise: tds.yearGrossAfterPaise, tdsDeductedPaise: deductedBefore + tds.tdsPaise, updatedAt: recordedAt}, {merge: true});
     transaction.set(markerRef, value);
     return value;
   });
@@ -276,8 +310,11 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
     if (value.reversedAt) return value;
     const yearRef = database.collection(TAX_PARTNER_YEARS_COLLECTION).doc(`${value.restaurantId}_${value.financialYear}`);
     const year = await transaction.get(yearRef);
-    const gross = Number(record(year.exists ? year.data() : {}).grossPaise ?? 0) || 0;
-    transaction.set(yearRef, {grossPaise: Math.max(0, gross - value.incomeTaxTdsBasePaise), updatedAt: at}, {merge: true});
+    const yearData = record(year.exists ? year.data() : {});
+    const gross = Number(yearData.grossPaise ?? 0) || 0;
+    const deducted = Number(yearData.tdsDeductedPaise ?? 0) || 0;
+    transaction.set(yearRef, {grossPaise: Math.max(0, gross - value.incomeTaxTdsBasePaise),
+      tdsDeductedPaise: Math.max(0, deducted - value.incomeTaxTdsPaise), updatedAt: at}, {merge: true});
     const reversed = {...value, reversedAt: at};
     transaction.set(markerRef, reversed);
     return reversed;
@@ -306,7 +343,10 @@ export async function lawBasedCheckoutTax(input: {
 }, database: FirestoreLike = firestoreDb): Promise<{tax: TaxComputation; orderTax: OrderTax} | null> {
   if (!input.plan.engineEnabled) return null;
   const settings = await loadTaxSettings(database);
-  if (!settings.enabled) return null;
+  if (!settings.live) {
+    if (settings.gstLive) logger.warn("TAX_ENGINE_WAITING_FOR_GSTIN", {gstinSaved: Boolean(settings.scraveitGstin)});
+    return null;
+  }
   const seller = await loadSellerTaxProfile(input.restaurant.id, settings.defaultStateCode, database);
   const subtotalPaise = paise(input.subtotal);
   const sellerDiscountPaise = input.plan.discount.restaurantDiscountPaise;

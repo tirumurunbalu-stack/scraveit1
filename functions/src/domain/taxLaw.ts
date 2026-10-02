@@ -17,7 +17,12 @@
  * - Income-tax e-commerce TDS: Income-tax Act, 2025 s.393(1) Table Sl. 8(v)
  *   (successor of s.194-O) from 1 April 2026: 0.1% of gross sales/services;
  *   nil for an individual/HUF with PAN/Aadhaar whose yearly gross through the
- *   platform is at most ₹5,00,000.
+ *   platform is at most ₹5,00,000. Once crossed, TDS is on the whole year's
+ *   gross (catch-up); companies, firms, LLPs etc. get no exemption.
+ * - Rider contractor TDS: Income-tax Act, 2025 s.393(1) Table Sl. 6(i)
+ *   (successor of s.194C): 1% for an individual/HUF, 2% for others, once a
+ *   single credit exceeds ₹30,000 or the year's credits exceed ₹1,00,000.
+ *   Riders classified as employees are left to salary TDS (payroll).
  * - Goods GST is per product (HSN, pre-packaged/labelled), never per shop.
  */
 
@@ -41,6 +46,20 @@ export interface EcomTdsRule {
   individualExemptUptoPaise: number;
   /** GST charged separately on the invoice is not part of the TDS base. */
   baseExcludesGst: boolean;
+}
+
+export interface ContractorTdsRule {
+  effectiveFrom: number;
+  effectiveTo: number;
+  section: string;
+  individualRateBps: number;
+  otherRateBps: number;
+  /** Rate when the contractor has not furnished PAN. */
+  noPanRateBps: number;
+  /** TDS applies to a single credit above this. */
+  singleCreditOverPaise: number;
+  /** Once the year's credits exceed this, TDS applies to all of them. */
+  aggregateOverPaise: number;
 }
 
 export interface ProductTaxRule {
@@ -72,6 +91,7 @@ export interface TaxLaw {
   /** SCRAVEIT's own services: platform fee, commission, other fees. */
   platformServiceGst: DatedRate[];
   ecomTds: EcomTdsRule[];
+  contractorTds: ContractorTdsRule[];
   /** Product GST suggestions for the store apps (owners confirm per product). */
   hsnGuides: HsnGuide[];
 }
@@ -94,6 +114,12 @@ export const BASELINE_TAX_LAW: Readonly<TaxLaw> = Object.freeze({
       rateBps: 10, noPanRateBps: 500, individualExemptUptoPaise: 5_00_000_00, baseExcludesGst: true},
     {effectiveFrom: IST("2026-04-01"), effectiveTo: FOREVER, section: "393(1) Table Sl. 8(v) (Income-tax Act, 2025)",
       rateBps: 10, noPanRateBps: 500, individualExemptUptoPaise: 5_00_000_00, baseExcludesGst: true},
+  ],
+  contractorTds: [
+    {effectiveFrom: IST("2017-07-01"), effectiveTo: IST("2026-04-01"), section: "194C (Income-tax Act, 1961)",
+      individualRateBps: 100, otherRateBps: 200, noPanRateBps: 2_000, singleCreditOverPaise: 30_000_00, aggregateOverPaise: 1_00_000_00},
+    {effectiveFrom: IST("2026-04-01"), effectiveTo: FOREVER, section: "393(1) Table Sl. 6(i) (Income-tax Act, 2025)",
+      individualRateBps: 100, otherRateBps: 200, noPanRateBps: 2_000, singleCreditOverPaise: 30_000_00, aggregateOverPaise: 1_00_000_00},
   ],
   hsnGuides: [
     ...[
@@ -153,6 +179,15 @@ export function normalizeTaxLaw(value: unknown): TaxLaw {
         individualExemptUptoPaise: int(rule.individualExemptUptoPaise, 0, 0, Number.MAX_SAFE_INTEGER),
         baseExcludesGst: rule.baseExcludesGst !== false};
     }) : base.ecomTds.map((rule) => ({...rule})),
+    contractorTds: Array.isArray(input.contractorTds) && input.contractorTds.length ? input.contractorTds.map((entry) => {
+      const rule = record(entry);
+      return {effectiveFrom: int(rule.effectiveFrom, 0, 0, Number.MAX_SAFE_INTEGER),
+        effectiveTo: int(rule.effectiveTo, 0, 0, Number.MAX_SAFE_INTEGER), section: String(rule.section ?? "").slice(0, 120),
+        individualRateBps: int(rule.individualRateBps, 100, 0, 10_000), otherRateBps: int(rule.otherRateBps, 200, 0, 10_000),
+        noPanRateBps: int(rule.noPanRateBps, 2_000, 0, 10_000),
+        singleCreditOverPaise: int(rule.singleCreditOverPaise, 30_000_00, 0, Number.MAX_SAFE_INTEGER),
+        aggregateOverPaise: int(rule.aggregateOverPaise, 1_00_000_00, 0, Number.MAX_SAFE_INTEGER)};
+    }) : base.contractorTds.map((rule) => ({...rule})),
     hsnGuides: base.hsnGuides.map((guide) => ({...guide, rule: {...guide.rule}})),
   };
 }
@@ -168,6 +203,10 @@ export function rateAt(rates: readonly DatedRate[], at: number): number {
 
 export function ecomTdsRuleAt(law: TaxLaw, at: number): EcomTdsRule | null {
   return inForce(law.ecomTds, at);
+}
+
+export function contractorTdsRuleAt(law: TaxLaw, at: number): ContractorTdsRule | null {
+  return inForce(law.contractorTds, at);
 }
 
 /** The product's own tax rule valid on the order date. */

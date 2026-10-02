@@ -99,6 +99,29 @@ export interface ServiceTaxLine extends GstSplit {
   chargedTo: "customer" | "partner";
 }
 
+/**
+ * The six taxes SCRAVEIT handles, always kept apart: never add GST, GST-TCS
+ * and income-tax TDS together into one "tax" figure.
+ * - restaurant_gst_9_5: 5% on restaurant service, paid by SCRAVEIT u/s 9(5)
+ * - product_gst: GST inside grocery/dairy shelf prices, owed by the seller
+ * - scraveit_service_gst: GST on SCRAVEIT's fees and commission (incl. local
+ *   delivery, which SCRAVEIT pays u/s 9(5))
+ * - gst_tcs_section_52: GST collected at source from registered sellers
+ * - seller_income_tax_tds: e-commerce TDS from sellers (set on delivery)
+ * - rider_contractor_tds: contractor TDS from riders (set when earnings are credited)
+ */
+export interface TaxHeads {
+  restaurant_gst_9_5: number;
+  product_gst: number;
+  scraveit_service_gst: number;
+  gst_tcs_section_52: number;
+  seller_income_tax_tds: number;
+  rider_contractor_tds: number;
+}
+
+export const NO_TAX: Readonly<TaxHeads> = Object.freeze({restaurant_gst_9_5: 0, product_gst: 0, scraveit_service_gst: 0,
+  gst_tcs_section_52: 0, seller_income_tax_tds: 0, rider_contractor_tds: 0});
+
 export interface OrderTax {
   lawVersion: string;
   financialYear?: string;
@@ -116,6 +139,8 @@ export interface OrderTax {
   /** Base and rate only; the amount is settled at delivery with the seller's yearly total. */
   incomeTaxTds: {section: string; basePaise: number; rateBps: number; individualExemptUptoPaise: number;
     thresholdApplies: boolean};
+  /** In paise, one field per tax. TDS heads are 0 here: they are fixed on delivery / on credit. */
+  taxHeads: TaxHeads;
 }
 
 function split(totalPaise: number, intraState: boolean): GstSplit {
@@ -200,8 +225,19 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
   const tdsBase = isGoods && tdsRule?.baseExcludesGst !== false ? sale - goodsTotal : sale;
   const individual = input.seller.entityType === "individual" || input.seller.entityType === "huf";
 
+  const serviceGst = (pick: (line: ServiceTaxLine) => boolean) =>
+    services.filter(pick).reduce((sum, line) => sum + line.gstPaise, 0);
+  const taxHeads: TaxHeads = {
+    ...NO_TAX,
+    restaurant_gst_9_5: serviceGst((line) => line.component === "restaurant_service"),
+    product_gst: goodsTotal,
+    scraveit_service_gst: serviceGst((line) => line.component !== "restaurant_service"),
+    gst_tcs_section_52: tcsTotal,
+  };
+
   return {
     lawVersion: law.version,
+    taxHeads,
     storeKind: input.storeKind,
     intraState,
     items,
@@ -222,20 +258,21 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
 }
 
 /**
- * Income-tax TDS for one delivered order, given the seller's gross through the
- * platform earlier in the same financial year. An individual/HUF with PAN owes
- * nothing while the year's gross stays at or below the limit; once it is
- * crossed, TDS applies to the whole year's gross, so the first order over the
- * limit also catches up the earlier orders.
+ * Seller e-commerce TDS due on one delivered order, as a year-to-date
+ * catch-up: required_TDS_YTD = rate × gross_YTD (nil while an individual/HUF
+ * with PAN stays at or below the limit), TDS_now = required − already
+ * deducted. The first order over the limit therefore also covers the earlier
+ * orders, and rounding never drifts. Companies, firms, LLPs and others get no
+ * exemption: TDS from the first rupee.
  */
-export function incomeTaxTdsAtDelivery(tax: OrderTax["incomeTaxTds"], yearGrossBeforePaise: number): {
-  tdsPaise: number; yearGrossAfterPaise: number; catchUpBasePaise: number;
+export function incomeTaxTdsAtDelivery(tax: OrderTax["incomeTaxTds"], yearGrossBeforePaise: number,
+  tdsDeductedBeforePaise = 0): {
+  tdsPaise: number; yearGrossAfterPaise: number; requiredYtdPaise: number; catchUpBasePaise: number;
 } {
   const after = yearGrossBeforePaise + tax.basePaise;
-  if (tax.rateBps <= 0 || tax.basePaise <= 0) return {tdsPaise: 0, yearGrossAfterPaise: after, catchUpBasePaise: 0};
-  if (!tax.thresholdApplies) return {tdsPaise: bps(tax.basePaise, tax.rateBps), yearGrossAfterPaise: after, catchUpBasePaise: 0};
-  if (after <= tax.individualExemptUptoPaise) return {tdsPaise: 0, yearGrossAfterPaise: after, catchUpBasePaise: 0};
-  const crossingNow = yearGrossBeforePaise <= tax.individualExemptUptoPaise;
-  const base = crossingNow ? after : tax.basePaise;
-  return {tdsPaise: bps(base, tax.rateBps), yearGrossAfterPaise: after, catchUpBasePaise: crossingNow ? yearGrossBeforePaise : 0};
+  const exempt = tax.thresholdApplies && after <= tax.individualExemptUptoPaise;
+  const requiredYtdPaise = tax.rateBps <= 0 || exempt ? 0 : bps(after, tax.rateBps);
+  const tdsPaise = tax.basePaise <= 0 ? 0 : Math.max(0, requiredYtdPaise - tdsDeductedBeforePaise);
+  const crossingNow = tax.thresholdApplies && !exempt && yearGrossBeforePaise <= tax.individualExemptUptoPaise;
+  return {tdsPaise, yearGrossAfterPaise: after, requiredYtdPaise, catchUpBasePaise: crossingNow ? yearGrossBeforePaise : 0};
 }

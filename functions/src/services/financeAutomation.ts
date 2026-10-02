@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {firestoreDb} from "../admin";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {sweepRiderContractorTds} from "./riderTds";
 import {
   createLedgerJournal,
   validateLedgerJournal,
@@ -1293,6 +1294,8 @@ export async function runWeeklyFinanceAutomation(
   }
 
   try {
+    // Rider contractor TDS on every credit first, so balances are net of it.
+    await sweepRiderContractorTds(database as unknown as FirestoreLike, attemptedAt);
     const [balances, riderCoverageSnapshot, restaurantCoverageSnapshot, ridersSnapshot, restaurantsSnapshot] =
       await Promise.all([
         readAllLedgerBalances(database),

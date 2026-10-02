@@ -311,6 +311,8 @@ service cloud.firestore {
         && resource.data.faceMatchStatus == 'unique'
         && request.resource.data.faceMatchStatus == resource.data.faceMatchStatus
         && request.resource.data.rekognitionFaceId == resource.data.rekognitionFaceId
+        // Contractor vs employee decides rider TDS: admin only.
+        && request.resource.data.get('taxClassification', null) == resource.data.get('taxClassification', null)
         // Who referred a rider can be set once and never switched later (the
         // referral itself is frozen server-side in riderReferrals/{uid}).
         && (!('referredByCode' in resource.data)

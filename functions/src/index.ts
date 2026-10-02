@@ -177,6 +177,7 @@ import {
   recordRiderPayout as writeRiderPayout,
 } from "./services/payouts";
 import {readRiderFinancialSummary} from "./services/riderFinance";
+import {sweepRiderContractorTds} from "./services/riderTds";
 import {getRestaurantSettlementSummary as readRestaurantSettlementSummary} from "./services/restaurantSettlements";
 import {
   evaluateRiderRewardsForDeliveredOrder,
@@ -1206,6 +1207,15 @@ export const backfillLedgerPartyJournals = onSchedule({
 }, async () => {
   const result = await backfillLedgerPartyIndex();
   if (result.indexed > 0 || !result.complete) logger.info("LEDGER_PARTY_INDEX_BACKFILL", result);
+});
+
+export const sweepRiderTds = onSchedule({
+  schedule: "every 60 minutes",
+  region: REGION,
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  await sweepRiderContractorTds();
 });
 
 export const settleRiderIncentivePeriods = onSchedule({
