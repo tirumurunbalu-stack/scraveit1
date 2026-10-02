@@ -34,6 +34,8 @@ export interface TaxPackWithholding {
   invoices: {series: string; invoiceNo: string; kind: string}[];
   recordedAt: number;
   reversedAt?: number;
+  /** Local delivery GST settled once the rider was known (0 when a registered rider charges it). */
+  taxHeads?: {local_delivery_gst_9_5: number};
 }
 
 export interface TaxPackPartner {
@@ -79,6 +81,11 @@ export interface TaxPackInput {
 
 export interface TaxPackRiderTdsCredit {
   riderId: string;
+  component?: string;
+  legalEntityType?: string;
+  panVerified?: boolean;
+  entityPanMismatch?: boolean;
+  tipTdsTreatment?: string;
   financialYear: string;
   occurredAt: number;
   creditPaise: number;
@@ -183,8 +190,9 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
       deliveryMargin: rupees(earn.deliveryMarginPaise), lateNight: rupees(earn.lateNightMarginPaise),
       rainSurge: rupees(earn.rainAndSurgeSharePaise), kitchen: rupees(earn.kitchenFeeSharePaise),
       discounts: rupees(-earn.discountsFundedPaise), net: rupees(net),
-      gstRestaurant: rupees(serviceGst(tax, "restaurant_service")), gstDelivery: rupees(serviceGst(tax, "delivery_fee")),
-      gstServices: rupees(tax ? sumBy(tax.services.filter((line) => line.supplier === "scraveit" && line.chargedTo === "customer"),
+      gstRestaurant: rupees(serviceGst(tax, "restaurant_service")), gstDelivery: rupees(withholdings.get(order.orderId)?.taxHeads?.local_delivery_gst_9_5 ?? serviceGst(tax, "delivery_fee")),
+      gstServices: rupees(tax ? sumBy(tax.services.filter((line) => line.supplier === "scraveit" && line.chargedTo === "customer" &&
+        line.component !== "delivery_fee"),
         (line) => line.gstPaise) : 0),
       gstCommission: rupees(serviceGst(tax, "commission")),
     });
@@ -356,17 +364,25 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
   for (const credit of input.riderTdsCredits ?? []) {
     const key = `${credit.riderId}|${credit.financialYear}`;
     const row = riderTdsByRider.get(key) ?? {rider: input.riders[credit.riderId] ?? credit.riderId, pan: credit.pan || "Not furnished",
-      classification: credit.classification, section: credit.section, year: credit.financialYear, rate: "", credited: 0, tds: 0};
-    row.credited = Math.round(((row.credited as number) + credit.creditPaise / 100) * 100) / 100;
+      entity: credit.legalEntityType ?? "", panVerified: credit.panVerified ? "Yes" : "No", flags: "",
+      classification: credit.classification, section: credit.section, year: credit.financialYear, rate: "", credited: 0, tips: 0,
+      tipTreatment: credit.tipTdsTreatment ?? "", tds: 0};
+    const field = credit.component === "customer_tip" ? "tips" : "credited";
+    row[field] = Math.round(((row[field] as number) + credit.creditPaise / 100) * 100) / 100;
+    if (credit.entityPanMismatch) row.flags = "Entity type and PAN disagree: higher rate applied";
+    if (credit.tipTdsTreatment) row.tipTreatment = credit.tipTdsTreatment;
     row.tds = Math.round(((row.tds as number) + credit.tdsPaise / 100) * 100) / 100;
     if (credit.rateBps > 0) row.rate = `${credit.rateBps / 100}%`;
     if (credit.pan) row.pan = credit.pan;
     riderTdsByRider.set(key, row);
   }
   const riderTdsSheet: PackSheet = {name: "Rider TDS register", columns: [
-    {header: "Rider", key: "rider", width: 24}, {header: "PAN", key: "pan", width: 14}, {header: "Classification", key: "classification", width: 14},
+    {header: "Rider", key: "rider", width: 24}, {header: "PAN", key: "pan", width: 14}, {header: "PAN verified", key: "panVerified", width: 10},
+    {header: "Legal entity", key: "entity", width: 12}, {header: "Classification", key: "classification", width: 14},
     {header: "Section", key: "section", width: 36}, {header: "FY", key: "year", width: 8}, {header: "Rate", key: "rate", width: 8},
-    {header: "Earnings credited (TDS base)", key: "credited", money: true}, {header: "TDS deducted", key: "tds", money: true},
+    {header: "Earnings credited", key: "credited", money: true}, {header: "Customer tips credited", key: "tips", money: true},
+    {header: "Tips TDS treatment", key: "tipTreatment", width: 16}, {header: "TDS deducted", key: "tds", money: true},
+    {header: "Flags", key: "flags", width: 40},
   ], rows: [...riderTdsByRider.values()].sort((a, b) => String(a.rider).localeCompare(String(b.rider)))};
   const productGst = sumBy(delivered, (order) => order.orderTax?.goodsGst.totalPaise ?? 0) / 100;
 
@@ -378,7 +394,7 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "Customers paid", value: total(sales, "paid"), note: "Sales register"},
     {item: "Scraveit net income (before running costs)", value: total(income, "net"), note: "Scraveit income & GST"},
     {item: "GST payable by Scraveit: restaurant service u/s 9(5)", value: total(income, "gstRestaurant"), note: "restaurant_gst_9_5 · GSTR-1 / GSTR-3B"},
-    {item: "GST payable by Scraveit: delivery u/s 9(5)", value: total(income, "gstDelivery"), note: "scraveit_service_gst · GSTR-1 / GSTR-3B"},
+    {item: "GST payable by Scraveit: delivery u/s 9(5)", value: total(income, "gstDelivery"), note: "local_delivery_gst_9_5 · GSTR-1 / GSTR-3B"},
     {item: "GST payable by Scraveit: own services to customers", value: total(income, "gstServices"), note: "scraveit_service_gst · GSTR-1 / GSTR-3B"},
     {item: "GST payable by Scraveit: commission to stores", value: total(income, "gstCommission"), note: "scraveit_service_gst · B2B invoices"},
     {item: "Product GST inside shelf prices (owed by the sellers)", value: Math.round(productGst * 100) / 100, note: "product_gst · seller's own returns, not Scraveit's"},

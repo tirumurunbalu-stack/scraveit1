@@ -114,22 +114,58 @@ describe("restaurant orders", () => {
   });
 });
 
-describe("six taxes kept apart", () => {
-  it("fills restaurant_gst_9_5, product_gst, scraveit_service_gst and gst_tcs_section_52 separately; TDS heads wait", () => {
-    const restaurant = computeOrderTax(law, order({storeKind: "restaurant", commissionPaise: 5_100,
-      items: [{productId: "meals", name: "Meals", quantity: 1, linePaise: 34_000, taxRules: []}],
-      fees: {...noFees, deliveryFeePaise: 3_900, platformFeePaise: 1_499}}));
+describe("seven taxes kept apart", () => {
+  const restaurantOrder = (overrides: Partial<OrderTaxInput> = {}) => order({storeKind: "restaurant", commissionPaise: 5_100,
+    items: [{productId: "meals", name: "Meals", quantity: 1, linePaise: 34_000, taxRules: []}],
+    fees: {...noFees, deliveryFeePaise: 3_900, platformFeePaise: 1_499}, ...overrides});
+
+  it("fills each GST head on its own; the TDS heads wait for delivery / credit", () => {
+    const restaurant = computeOrderTax(law, restaurantOrder());
+    expect(Object.keys(restaurant.taxHeads).sort()).toEqual(["gst_tcs_section_52", "local_delivery_gst_9_5", "product_gst",
+      "restaurant_gst_9_5", "rider_contractor_tds", "scraveit_service_gst", "seller_income_tax_tds"]);
+    expect(restaurant.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700, local_delivery_gst_9_5: 702,
+      scraveit_service_gst: 270 + 918, product_gst: 0, seller_income_tax_tds: 0, rider_contractor_tds: 0});
     const curd = computeOrderTax(law, order({items: [
       {productId: "curd", name: "Curd", quantity: 1, linePaise: 10_500, taxRules: [rule(500, "taxable", "0403", true)]}]}));
     expect(curd.taxHeads).toMatchObject({product_gst: 500, gst_tcs_section_52: 50, restaurant_gst_9_5: 0});
-    expect(Object.keys(restaurant.taxHeads).sort()).toEqual(["gst_tcs_section_52", "product_gst", "restaurant_gst_9_5",
-      "rider_contractor_tds", "scraveit_service_gst", "seller_income_tax_tds"]);
-    expect(restaurant.taxHeads.restaurant_gst_9_5).toBeGreaterThan(0);
-    expect(restaurant.taxHeads.product_gst).toBe(0);
-    expect(restaurant.taxHeads.restaurant_gst_9_5 + restaurant.taxHeads.scraveit_service_gst)
-      .toBe(restaurant.customerTaxPaise + restaurant.partnerTaxPaise);
-    expect(restaurant.taxHeads.seller_income_tax_tds).toBe(0);
-    expect(restaurant.taxHeads.rider_contractor_tds).toBe(0);
+  });
+
+  it("charges no GST at all while GST_LIVE is off, but still knows the seller-TDS base", () => {
+    const off = computeOrderTax(law, restaurantOrder({gstApplies: false}));
+    expect(off.gstApplied).toBe(false);
+    expect(off.customerTaxPaise).toBe(0);
+    expect(off.services).toEqual([]);
+    expect(Object.values(off.taxHeads).every((value) => value === 0)).toBe(true);
+    expect(off.incomeTaxTds.basePaise).toBe(34_000);
+  });
+
+  it("taxes local delivery at 18% for every store kind, by who supplies it", () => {
+    const fee = {...noFees, deliveryFeePaise: 3_900};
+    for (const storeKind of ["restaurant", "grocery", "dairy", "pharmacy"] as const) {
+      const unregistered = computeOrderTax(law, order({storeKind, fees: fee,
+        delivery: {deliveryServiceSupplier: "RIDER", riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: false}}));
+      const line = unregistered.services.find((entry) => entry.component === "delivery_fee")!;
+      expect(line).toMatchObject({supplier: "scraveit_9_5", basis: "section_9_5", rateBps: 1_800, gstPaise: 702});
+      expect(unregistered.taxHeads.local_delivery_gst_9_5).toBe(702);
+    }
+    const own = computeOrderTax(law, order({fees: fee,
+      delivery: {deliveryServiceSupplier: "SCRAVEIT", riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: false}}));
+    expect(own.services[0]).toMatchObject({supplier: "scraveit", basis: "scraveit_own_supply"});
+    expect(own.taxHeads).toMatchObject({local_delivery_gst_9_5: 702, scraveit_service_gst: 0});
+    const registered = computeOrderTax(law, order({fees: fee,
+      delivery: {deliveryServiceSupplier: "RIDER", riderGstRegistered: true, riderGstin: "37ABCPR1234K1Z5", riderRegistrationLiable: true}}));
+    expect(registered.services[0]).toMatchObject({supplier: "rider", basis: "rider_registered"});
+    expect(registered.taxHeads.local_delivery_gst_9_5).toBe(0);
+    expect(registered.riderDeliveryTcs).toMatchObject({basePaise: 3_900, rateBps: 50, totalPaise: 20});
+    expect(registered.taxHeads.gst_tcs_section_52).toBe(20);
+    const liable = computeOrderTax(law, order({fees: fee,
+      delivery: {deliveryServiceSupplier: "RIDER", riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: true}}));
+    expect(liable.services[0]).toMatchObject({basis: "section_9_5", complianceFlag: "RIDER_MUST_REGISTER"});
+  });
+
+  it("has no local delivery GST before 22 September 2025", () => {
+    const before = computeOrderTax(law, order({at: Date.parse("2025-09-21T12:00:00+05:30"), fees: {...noFees, deliveryFeePaise: 3_900}}));
+    expect(before.taxHeads.local_delivery_gst_9_5).toBe(0);
   });
 });
 
@@ -148,6 +184,12 @@ describe("income-tax TDS through the year", () => {
   });
   it("never deducts twice when earlier TDS already covers the year", () => {
     expect(incomeTaxTdsAtDelivery({...base, basePaise: 1_00}, 6_00_000_00, 60_000).tdsPaise).toBe(0);
+  });
+  it("charges an individual without PAN the e-commerce 5% from the first rupee (not the contractor 20%)", () => {
+    const noPan = computeOrderTax(law, order({seller: {...registered, entityType: "individual", pan: "", panFurnished: false},
+      items: [{productId: "x", name: "X", quantity: 1, linePaise: 10_000, taxRules: [rule(0, "nil", "0401")]}]}));
+    expect(noPan.incomeTaxTds).toMatchObject({rateBps: 500, thresholdApplies: false});
+    expect(incomeTaxTdsAtDelivery(noPan.incomeTaxTds, 0).tdsPaise).toBe(500);
   });
   it("has no threshold for a company or firm", () => {
     expect(incomeTaxTdsAtDelivery({...base, basePaise: 50_000, thresholdApplies: false}, 0).tdsPaise).toBe(50);

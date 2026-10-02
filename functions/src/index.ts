@@ -56,6 +56,7 @@ import {
   declineOrderSchema,
   exportPlatformDataWorkbookSchema,
   exportTaxPackSchema,
+  setRiderTaxClassificationSchema,
   initiatePaymentSchema,
   markRiderArrivedRestaurantSchema,
   recoverDeliveryOtpSchema,
@@ -177,7 +178,7 @@ import {
   recordRiderPayout as writeRiderPayout,
 } from "./services/payouts";
 import {readRiderFinancialSummary} from "./services/riderFinance";
-import {sweepRiderContractorTds} from "./services/riderTds";
+import {setRiderTaxClassification as recordRiderTaxClassification, sweepRiderContractorTds} from "./services/riderTds";
 import {getRestaurantSettlementSummary as readRestaurantSettlementSummary} from "./services/restaurantSettlements";
 import {
   evaluateRiderRewardsForDeliveredOrder,
@@ -796,6 +797,20 @@ export const exportTaxPack = onCall({
     return await buildTaxPackExport(request.auth.uid, request.auth.token, input);
   } catch (error) {
     logger.warn("exportTaxPack rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
+export const setRiderTaxClassification = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to change a tax classification."));
+  try {
+    const input = parse(setRiderTaxClassificationSchema, request.data ?? {});
+    return await recordRiderTaxClassification(request.auth.uid, request.auth.token, input);
+  } catch (error) {
+    logger.warn("setRiderTaxClassification rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
     throw asHttpsError(error);
   }
 });

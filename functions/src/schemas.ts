@@ -866,3 +866,12 @@ export const breakEvenSchema = z.object({
   workingCapitalReserveBps: bps.optional(),
   expansionBps: bps.optional(),
 }).strict();
+
+/** Restricted compliance control: contractor / employee for one rider. */
+export const setRiderTaxClassificationSchema = z.object({
+  riderId: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
+  taxClassification: z.enum(["CONTRACTOR", "EMPLOYEE"]),
+  effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  reason: z.enum(["INDEPENDENT_DELIVERY_PARTNER", "ONBOARDED_AS_EMPLOYEE", "EMPLOYMENT_ENDED", "CORRECTION_APPROVED_BY_CA"]),
+  note: z.string().trim().min(1).max(500),
+}).strict();

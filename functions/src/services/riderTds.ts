@@ -1,39 +1,70 @@
+import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
 import {createLedgerJournal, type LedgerJournal} from "../domain/ledger";
-import {riderContractorTdsOnCredit, validPan, type RiderTdsYear} from "../domain/riderTds";
+import {
+  classificationAt,
+  classificationChangeProblem,
+  EMPTY_RIDER_TDS_YEAR,
+  normalizeLegalEntityType,
+  panEntityType,
+  panMatchesEntity,
+  riderContractorTdsOnCredit,
+  validPan,
+  type ClassificationEntry,
+  type RiderCreditComponent,
+  type RiderTaxClassification,
+  type RiderTdsIdentity,
+  type RiderTdsYear,
+  type TipTdsTreatment,
+} from "../domain/riderTds";
 import {contractorTdsRuleAt, financialYearLabel} from "../domain/taxLaw";
+import {DomainError} from "../errors";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
+import {requireOwnerClaim} from "./authz";
 import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournalIfAbsent} from "./ledger";
-import {loadTaxSettings, riderTaxClassificationOf, type RiderTaxClassification, type TaxSettings} from "./taxEngine";
+import {loadTaxSettings, type TaxSettings} from "./taxEngine";
 
 /**
- * Applies rider contractor TDS to every credit of rider earnings in the
- * ledger, once per credit: a marker per (journal, rider), a yearly total per
- * rider, and a journal moving the TDS from the rider's payable into the
+ * Applies rider contractor TDS to every rider credit in the ledger, once per
+ * credit: a marker per (journal, rider, component), a yearly total per rider,
+ * and a journal moving the TDS from what the rider is owed into the
  * contractor-TDS liability. Runs on a schedule and right before any payout,
- * so a rider is never paid out the TDS part.
+ * so a rider is never paid out the TDS part. Only while TDS_LIVE is active.
  */
 
 export const RIDER_TDS_CREDITS_COLLECTION = "riderTdsCredits";
 export const TAX_RIDER_YEARS_COLLECTION = "taxRiderYears";
+export const RIDER_TAX_CLASSIFICATIONS_COLLECTION = "riderTaxClassifications";
+export const TAX_COMPLIANCE_AUDIT_COLLECTION = "taxComplianceAudit";
 const SWEEP_DOC = "riderTdsSweep";
 const PAGE = 500;
 const MAX_PAGES = 40;
 /** Journals can be written a little after the moment they record. */
 const OVERLAP_MS = 3 * 86_400_000;
-const EARNINGS_PREFIX = "liability:rider-earnings:";
+const ACCOUNT_PREFIX: Record<RiderCreditComponent, string> = {
+  rider_earning: "liability:rider-earnings:",
+  customer_tip: "liability:rider-tips:",
+};
 
 export interface RiderTdsCredit {
   sourceJournalId: string;
   riderId: string;
+  component: RiderCreditComponent;
   financialYear: string;
   occurredAt: number;
   creditPaise: number;
   classification: RiderTaxClassification;
+  classificationEffectiveFrom: string;
   section: string;
+  legalEntityType: string;
   pan: string;
+  panEntityType: string;
+  panVerified: boolean;
+  entityPanMismatch: boolean;
+  tipTdsTreatment: TipTdsTreatment;
   rateBps: number;
+  rateReason: string;
   requiredYtdPaise: number;
   /** rider_contractor_tds for this credit. */
   tdsPaise: number;
@@ -49,84 +80,125 @@ function financialYearStart(at: number): number {
   return Date.UTC(year, 3, 1) - 19_800_000;
 }
 
+/**
+ * A rider's TDS identity. legalEntityType is what the rider is (declared at
+ * onboarding, independent delivery partners default to INDIVIDUAL); the PAN's
+ * own entity letter only checks it.
+ */
+export function riderTdsIdentity(rider: unknown): RiderTdsIdentity {
+  const input = record(rider);
+  const pan = validPan(input.pan) || validPan(input.panNumber) || validPan(record(input.payoutProfile).panNumber);
+  return {
+    legalEntityType: normalizeLegalEntityType(input.legalEntityType) || "INDIVIDUAL",
+    pan,
+    panEntityType: panEntityType(pan),
+    panVerified: input.panVerified === true,
+  };
+}
+
+function classificationEntries(value: unknown): ClassificationEntry[] {
+  const entries = record(value).entries;
+  return Array.isArray(entries) ? entries.map((entry) => entry as ClassificationEntry) : [];
+}
+
 export function riderTdsJournal(credit: RiderTdsCredit): LedgerJournal | null {
   if (credit.tdsPaise <= 0) return null;
   return createLedgerJournal({
     eventType: "rider_contractor_tds",
-    eventId: `rider-tds:${credit.sourceJournalId}:${credit.riderId}`,
+    eventId: `rider-tds:${credit.sourceJournalId}:${credit.riderId}:${credit.component}`,
     occurredAt: credit.occurredAt,
     metadata: {riderId: credit.riderId, financialYear: credit.financialYear, sourceJournalId: credit.sourceJournalId,
-      section: credit.section.slice(0, 120), rateBps: credit.rateBps},
+      component: credit.component, section: credit.section.slice(0, 120), rateBps: credit.rateBps},
     postings: [
-      {accountId: `${EARNINGS_PREFIX}${credit.riderId}`, side: "debit", amountPaise: credit.tdsPaise,
-        memo: "Contractor TDS deducted from rider earnings"},
+      {accountId: `${ACCOUNT_PREFIX[credit.component]}${credit.riderId}`, side: "debit", amountPaise: credit.tdsPaise,
+        memo: "Contractor TDS deducted"},
       {accountId: "liability:rider-contractor-tds-payable", side: "credit", amountPaise: credit.tdsPaise,
         memo: "Rider contractor TDS payable"},
     ],
   });
 }
 
-/** Rider earnings credited by one journal, per rider. */
-export function riderEarningCredits(journal: {eventType?: unknown; entries?: unknown}): Map<string, number> {
-  const credits = new Map<string, number>();
-  if (journal.eventType === "rider_contractor_tds" || !Array.isArray(journal.entries)) return credits;
+/** What one journal credits to riders: earnings and customer tips kept apart. */
+export function riderCredits(journal: {eventType?: unknown; entries?: unknown}): {riderId: string; component: RiderCreditComponent; amountPaise: number}[] {
+  if (journal.eventType === "rider_contractor_tds" || !Array.isArray(journal.entries)) return [];
+  const totals = new Map<string, {riderId: string; component: RiderCreditComponent; amountPaise: number}>();
   for (const raw of journal.entries) {
     const entry = record(raw);
+    if (entry.side !== "credit") continue;
     const accountId = String(entry.accountId ?? "");
-    if (entry.side !== "credit" || !accountId.startsWith(EARNINGS_PREFIX)) continue;
-    const riderId = accountId.slice(EARNINGS_PREFIX.length);
-    credits.set(riderId, (credits.get(riderId) ?? 0) + (Number(entry.amountPaise) || 0));
+    for (const component of ["rider_earning", "customer_tip"] as const) {
+      if (!accountId.startsWith(ACCOUNT_PREFIX[component])) continue;
+      const riderId = accountId.slice(ACCOUNT_PREFIX[component].length);
+      const key = `${riderId}|${component}`;
+      const row = totals.get(key) ?? {riderId, component, amountPaise: 0};
+      row.amountPaise += Number(entry.amountPaise) || 0;
+      totals.set(key, row);
+    }
   }
-  return credits;
+  return [...totals.values()].filter((row) => row.amountPaise > 0);
 }
 
 export async function applyRiderCredit(settings: TaxSettings, source: {journalId: string; occurredAt: number},
-  riderId: string, creditPaise: number, database: FirestoreLike = firestoreDb): Promise<(RiderTdsCredit & {fresh: boolean}) | null> {
+  credit: {riderId: string; component: RiderCreditComponent; amountPaise: number},
+  database: FirestoreLike = firestoreDb): Promise<(RiderTdsCredit & {fresh: boolean}) | null> {
   const rule = contractorTdsRuleAt(settings.law, source.occurredAt);
-  if (!rule || creditPaise <= 0) return null;
+  if (!rule || credit.amountPaise <= 0) return null;
+  const {riderId, component} = credit;
   const financialYear = financialYearLabel(source.occurredAt);
-  const markerRef = database.collection(RIDER_TDS_CREDITS_COLLECTION).doc(`${source.journalId}__${riderId}`);
+  const markerRef = database.collection(RIDER_TDS_CREDITS_COLLECTION).doc(`${source.journalId}__${riderId}__${component}`);
   const yearRef = database.collection(TAX_RIDER_YEARS_COLLECTION).doc(`${riderId}_${financialYear}`);
   const riderRef = database.collection("riders").doc(riderId);
-  const credit = await database.runTransaction(async (transaction: TransactionLike) => {
+  const classRef = database.collection(RIDER_TAX_CLASSIFICATIONS_COLLECTION).doc(riderId);
+  const result = await database.runTransaction(async (transaction: TransactionLike) => {
     const marker = await transaction.get(markerRef);
     if (marker.exists) return {credit: marker.data() as RiderTdsCredit, fresh: false};
-    const [riderSnap, yearSnap] = [await transaction.get(riderRef), await transaction.get(yearRef)];
-    const rider = record(riderSnap.exists ? riderSnap.data() : {});
-    const classification = riderTaxClassificationOf(rider.taxClassification, settings.riderTaxClassification);
-    const pan = validPan(rider.panNumber) || validPan(record(rider.payoutProfile).panNumber);
+    const riderSnap = await transaction.get(riderRef);
+    const classSnap = await transaction.get(classRef);
+    const yearSnap = await transaction.get(yearRef);
+    const identity = riderTdsIdentity(riderSnap.exists ? riderSnap.data() : {});
+    const classification = classificationAt(classificationEntries(classSnap.exists ? classSnap.data() : {}), source.occurredAt);
     const yearData = record(yearSnap.exists ? yearSnap.data() : {});
     const before: RiderTdsYear = {
-      creditedPaise: Number(yearData.creditedPaise ?? 0) || 0,
+      earningsPaise: Number(yearData.earningsPaise ?? 0) || 0,
+      tipsPaise: Number(yearData.tipsPaise ?? 0) || 0,
       largeCreditsPaise: Number(yearData.largeCreditsPaise ?? 0) || 0,
       deductedPaise: Number(yearData.deductedPaise ?? 0) || 0,
     };
+    const employee = classification.taxClassification === "EMPLOYEE";
     // Employees: salary TDS is worked out by payroll, not per credit.
-    const result = classification === "EMPLOYEE"
-      ? {rateBps: 0, requiredYtdPaise: 0, tdsPaise: 0, year: {...before, creditedPaise: before.creditedPaise + creditPaise}}
-      : riderContractorTdsOnCredit(rule, pan, before, creditPaise);
+    const outcome = employee
+      ? {rateBps: 0, rateReason: "payroll", requiredYtdPaise: 0, tdsPaise: 0, year: {...before,
+        earningsPaise: before.earningsPaise + (component === "rider_earning" ? credit.amountPaise : 0),
+        tipsPaise: before.tipsPaise + (component === "customer_tip" ? credit.amountPaise : 0)}}
+      : riderContractorTdsOnCredit(rule, identity, before, credit, settings.riderTipTdsTreatment);
     const value: RiderTdsCredit = {
-      sourceJournalId: source.journalId, riderId, financialYear, occurredAt: source.occurredAt, creditPaise,
-      classification, section: classification === "EMPLOYEE" ? "Salary (payroll)" : rule.section, pan,
-      rateBps: result.rateBps, requiredYtdPaise: result.requiredYtdPaise, tdsPaise: result.tdsPaise,
+      sourceJournalId: source.journalId, riderId, component, financialYear, occurredAt: source.occurredAt,
+      creditPaise: credit.amountPaise, classification: classification.taxClassification,
+      classificationEffectiveFrom: classification.classificationEffectiveFrom,
+      section: employee ? "Salary (payroll)" : rule.section,
+      legalEntityType: identity.legalEntityType, pan: identity.pan, panEntityType: identity.panEntityType,
+      panVerified: identity.panVerified, entityPanMismatch: !panMatchesEntity(identity.legalEntityType, identity.panEntityType),
+      tipTdsTreatment: settings.riderTipTdsTreatment,
+      rateBps: outcome.rateBps, rateReason: outcome.rateReason, requiredYtdPaise: outcome.requiredYtdPaise, tdsPaise: outcome.tdsPaise,
     };
-    transaction.set(yearRef, {riderId, financialYear, classification, pan, ...result.year,
-      updatedAt: source.occurredAt}, {merge: true});
+    transaction.set(yearRef, {riderId, financialYear, classification: classification.taxClassification,
+      legalEntityType: identity.legalEntityType, pan: identity.pan, panVerified: identity.panVerified,
+      ...outcome.year, updatedAt: source.occurredAt}, {merge: true});
     transaction.set(markerRef, value);
     return {credit: value, fresh: true};
   });
   // Rebuilt from the marker, so a retry after a crash still posts it once.
-  const journal = riderTdsJournal(credit.credit);
+  const journal = riderTdsJournal(result.credit);
   if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
-  return {...credit.credit, fresh: credit.fresh};
+  return {...result.credit, fresh: result.fresh};
 }
 
-/** Applies TDS to all rider credits since the last sweep. No-op until the tax engine is live. */
+/** Applies TDS to all rider credits since the last sweep. No-op unless TDS_LIVE is active. */
 export async function sweepRiderContractorTds(database: FirestoreLike = firestoreDb, now = Date.now()): Promise<{
-  live: boolean; journalsScanned: number; creditsApplied: number; tdsPaise: number; complete: boolean;
+  active: boolean; journalsScanned: number; creditsApplied: number; tdsPaise: number; complete: boolean;
 }> {
   const settings = await loadTaxSettings(database);
-  if (!settings.live) return {live: false, journalsScanned: 0, creditsApplied: 0, tdsPaise: 0, complete: true};
+  if (!settings.tdsActive) return {active: false, journalsScanned: 0, creditsApplied: 0, tdsPaise: 0, complete: true};
   const sweepRef = database.collection("private").doc(SWEEP_DOC);
   const sweepSnap = await sweepRef.get();
   const scannedThrough = Number(record(sweepSnap.exists ? sweepSnap.data() : {}).scannedThrough ?? 0) ||
@@ -145,8 +217,8 @@ export async function sweepRiderContractorTds(database: FirestoreLike = firestor
       const occurredAt = Number(journal.occurredAt) || 0;
       journalsScanned += 1;
       newest = Math.max(newest, occurredAt);
-      for (const [riderId, credit] of riderEarningCredits(journal)) {
-        const applied = await applyRiderCredit(settings, {journalId: doc.id, occurredAt}, riderId, credit, database);
+      for (const credit of riderCredits(journal)) {
+        const applied = await applyRiderCredit(settings, {journalId: doc.id, occurredAt}, credit, database);
         if (applied?.fresh) {
           creditsApplied += 1;
           tdsPaise += applied.tdsPaise;
@@ -163,5 +235,61 @@ export async function sweepRiderContractorTds(database: FirestoreLike = firestor
   }
   await sweepRef.set({scannedThrough: newest, sweptAt: now}, {merge: true});
   if (tdsPaise > 0 || !complete) logger.info("RIDER_CONTRACTOR_TDS_SWEEP", {journalsScanned, creditsApplied, tdsPaise, complete});
-  return {live: true, journalsScanned, creditsApplied, tdsPaise, complete};
+  return {active: true, journalsScanned, creditsApplied, tdsPaise, complete};
+}
+
+// ---------------------------------------------------------------------------
+// Restricted compliance control: contractor / employee
+// ---------------------------------------------------------------------------
+
+export const CLASSIFICATION_REASONS = [
+  "INDEPENDENT_DELIVERY_PARTNER",
+  "ONBOARDED_AS_EMPLOYEE",
+  "EMPLOYMENT_ENDED",
+  "CORRECTION_APPROVED_BY_CA",
+] as const;
+
+export interface ClassificationChangeInput {
+  riderId: string;
+  taxClassification: RiderTaxClassification;
+  effectiveFrom: string;
+  reason: typeof CLASSIFICATION_REASONS[number];
+  note: string;
+}
+
+/**
+ * Records a contractor/employee change for one rider. Owner (Super Admin)
+ * only, dated from today or later, appended to the rider's history and to an
+ * immutable audit record: never an edit of the past.
+ */
+export async function setRiderTaxClassification(uid: string, token: DecodedIdToken, input: ClassificationChangeInput,
+  database: FirestoreLike = firestoreDb, now = Date.now()): Promise<{entries: ClassificationEntry[]; auditId: string}> {
+  requireOwnerClaim(token);
+  if (input.taxClassification === "EMPLOYEE" && input.reason !== "ONBOARDED_AS_EMPLOYEE" && input.reason !== "CORRECTION_APPROVED_BY_CA") {
+    throw new DomainError("invalid-argument", "EMPLOYEE is only for a rider actually onboarded on payroll.");
+  }
+  if (!input.note.trim()) throw new DomainError("invalid-argument", "Add a note explaining the change.");
+  const classRef = database.collection(RIDER_TAX_CLASSIFICATIONS_COLLECTION).doc(input.riderId);
+  const riderRef = database.collection("riders").doc(input.riderId);
+  const auditId = `rider-classification-${input.riderId}-${now}`;
+  const auditRef = database.collection(TAX_COMPLIANCE_AUDIT_COLLECTION).doc(auditId);
+  const entries = await database.runTransaction(async (transaction: TransactionLike) => {
+    const rider = await transaction.get(riderRef);
+    if (!rider.exists) throw new DomainError("not-found", "That rider does not exist.");
+    const current = await transaction.get(classRef);
+    const existing = classificationEntries(current.exists ? current.data() : {});
+    const problem = classificationChangeProblem(existing, {effectiveFrom: input.effectiveFrom, now});
+    if (problem) throw new DomainError("failed-precondition", problem);
+    const entry: ClassificationEntry = {
+      taxClassification: input.taxClassification, classificationEffectiveFrom: input.effectiveFrom,
+      classificationReason: input.reason, changedBy: uid, changedAt: now,
+    };
+    const next = [...existing, entry];
+    transaction.set(classRef, {riderId: input.riderId, entries: next, updatedAt: now});
+    transaction.set(auditRef, {id: auditId, action: "rider_tax_classification.change", riderId: input.riderId,
+      before: classificationAt(existing, now), after: entry, note: input.note.trim().slice(0, 500),
+      actorId: uid, actorEmail: String(token.email ?? "").slice(0, 254), at: now});
+    return next;
+  });
+  return {entries, auditId};
 }

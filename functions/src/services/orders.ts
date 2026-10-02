@@ -469,7 +469,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   let tax = checkoutTax(economicsControl, economicsPlan, fees, subtotal, pricedAt);
   // Effective-dated tax law (services/taxEngine.ts) replaces it once switched on.
   const lawTax = await lawBasedCheckoutTax({restaurant, items, menuById, plan: economicsPlan, fees, subtotal, at: pricedAt});
-  if (lawTax) tax = lawTax.tax;
+  if (lawTax?.tax) tax = lawTax.tax;
   const feeInput = {
     subtotal,
     discount,
