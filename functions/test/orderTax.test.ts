@@ -163,6 +163,17 @@ describe("seven taxes kept apart", () => {
     expect(liable.services[0]).toMatchObject({basis: "section_9_5", complianceFlag: "RIDER_MUST_REGISTER"});
   });
 
+  it("treats a store's own delivery as part of its own supply (RESTAURANT), never local_delivery_gst_9_5", () => {
+    const self = {deliveryServiceSupplier: "RESTAURANT" as const, riderGstRegistered: false, riderGstin: "", riderRegistrationLiable: false};
+    const restaurant = computeOrderTax(law, restaurantOrder({delivery: self}));
+    expect(restaurant.services.find((line) => line.component === "delivery_fee"))
+      .toMatchObject({basis: "restaurant_self_delivery", supplier: "scraveit_9_5", rateBps: 500, gstPaise: 195});
+    expect(restaurant.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700 + 195, local_delivery_gst_9_5: 0});
+    const dairy = computeOrderTax(law, order({fees: {...noFees, deliveryFeePaise: 3_900}, delivery: self}));
+    expect(dairy.services[0]).toMatchObject({basis: "seller_self_delivery", supplier: "seller", gstPaise: 0});
+    expect(dairy.taxHeads.local_delivery_gst_9_5).toBe(0);
+  });
+
   it("has no local delivery GST before 22 September 2025", () => {
     const before = computeOrderTax(law, order({at: Date.parse("2025-09-21T12:00:00+05:30"), fees: {...noFees, deliveryFeePaise: 3_900}}));
     expect(before.taxHeads.local_delivery_gst_9_5).toBe(0);

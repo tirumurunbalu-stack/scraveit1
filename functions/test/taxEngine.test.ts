@@ -10,6 +10,7 @@ import type {FirestoreLike} from "../src/firestoreTypes";
 import {
   recordDeliveredOrderTax,
   reverseOrderTaxWithholding,
+  deliverySupplierFor,
   normalizeTaxSettings,
   sellerTaxProfile,
   withholdingJournal,
@@ -90,6 +91,11 @@ describe("tax on delivery", () => {
     expect(normalizeTaxSettings({...TDS_ON, tanVerified: false})).toMatchObject({tdsActive: false});
     expect(normalizeTaxSettings({...TDS_ON, scraveitTan: "VPNS3649"})).toMatchObject({tdsActive: false});
     expect(normalizeTaxSettings({}).riderTipTdsTreatment).toBe("PENDING_REVIEW");
+    // Zomato-style default: the rider supplies delivery through SCRAVEIT; RESTAURANT only per store.
+    expect(normalizeTaxSettings({}).deliveryServiceSupplier).toBe("RIDER");
+    expect(normalizeTaxSettings({deliveryServiceSupplier: "RESTAURANT"}).deliveryServiceSupplier).toBe("RIDER");
+    expect(deliverySupplierFor(normalizeTaxSettings({}), {selfDelivery: true})).toBe("RESTAURANT");
+    expect(deliverySupplierFor(normalizeTaxSettings({}), {})).toBe("RIDER");
   });
 
   it("with GST_LIVE off and TDS_LIVE on: seller TDS only, no TCS, no GST invoice", async () => {
