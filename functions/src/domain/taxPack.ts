@@ -41,9 +41,10 @@ export interface TaxPackWithholding {
   riderEcommerceTds?: {riderId: string; tdsPaise: number; rateBps: number; basePaise: number};
   gstTcsReturnAdjustment?: {period: string; sellerAdjustedTcsPaise: number; sellerUnadjustedTcsPaise: number;
     riderAdjustedTcsPaise: number; riderUnadjustedTcsPaise: number};
-  tdsReversal?: {status: string; sellerTdsPaise: number; riderEcommerceTdsPaise: number};
+  tdsReversal?: {status: string; sellerTdsPaise: number; riderEcommerceTdsPaise: number;
+    sellerTdsAvailableForOffsetPaise?: number; riderTdsAvailableForOffsetPaise?: number};
   deliverySettlementReversal?: {deliveryGrossConsideration: number; platformFee: number; platformFeeGst: number; supplierGst: number;
-    operationalPayKept: number};
+    customerDeliveryConsiderationReversed?: number; scraveitFundedDeliveryCompensation?: {amountPaise: number; taxCategory: string}};
 }
 
 export interface TaxPackPartner {
@@ -253,11 +254,11 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
       entity: partner?.entityType ?? "", gross: 0, tds: 0, catchUp: 0, reversedTds: 0, pendingTds: 0};
     const add = (field: string, paise: number) => { row[field] = Math.round(((row[field] as number) + rupees(paise)) * 100) / 100; };
     // A refund keeps the TDS deducted until reconciliation: only ADJUSTED comes off.
-    const adjusted = w.reversedAt && w.tdsReversal?.status === "ADJUSTED";
-    add("gross", adjusted ? 0 : w.incomeTaxTdsBasePaise);
+    // A returned sale's TDS is never paid back: it waits to be set off (AVAILABLE_FOR_OFFSET), was set off
+    // (OFFSET_APPLIED), or stays the seller's deposited credit (CLAIMABLE_BY_PARTICIPANT).
+    add("gross", w.incomeTaxTdsBasePaise);
     add("tds", w.incomeTaxTdsPaise);
-    if (adjusted) add("reversedTds", w.incomeTaxTdsPaise);
-    if (w.reversedAt && w.tdsReversal?.status === "PENDING_ADJUSTMENT") add("pendingTds", w.incomeTaxTdsPaise);
+    if (w.reversedAt && w.tdsReversal?.status === "AVAILABLE_FOR_OFFSET") add("pendingTds", w.incomeTaxTdsPaise);
     add("catchUp", w.incomeTaxTdsCatchUpBasePaise);
     tdsBySeller.set(key, row);
   }
@@ -265,8 +266,8 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {header: "Financial year", key: "fy", width: 12}, {header: "Store", key: "store", width: 26}, {header: "PAN", key: "pan", width: 12},
     {header: "Business type", key: "entity", width: 14}, {header: "Gross sales (TDS base)", key: "gross", money: true},
     {header: "Earlier sales caught up", key: "catchUp", money: true}, {header: "TDS withheld", key: "tds", money: true},
-    {header: "TDS adjusted in reconciliation", key: "reversedTds", money: true},
-    {header: "Refund TDS pending reconciliation", key: "pendingTds", money: true},
+    {header: "TDS returned as cash (always 0)", key: "reversedTds", money: true},
+    {header: "Returned-sale TDS awaiting offset", key: "pendingTds", money: true},
   ], rows: [...tdsBySeller.values()]};
 
   // Money movements from the ledger.
@@ -428,22 +429,26 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {header: "Order", key: "order", width: 22}, {header: "Refunded", key: "date", width: 12}, {header: "TCS period", key: "period", width: 10},
     {header: "Seller TCS adjusted", key: "sellerAdj", money: true}, {header: "Seller TCS not adjustable", key: "sellerUnadj", money: true},
     {header: "Rider TCS adjusted", key: "riderAdj", money: true}, {header: "Rider TCS not adjustable", key: "riderUnadj", money: true},
-    {header: "TDS reversal status", key: "tdsStatus", width: 24}, {header: "Seller TDS kept", key: "sellerTds", money: true},
-    {header: "Rider e-commerce TDS kept", key: "riderTds", money: true}, {header: "Delivery gross reversed", key: "gross", money: true},
+    {header: "TDS reversal status", key: "tdsStatus", width: 24},
+    {header: "Seller TDS for offset", key: "sellerTds", money: true}, {header: "Rider TDS for offset", key: "riderTds", money: true},
+    {header: "Customer delivery consideration reversed", key: "gross", money: true},
     {header: "Platform fee reversed", key: "fee", money: true}, {header: "Fee GST reversed", key: "feeGst", money: true},
-    {header: "Supplier GST reversed", key: "supplierGst", money: true}, {header: "Rider pay kept (treatment pending)", key: "payKept", money: true},
+    {header: "Supplier GST reversed", key: "supplierGst", money: true},
+    {header: "Scraveit-funded delivery compensation", key: "payKept", money: true}, {header: "Compensation tax category", key: "payCategory", width: 30},
   ], rows: input.withholdings.filter((entry) => entry.reversedAt).map((entry) => ({
     order: entry.orderId, date: istDate(entry.reversedAt!), period: entry.gstTcsReturnAdjustment?.period ?? "",
     sellerAdj: rupees(entry.gstTcsReturnAdjustment?.sellerAdjustedTcsPaise ?? 0),
     sellerUnadj: rupees(entry.gstTcsReturnAdjustment?.sellerUnadjustedTcsPaise ?? 0),
     riderAdj: rupees(entry.gstTcsReturnAdjustment?.riderAdjustedTcsPaise ?? 0),
     riderUnadj: rupees(entry.gstTcsReturnAdjustment?.riderUnadjustedTcsPaise ?? 0),
-    tdsStatus: entry.tdsReversal?.status ?? "", sellerTds: rupees(entry.tdsReversal?.sellerTdsPaise ?? 0),
-    riderTds: rupees(entry.tdsReversal?.riderEcommerceTdsPaise ?? 0),
-    gross: rupees(entry.deliverySettlementReversal?.deliveryGrossConsideration ?? 0),
+    tdsStatus: entry.tdsReversal?.status ?? "", sellerTds: rupees(entry.tdsReversal?.sellerTdsAvailableForOffsetPaise ?? 0),
+    riderTds: rupees(entry.tdsReversal?.riderTdsAvailableForOffsetPaise ?? 0),
+    gross: rupees(entry.deliverySettlementReversal?.customerDeliveryConsiderationReversed ??
+      entry.deliverySettlementReversal?.deliveryGrossConsideration ?? 0),
     fee: rupees(entry.deliverySettlementReversal?.platformFee ?? 0), feeGst: rupees(entry.deliverySettlementReversal?.platformFeeGst ?? 0),
     supplierGst: rupees(entry.deliverySettlementReversal?.supplierGst ?? 0),
-    payKept: rupees(entry.deliverySettlementReversal?.operationalPayKept ?? 0),
+    payKept: rupees(entry.deliverySettlementReversal?.scraveitFundedDeliveryCompensation?.amountPaise ?? 0),
+    payCategory: entry.deliverySettlementReversal?.scraveitFundedDeliveryCompensation?.taxCategory ?? "",
   }))};
   const productGst = sumBy(delivered, (order) => order.orderTax?.goodsGst.totalPaise ?? 0) / 100;
 
@@ -460,7 +465,7 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "GST payable by Scraveit: commission to stores", value: total(income, "gstCommission"), note: "scraveit_service_gst · B2B invoices"},
     {item: "Product GST inside shelf prices (owed by the sellers)", value: Math.round(productGst * 100) / 100, note: "product_gst · seller's own returns, not Scraveit's"},
     {item: "GST TCS collected u/s 52", value: Math.round((total(sellerGst, "tcsCgst") + total(sellerGst, "tcsSgst") + total(sellerGst, "tcsIgst")) * 100) / 100, note: "gst_tcs_section_52 · GSTR-8"},
-    {item: "Income-tax e-commerce TDS withheld (net of reconciled adjustments)", value: Math.round(tdsTotal * 100) / 100, note: "seller_income_tax_tds · TDS return; certificates to sellers"},
+    {item: "Income-tax e-commerce TDS withheld", value: Math.round(tdsTotal * 100) / 100, note: "seller_income_tax_tds · TDS return; certificates to sellers"},
     {item: "Rider e-commerce TDS (rider supplies delivery)", value: total(deliverySettlementSheet, "ecomTds"),
       note: "rider_ecommerce_tds · e-commerce TDS return; never with contractor TDS"},
     {item: "Rider contractor TDS (Scraveit supplies delivery)", value: total(riderTdsSheet, "tds"),

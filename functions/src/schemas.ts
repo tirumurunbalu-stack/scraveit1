@@ -879,6 +879,6 @@ export const setRiderTaxClassificationSchema = z.object({
 /** Tax reconciliation: close a refunded order's TDS. */
 export const resolveTdsReversalSchema = z.object({
   orderId: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
-  status: z.enum(["ADJUSTED", "CLAIMABLE_BY_PARTICIPANT"]),
+  status: z.enum(["CLAIMABLE_BY_PARTICIPANT"]),
   note: z.string().trim().min(1).max(500),
 }).strict();

@@ -77,7 +77,10 @@ export interface SupplierFeePolicy {
   platformFeeTaxMode: PlatformFeeTaxMode;
   /** GST rate on SCRAVEIT's platform/facilitation service to the rider/store (configurable until classified). */
   platformFeeGstRateBps: number;
+  /** "PENDING_CONFIRMATION" until the rider agreement and invoice wording are final. */
   platformFeeSac: string;
+  /** Working candidate, e.g. 998599 (other support services n.e.c.). */
+  platformFeeSacCandidate?: string;
   /** Store self-delivery: SCRAVEIT's contractual fee as a share of the delivery consideration. */
   storeDeliveryFeeBps: number;
 }
@@ -140,6 +143,8 @@ export function deliverySupplierSettlement(input: {
     scraveit_rider_platform_fee: fee,
     scraveit_rider_platform_fee_gst: gst,
     scraveit_platform_deduction_total: fee + gst,
+    // The rider's services include a delivery-linked SCRAVEIT top-up (DELIVERY_SERVICE_CONSIDERATION).
+    rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross + topUp : 0,
     operational_pay: pay,
     bonuses_adjustments: topUp,
     delivery_supplier_net_settlement: gross + gstCollected - fee - gst - input.tcsPaise - tds + topUp,

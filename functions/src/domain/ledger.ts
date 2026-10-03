@@ -35,6 +35,10 @@ export const LEDGER_EVENT_TYPES = [
   // What SCRAVEIT keeps from a delivery supplier's consideration, named as its
   // platform/facilitation fee (and GST on it) instead of a "delivery margin".
   "delivery_settlement",
+  // RIDER-supplier model: TDS on SCRAVEIT-funded rider payments outside a
+  // delivery - e-commerce (s.393(1) 8(v)) or business benefit (8(iv)).
+  "rider_ecommerce_tds",
+  "rider_perquisite_tds",
 ] as const;
 
 export type LedgerEventType = typeof LEDGER_EVENT_TYPES[number];

@@ -53,6 +53,8 @@ describe("immutable financial ledger primitives", () => {
       "rider_contractor_tds",
       "delivery_gst_settlement",
       "delivery_settlement",
+      "rider_ecommerce_tds",
+      "rider_perquisite_tds",
     ] satisfies LedgerEventType[]);
   });
 

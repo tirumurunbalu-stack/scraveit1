@@ -24,7 +24,9 @@ const empty = {...EMPTY_RIDER_TDS_YEAR};
 const person: RiderTdsIdentity = {legalEntityType: "INDIVIDUAL", pan: "ABCPR1234K", panEntityType: "INDIVIDUAL", panVerified: true};
 const earning = (amountPaise: number) => ({component: "rider_earning" as const, amountPaise});
 const tip = (amountPaise: number) => ({component: "customer_tip" as const, amountPaise});
-const TDS_ON = {tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true};
+const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
+  "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
+const TDS_ON = {tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true, feeOwnership: CONFIRMED_FEES};
 
 describe("rider contractor TDS rules (s.393(1) Table Sl. 6(i))", () => {
   it("uses 1% for an individual/HUF, 2% for other entities, 20% without PAN", () => {
@@ -139,8 +141,12 @@ describe("rider TDS sweep: TDS_LIVE, independent of GST_LIVE", () => {
     db.seed("riders/r1", {panNumber: "ABCPR1234K"});
     const journal = credit("e1", "liability:rider-earnings:r1", 1_50_000_00, at);
     db.seed(`ledgerJournals/${journal.journalId}`, JSON.parse(JSON.stringify(journal)));
-    expect(await sweepRiderContractorTds(db as unknown as FirestoreLike, at + 10)).toMatchObject({active: false, tdsPaise: 0});
-    expect(db.paths().some((path) => path.startsWith("riderTdsCredits/"))).toBe(false);
+    expect(await sweepRiderContractorTds(db as unknown as FirestoreLike, at + 10)).toMatchObject({active: true, model: "RIDER", tdsPaise: 0});
+    // An unclassified credit is recorded for review - no contractor TDS, no ₹30,000 / ₹1 lakh rules.
+    const marker = db.paths().find((path) => path.startsWith("riderTdsCredits/"));
+    expect(db.read(marker!)).toMatchObject({riderPaymentTaxCategory: "PENDING_REVIEW", tdsRoute: "NONE", tdsPaise: 0});
+    expect(db.paths().some((path) => path.startsWith("ledgerJournals/") &&
+      (db.read(path) as {eventType: string}).eventType === "rider_contractor_tds")).toBe(false);
   });
 
   it("SCRAVEIT supplier + rider subcontractor, TDS_LIVE alone (GST_LIVE off): once per credit, tips apart, employees to payroll", async () => {

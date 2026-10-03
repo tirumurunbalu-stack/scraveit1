@@ -15,12 +15,28 @@ import {
   type RiderTdsYear,
   type TipTdsTreatment,
 } from "../domain/riderTds";
-import {contractorTdsRuleAt, financialYearLabel} from "../domain/taxLaw";
+import {contractorTdsRuleAt, ecomTdsRuleAt, financialYearLabel} from "../domain/taxLaw";
 import {DomainError} from "../errors";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {requireOwnerClaim} from "./authz";
 import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournalIfAbsent} from "./ledger";
-import {loadTaxSettings, type TaxSettings} from "./taxEngine";
+import {incomeTaxTdsAtDelivery} from "../domain/orderTax";
+import {
+  applyTdsOffset,
+  PERQUISITE_RULE,
+  perquisiteTdsOnCredit,
+  riderPaymentCategoryOf,
+  tdsRouteOf,
+  type RiderPaymentTaxCategory,
+  type TdsOffsetSource,
+} from "../domain/riderPaymentTax";
+import {
+  loadTaxSettings,
+  TAX_RIDER_ECOM_YEARS_COLLECTION,
+  TDS_OFFSETS_COLLECTION,
+  tdsOffsetPoolId,
+  type TaxSettings,
+} from "./taxEngine";
 
 /**
  * Applies rider contractor TDS to every rider credit in the ledger, once per
@@ -105,8 +121,8 @@ export function riderTdsJournal(credit: RiderTdsCredit): LedgerJournal | null {
 /** What one journal credits to riders: earnings and customer tips kept apart. */
 export function riderCredits(journal: {eventType?: unknown; entries?: unknown}): {riderId: string; component: RiderCreditComponent; amountPaise: number}[] {
   // Own TDS journals, and GST passed on to a registered rider (TDS is on the value excluding GST).
-  if (journal.eventType === "rider_contractor_tds" || journal.eventType === "delivery_gst_settlement" ||
-    !Array.isArray(journal.entries)) return [];
+  if (["rider_contractor_tds", "rider_ecommerce_tds", "rider_perquisite_tds", "delivery_gst_settlement", "delivery_settlement",
+    "tax_withholding", "tax_withholding_reversal"].includes(String(journal.eventType)) || !Array.isArray(journal.entries)) return [];
   const totals = new Map<string, {riderId: string; component: RiderCreditComponent; amountPaise: number}>();
   for (const raw of journal.entries) {
     const entry = record(raw);
@@ -179,16 +195,136 @@ export async function applyRiderCredit(settings: TaxSettings, source: {journalId
   return {...result.credit, fresh: result.fresh};
 }
 
+export const TAX_RIDER_PERQUISITE_YEARS_COLLECTION = "taxRiderPerquisiteYears";
+
+export interface RiderPlatformPayment {
+  sourceJournalId: string;
+  riderId: string;
+  component: RiderCreditComponent;
+  financialYear: string;
+  occurredAt: number;
+  amountPaise: number;
+  riderPaymentTaxCategory: RiderPaymentTaxCategory | "CUSTOMER_TIP";
+  tdsRoute: "ECOMMERCE_8V" | "PERQUISITE_8IV" | "NONE";
+  section: string;
+  rateBps: number;
+  tdsNormallyDuePaise: number;
+  offsetPaise: number;
+  tdsPaise: number;
+}
+
+export function riderPlatformPaymentJournal(payment: RiderPlatformPayment): LedgerJournal | null {
+  if (payment.tdsPaise <= 0 || payment.tdsRoute === "NONE") return null;
+  const ecommerce = payment.tdsRoute === "ECOMMERCE_8V";
+  return createLedgerJournal({
+    eventType: ecommerce ? "rider_ecommerce_tds" : "rider_perquisite_tds",
+    eventId: `rider-pay-tds:${payment.sourceJournalId}:${payment.riderId}:${payment.component}`,
+    occurredAt: payment.occurredAt,
+    metadata: {riderId: payment.riderId, financialYear: payment.financialYear, sourceJournalId: payment.sourceJournalId,
+      riderPaymentTaxCategory: payment.riderPaymentTaxCategory, section: payment.section.slice(0, 120), rateBps: payment.rateBps},
+    postings: [
+      {accountId: `${ACCOUNT_PREFIX[payment.component]}${payment.riderId}`, side: "debit", amountPaise: payment.tdsPaise,
+        memo: ecommerce ? "Rider e-commerce TDS deducted" : "Business benefit/perquisite TDS deducted"},
+      {accountId: ecommerce ? "liability:rider-ecommerce-tds-payable" : "liability:rider-perquisite-tds-payable", side: "credit",
+        amountPaise: payment.tdsPaise, memo: ecommerce ? "Rider e-commerce TDS payable" : "Perquisite TDS payable"},
+    ],
+  });
+}
+
+/**
+ * RIDER-supplier model: one SCRAVEIT-funded payment to a rider outside a
+ * delivery settlement, taxed by its riderPaymentTaxCategory - e-commerce TDS
+ * (shares the rider's e-commerce year and offset pool with deliveries),
+ * perquisite TDS, or recorded with no deduction. Once per credit.
+ */
+export async function applyRiderPlatformPayment(settings: TaxSettings,
+  source: {journalId: string; occurredAt: number; eventType: string; category: unknown},
+  credit: {riderId: string; component: RiderCreditComponent; amountPaise: number},
+  database: FirestoreLike = firestoreDb): Promise<(RiderPlatformPayment & {fresh: boolean}) | null> {
+  if (credit.amountPaise <= 0) return null;
+  const {riderId, component} = credit;
+  const map = settings.riderPaymentTaxCategories;
+  const category = component === "customer_tip" ? "CUSTOMER_TIP" as const
+    : riderPaymentCategoryOf(source.eventType, source.category, map);
+  const route = category === "CUSTOMER_TIP"
+    ? (settings.riderTipTdsTreatment === "INCLUDED" ? "ECOMMERCE_8V" as const : "NONE" as const)
+    : tdsRouteOf(category, map);
+  const financialYear = financialYearLabel(source.occurredAt);
+  const markerRef = database.collection(RIDER_TDS_CREDITS_COLLECTION).doc(`${source.journalId}__${riderId}__${component}`);
+  const riderRef = database.collection("riders").doc(riderId);
+  const classRef = database.collection(RIDER_TAX_CLASSIFICATIONS_COLLECTION).doc(riderId);
+  const ecomYearRef = database.collection(TAX_RIDER_ECOM_YEARS_COLLECTION).doc(`${riderId}_${financialYear}`);
+  const poolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("rider", riderId, financialYear));
+  const perqYearRef = database.collection(TAX_RIDER_PERQUISITE_YEARS_COLLECTION).doc(`${riderId}_${financialYear}`);
+  const result = await database.runTransaction(async (transaction: TransactionLike) => {
+    const marker = await transaction.get(markerRef);
+    if (marker.exists) return {payment: marker.data() as RiderPlatformPayment, fresh: false};
+    const rider = (await transaction.get(riderRef)).data();
+    const classSnap = await transaction.get(classRef);
+    const ecomYear = record((await transaction.get(ecomYearRef)).data());
+    const poolData = (await transaction.get(poolRef)).data();
+    const perqYear = record((await transaction.get(perqYearRef)).data());
+    const employee = classificationAt(classificationEntries(classSnap.exists ? classSnap.data() : {}), source.occurredAt)
+      .taxClassification === "EMPLOYEE";
+    const effectiveRoute = employee ? "NONE" as const : route;
+    let section = "";
+    let rateBps = 0;
+    let due = 0;
+    let offset = 0;
+    let deducted = 0;
+    if (effectiveRoute === "ECOMMERCE_8V") {
+      const rule = ecomTdsRuleAt(settings.law, source.occurredAt);
+      const identity = riderTdsIdentity(rider);
+      const individual = (identity.legalEntityType === "INDIVIDUAL" || identity.legalEntityType === "HUF") &&
+        panMatchesEntity(identity.legalEntityType, identity.panEntityType);
+      if (rule) {
+        section = rule.section;
+        rateBps = identity.pan ? rule.rateBps : rule.noPanRateBps;
+        const before = Number(ecomYear.grossPaise) || 0;
+        const deductedBefore = Number(ecomYear.tdsDeductedPaise) || 0;
+        const outcome = incomeTaxTdsAtDelivery({section, basePaise: credit.amountPaise, rateBps,
+          individualExemptUptoPaise: rule.individualExemptUptoPaise, thresholdApplies: individual && !!identity.pan}, before, deductedBefore);
+        const pool = {participantKey: `rider:${riderId}`, financialYear,
+          sources: Array.isArray(record(poolData).sources) ? record(poolData).sources as TdsOffsetSource[] : []};
+        const applied = applyTdsOffset(pool, outcome.tdsPaise);
+        due = outcome.tdsPaise;
+        offset = applied.offsetPaise;
+        deducted = applied.tdsActuallyDeductedPaise;
+        transaction.set(ecomYearRef, {riderId, financialYear, grossPaise: outcome.yearGrossAfterPaise,
+          tdsDeductedPaise: deductedBefore + due, updatedAt: source.occurredAt}, {merge: true});
+        if (offset > 0) transaction.set(poolRef, {...applied.pool, updatedAt: source.occurredAt});
+      }
+    } else if (effectiveRoute === "PERQUISITE_8IV") {
+      section = PERQUISITE_RULE.section;
+      rateBps = PERQUISITE_RULE.rateBps;
+      const outcome = perquisiteTdsOnCredit(PERQUISITE_RULE, Number(perqYear.valuePaise) || 0, Number(perqYear.deductedPaise) || 0,
+        credit.amountPaise);
+      due = outcome.tdsPaise;
+      deducted = outcome.tdsPaise;
+      transaction.set(perqYearRef, {riderId, financialYear, valuePaise: outcome.yearValueAfterPaise,
+        deductedPaise: (Number(perqYear.deductedPaise) || 0) + deducted, updatedAt: source.occurredAt}, {merge: true});
+    }
+    const payment: RiderPlatformPayment = {sourceJournalId: source.journalId, riderId, component, financialYear,
+      occurredAt: source.occurredAt, amountPaise: credit.amountPaise, riderPaymentTaxCategory: category, tdsRoute: effectiveRoute,
+      section: employee ? "Salary (payroll)" : section, rateBps, tdsNormallyDuePaise: due, offsetPaise: offset, tdsPaise: deducted};
+    transaction.set(markerRef, payment);
+    return {payment, fresh: true};
+  });
+  const journal = riderPlatformPaymentJournal(result.payment);
+  if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
+  return {...result.payment, fresh: result.fresh};
+}
+
 /** Applies TDS to all rider credits since the last sweep. No-op unless TDS_LIVE is active. */
 export async function sweepRiderContractorTds(database: FirestoreLike = firestoreDb, now = Date.now()): Promise<{
-  active: boolean; journalsScanned: number; creditsApplied: number; tdsPaise: number; complete: boolean;
+  active: boolean; model: string; journalsScanned: number; creditsApplied: number; tdsPaise: number; complete: boolean;
 }> {
   const settings = await loadTaxSettings(database);
-  // Contractor TDS only when SCRAVEIT supplies delivery and subcontracts riders. Under the RIDER
-  // model the rider supplies delivery through SCRAVEIT: e-commerce TDS on delivery instead, never both.
-  if (!settings.tdsActive || settings.deliveryServiceSupplier !== "SCRAVEIT") {
-    return {active: false, journalsScanned: 0, creditsApplied: 0, tdsPaise: 0, complete: true};
-  }
+  if (!settings.tdsActive) return {active: false, model: settings.deliveryServiceSupplier, journalsScanned: 0, creditsApplied: 0,
+    tdsPaise: 0, complete: true};
+  // SCRAVEIT supplies delivery and subcontracts riders: contractor TDS on every credit. RIDER supplies delivery:
+  // the delivery itself is settled per order (e-commerce TDS); here only SCRAVEIT's other payments, by tax category.
+  const contractorModel = settings.deliveryServiceSupplier === "SCRAVEIT";
   const sweepRef = database.collection("private").doc(SWEEP_DOC);
   const sweepSnap = await sweepRef.get();
   const scannedThrough = Number(record(sweepSnap.exists ? sweepSnap.data() : {}).scannedThrough ?? 0) ||
@@ -208,7 +344,12 @@ export async function sweepRiderContractorTds(database: FirestoreLike = firestor
       journalsScanned += 1;
       newest = Math.max(newest, occurredAt);
       for (const credit of riderCredits(journal)) {
-        const applied = await applyRiderCredit(settings, {journalId: doc.id, occurredAt}, credit, database);
+        // RIDER model: an order's own rider pay (incl. per-order incentives) belongs to its delivery settlement.
+        if (!contractorModel && journal.orderId && credit.component === "rider_earning") continue;
+        const applied = contractorModel
+          ? await applyRiderCredit(settings, {journalId: doc.id, occurredAt}, credit, database)
+          : await applyRiderPlatformPayment(settings, {journalId: doc.id, occurredAt, eventType: String(journal.eventType ?? ""),
+            category: record(journal.metadata).riderPaymentTaxCategory}, credit, database);
         if (applied?.fresh) {
           creditsApplied += 1;
           tdsPaise += applied.tdsPaise;
@@ -224,8 +365,8 @@ export async function sweepRiderContractorTds(database: FirestoreLike = firestor
     cursor = last > cursor ? last : last + 1;
   }
   await sweepRef.set({scannedThrough: newest, sweptAt: now}, {merge: true});
-  if (tdsPaise > 0 || !complete) logger.info("RIDER_CONTRACTOR_TDS_SWEEP", {journalsScanned, creditsApplied, tdsPaise, complete});
-  return {active: true, journalsScanned, creditsApplied, tdsPaise, complete};
+  if (tdsPaise > 0 || !complete) logger.info("RIDER_TDS_SWEEP", {model: settings.deliveryServiceSupplier, journalsScanned, creditsApplied, tdsPaise, complete});
+  return {active: true, model: settings.deliveryServiceSupplier, journalsScanned, creditsApplied, tdsPaise, complete};
 }
 
 // ---------------------------------------------------------------------------

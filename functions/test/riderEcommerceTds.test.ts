@@ -28,7 +28,10 @@ const at = Date.parse("2026-10-10T12:00:00+05:30");
 const law = normalizeTaxLaw({});
 const seller: SellerTaxProfile = {registrationType: "regular", gstin: "37ABCDE1234F1Z5", ecoEnrolmentNo: "", pan: "ABCDE1234F",
   panFurnished: true, entityType: "firm", stateCode: "37"};
-const LIVE = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true};
+const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
+  "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
+const LIVE = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true,
+  feeOwnership: CONFIRMED_FEES};
 const DELIVERY_FEE = 6_000; // ₹60 customer delivery charge
 const TRIP_PAY = 4_500; // ₹45 operational rider pay
 
@@ -61,7 +64,7 @@ describe("RIDER supplies delivery through SCRAVEIT: e-commerce TDS, never contra
     expect(entry.deliverySettlement).toMatchObject({delivery_service_supplier: "RIDER", delivery_gross_consideration: DELIVERY_FEE,
       delivery_gst_9_5_paid_by_scraveit: 1_080, delivery_gst_collected_for_supplier: 0, delivery_supplier_gst_tcs: 0,
       rider_contractor_tds: 0, operational_pay: TRIP_PAY});
-    expect((await sweepRiderContractorTds(database, at + 10)).active).toBe(false);
+    expect((await sweepRiderContractorTds(database, at + 10)).model).toBe("RIDER");
   });
 
   it("names SCRAVEIT's ₹15 as an explicit platform fee + GST, not a delivery margin; the rider's gross stays ₹60", async () => {
@@ -85,11 +88,13 @@ describe("RIDER supplies delivery through SCRAVEIT: e-commerce TDS, never contra
     expect(entry.taxHeads!.rider_ecommerce_tds).toBe(entry.riderEcommerceTds!.tdsPaise);
     expect(withholdingJournal(entry)!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:rider-ecommerce-tds-payable", side: "credit", amountPaise: entry.riderEcommerceTds!.tdsPaise})]));
-    // A refund never hands TDS back as cash: kept, marked for reconciliation, rider year unchanged.
-    const deducted = entry.riderEcommerceTds!.tdsPaise;
+    // A refund never hands TDS back as cash. The rider keeps its ₹45 pay as SCRAVEIT-funded delivery
+    // consideration, so only the ₹15 that is no longer the rider's service leaves the base.
     const refunded = (await reverseOrderTaxWithholding("o1", at + 100, database))!;
-    expect(refunded.tdsReversal).toMatchObject({status: "PENDING_ADJUSTMENT", riderEcommerceTdsPaise: deducted});
-    expect(db.read("taxRiderEcomYears/r1_26-27")).toMatchObject({grossPaise: 4_99_99_000 + DELIVERY_FEE, tdsDeductedPaise: deducted});
+    expect(refunded.tdsReversal).toMatchObject({status: "AVAILABLE_FOR_OFFSET", riderReturnedBasePaise: DELIVERY_FEE - TRIP_PAY,
+      riderTdsAvailableForOffsetPaise: Math.round(entry.riderEcommerceTds!.tdsNormallyDuePaise * (DELIVERY_FEE - TRIP_PAY) / DELIVERY_FEE)});
+    expect(refunded.deliverySettlementReversal).toMatchObject({customerDeliveryConsiderationReversed: DELIVERY_FEE,
+      scraveitFundedDeliveryCompensation: {amountPaise: TRIP_PAY, taxCategory: "DELIVERY_SERVICE_CONSIDERATION"}});
   });
 
   it("gives a company rider no ₹5 lakh exemption, and a rider without PAN the e-commerce 5%", async () => {
@@ -175,7 +180,8 @@ describe("SCRAVEIT platform fee: GST-inclusive or GST-exclusive", () => {
 
   it("keeps the fee's SAC pending until it is classified", async () => {
     const {database} = setup(PERSON);
-    expect((await deliver(database))!.deliverySettlement!.scraveit_rider_platform_fee_sac).toBe("");
+    const s = (await deliver(database))!.deliverySettlement!;
+    expect(s.scraveit_rider_platform_fee_sac).toBe("PENDING_CONFIRMATION");
   });
 });
 
@@ -201,13 +207,15 @@ describe("refunds and reversals", () => {
     expect(refunded.gstTcsReturnAdjustment).toMatchObject({period: "2026-10", riderAdjustedTcsPaise: 30, riderUnadjustedTcsPaise: 0});
     expect(tcsReturnAdjustmentJournal(refunded)!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:gst-tcs-payable", side: "debit", amountPaise: 30})]));
-    expect(refunded.tdsReversal).toMatchObject({status: "PENDING_ADJUSTMENT", riderEcommerceTdsPaise: delivered.riderEcommerceTds!.tdsPaise});
-    // The TDS stays deducted: no cash back to the rider from the TDS liability.
-    expect(withholdingJournal(refunded, true)).toBeTruthy();
-    expect(db.paths().some((path) => path.includes("ledgerJournals/") &&
-      JSON.stringify(db.read(path)).includes("tds-adjusted"))).toBe(false);
+    expect(refunded.tdsReversal!.status).toBe("AVAILABLE_FOR_OFFSET");
+    expect(delivered.riderEcommerceTds!.tdsPaise).toBeGreaterThan(0);
+    // No cash back to the rider from the TDS liability.
+    type Stored = {entries?: {accountId: string; side: string}[]};
+    expect(db.paths().filter((path) => /^ledgerJournals\/[^/]+$/.test(path)).some((path) => ((db.read(path) as Stored).entries ?? [])
+      .some((line) => line.accountId === "liability:rider-ecommerce-tds-payable" && line.side === "debit"))).toBe(false);
     expect(refunded.deliverySettlementReversal).toMatchObject({deliveryGrossConsideration: DELIVERY_FEE, supplierGst: 1_080,
-      platformFee: 1_271, platformFeeGst: 229, operationalPayKept: TRIP_PAY, operationalPayKeptClassification: "PENDING_REVIEW"});
+      platformFee: 1_271, platformFeeGst: 229, customerDeliveryConsiderationReversed: DELIVERY_FEE,
+      scraveitFundedDeliveryCompensation: {amountPaise: TRIP_PAY, taxCategory: "DELIVERY_SERVICE_CONSIDERATION"}});
     const [feeReversal, gstReversal] = deliverySettlementReversalJournals(refunded);
     expect(feeReversal!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "revenue:scraveit-rider-platform-fee", side: "debit", amountPaise: 1_271}),
@@ -227,7 +235,7 @@ describe("refunds and reversals", () => {
 
   it("marks NOT_REQUIRED when no TDS was deducted, and keeps the settlement when the delivery charge is not refunded", async () => {
     // GST live, TDS off: nothing was deducted.
-    const {database} = setup(PERSON, {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5"});
+    const {database} = setup(PERSON, {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", feeOwnership: CONFIRMED_FEES});
     await deliver(database);
     const refunded = (await reverseOrderTaxWithholding("o1", at + 1_000, database, {deliveryConsiderationRefunded: false}))!;
     expect(refunded.tdsReversal!.status).toBe("NOT_REQUIRED");
@@ -235,20 +243,39 @@ describe("refunds and reversals", () => {
     expect(deliverySettlementReversalJournals(refunded)).toEqual([]);
   });
 
-  it("closes pending TDS in reconciliation: ADJUSTED returns it, CLAIMABLE_BY_PARTICIPANT keeps it deposited", async () => {
-    for (const status of ["ADJUSTED", "CLAIMABLE_BY_PARTICIPANT"] as const) {
-      const {db, database} = setup(PERSON);
-      db.seed("taxRiderEcomYears/r1_26-27", {grossPaise: 6_00_000_00, tdsDeductedPaise: 60_000});
-      const delivered = (await deliver(database))!;
-      await reverseOrderTaxWithholding("o1", at + 1_000, database);
-      await expect(resolveTdsReversal("ops", {savrivoRole: "ops_admin"} as unknown as DecodedIdToken,
-        {orderId: "o1", status, note: "x"}, database)).rejects.toThrow(/owner/);
-      const resolved = await resolveTdsReversal("owner-1", owner, {orderId: "o1", status, note: "Q3 return reviewed"}, database, at + 2_000);
-      expect(resolved.tdsReversal).toMatchObject({status, resolvedBy: "owner-1"});
-      const year = db.read("taxRiderEcomYears/r1_26-27") as {tdsDeductedPaise: number};
-      expect(year.tdsDeductedPaise).toBe(status === "ADJUSTED" ? 60_000 : 60_000 + delivered.riderEcommerceTds!.tdsPaise);
-      await expect(resolveTdsReversal("owner-1", owner, {orderId: "o1", status, note: "again"}, database)).rejects.toThrow(/no TDS waiting/);
-    }
+  it("sets returned TDS off against the rider's next transaction: due − offset = deducted, then OFFSET_APPLIED", async () => {
+    const {db, database} = setup(PERSON);
+    db.seed("taxRiderEcomYears/r1_26-27", {grossPaise: 6_00_000_00, tdsDeductedPaise: 60_000});
+    db.seed("tdsOffsets/rider_r1_26-27", {participantKey: "rider:r1", financialYear: "26-27",
+      sources: [{orderId: "o0", amountPaise: 4, remainingPaise: 4}]});
+    db.seed("taxWithholdings/o0", {orderId: "o0", restaurantId: "rest-1", financialYear: "26-27", recordedAt: at - 1,
+      tdsReversal: {status: "AVAILABLE_FOR_OFFSET", history: ["PENDING_ADJUSTMENT", "AVAILABLE_FOR_OFFSET"]}});
+    const entry = (await deliver(database))!;
+    expect(entry.riderEcommerceTds).toMatchObject({tdsNormallyDuePaise: 6, offsetPaise: 4, tdsPaise: 2});
+    expect(db.read("tdsOffsets/rider_r1_26-27")).toMatchObject({sources: [{orderId: "o0", remainingPaise: 0}]});
+    expect(db.read("taxWithholdings/o0")).toMatchObject({tdsReversal: {status: "OFFSET_APPLIED"}});
+    // Due (not just deducted) counts toward the year: the offset TDS was already deposited.
+    expect(db.read("taxRiderEcomYears/r1_26-27")).toMatchObject({tdsDeductedPaise: 60_000 + 6});
+  });
+
+  it("keeps unused TDS as the participant's deposited credit after the year: CLAIMABLE_BY_PARTICIPANT, owner only", async () => {
+    const {db, database} = setup(PERSON);
+    db.seed("taxRiderEcomYears/r1_26-27", {grossPaise: 6_00_000_00, tdsDeductedPaise: 60_000});
+    await deliver(database);
+    await reverseOrderTaxWithholding("o1", at + 1_000, database);
+    await expect(resolveTdsReversal("owner-1", owner, {orderId: "o1", status: "CLAIMABLE_BY_PARTICIPANT", note: "x"}, database, at + 2_000))
+      .rejects.toThrow(/still open/);
+    const afterYear = Date.parse("2027-04-02T10:00:00+05:30");
+    await expect(resolveTdsReversal("ops", {savrivoRole: "ops_admin"} as unknown as DecodedIdToken,
+      {orderId: "o1", status: "CLAIMABLE_BY_PARTICIPANT", note: "x"}, database, afterYear)).rejects.toThrow(/owner/);
+    const resolved = await resolveTdsReversal("owner-1", owner, {orderId: "o1", status: "CLAIMABLE_BY_PARTICIPANT",
+      note: "FY 26-27 closed; credit in Form 26AS"}, database, afterYear);
+    expect(resolved.tdsReversal).toMatchObject({status: "CLAIMABLE_BY_PARTICIPANT", resolvedBy: "owner-1"});
+    const pool = db.read("tdsOffsets/rider_r1_26-27") as {sources: {remainingPaise: number; claimableByParticipantPaise: number}[]};
+    expect(pool.sources[0]!.remainingPaise).toBe(0);
+    expect(pool.sources[0]!.claimableByParticipantPaise).toBeGreaterThan(0);
+    // Nothing comes back out of the TDS liability.
+    expect(db.paths().some((path) => path.startsWith("ledgerJournals/") && JSON.stringify(db.read(path)).includes("tds-adjusted"))).toBe(false);
   });
 });
 

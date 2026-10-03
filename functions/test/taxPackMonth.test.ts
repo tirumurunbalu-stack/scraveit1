@@ -17,6 +17,8 @@ import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
  * A fake month of orders, run end to end through the tax engine and the tax
  * pack, with fake payouts and a fake bank statement: no real bank needed.
  */
+const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
+  "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
 const law = normalizeTaxLaw({});
 const policy = DEFAULT_ECONOMICS_POLICY;
 const day = (d: number, h = 13) => Date.parse(`2026-10-${String(d).padStart(2, "0")}T${String(h).padStart(2, "0")}:00:00+05:30`);
@@ -52,7 +54,8 @@ const scenarios: Scenario[] = [
 
 async function runMonth() {
   const db = new InMemoryFirestore();
-  db.seed("private/taxLaw", {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true});
+  db.seed("private/taxLaw", {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true,
+    feeOwnership: CONFIRMED_FEES});
   const database = db as unknown as FirestoreLike;
   const orders: TaxPackInput["orders"][number][] = [];
   const journals: TaxPackJournal[] = [];

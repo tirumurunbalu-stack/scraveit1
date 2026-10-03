@@ -30,8 +30,10 @@ const curd = {productId: "curd", name: "Curd 400 g", quantity: 4, linePaise: 4 *
 const noFees = {deliveryFeePaise: 3_900, platformFeePaise: 1_499, smallOrderFeePaise: 0, lateNightFeePaise: 0, rainFeePaise: 0,
   kitchenFeePaise: 0, riderSurgeFeePaise: 0, riderIncentiveFeePaise: 0};
 
-const GST_ON = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5"};
-const TDS_ON = {tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true};
+const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
+  "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
+const GST_ON = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", feeOwnership: CONFIRMED_FEES};
+const TDS_ON = {tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true, feeOwnership: CONFIRMED_FEES};
 
 function seedOrder(db: InMemoryFirestore, orderId: string, gstApplies = true) {
   const orderTax = {...computeOrderTax(law, {at, gstApplies, storeKind: "dairy", seller, customerStateCode: "37", items: [curd],
@@ -86,9 +88,13 @@ describe("tax on delivery", () => {
     const reversed = await reverseOrderTaxWithholding("o1", at + 10, database);
     expect(reversed).toMatchObject({reversedAt: at + 10,
       gstTcsReturnAdjustment: {period: "2026-10", sellerAdjustedTcsPaise: 100, sellerUnadjustedTcsPaise: 0},
-      tdsReversal: {status: "PENDING_ADJUSTMENT", sellerTdsPaise: 20}});
-    // Yearly TDS totals untouched: no silent reduction of TDS already deducted.
-    expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 40_000, tdsDeductedPaise: 40});
+      tdsReversal: {status: "AVAILABLE_FOR_OFFSET", history: ["PENDING_ADJUSTMENT", "AVAILABLE_FOR_OFFSET"],
+        sellerTdsAvailableForOffsetPaise: 20}});
+    // CBDT Circular 20/2023: the TDS waits in the seller's offset pool for its next transaction - no cash back.
+    expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 20_000, tdsDeductedPaise: 20});
+    expect(db.read("tdsOffsets/seller_dairy-1_26-27")).toMatchObject({sources: [{orderId: "o1", amountPaise: 20, remainingPaise: 20}]});
+    expect(db.paths().some((path) => path.startsWith("ledgerJournals/") && JSON.stringify(db.read(path)).includes("income-tax-tds-payable")
+      && JSON.stringify(db.read(path)).includes("reversal"))).toBe(false);
     expect(await reverseOrderTaxWithholding("o1", at + 20, database)).toMatchObject({reversedAt: at + 10});
   });
 
