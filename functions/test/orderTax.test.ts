@@ -129,7 +129,7 @@ describe("seven taxes kept apart", () => {
   it("fills each GST head on its own; the TDS heads wait for delivery / credit", () => {
     const restaurant = computeOrderTax(law, restaurantOrder());
     expect(Object.keys(restaurant.taxHeads).sort()).toEqual(["gst_tcs_section_52", "local_delivery_gst_9_5", "product_gst",
-      "restaurant_gst_9_5", "rider_contractor_tds", "scraveit_service_gst", "seller_income_tax_tds"]);
+      "restaurant_gst_9_5", "rider_contractor_tds", "rider_ecommerce_tds", "scraveit_service_gst", "seller_income_tax_tds"]);
     expect(restaurant.taxHeads).toMatchObject({restaurant_gst_9_5: 1_700, local_delivery_gst_9_5: 702,
       scraveit_service_gst: 270 + 918, product_gst: 0, seller_income_tax_tds: 0, rider_contractor_tds: 0});
     const curd = computeOrderTax(law, order({items: [
@@ -176,6 +176,23 @@ describe("seven taxes kept apart", () => {
   it("has no local delivery GST before 22 September 2025", () => {
     const before = computeOrderTax(law, order({at: Date.parse("2025-09-21T12:00:00+05:30"), fees: {...noFees, deliveryFeePaise: 3_900}}));
     expect(before.taxHeads.local_delivery_gst_9_5).toBe(0);
+  });
+});
+
+describe("delivery consideration", () => {
+  it("counts surge, rain and late-night amounts as the rider's consideration unless classified as SCRAVEIT charges", () => {
+    const fees = {...noFees, deliveryFeePaise: 4_000, riderSurgeFeePaise: 1_000, rainFeePaise: 2_000, riderIncentiveFeePaise: 1_500,
+      platformFeePaise: 1_499};
+    const rider = computeOrderTax(law, order({fees}));
+    const line = rider.services.find((entry) => entry.component === "delivery_fee")!;
+    expect(line.basePaise).toBe(4_000 + 1_000 + 2_000 + 1_500);
+    expect(line.consideration).toEqual({deliveryFee: 4_000, deliverySurge: 1_000, rainDeliveryAmount: 2_000, lateNightDeliveryAmount: 1_500});
+    expect(rider.services.map((entry) => entry.component).sort()).toEqual(["delivery_fee", "platform_fee"]);
+    const split = computeOrderTax(law, order({fees, deliveryComponents: {deliverySurge: "SCRAVEIT_CHARGE",
+      rainDeliveryAmount: "RIDER_CONSIDERATION", lateNightDeliveryAmount: "SCRAVEIT_CHARGE"}}));
+    expect(split.services.find((entry) => entry.component === "delivery_fee")!.basePaise).toBe(6_000);
+    expect(split.services.find((entry) => entry.component === "rider_surge_fee")).toMatchObject({supplier: "scraveit", basePaise: 1_000});
+    expect(split.services.find((entry) => entry.component === "late_night_fee")).toMatchObject({supplier: "scraveit", basePaise: 1_500});
   });
 });
 

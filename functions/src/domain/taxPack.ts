@@ -1,3 +1,4 @@
+import type {DeliverySupplierSettlement} from "./deliverySupplierSettlement";
 import ExcelJS from "exceljs";
 import type {OrderEconomicsSnapshot} from "./economics";
 import type {OrderTax} from "./orderTax";
@@ -36,8 +37,8 @@ export interface TaxPackWithholding {
   reversedAt?: number;
   /** Local delivery GST settled once the rider was known (0 when a registered rider charges it). */
   taxHeads?: {local_delivery_gst_9_5: number};
-  deliverySettlement?: {supplier: string; supplierId: string; deliveryTaxableValue: number; deliveryGstCollectedForSupplier: number;
-    deliveryTcs: number; deliveryTds: number; deliveryNetSettlement: number};
+  deliverySettlement?: DeliverySupplierSettlement;
+  riderEcommerceTds?: {riderId: string; tdsPaise: number; rateBps: number; basePaise: number};
 }
 
 export interface TaxPackPartner {
@@ -378,7 +379,7 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     if (credit.pan) row.pan = credit.pan;
     riderTdsByRider.set(key, row);
   }
-  const riderTdsSheet: PackSheet = {name: "Rider TDS register", columns: [
+  const riderTdsSheet: PackSheet = {name: "Rider contractor TDS", columns: [
     {header: "Rider", key: "rider", width: 24}, {header: "PAN", key: "pan", width: 14}, {header: "PAN verified", key: "panVerified", width: 10},
     {header: "Legal entity", key: "entity", width: 12}, {header: "Classification", key: "classification", width: 14},
     {header: "Section", key: "section", width: 36}, {header: "FY", key: "year", width: 8}, {header: "Rate", key: "rate", width: 8},
@@ -386,16 +387,29 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {header: "Tips TDS treatment", key: "tipTreatment", width: 16}, {header: "TDS deducted", key: "tds", money: true},
     {header: "Flags", key: "flags", width: 40},
   ], rows: [...riderTdsByRider.values()].sort((a, b) => String(a.rider).localeCompare(String(b.rider)))};
-  // GST-registered riders/stores supplying their own delivery: their GST, collected for them, not Scraveit's.
-  const deliverySettlementSheet: PackSheet = {name: "Supplier delivery GST", columns: [
-    {header: "Order", key: "order", width: 24}, {header: "Supplier", key: "supplier", width: 10}, {header: "Supplier id", key: "id", width: 24},
-    {header: "Delivery taxable value", key: "taxable", money: true}, {header: "GST collected for supplier", key: "gst", money: true},
-    {header: "TCS u/s 52", key: "tcs", money: true}, {header: "TDS", key: "tds", money: true}, {header: "Net settlement", key: "net", money: true},
-  ], rows: input.withholdings.filter((entry) => entry.deliverySettlement && !entry.reversedAt).map((entry) => {
+  // Every delivery's settlement with its supplier: gross consideration, GST, TCS, TDS, SCRAVEIT's explicit fee, net.
+  const settled = input.withholdings.filter((entry) => entry.deliverySettlement && !entry.reversedAt);
+  const deliverySettlementSheet: PackSheet = {name: "Delivery settlements", columns: [
+    {header: "Order", key: "order", width: 22}, {header: "Supplier", key: "supplier", width: 10}, {header: "Supplier name", key: "name", width: 22},
+    {header: "Gross consideration", key: "gross", money: true}, {header: "of which delivery fee", key: "fee", money: true},
+    {header: "Surge", key: "surge", money: true}, {header: "Rain", key: "rain", money: true}, {header: "Late night", key: "late", money: true},
+    {header: "GST collected for supplier", key: "gstSupplier", money: true}, {header: "GST 9(5) paid by Scraveit", key: "gst95", money: true},
+    {header: "GST TCS u/s 52", key: "tcs", money: true}, {header: "Rider e-commerce TDS", key: "ecomTds", money: true},
+    {header: "Rider contractor TDS", key: "contractorTds", money: true}, {header: "Store TDS", key: "storeTds", money: true},
+    {header: "Scraveit platform fee", key: "platformFee", money: true}, {header: "GST on platform fee", key: "platformFeeGst", money: true},
+    {header: "Fee SAC", key: "sac", width: 8}, {header: "Operational pay", key: "pay", money: true},
+    {header: "Bonuses / adjustments", key: "adj", money: true}, {header: "Net settlement", key: "net", money: true},
+  ], rows: settled.map((entry) => {
     const d = entry.deliverySettlement!;
-    return {order: entry.orderId, supplier: d.supplier, id: d.supplier === "rider" ? input.riders[d.supplierId] ?? d.supplierId :
-      partners.get(d.supplierId)?.name ?? d.supplierId, taxable: rupees(d.deliveryTaxableValue), gst: rupees(d.deliveryGstCollectedForSupplier),
-      tcs: rupees(d.deliveryTcs), tds: rupees(d.deliveryTds), net: rupees(d.deliveryNetSettlement)};
+    return {order: entry.orderId, supplier: d.delivery_service_supplier,
+      name: d.delivery_service_supplier === "RESTAURANT" ? partners.get(d.supplier_id)?.name ?? d.supplier_id : input.riders[d.supplier_id] ?? d.supplier_id,
+      gross: rupees(d.delivery_gross_consideration), fee: rupees(d.delivery_fee), surge: rupees(d.delivery_surge),
+      rain: rupees(d.rain_delivery_amount), late: rupees(d.late_night_delivery_amount),
+      gstSupplier: rupees(d.delivery_gst_collected_for_supplier), gst95: rupees(d.delivery_gst_9_5_paid_by_scraveit),
+      tcs: rupees(d.delivery_supplier_gst_tcs), ecomTds: rupees(d.rider_ecommerce_tds), contractorTds: rupees(d.rider_contractor_tds),
+      storeTds: rupees(d.store_delivery_tds), platformFee: rupees(d.scraveit_rider_platform_fee),
+      platformFeeGst: rupees(d.scraveit_rider_platform_fee_gst), sac: d.scraveit_rider_platform_fee_sac || "pending",
+      pay: rupees(d.operational_pay), adj: rupees(d.bonuses_adjustments), net: rupees(d.delivery_supplier_net_settlement)};
   })};
   const productGst = sumBy(delivered, (order) => order.orderTax?.goodsGst.totalPaise ?? 0) / 100;
 
@@ -413,7 +427,16 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {item: "Product GST inside shelf prices (owed by the sellers)", value: Math.round(productGst * 100) / 100, note: "product_gst · seller's own returns, not Scraveit's"},
     {item: "GST TCS collected u/s 52", value: Math.round((total(sellerGst, "tcsCgst") + total(sellerGst, "tcsSgst") + total(sellerGst, "tcsIgst")) * 100) / 100, note: "gst_tcs_section_52 · GSTR-8"},
     {item: "Income-tax e-commerce TDS withheld (net of refunds)", value: Math.round(tdsTotal * 100) / 100, note: "seller_income_tax_tds · TDS return; certificates to sellers"},
-    {item: "Rider contractor TDS deducted", value: total(riderTdsSheet, "tds"), note: "rider_contractor_tds · TDS return; certificates to riders"},
+    {item: "Rider e-commerce TDS (rider supplies delivery)", value: total(deliverySettlementSheet, "ecomTds"),
+      note: "rider_ecommerce_tds · e-commerce TDS return; never with contractor TDS"},
+    {item: "Rider contractor TDS (Scraveit supplies delivery)", value: total(riderTdsSheet, "tds"),
+      note: "rider_contractor_tds · contractor TDS return; never with e-commerce TDS"},
+    {item: "Scraveit platform fee to delivery suppliers", value: total(deliverySettlementSheet, "platformFee"),
+      note: "scraveit_rider_platform_fee · Scraveit income"},
+    {item: "GST on that platform fee", value: total(deliverySettlementSheet, "platformFeeGst"),
+      note: "scraveit_rider_platform_fee_gst · SAC/rate to be confirmed"},
+    {item: "Delivery GST collected for registered suppliers (not Scraveit's)", value: total(deliverySettlementSheet, "gstSupplier"),
+      note: "delivery_gst_collected_for_supplier · passed on in settlement"},
     {item: "Paid to stores", value: total(partnerSheet, "paid") * -1, note: "Partner settlements"},
     {item: "Paid to riders", value: total(riderSheet, "amount"), note: "Rider payouts"},
     {item: "Refunds", value: total(refundSheet, "amount"), note: "Refunds"},

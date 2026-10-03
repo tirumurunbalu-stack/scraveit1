@@ -133,9 +133,19 @@ describe("rider TDS sweep: TDS_LIVE, independent of GST_LIVE", () => {
     }
   });
 
-  it("runs with TDS_LIVE alone (GST_LIVE off): once per credit, tips apart, employees left to payroll", async () => {
+  it("never runs contractor TDS while the rider supplies delivery (RIDER, the default)", async () => {
     const db = new InMemoryFirestore();
-    db.seed("private/taxLaw", {...TDS_ON, gstLive: false});
+    db.seed("private/taxLaw", TDS_ON);
+    db.seed("riders/r1", {panNumber: "ABCPR1234K"});
+    const journal = credit("e1", "liability:rider-earnings:r1", 1_50_000_00, at);
+    db.seed(`ledgerJournals/${journal.journalId}`, JSON.parse(JSON.stringify(journal)));
+    expect(await sweepRiderContractorTds(db as unknown as FirestoreLike, at + 10)).toMatchObject({active: false, tdsPaise: 0});
+    expect(db.paths().some((path) => path.startsWith("riderTdsCredits/"))).toBe(false);
+  });
+
+  it("SCRAVEIT supplier + rider subcontractor, TDS_LIVE alone (GST_LIVE off): once per credit, tips apart, employees to payroll", async () => {
+    const db = new InMemoryFirestore();
+    db.seed("private/taxLaw", {...TDS_ON, gstLive: false, deliveryServiceSupplier: "SCRAVEIT"});
     db.seed("riders/r1", {fullName: "Ravi", panNumber: "ABCPR1234K", legalEntityType: "INDIVIDUAL"});
     db.seed("riders/r2", {fullName: "Staff rider", panNumber: "ABCPS1234K"});
     db.seed("riderTaxClassifications/r2", {entries: [{taxClassification: "EMPLOYEE", classificationEffectiveFrom: "2026-10-01",

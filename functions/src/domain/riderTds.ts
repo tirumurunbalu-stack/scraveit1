@@ -164,3 +164,24 @@ export function classificationChangeProblem(entries: readonly ClassificationEntr
   }
   return "";
 }
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/**
+ * A rider's TDS identity. legalEntityType is what the rider is (declared at
+ * onboarding, independent delivery partners default to INDIVIDUAL); the PAN's
+ * own entity letter only checks it.
+ */
+export function riderTdsIdentity(rider: unknown): RiderTdsIdentity {
+  const input = record(rider);
+  const pan = validPan(input.pan) || validPan(input.panNumber) || validPan(record(input.payoutProfile).panNumber);
+  return {
+    legalEntityType: normalizeLegalEntityType(input.legalEntityType) || "INDIVIDUAL",
+    pan,
+    panEntityType: panEntityType(pan),
+    panVerified: input.panVerified === true,
+  };
+}
+

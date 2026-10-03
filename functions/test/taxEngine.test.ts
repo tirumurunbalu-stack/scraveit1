@@ -12,7 +12,6 @@ import {
   reverseOrderTaxWithholding,
   deliveryGstSettlementJournal,
   lawBasedCheckoutTax,
-  deliverySettlementFor,
   deliverySupplierFor,
   riderRegistrationRequired,
   deliveryTaxTreatmentOf,
@@ -140,29 +139,19 @@ describe("tax on delivery", () => {
     expect(withholdingJournal(registered!)!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:rider-earnings:r9", side: "debit", amountPaise: 20})]));
     // The rider's own 18% is collected for the rider and settled separately - never SCRAVEIT revenue.
-    expect(registered!.deliverySettlement).toEqual({supplier: "rider", supplierId: "r9", deliveryTaxableValue: 3_900,
-      deliveryGstCollectedForSupplier: 702, deliveryTcs: 20, deliveryTds: 0, deliveryNetSettlement: 3_900 + 702 - 20});
-    const settlementJournal = deliveryGstSettlementJournal("o1", at, registered!.deliverySettlement!);
-    expect(settlementJournal.entries).toEqual(expect.arrayContaining([
+    expect(registered!.deliverySettlement).toMatchObject({delivery_service_supplier: "RIDER", supplier_id: "r9",
+      delivery_gross_consideration: 3_900, delivery_gst_collected_for_supplier: 702, delivery_gst_9_5_paid_by_scraveit: 0,
+      delivery_supplier_gst_tcs: 20, rider_contractor_tds: 0});
+    const gstJournal = deliveryGstSettlementJournal("o1", at, registered!.deliverySettlement!)!;
+    expect(gstJournal.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:tax-payable", side: "debit", amountPaise: 702}),
       expect.objectContaining({accountId: "liability:rider-earnings:r9", side: "credit", amountPaise: 702})]));
-    expect(db.read(`ledgerJournals/${settlementJournal.journalId}`)).toBeTruthy();
+    expect(db.read(`ledgerJournals/${gstJournal.journalId}`)).toBeTruthy();
     // Contractor TDS never runs on that GST.
-    expect(riderCredits(JSON.parse(JSON.stringify(settlementJournal)))).toEqual([]);
+    expect(riderCredits(JSON.parse(JSON.stringify(gstJournal)))).toEqual([]);
     const unregistered = await recordDeliveredOrderTax({id: "o2", restaurantId: "dairy-1", riderId: "r1", deliveredAt: at}, database);
     expect(unregistered!.localDelivery).toMatchObject({basis: "section_9_5", gstPaise: 702});
     expect(unregistered!.taxHeads!.local_delivery_gst_9_5).toBe(702);
-  });
-
-  it("works out a GST-registered store's delivery settlement, including its TCS and TDS share", () => {
-    const line = {component: "delivery_fee", supplier: "seller" as const, basis: "store_registered" as const, basePaise: 4_000,
-      rateBps: 1_800, gstPaise: 720, chargedTo: "customer" as const, cgstPaise: 360, sgstPaise: 360, igstPaise: 0};
-    expect(deliverySettlementFor(line, "dairy-1", 50, {orderTdsPaise: 34, orderTdsBasePaise: 34_000})).toEqual({
-      supplier: "store", supplierId: "dairy-1", deliveryTaxableValue: 4_000, deliveryGstCollectedForSupplier: 720,
-      deliveryTcs: 20, deliveryTds: 4, deliveryNetSettlement: 4_000 + 720 - 20 - 4});
-    // SCRAVEIT's own 9(5) liability is no supplier settlement.
-    expect(deliverySettlementFor({...line, supplier: "scraveit_9_5", basis: "store_section_9_5"}, "dairy-1", 50,
-      {orderTdsPaise: 0, orderTdsBasePaise: 0})).toBeUndefined();
   });
 
   it("refuses checkout for a self-delivering store that must register first, with GST_LIVE and TDS_LIVE both off", async () => {

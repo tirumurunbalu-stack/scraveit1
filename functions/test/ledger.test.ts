@@ -52,6 +52,7 @@ describe("immutable financial ledger primitives", () => {
       "tax_withholding_reversal",
       "rider_contractor_tds",
       "delivery_gst_settlement",
+      "delivery_settlement",
     ] satisfies LedgerEventType[]);
   });
 

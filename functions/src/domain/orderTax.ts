@@ -115,8 +115,34 @@ export function compositeInForce(composite: CompositeClassification | undefined,
   return Number.isFinite(from) && from <= at;
 }
 
+/**
+ * Whether a delivery-linked charge is consideration for the rider's (or
+ * store's) delivery service, or a separate SCRAVEIT charge - as the customer
+ * terms and rider agreement say.
+ */
+export type DeliveryComponentClass = "RIDER_CONSIDERATION" | "SCRAVEIT_CHARGE";
+
+export interface DeliveryComponentTreatment {
+  deliverySurge: DeliveryComponentClass;
+  rainDeliveryAmount: DeliveryComponentClass;
+  lateNightDeliveryAmount: DeliveryComponentClass;
+}
+
+export const DEFAULT_DELIVERY_COMPONENTS: Readonly<DeliveryComponentTreatment> = Object.freeze({
+  deliverySurge: "RIDER_CONSIDERATION", rainDeliveryAmount: "RIDER_CONSIDERATION", lateNightDeliveryAmount: "RIDER_CONSIDERATION",
+});
+
+export interface DeliveryConsideration {
+  deliveryFee: number;
+  deliverySurge: number;
+  rainDeliveryAmount: number;
+  lateNightDeliveryAmount: number;
+}
+
 export interface OrderTaxInput {
   at: number;
+  /** Delivery-linked charges counted as the delivery supplier's consideration. */
+  deliveryComponents?: DeliveryComponentTreatment;
   /** GST_LIVE: when false no GST, no GST TCS (income-tax TDS base is still worked out). */
   gstApplies?: boolean;
   /** The store's approved composite-supply classification, if any. */
@@ -172,6 +198,8 @@ export interface ServiceTaxLine extends GstSplit {
   taxComplianceStatus?: "REGISTRATION_REQUIRED";
   /** Composite only: the approved principal supply it follows. */
   principalSupplyTaxCode?: string;
+  /** Delivery only: what makes up the delivery supplier's consideration (basePaise is the total). */
+  consideration?: DeliveryConsideration;
   basePaise: number;
   rateBps: number;
   gstPaise: number;
@@ -192,7 +220,11 @@ export interface ServiceTaxLine extends GstSplit {
  * - gst_tcs_section_52: GST collected at source from registered suppliers
  * Income-tax (TDS_LIVE):
  * - seller_income_tax_tds: e-commerce TDS from sellers (set on delivery)
- * - rider_contractor_tds: contractor TDS from riders (set when earnings are credited)
+ * - rider_ecommerce_tds: e-commerce TDS from a rider supplying delivery
+ *   through SCRAVEIT (deliveryServiceSupplier RIDER; set on delivery)
+ * - rider_contractor_tds: contractor TDS from a rider SCRAVEIT subcontracts
+ *   (deliveryServiceSupplier SCRAVEIT; set when earnings are credited)
+ * The two rider TDS heads never both apply to the same delivery.
  */
 export interface TaxHeads {
   restaurant_gst_9_5: number;
@@ -201,11 +233,14 @@ export interface TaxHeads {
   local_delivery_gst_9_5: number;
   gst_tcs_section_52: number;
   seller_income_tax_tds: number;
+  /** RIDER supplies delivery through SCRAVEIT: e-commerce TDS on the rider's gross (never with contractor TDS). */
+  rider_ecommerce_tds: number;
+  /** SCRAVEIT supplies delivery and subcontracts the rider: contractor TDS (never with e-commerce TDS). */
   rider_contractor_tds: number;
 }
 
 export const NO_TAX: Readonly<TaxHeads> = Object.freeze({restaurant_gst_9_5: 0, product_gst: 0, scraveit_service_gst: 0,
-  local_delivery_gst_9_5: 0, gst_tcs_section_52: 0, seller_income_tax_tds: 0, rider_contractor_tds: 0});
+  local_delivery_gst_9_5: 0, gst_tcs_section_52: 0, rider_ecommerce_tds: 0, seller_income_tax_tds: 0, rider_contractor_tds: 0});
 
 export interface OrderTax {
   lawVersion: string;
@@ -361,16 +396,28 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     service("restaurant_service", "scraveit_9_5", Math.max(0, food), rateAt(law.restaurantServiceGst, input.at), "customer");
   }
   const platformRate = rateAt(law.platformServiceGst, input.at);
+  const components = input.deliveryComponents ?? DEFAULT_DELIVERY_COMPONENTS;
+  const lateNightPaise = input.fees.lateNightFeePaise + input.fees.riderIncentiveFeePaise;
+  const consideration: DeliveryConsideration = {
+    deliveryFee: input.fees.deliveryFeePaise,
+    deliverySurge: components.deliverySurge === "RIDER_CONSIDERATION" ? input.fees.riderSurgeFeePaise : 0,
+    rainDeliveryAmount: components.rainDeliveryAmount === "RIDER_CONSIDERATION" ? input.fees.rainFeePaise : 0,
+    lateNightDeliveryAmount: components.lateNightDeliveryAmount === "RIDER_CONSIDERATION" ? lateNightPaise : 0,
+  };
+  const considerationPaise = consideration.deliveryFee + consideration.deliverySurge + consideration.rainDeliveryAmount +
+    consideration.lateNightDeliveryAmount;
   const storeGstRegistered = law.gstTcsRegistrationTypes.includes(input.seller.registrationType) && input.seller.gstin.length === 15;
-  services.push(...deliveryGstLines(law, input.at, input.fees.deliveryFeePaise,
+  services.push(...deliveryGstLines(law, input.at, considerationPaise,
     input.delivery ?? checkoutDeliveryContext("RIDER"), intraState, {storeKind: input.storeKind, storeGstRegistered,
-      storeRegistrationLiable: input.seller.registrationLiable === true, ...(input.composite ? {composite: input.composite} : {})}));
+      storeRegistrationLiable: input.seller.registrationLiable === true, ...(input.composite ? {composite: input.composite} : {})})
+    .map((line) => ({...line, consideration})));
   service("platform_fee", "scraveit", input.fees.platformFeePaise, platformRate, "customer");
   service("small_order_fee", "scraveit", input.fees.smallOrderFeePaise, platformRate, "customer");
-  service("late_night_fee", "scraveit", input.fees.lateNightFeePaise + input.fees.riderIncentiveFeePaise, platformRate, "customer");
-  service("rain_fee", "scraveit", input.fees.rainFeePaise, platformRate, "customer");
+  // Only the parts that are SCRAVEIT's own charges; the rest is in the delivery consideration above.
+  service("late_night_fee", "scraveit", lateNightPaise - consideration.lateNightDeliveryAmount, platformRate, "customer");
+  service("rain_fee", "scraveit", input.fees.rainFeePaise - consideration.rainDeliveryAmount, platformRate, "customer");
   service("busy_kitchen_fee", "scraveit", input.fees.kitchenFeePaise, platformRate, "customer");
-  service("rider_surge_fee", "scraveit", input.fees.riderSurgeFeePaise, platformRate, "customer");
+  service("rider_surge_fee", "scraveit", input.fees.riderSurgeFeePaise - consideration.deliverySurge, platformRate, "customer");
   service("commission", "scraveit", input.commissionPaise, platformRate, "partner");
 
   const riderDeliveryTcs = riderDeliveryTcsOf(law, input.at, services, intraState);

@@ -32,6 +32,9 @@ export const LEDGER_EVENT_TYPES = [
   // GST a GST-registered rider/store charged on its own delivery service,
   // collected by SCRAVEIT for that supplier and passed on (never revenue).
   "delivery_gst_settlement",
+  // What SCRAVEIT keeps from a delivery supplier's consideration, named as its
+  // platform/facilitation fee (and GST on it) instead of a "delivery margin".
+  "delivery_settlement",
 ] as const;
 
 export type LedgerEventType = typeof LEDGER_EVENT_TYPES[number];

@@ -6,15 +6,12 @@ import {
   classificationAt,
   classificationChangeProblem,
   EMPTY_RIDER_TDS_YEAR,
-  normalizeLegalEntityType,
-  panEntityType,
   panMatchesEntity,
+  riderTdsIdentity,
   riderContractorTdsOnCredit,
-  validPan,
   type ClassificationEntry,
   type RiderCreditComponent,
   type RiderTaxClassification,
-  type RiderTdsIdentity,
   type RiderTdsYear,
   type TipTdsTreatment,
 } from "../domain/riderTds";
@@ -30,7 +27,8 @@ import {loadTaxSettings, type TaxSettings} from "./taxEngine";
  * credit: a marker per (journal, rider, component), a yearly total per rider,
  * and a journal moving the TDS from what the rider is owed into the
  * contractor-TDS liability. Runs on a schedule and right before any payout,
- * so a rider is never paid out the TDS part. Only while TDS_LIVE is active.
+ * so a rider is never paid out the TDS part. Only while TDS_LIVE is active
+ * and SCRAVEIT is the delivery supplier (deliveryServiceSupplier SCRAVEIT).
  */
 
 export const RIDER_TDS_CREDITS_COLLECTION = "riderTdsCredits";
@@ -80,21 +78,7 @@ function financialYearStart(at: number): number {
   return Date.UTC(year, 3, 1) - 19_800_000;
 }
 
-/**
- * A rider's TDS identity. legalEntityType is what the rider is (declared at
- * onboarding, independent delivery partners default to INDIVIDUAL); the PAN's
- * own entity letter only checks it.
- */
-export function riderTdsIdentity(rider: unknown): RiderTdsIdentity {
-  const input = record(rider);
-  const pan = validPan(input.pan) || validPan(input.panNumber) || validPan(record(input.payoutProfile).panNumber);
-  return {
-    legalEntityType: normalizeLegalEntityType(input.legalEntityType) || "INDIVIDUAL",
-    pan,
-    panEntityType: panEntityType(pan),
-    panVerified: input.panVerified === true,
-  };
-}
+export {riderTdsIdentity} from "../domain/riderTds";
 
 function classificationEntries(value: unknown): ClassificationEntry[] {
   const entries = record(value).entries;
@@ -200,7 +184,11 @@ export async function sweepRiderContractorTds(database: FirestoreLike = firestor
   active: boolean; journalsScanned: number; creditsApplied: number; tdsPaise: number; complete: boolean;
 }> {
   const settings = await loadTaxSettings(database);
-  if (!settings.tdsActive) return {active: false, journalsScanned: 0, creditsApplied: 0, tdsPaise: 0, complete: true};
+  // Contractor TDS only when SCRAVEIT supplies delivery and subcontracts riders. Under the RIDER
+  // model the rider supplies delivery through SCRAVEIT: e-commerce TDS on delivery instead, never both.
+  if (!settings.tdsActive || settings.deliveryServiceSupplier !== "SCRAVEIT") {
+    return {active: false, journalsScanned: 0, creditsApplied: 0, tdsPaise: 0, complete: true};
+  }
   const sweepRef = database.collection("private").doc(SWEEP_DOC);
   const sweepSnap = await sweepRef.get();
   const scannedThrough = Number(record(sweepSnap.exists ? sweepSnap.data() : {}).scannedThrough ?? 0) ||
