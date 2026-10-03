@@ -28,13 +28,12 @@ import {
   riderPaymentCategoryOf,
   tdsRouteOf,
   type RiderPaymentTaxCategory,
-  type TdsOffsetSource,
 } from "../domain/riderPaymentTax";
 import {
   loadTaxSettings,
   TAX_RIDER_ECOM_YEARS_COLLECTION,
-  TDS_OFFSETS_COLLECTION,
-  tdsOffsetPoolId,
+  poolOf,
+  tdsOffsetPoolRef,
   type TaxSettings,
 } from "./taxEngine";
 
@@ -254,12 +253,14 @@ export async function applyRiderPlatformPayment(settings: TaxSettings,
   const riderRef = database.collection("riders").doc(riderId);
   const classRef = database.collection(RIDER_TAX_CLASSIFICATIONS_COLLECTION).doc(riderId);
   const ecomYearRef = database.collection(TAX_RIDER_ECOM_YEARS_COLLECTION).doc(`${riderId}_${financialYear}`);
-  const poolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("rider", riderId, financialYear));
+
   const perqYearRef = database.collection(TAX_RIDER_PERQUISITE_YEARS_COLLECTION).doc(`${riderId}_${financialYear}`);
   const result = await database.runTransaction(async (transaction: TransactionLike) => {
     const marker = await transaction.get(markerRef);
     if (marker.exists) return {payment: marker.data() as RiderPlatformPayment, fresh: false};
     const rider = (await transaction.get(riderRef)).data();
+    const riderPan = riderTdsIdentity(rider).pan;
+    const poolRef = tdsOffsetPoolRef(database, "ECOMMERCE_TDS", riderPan, `rider:${riderId}`, financialYear);
     const classSnap = await transaction.get(classRef);
     const ecomYear = record((await transaction.get(ecomYearRef)).data());
     const poolData = (await transaction.get(poolRef)).data();
@@ -284,9 +285,8 @@ export async function applyRiderPlatformPayment(settings: TaxSettings,
         const deductedBefore = Number(ecomYear.tdsDeductedPaise) || 0;
         const outcome = incomeTaxTdsAtDelivery({section, basePaise: credit.amountPaise, rateBps,
           individualExemptUptoPaise: rule.individualExemptUptoPaise, thresholdApplies: individual && !!identity.pan}, before, deductedBefore);
-        const pool = {participantKey: `rider:${riderId}`, financialYear,
-          sources: Array.isArray(record(poolData).sources) ? record(poolData).sources as TdsOffsetSource[] : []};
-        const applied = applyTdsOffset(pool, outcome.tdsPaise);
+        const applied = applyTdsOffset(poolOf(poolData, "ECOMMERCE_TDS", riderPan, financialYear), outcome.tdsPaise,
+          {participantKey: `rider:${riderId}`, pan: riderPan, provision: "ECOMMERCE_TDS", financialYear});
         due = outcome.tdsPaise;
         offset = applied.offsetPaise;
         deducted = applied.tdsActuallyDeductedPaise;

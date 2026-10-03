@@ -111,39 +111,69 @@ export type TdsReversalStatus =
   | "OFFSET_APPLIED"
   | "CLAIMABLE_BY_PARTICIPANT";
 
+export type TdsProvision = "ECOMMERCE_TDS" | "CONTRACTOR_TDS";
+
+/** One returned transaction's TDS, waiting to be set off. */
 export interface TdsOffsetSource {
   orderId: string;
-  amountPaise: number;
-  remainingPaise: number;
+  /** seller:{id} or rider:{id} - the account the TDS came from (audit linkage). */
+  participantKey: string;
+  /** Deductee PAN ("" when none was furnished). */
+  pan: string;
+  provision: TdsProvision;
+  financialYear: string;
+  createdAt: number;
+  originalOffsetPaise: number;
+  offsetUsedPaise: number;
+  offsetRemainingPaise: number;
 }
 
 export interface TdsOffsetPool {
-  participantKey: string;
+  provision: TdsProvision;
+  pan: string;
   financialYear: string;
   sources: TdsOffsetSource[];
 }
 
-export function poolAvailable(pool: TdsOffsetPool | null | undefined): number {
-  return (pool?.sources ?? []).reduce((sum, source) => sum + Math.max(0, source.remainingPaise), 0);
+/** Pools are per TDS provision + deductee PAN + tax year; no PAN: per participant account. */
+export function tdsOffsetPoolKey(provision: TdsProvision, pan: string, participantKey: string, financialYear: string): string {
+  return `${provision}_${pan || `NOPAN-${participantKey.replace(":", "-")}`}_${financialYear}`;
+}
+
+/** Only this deductee's, this account's, this provision's, this year's offsets. */
+function usable(source: TdsOffsetSource, scope: {participantKey: string; pan: string; provision: TdsProvision; financialYear: string}): boolean {
+  return source.offsetRemainingPaise > 0 && source.participantKey === scope.participantKey && source.pan === scope.pan &&
+    source.provision === scope.provision && source.financialYear === scope.financialYear;
+}
+
+export function poolAvailable(pool: TdsOffsetPool | null | undefined,
+  scope: {participantKey: string; pan: string; provision: TdsProvision; financialYear: string}): number {
+  return (pool?.sources ?? []).filter((source) => usable(source, scope)).reduce((sum, source) => sum + source.offsetRemainingPaise, 0);
 }
 
 /**
- * tdsNormallyDue − availableTdsOffset = tdsActuallyDeducted, consuming the
- * oldest returned transactions first. Sources reaching 0 are OFFSET_APPLIED.
+ * tdsNormallyDue − availableTdsOffset = tdsActuallyDeducted, oldest offset
+ * first, partial use allowed. A source is fully applied only when its
+ * offsetRemaining reaches 0.
  */
-export function applyTdsOffset(pool: TdsOffsetPool, tdsNormallyDuePaise: number): {
-  offsetPaise: number; tdsActuallyDeductedPaise: number; pool: TdsOffsetPool; fullyApplied: string[];
+export function applyTdsOffset(pool: TdsOffsetPool, tdsNormallyDuePaise: number,
+  scope: {participantKey: string; pan: string; provision: TdsProvision; financialYear: string}): {
+  offsetPaise: number; tdsActuallyDeductedPaise: number; pool: TdsOffsetPool;
+  usage: {orderId: string; usedPaise: number; offsetRemainingPaise: number}[];
 } {
   let left = Math.max(0, tdsNormallyDuePaise);
-  const fullyApplied: string[] = [];
-  const sources = pool.sources.map((source) => {
-    if (left <= 0 || source.remainingPaise <= 0) return {...source};
-    const used = Math.min(left, source.remainingPaise);
+  const usage: {orderId: string; usedPaise: number; offsetRemainingPaise: number}[] = [];
+  const order = pool.sources.map((source, index) => ({source, index}))
+    .sort((a, b) => a.source.createdAt - b.source.createdAt || a.index - b.index);
+  const sources = pool.sources.map((source) => ({...source}));
+  for (const {index} of order) {
+    const source = sources[index]!;
+    if (left <= 0 || !usable(source, scope)) continue;
+    const used = Math.min(left, source.offsetRemainingPaise);
     left -= used;
-    const remainingPaise = source.remainingPaise - used;
-    if (remainingPaise === 0) fullyApplied.push(source.orderId);
-    return {...source, remainingPaise};
-  });
-  const offsetPaise = Math.max(0, tdsNormallyDuePaise) - left;
-  return {offsetPaise, tdsActuallyDeductedPaise: left, pool: {...pool, sources}, fullyApplied};
+    source.offsetUsedPaise += used;
+    source.offsetRemainingPaise -= used;
+    usage.push({orderId: source.orderId, usedPaise: used, offsetRemainingPaise: source.offsetRemainingPaise});
+  }
+  return {offsetPaise: Math.max(0, tdsNormallyDuePaise) - left, tdsActuallyDeductedPaise: left, pool: {...pool, sources}, usage};
 }

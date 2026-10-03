@@ -32,7 +32,7 @@ const noFees = {deliveryFeePaise: 3_900, platformFeePaise: 1_499, smallOrderFeeP
 
 const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
   "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
-const GST_ON = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", feeOwnership: CONFIRMED_FEES};
+const GST_ON = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", feeOwnership: CONFIRMED_FEES, scraveitRiderPlatformFeeSac: "998599", platformFeeSacConfirmed: true};
 const TDS_ON = {tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true, feeOwnership: CONFIRMED_FEES};
 
 function seedOrder(db: InMemoryFirestore, orderId: string, gstApplies = true) {
@@ -92,7 +92,9 @@ describe("tax on delivery", () => {
         sellerTdsAvailableForOffsetPaise: 20}});
     // CBDT Circular 20/2023: the TDS waits in the seller's offset pool for its next transaction - no cash back.
     expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 20_000, tdsDeductedPaise: 20});
-    expect(db.read("tdsOffsets/seller_dairy-1_26-27")).toMatchObject({sources: [{orderId: "o1", amountPaise: 20, remainingPaise: 20}]});
+    expect(db.read("tdsOffsets/ECOMMERCE_TDS_NOPAN-seller-dairy-1_26-27")).toMatchObject({sources: [{orderId: "o1",
+      participantKey: "seller:dairy-1", provision: "ECOMMERCE_TDS", financialYear: "26-27", originalOffsetPaise: 20, offsetUsedPaise: 0,
+      offsetRemainingPaise: 20}]});
     expect(db.paths().some((path) => path.startsWith("ledgerJournals/") && JSON.stringify(db.read(path)).includes("income-tax-tds-payable")
       && JSON.stringify(db.read(path)).includes("reversal"))).toBe(false);
     expect(await reverseOrderTaxWithholding("o1", at + 20, database)).toMatchObject({reversedAt: at + 10});
@@ -120,8 +122,9 @@ describe("tax on delivery", () => {
     db.seed("private/taxLaw", TDS_ON);
     seedOrder(db, "o1", false);
     const entry = await recordDeliveredOrderTax({id: "o1", restaurantId: "dairy-1", deliveredAt: at}, db as unknown as FirestoreLike);
-    expect(entry).toMatchObject({gstApplied: false, tdsApplied: true, gstTcsPaise: 0, incomeTaxTdsPaise: 20, invoices: []});
-    expect(entry!.taxHeads).toMatchObject({seller_income_tax_tds: 20, gst_tcs_section_52: 0, product_gst: 0});
+    // No GST separately identified (GST_LIVE off): TDS on the full ₹210, not ₹200.
+    expect(entry).toMatchObject({gstApplied: false, tdsApplied: true, gstTcsPaise: 0, incomeTaxTdsPaise: 21, invoices: []});
+    expect(entry!.taxHeads).toMatchObject({seller_income_tax_tds: 21, gst_tcs_section_52: 0, product_gst: 0});
     expect(withholdingJournal(entry!)!.entries.map((line) => line.accountId).sort())
       .toEqual(["liability:income-tax-tds-payable", "liability:restaurant-payable:dairy-1"]);
   });

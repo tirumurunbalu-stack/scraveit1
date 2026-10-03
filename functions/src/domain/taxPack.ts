@@ -409,7 +409,8 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
     {header: "Rider contractor TDS", key: "contractorTds", money: true}, {header: "Store TDS", key: "storeTds", money: true},
     {header: "Scraveit platform fee", key: "platformFee", money: true}, {header: "GST on platform fee", key: "platformFeeGst", money: true},
     {header: "Fee SAC", key: "sac", width: 8}, {header: "Fee tax mode", key: "mode", width: 14},
-    {header: "Rider e-commerce TDS base", key: "tdsBase", money: true}, {header: "Operational pay", key: "pay", money: true},
+    {header: "Rider e-commerce TDS base", key: "tdsBase", money: true}, {header: "TDS trigger", key: "trigger", width: 10},
+    {header: "GST excluded from TDS base", key: "gstExcluded", width: 12}, {header: "Operational pay", key: "pay", money: true},
     {header: "Bonuses / adjustments", key: "adj", money: true}, {header: "Net settlement", key: "net", money: true},
   ], rows: settled.map((entry) => {
     const d = entry.deliverySettlement!;
@@ -421,7 +422,8 @@ export function buildTaxPack(input: TaxPackInput): PackSheet[] {
       tcs: rupees(d.delivery_supplier_gst_tcs), ecomTds: rupees(d.rider_ecommerce_tds), contractorTds: rupees(d.rider_contractor_tds),
       storeTds: rupees(d.store_delivery_tds), platformFee: rupees(d.scraveit_rider_platform_fee),
       platformFeeGst: rupees(d.scraveit_rider_platform_fee_gst), sac: d.scraveit_rider_platform_fee_sac || "pending",
-      mode: d.platform_fee_tax_mode ?? "", tdsBase: rupees(d.rider_ecommerce_tds_base ?? 0),
+      mode: d.platform_fee_tax_mode ?? "", tdsBase: rupees(d.rider_ecommerce_tds_base ?? 0), trigger: d.tds_trigger ?? "",
+      gstExcluded: d.gst_separately_identified_at_tds_trigger ? "Yes" : "No",
       pay: rupees(d.operational_pay), adj: rupees(d.bonuses_adjustments), net: rupees(d.delivery_supplier_net_settlement)};
   })};
   // Refunds: TCS return adjustments (per period, never negative), TDS kept pending reconciliation, settlement reversals.

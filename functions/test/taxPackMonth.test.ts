@@ -55,7 +55,7 @@ const scenarios: Scenario[] = [
 async function runMonth() {
   const db = new InMemoryFirestore();
   db.seed("private/taxLaw", {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true,
-    feeOwnership: CONFIRMED_FEES});
+    feeOwnership: CONFIRMED_FEES, scraveitRiderPlatformFeeSac: "998599", platformFeeSacConfirmed: true});
   const database = db as unknown as FirestoreLike;
   const orders: TaxPackInput["orders"][number][] = [];
   const journals: TaxPackJournal[] = [];

@@ -188,6 +188,12 @@ export interface OrderTaxInput {
   gstApplies?: boolean;
   /** The store's approved composite-supply classification, if any. */
   composite?: CompositeClassification;
+  /**
+   * CBDT Circular 20/2023: separately stated GST is left out of the e-commerce
+   * TDS base only when TDS is deducted at CREDIT and the GST is identified then.
+   * Defaults to: GST applies and the trigger is CREDIT.
+   */
+  tdsTrigger?: "CREDIT" | "PAYMENT";
   delivery?: DeliveryTaxContext;
   storeKind: StoreKind;
   seller: SellerTaxProfile;
@@ -303,7 +309,7 @@ export interface OrderTax {
   gstTcs: GstSplit & {basePaise: number; rateBps: number; totalPaise: number; applies: boolean; reason: string};
   /** Base and rate only; the amount is settled at delivery with the seller's yearly total. */
   incomeTaxTds: {section: string; basePaise: number; rateBps: number; individualExemptUptoPaise: number;
-    thresholdApplies: boolean};
+    thresholdApplies: boolean; tdsTrigger?: "CREDIT" | "PAYMENT"; gstSeparatelyIdentifiedAtTdsTrigger?: boolean};
   /** In paise, one field per tax. TDS heads are 0 here: they are fixed on delivery / on credit. */
   taxHeads: TaxHeads;
   /** REGISTRATION_REQUIRED when the delivery supplier must register first. */
@@ -501,7 +507,8 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
   // A self-delivering store's delivery service is also its sale through SCRAVEIT (GST excluded).
   const storeDeliveryService = services.find((line) => line.component === "delivery_fee" &&
     (line.supplier === "seller" || line.basis === "store_section_9_5"));
-  const tdsBase = (isGoods && tdsRule?.baseExcludesGst !== false ? sale - goodsTotal : sale) +
+  const gstIdentifiedAtTds = (input.tdsTrigger ?? "CREDIT") === "CREDIT" && input.gstApplies !== false && goodsTotal > 0;
+  const tdsBase = (isGoods && tdsRule?.baseExcludesGst !== false && gstIdentifiedAtTds ? sale - goodsTotal : sale) +
     (storeDeliveryService && storeDeliveryService.basis !== "registration_required" ? storeDeliveryService.basePaise : 0);
   const individual = input.seller.entityType === "individual" || input.seller.entityType === "huf";
 
@@ -546,6 +553,8 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
       rateBps: !tdsRule ? 0 : input.seller.panFurnished ? tdsRule.rateBps : tdsRule.noPanRateBps,
       individualExemptUptoPaise: tdsRule?.individualExemptUptoPaise ?? 0,
       thresholdApplies: individual && input.seller.panFurnished,
+      tdsTrigger: input.tdsTrigger ?? "CREDIT",
+      gstSeparatelyIdentifiedAtTdsTrigger: gstIdentifiedAtTds,
     },
   };
 }

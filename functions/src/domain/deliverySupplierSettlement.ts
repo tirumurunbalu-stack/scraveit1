@@ -50,6 +50,9 @@ export interface DeliverySupplierSettlement {
   /** What rider e-commerce TDS is worked out on (GST excluded when stated separately). */
   rider_ecommerce_tds_base: number;
   gst_separately_stated: boolean;
+  tds_trigger: "CREDIT" | "PAYMENT";
+  /** Only then is the rider's separately stated GST left out of the TDS base (CBDT Circular 20/2023). */
+  gst_separately_identified_at_tds_trigger: boolean;
   /** SCRAVEIT's own liability u/s 9(5) (supplier not liable to register). */
   delivery_gst_9_5_paid_by_scraveit: number;
   delivery_supplier_gst_tcs: number;
@@ -103,6 +106,8 @@ export function deliverySupplierSettlement(input: {
   riderEcommerceTdsPaise: number;
   storeDeliveryTdsPaise: number;
   policy: SupplierFeePolicy;
+  tdsTrigger?: "CREDIT" | "PAYMENT";
+  gstSeparatelyIdentifiedAtTdsTrigger?: boolean;
 }): DeliverySupplierSettlement | null {
   const line = input.line;
   if (!line || line.basePaise <= 0) return null;
@@ -117,7 +122,9 @@ export function deliverySupplierSettlement(input: {
     late_night_delivery_amount: c.lateNightDeliveryAmount,
     delivery_gst_collected_for_supplier: gstCollected, delivery_gst_9_5_paid_by_scraveit: gst95,
     rider_gross_service_value: gross, rider_supplier_gst: line.supplier === "rider" ? gstCollected : 0,
-    rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross : 0, gst_separately_stated: true,
+    rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross : 0, gst_separately_stated: gstCollected > 0,
+    tds_trigger: input.tdsTrigger ?? "CREDIT",
+    gst_separately_identified_at_tds_trigger: input.gstSeparatelyIdentifiedAtTdsTrigger ?? (input.tdsTrigger ?? "CREDIT") === "CREDIT",
     rider_contractor_tds: 0, scraveit_rider_platform_fee_sac: input.policy.platformFeeSac,
     platform_fee_tax_mode: input.policy.platformFeeTaxMode,
   };
@@ -144,7 +151,8 @@ export function deliverySupplierSettlement(input: {
     scraveit_rider_platform_fee_gst: gst,
     scraveit_platform_deduction_total: fee + gst,
     // The rider's services include a delivery-linked SCRAVEIT top-up (DELIVERY_SERVICE_CONSIDERATION).
-    rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross + topUp : 0,
+    rider_ecommerce_tds_base: input.supplier === "RIDER"
+      ? gross + topUp + (line.supplier === "rider" && !(input.gstSeparatelyIdentifiedAtTdsTrigger ?? true) ? gstCollected : 0) : 0,
     operational_pay: pay,
     bonuses_adjustments: topUp,
     delivery_supplier_net_settlement: gross + gstCollected - fee - gst - input.tcsPaise - tds + topUp,

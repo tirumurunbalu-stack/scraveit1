@@ -31,7 +31,7 @@ const seller: SellerTaxProfile = {registrationType: "regular", gstin: "37ABCDE12
 const CONFIRMED_FEES = Object.fromEntries(["customerDeliveryCharge", "deliverySurge", "rainDeliveryAmount", "lateNightDeliveryAmount",
   "busyKitchenFee"].map((key) => [key, {contractConfirmed: true}]));
 const LIVE = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true,
-  feeOwnership: CONFIRMED_FEES};
+  feeOwnership: CONFIRMED_FEES, scraveitRiderPlatformFeeSac: "998599", platformFeeSacConfirmed: true};
 const DELIVERY_FEE = 6_000; // ₹60 customer delivery charge
 const TRIP_PAY = 4_500; // ₹45 operational rider pay
 
@@ -179,9 +179,32 @@ describe("SCRAVEIT platform fee: GST-inclusive or GST-exclusive", () => {
   });
 
   it("keeps the fee's SAC pending until it is classified", async () => {
-    const {database} = setup(PERSON);
+    const {database} = setup(PERSON, {...LIVE, platformFeeSacConfirmed: false});
     const s = (await deliver(database))!.deliverySettlement!;
     expect(s.scraveit_rider_platform_fee_sac).toBe("PENDING_CONFIRMATION");
+  });
+});
+
+describe("rider e-commerce TDS base: separately stated GST excluded only at CREDIT", () => {
+  it("TDS at PAYMENT (before the GST can be identified): base is the whole amount, GST included", async () => {
+    const {database} = setup({panNumber: "ABCCR1234K", legalEntityType: "COMPANY", riderGstRegistered: true, riderGstin: "37ABCCR1234K1Z5"},
+      {...LIVE, tdsTrigger: "PAYMENT"});
+    const entry = (await deliver(database))!;
+    expect(entry.riderEcommerceTds).toMatchObject({basePaise: DELIVERY_FEE + 1_080, tdsPaise: 7});
+    expect(entry.deliverySettlement).toMatchObject({tds_trigger: "PAYMENT", gst_separately_identified_at_tds_trigger: false,
+      rider_ecommerce_tds_base: DELIVERY_FEE + 1_080});
+  });
+
+  it("seller TDS: goods GST excluded at CREDIT with GST stated, included at PAYMENT", () => {
+    const ghee = [{productId: "g", name: "Ghee", quantity: 1, linePaise: 21_000,
+      taxRules: [{effectiveFrom: 0, effectiveTo: 0, hsnCode: "0405", gstRateBps: 500, taxability: "taxable" as const, prepackagedLabelled: true}]}];
+    const base = {at, storeKind: "dairy" as const, seller, customerStateCode: "37", items: ghee, sellerDiscountPaise: 0,
+      platformDiscountPaise: 0, commissionPaise: 0, fees: {deliveryFeePaise: 0, platformFeePaise: 0, smallOrderFeePaise: 0,
+        lateNightFeePaise: 0, rainFeePaise: 0, kitchenFeePaise: 0, riderSurgeFeePaise: 0, riderIncentiveFeePaise: 0}};
+    expect(computeOrderTax(law, {...base, tdsTrigger: "CREDIT"}).incomeTaxTds).toMatchObject({basePaise: 20_000,
+      tdsTrigger: "CREDIT", gstSeparatelyIdentifiedAtTdsTrigger: true});
+    expect(computeOrderTax(law, {...base, tdsTrigger: "PAYMENT"}).incomeTaxTds).toMatchObject({basePaise: 21_000,
+      gstSeparatelyIdentifiedAtTdsTrigger: false});
   });
 });
 
@@ -216,7 +239,23 @@ describe("refunds and reversals", () => {
     expect(refunded.deliverySettlementReversal).toMatchObject({deliveryGrossConsideration: DELIVERY_FEE, supplierGst: 1_080,
       platformFee: 1_271, platformFeeGst: 229, customerDeliveryConsiderationReversed: DELIVERY_FEE,
       scraveitFundedDeliveryCompensation: {amountPaise: TRIP_PAY, taxCategory: "DELIVERY_SERVICE_CONSIDERATION"}});
-    const [feeReversal, gstReversal] = deliverySettlementReversalJournals(refunded);
+    const reversals = deliverySettlementReversalJournals(refunded);
+    const byEvent = (suffix: string) => reversals.find((journal) => journal.eventId.endsWith(suffix))!;
+    const feeReversal = byEvent("rider-platform-fee:reversed");
+    const gstReversal = byEvent("delivery-gst:reversed");
+    // −₹60: the customer's whole delivery consideration reversed (rider ₹45 + SCRAVEIT ₹15) ...
+    const consideration = byEvent("customer-consideration-reversed");
+    expect(consideration.metadata).toMatchObject({customerDeliveryConsiderationReversedPaise: DELIVERY_FEE, riderSharePaise: TRIP_PAY});
+    expect(consideration.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "debit", amountPaise: TRIP_PAY}),
+      expect.objectContaining({accountId: "revenue:platform-fees", side: "debit", amountPaise: DELIVERY_FEE - TRIP_PAY}),
+      expect.objectContaining({accountId: "asset:refund-settlement-recovery:o1", side: "credit", amountPaise: DELIVERY_FEE})]));
+    // ... then +₹45 separately: SCRAVEIT compensates the rider for the delivery it performed.
+    const compensation = byEvent("scraveit-funded-delivery-compensation");
+    expect(compensation.metadata).toMatchObject({riderPaymentTaxCategory: "DELIVERY_SERVICE_CONSIDERATION"});
+    expect(compensation.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({accountId: "expense:scraveit-funded-delivery-compensation", side: "debit", amountPaise: TRIP_PAY}),
+      expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "credit", amountPaise: TRIP_PAY})]));
     expect(feeReversal!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "revenue:scraveit-rider-platform-fee", side: "debit", amountPaise: 1_271}),
       expect.objectContaining({accountId: "liability:tax-payable", side: "debit", amountPaise: 229})]));
@@ -246,14 +285,26 @@ describe("refunds and reversals", () => {
   it("sets returned TDS off against the rider's next transaction: due − offset = deducted, then OFFSET_APPLIED", async () => {
     const {db, database} = setup(PERSON);
     db.seed("taxRiderEcomYears/r1_26-27", {grossPaise: 6_00_000_00, tdsDeductedPaise: 60_000});
-    db.seed("tdsOffsets/rider_r1_26-27", {participantKey: "rider:r1", financialYear: "26-27",
-      sources: [{orderId: "o0", amountPaise: 4, remainingPaise: 4}]});
+    db.seed("tdsOffsets/ECOMMERCE_TDS_ABCPR1234K_26-27", {provision: "ECOMMERCE_TDS", pan: "ABCPR1234K", financialYear: "26-27",
+      sources: [
+        // Another rider's, another provision's and last year's offsets must never be used.
+        {orderId: "x1", participantKey: "rider:r2", pan: "ABCPR1234K", provision: "ECOMMERCE_TDS", financialYear: "26-27", createdAt: 1,
+          originalOffsetPaise: 9, offsetUsedPaise: 0, offsetRemainingPaise: 9},
+        {orderId: "x2", participantKey: "rider:r1", pan: "ABCPR1234K", provision: "CONTRACTOR_TDS", financialYear: "26-27", createdAt: 1,
+          originalOffsetPaise: 9, offsetUsedPaise: 0, offsetRemainingPaise: 9},
+        {orderId: "x3", participantKey: "rider:r1", pan: "ABCPR1234K", provision: "ECOMMERCE_TDS", financialYear: "25-26", createdAt: 1,
+          originalOffsetPaise: 9, offsetUsedPaise: 0, offsetRemainingPaise: 9},
+        {orderId: "o0", participantKey: "rider:r1", pan: "ABCPR1234K", provision: "ECOMMERCE_TDS", financialYear: "26-27", createdAt: 2,
+          originalOffsetPaise: 4, offsetUsedPaise: 0, offsetRemainingPaise: 4},
+      ]});
     db.seed("taxWithholdings/o0", {orderId: "o0", restaurantId: "rest-1", financialYear: "26-27", recordedAt: at - 1,
-      tdsReversal: {status: "AVAILABLE_FOR_OFFSET", history: ["PENDING_ADJUSTMENT", "AVAILABLE_FOR_OFFSET"]}});
+      tdsReversal: {status: "AVAILABLE_FOR_OFFSET", history: ["PENDING_ADJUSTMENT", "AVAILABLE_FOR_OFFSET"], originalOffsetPaise: 4,
+        offsetUsedPaise: 0, offsetRemainingPaise: 4}});
     const entry = (await deliver(database))!;
     expect(entry.riderEcommerceTds).toMatchObject({tdsNormallyDuePaise: 6, offsetPaise: 4, tdsPaise: 2});
-    expect(db.read("tdsOffsets/rider_r1_26-27")).toMatchObject({sources: [{orderId: "o0", remainingPaise: 0}]});
-    expect(db.read("taxWithholdings/o0")).toMatchObject({tdsReversal: {status: "OFFSET_APPLIED"}});
+    const pool = db.read("tdsOffsets/ECOMMERCE_TDS_ABCPR1234K_26-27") as {sources: {orderId: string; offsetRemainingPaise: number}[]};
+    expect(pool.sources.map((source) => [source.orderId, source.offsetRemainingPaise])).toEqual([["x1", 9], ["x2", 9], ["x3", 9], ["o0", 0]]);
+    expect(db.read("taxWithholdings/o0")).toMatchObject({tdsReversal: {status: "OFFSET_APPLIED", offsetUsedPaise: 4, offsetRemainingPaise: 0}});
     // Due (not just deducted) counts toward the year: the offset TDS was already deposited.
     expect(db.read("taxRiderEcomYears/r1_26-27")).toMatchObject({tdsDeductedPaise: 60_000 + 6});
   });
@@ -271,8 +322,8 @@ describe("refunds and reversals", () => {
     const resolved = await resolveTdsReversal("owner-1", owner, {orderId: "o1", status: "CLAIMABLE_BY_PARTICIPANT",
       note: "FY 26-27 closed; credit in Form 26AS"}, database, afterYear);
     expect(resolved.tdsReversal).toMatchObject({status: "CLAIMABLE_BY_PARTICIPANT", resolvedBy: "owner-1"});
-    const pool = db.read("tdsOffsets/rider_r1_26-27") as {sources: {remainingPaise: number; claimableByParticipantPaise: number}[]};
-    expect(pool.sources[0]!.remainingPaise).toBe(0);
+    const pool = db.read("tdsOffsets/ECOMMERCE_TDS_ABCPR1234K_26-27") as {sources: {offsetRemainingPaise: number; claimableByParticipantPaise: number}[]};
+    expect(pool.sources[0]!.offsetRemainingPaise).toBe(0);
     expect(pool.sources[0]!.claimableByParticipantPaise).toBeGreaterThan(0);
     // Nothing comes back out of the TDS liability.
     expect(db.paths().some((path) => path.startsWith("ledgerJournals/") && JSON.stringify(db.read(path)).includes("tds-adjusted"))).toBe(false);

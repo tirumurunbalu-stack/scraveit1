@@ -44,13 +44,21 @@ describe("rider payment tax categories (RIDER-supplier model)", () => {
     expect(perquisiteTdsOnCredit(PERQUISITE_RULE, 25_000_00, 2_50_000, 1_000_00).tdsPaise).toBe(10_000);
   });
 
-  it("sets returned TDS off oldest first: due − offset = deducted", () => {
-    const pool = {participantKey: "rider:r1", financialYear: "26-27",
-      sources: [{orderId: "a", amountPaise: 30, remainingPaise: 30}, {orderId: "b", amountPaise: 50, remainingPaise: 50}]};
-    const result = applyTdsOffset(pool, 60);
-    expect(result).toMatchObject({offsetPaise: 60, tdsActuallyDeductedPaise: 0, fullyApplied: ["a"]});
-    expect(result.pool.sources.map((source) => source.remainingPaise)).toEqual([0, 20]);
-    expect(applyTdsOffset(result.pool, 100)).toMatchObject({offsetPaise: 20, tdsActuallyDeductedPaise: 80, fullyApplied: ["b"]});
+  it("sets returned TDS off oldest first, partially, within one PAN + tax year + provision + account only", () => {
+    const scope = {participantKey: "rider:r1", pan: "ABCPR1234K", provision: "ECOMMERCE_TDS" as const, financialYear: "26-27"};
+    const source = (orderId: string, createdAt: number, amount: number, overrides = {}) => ({orderId, participantKey: "rider:r1",
+      pan: "ABCPR1234K", provision: "ECOMMERCE_TDS" as const, financialYear: "26-27", createdAt, originalOffsetPaise: amount,
+      offsetUsedPaise: 0, offsetRemainingPaise: amount, ...overrides});
+    const pool = {provision: "ECOMMERCE_TDS" as const, pan: "ABCPR1234K", financialYear: "26-27", sources: [
+      source("newer", 20, 50), source("older", 10, 30),
+      source("otherPan", 1, 99, {pan: "ZZZPZ9999Z"}), source("contractor", 1, 99, {provision: "CONTRACTOR_TDS"}),
+      source("lastYear", 1, 99, {financialYear: "25-26"}), source("otherRider", 1, 99, {participantKey: "rider:r2"})]};
+    const first = applyTdsOffset(pool, 60, scope);
+    expect(first).toMatchObject({offsetPaise: 60, tdsActuallyDeductedPaise: 0,
+      usage: [{orderId: "older", usedPaise: 30, offsetRemainingPaise: 0}, {orderId: "newer", usedPaise: 30, offsetRemainingPaise: 20}]});
+    expect(first.pool.sources.find((entry) => entry.orderId === "newer")).toMatchObject({offsetUsedPaise: 30, offsetRemainingPaise: 20});
+    expect(applyTdsOffset(first.pool, 100, scope)).toMatchObject({offsetPaise: 20, tdsActuallyDeductedPaise: 80});
+    expect(first.pool.sources.filter((entry) => entry.offsetRemainingPaise === 99)).toHaveLength(4);
   });
 });
 
@@ -86,14 +94,27 @@ describe("the sweep under the RIDER model taxes SCRAVEIT payments by category, n
 });
 
 describe("going live", () => {
-  it("cannot activate GST or TDS while any fee classification is unconfirmed", () => {
+  it("blocks GST_LIVE and TDS_LIVE separately, each only by what changes its own result", () => {
     const base = {gstLive: true, scraveitGstin: "37ABVCS0396N1Z5", tdsLive: true, scraveitTan: "VPNS36496F", tanVerified: true};
     const unconfirmed = normalizeTaxSettings(base);
-    expect(unconfirmed).toMatchObject({gstActive: false, tdsActive: false});
-    expect(unconfirmed.activationBlockers).toEqual(["FEE_CLASSIFICATION_UNCONFIRMED:rainDeliveryAmount",
-      "FEE_CLASSIFICATION_UNCONFIRMED:lateNightDeliveryAmount", "FEE_CLASSIFICATION_UNCONFIRMED:busyKitchenFee"]);
-    expect(normalizeTaxSettings({...base, feeOwnership: CONFIRMED_FEES})).toMatchObject({gstActive: true, tdsActive: true,
-      activationBlockers: []});
+    expect(unconfirmed.gstActivationBlockers).toEqual(["FEE_CLASSIFICATION_UNCONFIRMED:rainDeliveryAmount",
+      "FEE_CLASSIFICATION_UNCONFIRMED:lateNightDeliveryAmount", "FEE_CLASSIFICATION_UNCONFIRMED:busyKitchenFee",
+      "PLATFORM_SERVICE_SAC_PENDING_CONFIRMATION"]);
+    // Busy-kitchen belongs to SCRAVEIT: it changes no TDS base, so it does not block TDS.
+    expect(unconfirmed.tdsActivationBlockers).toEqual(["TDS_BASE_CLASSIFICATION_UNCONFIRMED:rainDeliveryAmount",
+      "TDS_BASE_CLASSIFICATION_UNCONFIRMED:lateNightDeliveryAmount"]);
+    // Rain and late night confirmed; SAC and busy-kitchen still pending: TDS can go live, GST cannot.
+    const tdsReady = normalizeTaxSettings({...base, feeOwnership: {rainDeliveryAmount: {contractConfirmed: true},
+      lateNightDeliveryAmount: {contractConfirmed: true}}});
+    expect(tdsReady).toMatchObject({tdsActive: true, gstActive: false, tdsActivationBlockers: []});
+    expect(tdsReady.gstActivationBlockers).toEqual(["FEE_CLASSIFICATION_UNCONFIRMED:busyKitchenFee",
+      "PLATFORM_SERVICE_SAC_PENDING_CONFIRMATION"]);
+    // A busy-kitchen fee owned by the store would change the store's base: then it blocks TDS too.
+    expect(normalizeTaxSettings({...base, feeOwnership: {rainDeliveryAmount: {contractConfirmed: true},
+      lateNightDeliveryAmount: {contractConfirmed: true}, busyKitchenFee: {economicOwner: "STORE"}}}).tdsActivationBlockers)
+      .toEqual(["TDS_BASE_CLASSIFICATION_UNCONFIRMED:busyKitchenFee"]);
+    expect(normalizeTaxSettings({...base, feeOwnership: CONFIRMED_FEES, scraveitRiderPlatformFeeSac: "998599",
+      platformFeeSacConfirmed: true})).toMatchObject({gstActive: true, tdsActive: true, gstActivationBlockers: [], tdsActivationBlockers: []});
   });
 
   it("keeps the platform-service SAC PENDING_CONFIRMATION (998599 as candidate) at 18% until confirmed", () => {

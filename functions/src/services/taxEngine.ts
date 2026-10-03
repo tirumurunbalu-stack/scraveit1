@@ -28,8 +28,10 @@ import {
   normalizeRiderPaymentCategories,
   type RiderPaymentCategoryMap,
   type RiderPaymentTaxCategory,
+  tdsOffsetPoolKey,
   type TdsOffsetPool,
   type TdsOffsetSource,
+  type TdsProvision,
   type TdsReversalStatus,
 } from "../domain/riderPaymentTax";
 import {deliverySupplierSettlement, type DeliverySupplierSettlement, type SupplierFeePolicy} from "../domain/deliverySupplierSettlement";
@@ -78,13 +80,17 @@ export const INVOICE_SERIES_COLLECTION = "invoiceSeries";
 export interface TaxSettings {
   /** GST_LIVE as set. */
   gstLive: boolean;
-  /** GST_LIVE, a valid GSTIN and every fee classification confirmed: GST is actually charged. */
+  /** GST_LIVE, a valid GSTIN and every GST-impacting classification confirmed: GST is actually charged. */
   gstActive: boolean;
-  /** Why GST_LIVE / TDS_LIVE cannot take effect yet (empty when they can). */
-  activationBlockers: string[];
+  /** Why GST_LIVE cannot take effect yet (empty when it can). Independent of TDS. */
+  gstActivationBlockers: string[];
+  /** Why TDS_LIVE cannot take effect yet (empty when it can). Independent of GST. */
+  tdsActivationBlockers: string[];
+  /** When e-commerce TDS is deducted: at CREDIT (GST stated separately can be excluded) or at an earlier PAYMENT. */
+  tdsTrigger: "CREDIT" | "PAYMENT";
   /** TDS_LIVE as set. */
   tdsLive: boolean;
-  /** TDS_LIVE, a valid TAN, TAN_VERIFIED and every fee classification confirmed: TDS is actually deducted. */
+  /** TDS_LIVE, a valid TAN, TAN_VERIFIED and every TDS-base-impacting classification confirmed: TDS is actually deducted. */
   tdsActive: boolean;
   /** How each kind of SCRAVEIT payment to a rider is treated for income tax (RIDER-supplier model). */
   riderPaymentTaxCategories: RiderPaymentCategoryMap;
@@ -124,6 +130,39 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function supplierFeePolicyOf(input: Record<string, unknown>): SupplierFeePolicy {
+  return {
+    platformFeeTaxMode: input.scraveitRiderPlatformFeeTaxMode === "GST_EXCLUSIVE" ? "GST_EXCLUSIVE" : "GST_INCLUSIVE",
+    platformFeeGstRateBps: Math.max(0, Math.min(2_800, Math.round(Number(input.scraveitRiderPlatformFeeGstRateBps ?? 1_800) || 0))),
+    // Working candidate 998599 (other support services n.e.c., 18%), not locked until the agreement and invoice wording are final.
+    platformFeeSac: /^[0-9]{6}$/.test(String(input.scraveitRiderPlatformFeeSac ?? "")) && input.platformFeeSacConfirmed === true
+      ? String(input.scraveitRiderPlatformFeeSac) : "PENDING_CONFIRMATION",
+    platformFeeSacCandidate: /^[0-9]{6}$/.test(String(input.scraveitRiderPlatformFeeSacCandidate ?? ""))
+      ? String(input.scraveitRiderPlatformFeeSacCandidate) : "998599",
+    storeDeliveryFeeBps: Math.max(0, Math.min(10_000, Math.round(Number(input.scraveitStoreDeliveryFeeBps ?? 0) || 0))),
+  };
+}
+
+/**
+ * GST_LIVE and TDS_LIVE are blocked separately, each only by what changes its
+ * own result:
+ * - every fee's owner/classification decides which GST head it falls in, and
+ *   the platform-service SAC/rate decides the GST on SCRAVEIT's fee to riders:
+ *   GST blockers;
+ * - only fees whose owner changes a rider's or store's TDS base (delivery
+ *   charge, surge, rain, late night; busy-kitchen only when not SCRAVEIT's):
+ *   TDS blockers.
+ */
+export function activationBlockersOf(feeOwnership: FeeOwnership, policy: SupplierFeePolicy): {gst: string[]; tds: string[]} {
+  const keys = Object.keys(feeOwnership) as (keyof FeeOwnership)[];
+  const unconfirmed = keys.filter((key) => !feeOwnership[key].contractConfirmed);
+  const gst = unconfirmed.map((key) => `FEE_CLASSIFICATION_UNCONFIRMED:${key}`);
+  if (policy.platformFeeSac === "PENDING_CONFIRMATION") gst.push("PLATFORM_SERVICE_SAC_PENDING_CONFIRMATION");
+  const tdsImpacting = (key: keyof FeeOwnership) => key !== "busyKitchenFee" || feeOwnership[key].economicOwner !== "SCRAVEIT";
+  const tds = unconfirmed.filter(tdsImpacting).map((key) => `TDS_BASE_CLASSIFICATION_UNCONFIRMED:${key}`);
+  return {gst, tds};
+}
+
 export function normalizeTaxSettings(value: unknown): TaxSettings {
   const input = record(value);
   const scraveitGstin = String(input.scraveitGstin ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 15);
@@ -132,15 +171,16 @@ export function normalizeTaxSettings(value: unknown): TaxSettings {
   const tdsLive = input.tdsLive === true;
   const tanVerified = input.tanVerified === true;
   const feeOwnership = normalizeFeeOwnership(input.feeOwnership);
-  // An unconfirmed fee classification never goes live: the contracts must say it first.
-  const unconfirmed = (Object.keys(feeOwnership) as (keyof FeeOwnership)[]).filter((key) => !feeOwnership[key].contractConfirmed);
-  const activationBlockers = unconfirmed.map((key) => `FEE_CLASSIFICATION_UNCONFIRMED:${key}`);
+  const supplierFeePolicy = supplierFeePolicyOf(input);
+  const blockers = activationBlockersOf(feeOwnership, supplierFeePolicy);
   return {
     gstLive,
-    gstActive: gstLive && validGstin(scraveitGstin) && unconfirmed.length === 0,
-    activationBlockers,
+    gstActive: gstLive && validGstin(scraveitGstin) && blockers.gst.length === 0,
+    gstActivationBlockers: blockers.gst,
+    tdsActivationBlockers: blockers.tds,
+    tdsTrigger: input.tdsTrigger === "PAYMENT" ? "PAYMENT" : "CREDIT",
     tdsLive,
-    tdsActive: tdsLive && validTan(scraveitTan) && tanVerified && unconfirmed.length === 0,
+    tdsActive: tdsLive && validTan(scraveitTan) && tanVerified && blockers.tds.length === 0,
     riderPaymentTaxCategories: normalizeRiderPaymentCategories(input.riderPaymentTaxCategories),
     scraveitPan: validPan(input.scraveitPan),
     scraveitTan,
@@ -152,16 +192,7 @@ export function normalizeTaxSettings(value: unknown): TaxSettings {
     // RIDER unless deliberately changed; RESTAURANT is per store, never platform-wide.
     deliveryServiceSupplier: input.deliveryServiceSupplier === "SCRAVEIT" ? "SCRAVEIT" : "RIDER",
     feeOwnership,
-    supplierFeePolicy: {
-      platformFeeTaxMode: input.scraveitRiderPlatformFeeTaxMode === "GST_EXCLUSIVE" ? "GST_EXCLUSIVE" : "GST_INCLUSIVE",
-      platformFeeGstRateBps: Math.max(0, Math.min(2_800, Math.round(Number(input.scraveitRiderPlatformFeeGstRateBps ?? 1_800) || 0))),
-      // Working candidate 998599 (other support services n.e.c., 18%), not locked until the agreement and invoice wording are final.
-      platformFeeSac: /^[0-9]{6}$/.test(String(input.scraveitRiderPlatformFeeSac ?? "")) && input.platformFeeSacConfirmed === true
-        ? String(input.scraveitRiderPlatformFeeSac) : "PENDING_CONFIRMATION",
-      platformFeeSacCandidate: /^[0-9]{6}$/.test(String(input.scraveitRiderPlatformFeeSacCandidate ?? ""))
-        ? String(input.scraveitRiderPlatformFeeSacCandidate) : "998599",
-      storeDeliveryFeeBps: Math.max(0, Math.min(10_000, Math.round(Number(input.scraveitStoreDeliveryFeeBps ?? 0) || 0))),
-    },
+    supplierFeePolicy,
   };
 }
 
@@ -253,6 +284,7 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
     ...computeOrderTax(context.settings.law, {
       at: context.at,
       gstApplies: context.settings.gstActive,
+      tdsTrigger: context.settings.tdsTrigger,
       feeOwnership: context.settings.feeOwnership,
       ...(compositeClassificationOf(context.restaurant) ? {composite: compositeClassificationOf(context.restaurant)} : {}),
       delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant),
@@ -386,15 +418,36 @@ export function riderRegistrationRequired(rider: unknown): boolean {
 export type {TdsReversalStatus} from "../domain/riderPaymentTax";
 export const TDS_OFFSETS_COLLECTION = "tdsOffsets";
 
-/** The offset pool of one participant for one tax year (CBDT Circular 20/2023). */
-export function tdsOffsetPoolId(kind: "seller" | "rider", participantId: string, financialYear: string): string {
-  return `${kind}_${participantId}_${financialYear}`;
+/** Offset pools per TDS provision + deductee PAN + tax year (CBDT Circular 20/2023). */
+export function tdsOffsetPoolRef(database: FirestoreLike, provision: TdsProvision, pan: string, participantKey: string,
+  financialYear: string) {
+  return database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolKey(provision, pan, participantKey, financialYear));
 }
 
-function poolOf(data: unknown, participantKey: string, financialYear: string): TdsOffsetPool {
+export function poolOf(data: unknown, provision: TdsProvision, pan: string, financialYear: string): TdsOffsetPool {
   const input = record(data);
-  return {participantKey, financialYear,
+  return {provision, pan, financialYear,
     sources: Array.isArray(input.sources) ? input.sources.map((source) => record(source) as unknown as TdsOffsetSource) : []};
+}
+
+/** Records how much of a returned transaction's TDS has been set off; OFFSET_APPLIED only when none remains. */
+async function markTdsOffsetUsage(orderId: string, usedPaise: number, offsetRemainingPaise: number, at: number,
+  database: FirestoreLike): Promise<void> {
+  const ref = database.collection(TAX_WITHHOLDINGS_COLLECTION).doc(orderId);
+  await database.runTransaction(async (transaction: TransactionLike) => {
+    const snap = await transaction.get(ref);
+    const value = snap.exists ? snap.data() as WithholdingRecord : null;
+    if (!value?.tdsReversal || value.tdsReversal.status !== "AVAILABLE_FOR_OFFSET") return;
+    // The order may have both seller and rider TDS waiting: applied only when all of it is used.
+    const used = (value.tdsReversal.offsetUsedPaise ?? 0) + usedPaise;
+    const original = value.tdsReversal.originalOffsetPaise ?? used + offsetRemainingPaise;
+    const remaining = Math.max(0, original - used);
+    const done = remaining === 0;
+    transaction.set(ref, {...value, tdsReversal: {...value.tdsReversal,
+      offsetUsedPaise: used, offsetRemainingPaise: remaining,
+      ...(done ? {status: "OFFSET_APPLIED" as const, history: [...(value.tdsReversal.history ?? []), "OFFSET_APPLIED" as const],
+        resolvedAt: at} : {})}});
+  });
 }
 export const GST_TCS_PERIODS_COLLECTION = "gstTcsPeriods";
 
@@ -431,7 +484,12 @@ export interface WithholdingRecord {
   tdsReversal?: {status: TdsReversalStatus; history: TdsReversalStatus[]; sellerTdsPaise: number; riderEcommerceTdsPaise: number;
     /** TDS put into the participant's offset pool for its next transaction this tax year. */
     sellerTdsAvailableForOffsetPaise: number; riderTdsAvailableForOffsetPaise: number;
-    sellerReturnedBasePaise: number; riderReturnedBasePaise: number; resolvedAt?: number; resolvedBy?: string; note?: string};
+    sellerReturnedBasePaise: number; riderReturnedBasePaise: number;
+    /** Partial use against later transactions; OFFSET_APPLIED only when offsetRemaining is 0. */
+    originalOffsetPaise?: number; offsetUsedPaise?: number; offsetRemainingPaise?: number;
+    resolvedAt?: number; resolvedBy?: string; note?: string};
+  /** The seller's PAN when its TDS was worked out: the offset pool's deductee. */
+  sellerPan?: string;
   /** Seller e-commerce TDS: what was due, what a returned transaction's TDS covered, what was deducted. */
   incomeTaxTdsNormallyDuePaise?: number;
   incomeTaxTdsOffsetPaise?: number;
@@ -444,7 +502,7 @@ export interface WithholdingRecord {
   /** RIDER supplier: income-tax e-commerce TDS on the rider's gross delivery consideration. */
   riderEcommerceTds?: {riderId: string; financialYear: string; basePaise: number; rateBps: number;
     /** Actually deducted = normally due − offset. */
-    tdsPaise: number; tdsNormallyDuePaise: number; offsetPaise: number;
+    tdsPaise: number; tdsNormallyDuePaise: number; offsetPaise: number; pan: string;
     requiredYtdPaise: number; catchUpBasePaise: number};
   /** GST TCS u/s 52 withheld from a GST-registered rider's delivery service. */
   riderDeliveryTcsPaise?: number;
@@ -566,7 +624,8 @@ export async function recordDeliveredOrderTax(
   const yearRef = database.collection(TAX_PARTNER_YEARS_COLLECTION).doc(`${order.restaurantId}_${tax.financialYear}`);
   const profileRef = database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).doc(order.restaurantId);
   const recordedAt = Number(order.deliveredAt ?? order.updatedAt ?? Date.now());
-  const offsetsUsedUp: string[] = [];
+  const offsetsUsedUp: {orderId: string; usedPaise: number; offsetRemainingPaise: number}[] = [];
+  const sellerPan = validPan((await loadSellerTaxProfile(order.restaurantId, settings.defaultStateCode, database)).pan);
   const entry = await database.runTransaction(async (transaction: TransactionLike) => {
     offsetsUsedUp.length = 0;
     const marker = await transaction.get(markerRef);
@@ -577,10 +636,13 @@ export async function recordDeliveredOrderTax(
     const seriesSnaps = await Promise.all(seriesRefs.map((ref) => transaction.get(ref)));
     const year = await transaction.get(yearRef);
     const riderYear = riderEcomApplies ? await transaction.get(riderEcomYearRef) : null;
-    const sellerPoolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("seller", order.restaurantId, tax.financialYear!));
-    const riderPoolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("rider", riderId || "none", tax.financialYear!));
-    const sellerPool = poolOf(tdsApplied ? (await transaction.get(sellerPoolRef)).data() : {}, `seller:${order.restaurantId}`, tax.financialYear!);
-    const riderPool = poolOf(riderEcomApplies ? (await transaction.get(riderPoolRef)).data() : {}, `rider:${riderId}`, tax.financialYear!);
+    const fy = tax.financialYear!;
+    const sellerScope = {participantKey: `seller:${order.restaurantId}`, pan: sellerPan, provision: "ECOMMERCE_TDS" as const, financialYear: fy};
+    const riderScope = {participantKey: `rider:${riderId}`, pan: identity.pan, provision: "ECOMMERCE_TDS" as const, financialYear: fy};
+    const sellerPoolRef = tdsOffsetPoolRef(database, "ECOMMERCE_TDS", sellerPan, sellerScope.participantKey, fy);
+    const riderPoolRef = tdsOffsetPoolRef(database, "ECOMMERCE_TDS", identity.pan, riderScope.participantKey, fy);
+    const sellerPool = poolOf(tdsApplied ? (await transaction.get(sellerPoolRef)).data() : {}, "ECOMMERCE_TDS", sellerPan, fy);
+    const riderPool = poolOf(riderEcomApplies ? (await transaction.get(riderPoolRef)).data() : {}, "ECOMMERCE_TDS", identity.pan, fy);
     const tcsPeriodSnaps = new Map<string, Record<string, unknown>>();
     for (const key of [order.restaurantId, riderId].filter(Boolean)) {
       const id = `${key}_${tcsPeriodOf(recordedAt)}`;
@@ -592,7 +654,7 @@ export async function recordDeliveredOrderTax(
     const tdsDue = tdsApplied ? incomeTaxTdsAtDelivery(tax.incomeTaxTds, before, deductedBefore)
       : {tdsPaise: 0, yearGrossAfterPaise: before, requiredYtdPaise: 0, catchUpBasePaise: 0};
     // tdsNormallyDue − availableTdsOffset = tdsActuallyDeducted
-    const sellerOffset = applyTdsOffset(sellerPool, tdsDue.tdsPaise);
+    const sellerOffset = applyTdsOffset(sellerPool, tdsDue.tdsPaise, sellerScope);
     const tds = {...tdsDue, tdsPaise: sellerOffset.tdsActuallyDeductedPaise};
     // No GST tax invoice is numbered unless the order was priced with GST_LIVE on.
     const invoices = (gstApplied ? plan : []).map((item, index) => {
@@ -610,12 +672,16 @@ export async function recordDeliveredOrderTax(
     const riderGrossBefore = Number(riderYearData.grossPaise ?? 0) || 0;
     const riderDeductedBefore = Number(riderYearData.tdsDeductedPaise ?? 0) || 0;
     // The rider's services: the customer's consideration plus any delivery-linked SCRAVEIT top-up (a guarantee).
-    const riderServiceBase = deliveryLine ? Math.max(deliveryLine.basePaise, operationalPay) : 0;
+    // A registered rider's own GST stays out only when TDS is at CREDIT and the GST is identified then.
+    const riderSupplierGst = deliveryLine?.supplier === "rider" && gstApplied ? deliveryLine.gstPaise : 0;
+    const riderGstIdentified = settings.tdsTrigger === "CREDIT" && riderSupplierGst > 0;
+    const riderServiceBase = deliveryLine
+      ? Math.max(deliveryLine.basePaise, operationalPay) + (riderSupplierGst > 0 && !riderGstIdentified ? riderSupplierGst : 0) : 0;
     const riderEcomDue = riderEcomApplies ? incomeTaxTdsAtDelivery({section: riderEcomRule!.section, basePaise: riderServiceBase,
       rateBps: identity.pan ? riderEcomRule!.rateBps : riderEcomRule!.noPanRateBps,
       individualExemptUptoPaise: riderEcomRule!.individualExemptUptoPaise, thresholdApplies: riderIndividual && !!identity.pan},
     riderGrossBefore, riderDeductedBefore) : null;
-    const riderOffset = riderEcomDue ? applyTdsOffset(riderPool, riderEcomDue.tdsPaise) : null;
+    const riderOffset = riderEcomDue ? applyTdsOffset(riderPool, riderEcomDue.tdsPaise, riderScope) : null;
     const riderEcom = riderEcomDue && riderOffset ? {...riderEcomDue, tdsPaise: riderOffset.tdsActuallyDeductedPaise,
       tdsNormallyDuePaise: riderEcomDue.tdsPaise, offsetPaise: riderOffset.offsetPaise} : null;
     const storeDeliveryTds = supplier === "RESTAURANT" && deliveryLine && tax.incomeTaxTds.basePaise > 0
@@ -626,7 +692,8 @@ export async function recordDeliveredOrderTax(
     const deliverySettlement = deliveryLine && (supplier !== "RIDER" || riderId) ? deliverySupplierSettlement({
       supplier, supplierId: supplier === "RESTAURANT" ? order.restaurantId : riderId, line: deliveryLine,
       operationalPayPaise: operationalPay, tcsPaise: supplierTcs, riderEcommerceTdsPaise: riderEcom?.tdsPaise ?? 0,
-      storeDeliveryTdsPaise: storeDeliveryTds, policy: settings.supplierFeePolicy}) ?? undefined : undefined;
+      storeDeliveryTdsPaise: storeDeliveryTds, policy: settings.supplierFeePolicy,
+      tdsTrigger: settings.tdsTrigger, gstSeparatelyIdentifiedAtTdsTrigger: riderGstIdentified || riderSupplierGst === 0}) ?? undefined : undefined;
     const value: WithholdingRecord = {
       orderId: order.id, restaurantId: order.restaurantId, financialYear: tax.financialYear!,
       gstApplied, tdsApplied, riderDeliveryTcsPaise,
@@ -635,12 +702,12 @@ export async function recordDeliveredOrderTax(
       ...(deliverySettlement ? {deliverySettlement} : {}),
       ...(riderEcom ? {riderEcommerceTds: {riderId, financialYear: tax.financialYear!, basePaise: riderServiceBase,
         rateBps: identity.pan ? riderEcomRule!.rateBps : riderEcomRule!.noPanRateBps, tdsPaise: riderEcom.tdsPaise,
-        tdsNormallyDuePaise: riderEcom.tdsNormallyDuePaise, offsetPaise: riderEcom.offsetPaise,
+        tdsNormallyDuePaise: riderEcom.tdsNormallyDuePaise, offsetPaise: riderEcom.offsetPaise, pan: identity.pan,
         requiredYtdPaise: riderEcom.requiredYtdPaise, catchUpBasePaise: riderEcom.catchUpBasePaise}} : {}),
       gstTcsPaise: sellerTcs,
       gstTcs: {cgstPaise: tax.gstTcs.cgstPaise, sgstPaise: tax.gstTcs.sgstPaise, igstPaise: tax.gstTcs.igstPaise, basePaise: tax.gstTcs.basePaise},
       incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: tax.incomeTaxTds.basePaise,
-      incomeTaxTdsNormallyDuePaise: tdsDue.tdsPaise, incomeTaxTdsOffsetPaise: sellerOffset.offsetPaise,
+      incomeTaxTdsNormallyDuePaise: tdsDue.tdsPaise, incomeTaxTdsOffsetPaise: sellerOffset.offsetPaise, sellerPan,
       incomeTaxTdsCatchUpBasePaise: tds.catchUpBasePaise, incomeTaxTdsRequiredYtdPaise: tds.requiredYtdPaise,
       taxHeads: {...NO_TAX, ...(gstApplied ? tax.taxHeads ?? {} : {}),
         ...(gstApplied ? {local_delivery_gst_9_5: deliveryLine && isScraveitLocalDeliveryGst(deliveryLine) ? deliveryLine.gstPaise : 0,
@@ -668,11 +735,11 @@ export async function recordDeliveredOrderTax(
       legalEntityType: identity.legalEntityType, pan: identity.pan, grossPaise: riderEcom.yearGrossAfterPaise,
       tdsDeductedPaise: riderDeductedBefore + riderEcom.tdsNormallyDuePaise, updatedAt: recordedAt}, {merge: true});
     transaction.set(markerRef, value);
-    offsetsUsedUp.push(...sellerOffset.fullyApplied, ...(riderOffset?.fullyApplied ?? []));
+    offsetsUsedUp.push(...sellerOffset.usage, ...(riderOffset?.usage ?? []));
     return value;
   });
-  // Returned transactions whose TDS is now fully set off.
-  for (const sourceOrderId of offsetsUsedUp) await markTdsOffsetApplied(sourceOrderId, recordedAt, database);
+  // Returned transactions whose TDS was (partly) set off here.
+  for (const use of offsetsUsedUp) await markTdsOffsetUsage(use.orderId, use.usedPaise, use.offsetRemainingPaise, recordedAt, database);
   const journal = withholdingJournal(entry);
   if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
   if (entry.deliverySettlement) {
@@ -719,14 +786,16 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
     const riderRef = riderId ? database.collection(GST_TCS_PERIODS_COLLECTION).doc(`${riderId}_${period}`) : null;
     const sellerYearRef = database.collection(TAX_PARTNER_YEARS_COLLECTION).doc(`${value.restaurantId}_${fy}`);
     const riderYearRef = value.riderEcommerceTds ? database.collection(TAX_RIDER_ECOM_YEARS_COLLECTION).doc(`${riderId}_${fy}`) : null;
-    const sellerPoolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("seller", value.restaurantId, fy));
-    const riderPoolRef = database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("rider", riderId || "none", fy));
+    const sellerPan = value.sellerPan ?? "";
+    const riderPan = value.riderEcommerceTds?.pan ?? "";
+    const sellerPoolRef = tdsOffsetPoolRef(database, "ECOMMERCE_TDS", sellerPan, `seller:${value.restaurantId}`, fy);
+    const riderPoolRef = tdsOffsetPoolRef(database, "ECOMMERCE_TDS", riderPan, `rider:${riderId}`, fy);
     const sellerPeriod = record((await transaction.get(sellerRef)).data());
     const riderPeriod = riderRef ? record((await transaction.get(riderRef)).data()) : {};
     const sellerYear = record((await transaction.get(sellerYearRef)).data());
     const riderYear = riderYearRef ? record((await transaction.get(riderYearRef)).data()) : {};
-    const sellerPool = poolOf((await transaction.get(sellerPoolRef)).data(), `seller:${value.restaurantId}`, fy);
-    const riderPool = poolOf((await transaction.get(riderPoolRef)).data(), `rider:${riderId}`, fy);
+    const sellerPool = poolOf((await transaction.get(sellerPoolRef)).data(), "ECOMMERCE_TDS", sellerPan, fy);
+    const riderPool = poolOf((await transaction.get(riderPoolRef)).data(), "ECOMMERCE_TDS", riderPan, fy);
 
     // GST TCS: Section 52 return adjustment, capped per supplier per month.
     const capacity = (doc: Record<string, unknown>) =>
@@ -744,21 +813,26 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
     const sellerTdsOnReturn = value.tdsApplied === false ? 0 : value.incomeTaxTdsNormallyDuePaise ?? value.incomeTaxTdsPaise;
     const sellerReturnedBase = value.tdsApplied === false ? 0 : value.incomeTaxTdsBasePaise;
     const settlement = value.deliverySettlement;
-    const compensation = deliveryRefunded && settlement && settlement.delivery_service_supplier === "RIDER" ? settlement.operational_pay : 0;
+    const riderSettlement = deliveryRefunded && settlement && settlement.delivery_service_supplier === "RIDER" ? settlement : null;
+    // What the rider still has for the delivery it performed: SCRAVEIT's compensation plus any earlier top-up.
+    const compensation = riderSettlement ? riderSettlement.operational_pay : 0;
+    // The rider's share of the customer's consideration, now funded by SCRAVEIT instead.
+    const compensationJournalPaise = riderSettlement ? riderShareOfConsideration(riderSettlement) : 0;
     const riderBase = value.riderEcommerceTds?.basePaise ?? 0;
     // The rider's service base after the refund is only SCRAVEIT's compensation for the delivery it performed.
     const riderReturnedBase = deliveryRefunded && value.riderEcommerceTds ? Math.max(0, riderBase - compensation) : 0;
     const riderDue = value.riderEcommerceTds?.tdsNormallyDuePaise ?? value.riderEcommerceTds?.tdsPaise ?? 0;
     const riderTdsOnReturn = riderBase > 0 ? Math.round(riderDue * riderReturnedBase / riderBase) : 0;
-    const addSource = (pool: TdsOffsetPool, amount: number) => ({...pool,
-      sources: [...pool.sources, {orderId: value.orderId, amountPaise: amount, remainingPaise: amount}]});
+    const addSource = (pool: TdsOffsetPool, participantKey: string, pan: string, amount: number): TdsOffsetPool => ({...pool,
+      sources: [...pool.sources, {orderId: value.orderId, participantKey, pan, provision: "ECOMMERCE_TDS", financialYear: fy,
+        createdAt: at, originalOffsetPaise: amount, offsetUsedPaise: 0, offsetRemainingPaise: amount}]});
     if (sellerTdsOnReturn > 0) {
-      transaction.set(sellerPoolRef, {...addSource(sellerPool, sellerTdsOnReturn), updatedAt: at});
+      transaction.set(sellerPoolRef, {...addSource(sellerPool, `seller:${value.restaurantId}`, sellerPan, sellerTdsOnReturn), updatedAt: at});
       transaction.set(sellerYearRef, {grossPaise: Math.max(0, (Number(sellerYear.grossPaise) || 0) - sellerReturnedBase),
         tdsDeductedPaise: Math.max(0, (Number(sellerYear.tdsDeductedPaise) || 0) - sellerTdsOnReturn), updatedAt: at}, {merge: true});
     }
     if (riderTdsOnReturn > 0 && riderYearRef) {
-      transaction.set(riderPoolRef, {...addSource(riderPool, riderTdsOnReturn), updatedAt: at});
+      transaction.set(riderPoolRef, {...addSource(riderPool, `rider:${riderId}`, riderPan, riderTdsOnReturn), updatedAt: at});
       transaction.set(riderYearRef, {grossPaise: Math.max(0, (Number(riderYear.grossPaise) || 0) - riderReturnedBase),
         tdsDeductedPaise: Math.max(0, (Number(riderYear.tdsDeductedPaise) || 0) - riderTdsOnReturn), updatedAt: at}, {merge: true});
     }
@@ -773,13 +847,14 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
         history: anyTds ? ["PENDING_ADJUSTMENT", "AVAILABLE_FOR_OFFSET"] : ["NOT_REQUIRED"],
         sellerTdsPaise: value.incomeTaxTdsPaise, riderEcommerceTdsPaise: value.riderEcommerceTds?.tdsPaise ?? 0,
         sellerTdsAvailableForOffsetPaise: sellerTdsOnReturn, riderTdsAvailableForOffsetPaise: riderTdsOnReturn,
-        sellerReturnedBasePaise: sellerReturnedBase, riderReturnedBasePaise: riderReturnedBase},
+        sellerReturnedBasePaise: sellerReturnedBase, riderReturnedBasePaise: riderReturnedBase,
+        originalOffsetPaise: sellerTdsOnReturn + riderTdsOnReturn, offsetUsedPaise: 0, offsetRemainingPaise: sellerTdsOnReturn + riderTdsOnReturn},
       ...(deliveryRefunded && settlement ? {deliverySettlementReversal: {reversedAt: at,
         deliveryGrossConsideration: settlement.delivery_gross_consideration, supplierGst: settlement.delivery_gst_collected_for_supplier,
         platformFee: settlement.scraveit_rider_platform_fee, platformFeeGst: settlement.scraveit_rider_platform_fee_gst,
         netSettlement: settlement.delivery_supplier_net_settlement,
         customerDeliveryConsiderationReversed: settlement.delivery_gross_consideration,
-        scraveitFundedDeliveryCompensation: {amountPaise: compensation, taxCategory: "DELIVERY_SERVICE_CONSIDERATION" as const}}} : {}),
+        scraveitFundedDeliveryCompensation: {amountPaise: compensationJournalPaise, taxCategory: "DELIVERY_SERVICE_CONSIDERATION" as const}}} : {}),
     };
     transaction.set(markerRef, reversed);
     return reversed;
@@ -791,18 +866,6 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
     logger.info("TAX_RETURN_RECORDED", {orderId, tcsAdjustment: entry.gstTcsReturnAdjustment, tds: entry.tdsReversal?.status});
   }
   return entry;
-}
-
-/** A returned transaction's TDS has been fully set off against later transactions. */
-async function markTdsOffsetApplied(orderId: string, at: number, database: FirestoreLike): Promise<void> {
-  const ref = database.collection(TAX_WITHHOLDINGS_COLLECTION).doc(orderId);
-  await database.runTransaction(async (transaction: TransactionLike) => {
-    const snap = await transaction.get(ref);
-    const value = snap.exists ? snap.data() as WithholdingRecord : null;
-    if (!value?.tdsReversal || value.tdsReversal.status !== "AVAILABLE_FOR_OFFSET") return;
-    transaction.set(ref, {...value, tdsReversal: {...value.tdsReversal, status: "OFFSET_APPLIED",
-      history: [...(value.tdsReversal.history ?? []), "OFFSET_APPLIED"], resolvedAt: at}});
-  });
 }
 
 /** Gives back only the TCS the return adjustment allowed for that period. */
@@ -829,7 +892,23 @@ export function tcsReturnAdjustmentJournal(entry: WithholdingRecord): LedgerJour
   });
 }
 
-/** The delivery settlement's economic entries, reversed when the delivery charge was refunded. */
+/** The rider's part of the customer's delivery consideration: all of it but what SCRAVEIT kept as its fee. */
+export function riderShareOfConsideration(settlement: DeliverySupplierSettlement): number {
+  const kept = settlement.platform_fee_tax_mode === "GST_EXCLUSIVE" ? settlement.scraveit_rider_platform_fee
+    : settlement.scraveit_rider_platform_fee + settlement.scraveit_rider_platform_fee_gst;
+  return Math.max(0, settlement.delivery_gross_consideration - kept);
+}
+
+/**
+ * The delivery settlement's economic entries, reversed when the delivery
+ * charge was refunded - as an audit trail, not a net figure:
+ * 1. the platform fee and its GST go back (fee reversal);
+ * 2. the customer's whole delivery consideration is reversed (−₹60: the
+ *    rider's share and SCRAVEIT's share, against the refund recovery);
+ * 3. SCRAVEIT separately compensates the rider for the delivery it performed
+ *    (+₹45, DELIVERY_SERVICE_CONSIDERATION, an explicit SCRAVEIT expense);
+ * 4. a registered rider's own GST goes back to be refunded.
+ */
 export function deliverySettlementReversalJournals(entry: WithholdingRecord): LedgerJournal[] {
   const settlement = entry.deliverySettlement;
   if (!settlement || !entry.deliverySettlementReversal) return [];
@@ -837,6 +916,42 @@ export function deliverySettlementReversalJournals(entry: WithholdingRecord): Le
   const journals: LedgerJournal[] = [];
   const fee = riderPlatformFeeJournal(entry.orderId, at, settlement, true);
   if (fee) journals.push(fee);
+  if (settlement.delivery_service_supplier === "RIDER" && settlement.delivery_gross_consideration > 0) {
+    const riderShare = riderShareOfConsideration(settlement);
+    const scraveitShare = settlement.delivery_gross_consideration - riderShare;
+    const rider = `liability:rider-earnings:${settlement.supplier_id}`;
+    journals.push(createLedgerJournal({
+      eventType: "delivery_settlement",
+      eventId: `order:${entry.orderId}:customer-consideration-reversed`,
+      occurredAt: at,
+      orderId: entry.orderId,
+      metadata: {riderId: settlement.supplier_id, customerDeliveryConsiderationReversedPaise: settlement.delivery_gross_consideration,
+        riderSharePaise: riderShare, scraveitSharePaise: scraveitShare},
+      postings: [
+        ...(riderShare > 0 ? [{accountId: rider, side: "debit" as const, amountPaise: riderShare,
+          memo: "Customer delivery consideration reversed: rider's share"}] : []),
+        ...(scraveitShare > 0 ? [{accountId: "revenue:platform-fees", side: "debit" as const, amountPaise: scraveitShare,
+          memo: "Customer delivery consideration reversed: SCRAVEIT's share"}] : []),
+        {accountId: `asset:refund-settlement-recovery:${entry.orderId}`, side: "credit", amountPaise: settlement.delivery_gross_consideration,
+          memo: "Refunded delivery consideration recovered"},
+      ],
+    }));
+    const compensation = entry.deliverySettlementReversal.scraveitFundedDeliveryCompensation;
+    if (compensation.amountPaise > 0) {
+      journals.push(createLedgerJournal({
+        eventType: "delivery_settlement",
+        eventId: `order:${entry.orderId}:scraveit-funded-delivery-compensation`,
+        occurredAt: at,
+        orderId: entry.orderId,
+        metadata: {riderId: settlement.supplier_id, riderPaymentTaxCategory: compensation.taxCategory},
+        postings: [
+          {accountId: "expense:scraveit-funded-delivery-compensation", side: "debit", amountPaise: compensation.amountPaise,
+            memo: "SCRAVEIT pays the rider for the delivery it performed"},
+          {accountId: rider, side: "credit", amountPaise: compensation.amountPaise, memo: "SCRAVEIT-funded delivery compensation"},
+        ],
+      }));
+    }
+  }
   if (settlement.delivery_gst_collected_for_supplier > 0) {
     journals.push(createLedgerJournal({
       eventType: "delivery_gst_settlement",
@@ -876,8 +991,8 @@ export async function resolveTdsReversal(uid: string, token: DecodedIdToken,
     }
     const riderId = value.riderEcommerceTds?.riderId || value.localDelivery?.riderId || "";
     const refs = [
-      database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("seller", value.restaurantId, value.financialYear)),
-      database.collection(TDS_OFFSETS_COLLECTION).doc(tdsOffsetPoolId("rider", riderId || "none", value.financialYear)),
+      tdsOffsetPoolRef(database, "ECOMMERCE_TDS", value.sellerPan ?? "", `seller:${value.restaurantId}`, value.financialYear),
+      tdsOffsetPoolRef(database, "ECOMMERCE_TDS", value.riderEcommerceTds?.pan ?? "", `rider:${riderId}`, value.financialYear),
     ];
     const pools: Record<string, unknown>[] = [];
     for (const ref of refs) pools.push(record((await transaction.get(ref)).data()));
@@ -885,7 +1000,7 @@ export async function resolveTdsReversal(uid: string, token: DecodedIdToken,
       const sources = Array.isArray(pools[index]!.sources) ? pools[index]!.sources as TdsOffsetSource[] : [];
       if (sources.some((source) => source.orderId === value.orderId)) {
         transaction.set(ref, {...pools[index], sources: sources.map((source) => source.orderId === value.orderId
-          ? {...source, remainingPaise: 0, claimableByParticipantPaise: source.remainingPaise} : source), updatedAt: now});
+          ? {...source, offsetRemainingPaise: 0, claimableByParticipantPaise: source.offsetRemainingPaise} : source), updatedAt: now});
       }
     });
     const resolved: WithholdingRecord = {...value, tdsReversal: {...value.tdsReversal, status: "CLAIMABLE_BY_PARTICIPANT",
@@ -916,9 +1031,8 @@ export async function lawBasedCheckoutTax(input: {
   const settings = await loadTaxSettings(database);
   if (settings.gstLive && !settings.gstActive) logger.warn("GST_LIVE_WAITING_FOR_GSTIN", {gstinSaved: Boolean(settings.scraveitGstin)});
   if (settings.tdsLive && !settings.tdsActive) logger.warn("TDS_LIVE_WAITING_FOR_TAN", {tanSaved: Boolean(settings.scraveitTan), tanVerified: settings.tanVerified});
-  if ((settings.gstLive || settings.tdsLive) && settings.activationBlockers.length) {
-    logger.warn("TAX_LIVE_BLOCKED", {blockers: settings.activationBlockers});
-  }
+  if (settings.gstLive && settings.gstActivationBlockers.length) logger.warn("GST_LIVE_BLOCKED", {blockers: settings.gstActivationBlockers});
+  if (settings.tdsLive && settings.tdsActivationBlockers.length) logger.warn("TDS_LIVE_BLOCKED", {blockers: settings.tdsActivationBlockers});
   // A self-delivering store that must register first is blocked whatever the switches say.
   if (input.restaurant.selfDelivery === true &&
     deliveryTaxTreatmentOf(input.restaurant) === "SEPARATE_LOCAL_DELIVERY") {
