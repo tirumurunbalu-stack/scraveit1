@@ -8,9 +8,14 @@ import type {DeliveryServiceSupplier, ServiceTaxLine} from "./orderTax";
  * SCRAVEIT collects the whole consideration on the rider's behalf. So the
  * rider's gross delivery revenue is the full consideration; what SCRAVEIT
  * keeps is an explicit, contractual platform/facilitation fee to the rider
- * (with SCRAVEIT's own GST on it) - never a "delivery margin". When
- * operational pay is above the consideration (a guarantee), the difference
- * is a SCRAVEIT top-up shown under bonuses/adjustments.
+ * - never a "delivery margin". GST on that fee is SCRAVEIT's output-tax
+ * liability, not its revenue; how it lands depends on platformFeeTaxMode:
+ * - GST_INCLUSIVE: the amount kept (e.g. ₹15) includes GST: fee ₹12.71 +
+ *   GST ₹2.29, total rider deduction ₹15.
+ * - GST_EXCLUSIVE: the fee is the amount kept (₹15) and GST is added on top
+ *   (₹2.70): total rider deduction ₹17.70.
+ * When operational pay is above the consideration (a guarantee), the
+ * difference is a SCRAVEIT top-up shown under bonuses/adjustments.
  *
  *   riderGrossDeliveryRevenue
  * + riderDeliveryGstCollected            (registered rider only; the rider's GST)
@@ -38,6 +43,13 @@ export interface DeliverySupplierSettlement {
   late_night_delivery_amount: number;
   /** The supplier's own GST (registered supplier), collected for it: never SCRAVEIT revenue. */
   delivery_gst_collected_for_supplier: number;
+  /** The rider's service value: consideration excluding the separately stated GST. */
+  rider_gross_service_value: number;
+  /** The registered rider's own GST, stated separately (never in the e-commerce TDS base). */
+  rider_supplier_gst: number;
+  /** What rider e-commerce TDS is worked out on (GST excluded when stated separately). */
+  rider_ecommerce_tds_base: number;
+  gst_separately_stated: boolean;
   /** SCRAVEIT's own liability u/s 9(5) (supplier not liable to register). */
   delivery_gst_9_5_paid_by_scraveit: number;
   delivery_supplier_gst_tcs: number;
@@ -49,6 +61,9 @@ export interface DeliverySupplierSettlement {
   scraveit_rider_platform_fee: number;
   scraveit_rider_platform_fee_gst: number;
   scraveit_rider_platform_fee_sac: string;
+  platform_fee_tax_mode: PlatformFeeTaxMode;
+  /** Fee + GST on it: the full deduction from the rider. */
+  scraveit_platform_deduction_total: number;
   /** What the operational engine pays the supplier for this delivery (trip, distance, waiting, incentive...). */
   operational_pay: number;
   /** SCRAVEIT top-up when operational pay exceeds the consideration. */
@@ -56,7 +71,10 @@ export interface DeliverySupplierSettlement {
   delivery_supplier_net_settlement: number;
 }
 
+export type PlatformFeeTaxMode = "GST_INCLUSIVE" | "GST_EXCLUSIVE";
+
 export interface SupplierFeePolicy {
+  platformFeeTaxMode: PlatformFeeTaxMode;
   /** GST rate on SCRAVEIT's platform/facilitation service to the rider/store (configurable until classified). */
   platformFeeGstRateBps: number;
   platformFeeSac: string;
@@ -64,10 +82,12 @@ export interface SupplierFeePolicy {
   storeDeliveryFeeBps: number;
 }
 
-/** Splits a GST-inclusive retained amount into fee + GST. */
-function inclusiveSplit(retainedPaise: number, rateBps: number): {fee: number; gst: number} {
+/** The amount SCRAVEIT keeps, as fee + GST, by tax mode. */
+export function platformFeeSplit(retainedPaise: number, rateBps: number, mode: PlatformFeeTaxMode): {fee: number; gst: number} {
   if (retainedPaise <= 0) return {fee: 0, gst: 0};
-  const fee = Math.round(retainedPaise * 10_000 / (10_000 + Math.max(0, rateBps)));
+  const rate = Math.max(0, rateBps);
+  if (mode === "GST_EXCLUSIVE") return {fee: retainedPaise, gst: Math.round(retainedPaise * rate / 10_000)};
+  const fee = Math.round(retainedPaise * 10_000 / (10_000 + rate));
   return {fee, gst: retainedPaise - fee};
 }
 
@@ -93,12 +113,16 @@ export function deliverySupplierSettlement(input: {
     delivery_fee: c.deliveryFee, delivery_surge: c.deliverySurge, rain_delivery_amount: c.rainDeliveryAmount,
     late_night_delivery_amount: c.lateNightDeliveryAmount,
     delivery_gst_collected_for_supplier: gstCollected, delivery_gst_9_5_paid_by_scraveit: gst95,
+    rider_gross_service_value: gross, rider_supplier_gst: line.supplier === "rider" ? gstCollected : 0,
+    rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross : 0, gst_separately_stated: true,
     rider_contractor_tds: 0, scraveit_rider_platform_fee_sac: input.policy.platformFeeSac,
+    platform_fee_tax_mode: input.policy.platformFeeTaxMode,
   };
   if (input.supplier === "SCRAVEIT") {
     // The consideration is SCRAVEIT's own; the rider is paid as its subcontractor.
     return {...base, delivery_supplier_gst_tcs: 0, rider_ecommerce_tds: 0, store_delivery_tds: 0,
-      scraveit_rider_platform_fee: 0, scraveit_rider_platform_fee_gst: 0, operational_pay: input.operationalPayPaise,
+      scraveit_rider_platform_fee: 0, scraveit_rider_platform_fee_gst: 0, scraveit_platform_deduction_total: 0,
+      operational_pay: input.operationalPayPaise,
       bonuses_adjustments: 0, delivery_supplier_net_settlement: input.operationalPayPaise};
   }
   const pay = input.supplier === "RESTAURANT"
@@ -106,7 +130,7 @@ export function deliverySupplierSettlement(input: {
     : Math.max(0, input.operationalPayPaise);
   const retained = Math.max(0, gross - pay);
   const topUp = Math.max(0, pay - gross);
-  const {fee, gst} = inclusiveSplit(retained, input.policy.platformFeeGstRateBps);
+  const {fee, gst} = platformFeeSplit(retained, input.policy.platformFeeGstRateBps, input.policy.platformFeeTaxMode);
   const tds = input.supplier === "RIDER" ? input.riderEcommerceTdsPaise : input.storeDeliveryTdsPaise;
   return {
     ...base,
@@ -115,6 +139,7 @@ export function deliverySupplierSettlement(input: {
     store_delivery_tds: input.supplier === "RESTAURANT" ? input.storeDeliveryTdsPaise : 0,
     scraveit_rider_platform_fee: fee,
     scraveit_rider_platform_fee_gst: gst,
+    scraveit_platform_deduction_total: fee + gst,
     operational_pay: pay,
     bonuses_adjustments: topUp,
     delivery_supplier_net_settlement: gross + gstCollected - fee - gst - input.tcsPaise - tds + topUp,

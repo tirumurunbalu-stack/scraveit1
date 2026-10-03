@@ -116,21 +116,62 @@ export function compositeInForce(composite: CompositeClassification | undefined,
 }
 
 /**
- * Whether a delivery-linked charge is consideration for the rider's (or
- * store's) delivery service, or a separate SCRAVEIT charge - as the customer
- * terms and rider agreement say.
+ * Who each customer charge economically belongs to, as the customer terms and
+ * rider agreement say - never inferred from the fee's name, never split:
+ * - RIDER: consideration for the delivery service (the rider's; for a store's
+ *   self-delivery the store's; for SCRAVEIT-supplied delivery SCRAVEIT's).
+ * - SCRAVEIT: SCRAVEIT's own platform charge (SCRAVEIT revenue + its GST).
+ * - STORE: the restaurant/store's own consideration (restaurant: part of the
+ *   restaurant service, 9(5); goods store: the seller's own supply).
  */
-export type DeliveryComponentClass = "RIDER_CONSIDERATION" | "SCRAVEIT_CHARGE";
+export type EconomicOwner = "RIDER" | "SCRAVEIT" | "STORE";
 
-export interface DeliveryComponentTreatment {
-  deliverySurge: DeliveryComponentClass;
-  rainDeliveryAmount: DeliveryComponentClass;
-  lateNightDeliveryAmount: DeliveryComponentClass;
+export interface FeeClassification {
+  economicOwner: EconomicOwner;
+  /** E.g. LOCAL_DELIVERY_SERVICE, SCRAVEIT_PLATFORM_SERVICE, RESTAURANT_SERVICE. */
+  taxClassification: string;
+  /** The customer terms / rider agreement already say so. */
+  contractConfirmed: boolean;
 }
 
-export const DEFAULT_DELIVERY_COMPONENTS: Readonly<DeliveryComponentTreatment> = Object.freeze({
-  deliverySurge: "RIDER_CONSIDERATION", rainDeliveryAmount: "RIDER_CONSIDERATION", lateNightDeliveryAmount: "RIDER_CONSIDERATION",
+export interface FeeOwnership {
+  customerDeliveryCharge: FeeClassification;
+  deliverySurge: FeeClassification;
+  rainDeliveryAmount: FeeClassification;
+  lateNightDeliveryAmount: FeeClassification;
+  busyKitchenFee: FeeClassification;
+}
+
+const fee = (economicOwner: EconomicOwner, taxClassification: string, contractConfirmed: boolean): FeeClassification =>
+  Object.freeze({economicOwner, taxClassification, contractConfirmed});
+
+/** Zomato-style: delivery charge and delivery surge are collected for the rider. The rest waits for the contracts. */
+export const DEFAULT_FEE_OWNERSHIP: Readonly<FeeOwnership> = Object.freeze({
+  customerDeliveryCharge: fee("RIDER", "LOCAL_DELIVERY_SERVICE", true),
+  deliverySurge: fee("RIDER", "LOCAL_DELIVERY_SERVICE", true),
+  rainDeliveryAmount: fee("RIDER", "LOCAL_DELIVERY_SERVICE", false),
+  lateNightDeliveryAmount: fee("RIDER", "LOCAL_DELIVERY_SERVICE", false),
+  busyKitchenFee: fee("SCRAVEIT", "SCRAVEIT_PLATFORM_SERVICE", false),
 });
+
+const DEFAULT_TAX_CLASS: Record<EconomicOwner, string> = {
+  RIDER: "LOCAL_DELIVERY_SERVICE", SCRAVEIT: "SCRAVEIT_PLATFORM_SERVICE", STORE: "STORE_SUPPLY",
+};
+
+export function normalizeFeeOwnership(value: unknown): FeeOwnership {
+  const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const pick = (key: keyof FeeOwnership): FeeClassification => {
+    const entry = input[key] && typeof input[key] === "object" ? input[key] as Record<string, unknown> : null;
+    if (!entry) return DEFAULT_FEE_OWNERSHIP[key];
+    const owner = entry.economicOwner === "SCRAVEIT" || entry.economicOwner === "STORE" || entry.economicOwner === "RIDER"
+      ? entry.economicOwner : DEFAULT_FEE_OWNERSHIP[key].economicOwner;
+    return {economicOwner: owner, taxClassification: String(entry.taxClassification || DEFAULT_TAX_CLASS[owner]).slice(0, 60),
+      contractConfirmed: entry.contractConfirmed === true};
+  };
+  return {customerDeliveryCharge: pick("customerDeliveryCharge"), deliverySurge: pick("deliverySurge"),
+    rainDeliveryAmount: pick("rainDeliveryAmount"), lateNightDeliveryAmount: pick("lateNightDeliveryAmount"),
+    busyKitchenFee: pick("busyKitchenFee")};
+}
 
 export interface DeliveryConsideration {
   deliveryFee: number;
@@ -141,8 +182,8 @@ export interface DeliveryConsideration {
 
 export interface OrderTaxInput {
   at: number;
-  /** Delivery-linked charges counted as the delivery supplier's consideration. */
-  deliveryComponents?: DeliveryComponentTreatment;
+  /** Who each customer charge belongs to. */
+  feeOwnership?: FeeOwnership;
   /** GST_LIVE: when false no GST, no GST TCS (income-tax TDS base is still worked out). */
   gstApplies?: boolean;
   /** The store's approved composite-supply classification, if any. */
@@ -267,6 +308,10 @@ export interface OrderTax {
   taxHeads: TaxHeads;
   /** REGISTRATION_REQUIRED when the delivery supplier must register first. */
   taxComplianceStatus: "OK" | "REGISTRATION_REQUIRED";
+  /** The ownership/tax classification each charge was taxed under. */
+  feeOwnership?: FeeOwnership;
+  /** Charges owned by the store (goods store: its own supply, outside SCRAVEIT's GST). */
+  storeOwnedFeesPaise?: number;
   /** GST TCS u/s 52 on a GST-registered rider's delivery service (withheld from the rider). */
   riderDeliveryTcs: GstSplit & {basePaise: number; rateBps: number; totalPaise: number};
 }
@@ -396,14 +441,29 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     service("restaurant_service", "scraveit_9_5", Math.max(0, food), rateAt(law.restaurantServiceGst, input.at), "customer");
   }
   const platformRate = rateAt(law.platformServiceGst, input.at);
-  const components = input.deliveryComponents ?? DEFAULT_DELIVERY_COMPONENTS;
+  const ownership = input.feeOwnership ?? DEFAULT_FEE_OWNERSHIP;
   const lateNightPaise = input.fees.lateNightFeePaise + input.fees.riderIncentiveFeePaise;
-  const consideration: DeliveryConsideration = {
-    deliveryFee: input.fees.deliveryFeePaise,
-    deliverySurge: components.deliverySurge === "RIDER_CONSIDERATION" ? input.fees.riderSurgeFeePaise : 0,
-    rainDeliveryAmount: components.rainDeliveryAmount === "RIDER_CONSIDERATION" ? input.fees.rainFeePaise : 0,
-    lateNightDeliveryAmount: components.lateNightDeliveryAmount === "RIDER_CONSIDERATION" ? lateNightPaise : 0,
+  const charges: Record<keyof FeeOwnership, number> = {
+    customerDeliveryCharge: input.fees.deliveryFeePaise, deliverySurge: input.fees.riderSurgeFeePaise,
+    rainDeliveryAmount: input.fees.rainFeePaise, lateNightDeliveryAmount: lateNightPaise, busyKitchenFee: input.fees.kitchenFeePaise,
   };
+  const ownedBy = (key: keyof FeeOwnership, owner: EconomicOwner) => ownership[key].economicOwner === owner ? charges[key] : 0;
+  const consideration: DeliveryConsideration = {
+    deliveryFee: ownedBy("customerDeliveryCharge", "RIDER"),
+    deliverySurge: ownedBy("deliverySurge", "RIDER"),
+    rainDeliveryAmount: ownedBy("rainDeliveryAmount", "RIDER"),
+    lateNightDeliveryAmount: ownedBy("lateNightDeliveryAmount", "RIDER"),
+  };
+  // A store-owned charge: restaurant -> part of the restaurant service (9(5)); goods store -> the seller's own supply.
+  const storeOwnedPaise = (Object.keys(charges) as (keyof FeeOwnership)[]).reduce((sum, key) => sum + ownedBy(key, "STORE"), 0);
+  if (!isGoods && storeOwnedPaise > 0) {
+    const restaurantLine = services.find((line) => line.component === "restaurant_service");
+    if (restaurantLine) {
+      restaurantLine.basePaise += storeOwnedPaise;
+      restaurantLine.gstPaise = bps(restaurantLine.basePaise, restaurantLine.rateBps);
+      Object.assign(restaurantLine, split(restaurantLine.gstPaise, intraState));
+    }
+  }
   const considerationPaise = consideration.deliveryFee + consideration.deliverySurge + consideration.rainDeliveryAmount +
     consideration.lateNightDeliveryAmount;
   const storeGstRegistered = law.gstTcsRegistrationTypes.includes(input.seller.registrationType) && input.seller.gstin.length === 15;
@@ -413,11 +473,12 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     .map((line) => ({...line, consideration})));
   service("platform_fee", "scraveit", input.fees.platformFeePaise, platformRate, "customer");
   service("small_order_fee", "scraveit", input.fees.smallOrderFeePaise, platformRate, "customer");
-  // Only the parts that are SCRAVEIT's own charges; the rest is in the delivery consideration above.
-  service("late_night_fee", "scraveit", lateNightPaise - consideration.lateNightDeliveryAmount, platformRate, "customer");
-  service("rain_fee", "scraveit", input.fees.rainFeePaise - consideration.rainDeliveryAmount, platformRate, "customer");
-  service("busy_kitchen_fee", "scraveit", input.fees.kitchenFeePaise, platformRate, "customer");
-  service("rider_surge_fee", "scraveit", input.fees.riderSurgeFeePaise - consideration.deliverySurge, platformRate, "customer");
+  // Each charge goes whole to its one owner: SCRAVEIT-owned ones are SCRAVEIT's platform services.
+  service("customer_delivery_charge", "scraveit", ownedBy("customerDeliveryCharge", "SCRAVEIT"), platformRate, "customer");
+  service("late_night_fee", "scraveit", ownedBy("lateNightDeliveryAmount", "SCRAVEIT"), platformRate, "customer");
+  service("rain_fee", "scraveit", ownedBy("rainDeliveryAmount", "SCRAVEIT"), platformRate, "customer");
+  service("busy_kitchen_fee", "scraveit", ownedBy("busyKitchenFee", "SCRAVEIT"), platformRate, "customer");
+  service("rider_surge_fee", "scraveit", ownedBy("deliverySurge", "SCRAVEIT"), platformRate, "customer");
   service("commission", "scraveit", input.commissionPaise, platformRate, "partner");
 
   const riderDeliveryTcs = riderDeliveryTcsOf(law, input.at, services, intraState);
@@ -462,6 +523,8 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
     gstApplied,
     pricedAt: input.at,
     taxComplianceStatus: deliveryRegistrationProblem(services) ? "REGISTRATION_REQUIRED" : "OK",
+    feeOwnership: ownership,
+    storeOwnedFeesPaise: storeOwnedPaise,
     taxHeads,
     riderDeliveryTcs: gstApplied ? riderDeliveryTcs : {basePaise: 0, rateBps: 0, totalPaise: 0, ...split(0, intraState)},
     storeKind: input.storeKind,

@@ -57,6 +57,7 @@ import {
   exportPlatformDataWorkbookSchema,
   exportTaxPackSchema,
   setRiderTaxClassificationSchema,
+  resolveTdsReversalSchema,
   initiatePaymentSchema,
   markRiderArrivedRestaurantSchema,
   recoverDeliveryOtpSchema,
@@ -200,7 +201,7 @@ import {
 import {runWeeklyFinanceAutomation} from "./services/financeAutomation";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
-import {lawBasedCheckoutTax, recordDeliveredOrderTax, reverseOrderTaxWithholding} from "./services/taxEngine";
+import {lawBasedCheckoutTax, recordDeliveredOrderTax, resolveTdsReversal, reverseOrderTaxWithholding} from "./services/taxEngine";
 import {exportTaxPack as buildTaxPackExport} from "./services/taxPack";
 import {backfillLedgerPartyIndex} from "./services/ledgerPartyIndex";
 import {
@@ -815,6 +816,20 @@ export const setRiderTaxClassification = onCall({
   }
 });
 
+export const resolveRefundTdsReversal = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to reconcile TDS."));
+  try {
+    const input = parse(resolveTdsReversalSchema, request.data ?? {});
+    return await resolveTdsReversal(request.auth.uid, request.auth.token, input);
+  } catch (error) {
+    logger.warn("resolveRefundTdsReversal rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
 export const exportPlatformDataWorkbook = onCall({
   region: REGION,
   enforceAppCheck: true,
@@ -1372,7 +1387,7 @@ export const onOrderUpdated = onDocumentUpdated({
     });
     // A refunded order no longer counts toward a rider referral target.
     if (order.riderId) await reverseRiderReferralDelivery(order);
-    // Returns reduce the seller's TCS base and yearly gross: give the withholding back.
+    // Returns: Section 52 TCS return adjustment for the period; TDS kept for reconciliation; delivery settlement reversed.
     await sideEffectLease(`tax-withholding:${order.id}:refund`, async () => {
       await reverseOrderTaxWithholding(order.id, Number(order.updatedAt ?? Date.now()));
     });

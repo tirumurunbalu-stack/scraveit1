@@ -2,6 +2,7 @@ import {describe, expect, it} from "vitest";
 import {
   checkoutDeliveryContext,
   computeOrderTax,
+  normalizeFeeOwnership,
   incomeTaxTdsAtDelivery,
   type CompositeClassification,
   type OrderTaxInput,
@@ -188,8 +189,8 @@ describe("delivery consideration", () => {
     expect(line.basePaise).toBe(4_000 + 1_000 + 2_000 + 1_500);
     expect(line.consideration).toEqual({deliveryFee: 4_000, deliverySurge: 1_000, rainDeliveryAmount: 2_000, lateNightDeliveryAmount: 1_500});
     expect(rider.services.map((entry) => entry.component).sort()).toEqual(["delivery_fee", "platform_fee"]);
-    const split = computeOrderTax(law, order({fees, deliveryComponents: {deliverySurge: "SCRAVEIT_CHARGE",
-      rainDeliveryAmount: "RIDER_CONSIDERATION", lateNightDeliveryAmount: "SCRAVEIT_CHARGE"}}));
+    const split = computeOrderTax(law, order({fees, feeOwnership: normalizeFeeOwnership({
+      deliverySurge: {economicOwner: "SCRAVEIT"}, lateNightDeliveryAmount: {economicOwner: "SCRAVEIT", contractConfirmed: true}})}));
     expect(split.services.find((entry) => entry.component === "delivery_fee")!.basePaise).toBe(6_000);
     expect(split.services.find((entry) => entry.component === "rider_surge_fee")).toMatchObject({supplier: "scraveit", basePaise: 1_000});
     expect(split.services.find((entry) => entry.component === "late_night_fee")).toMatchObject({supplier: "scraveit", basePaise: 1_500});

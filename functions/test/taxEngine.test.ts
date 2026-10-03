@@ -82,9 +82,13 @@ describe("tax on delivery", () => {
     expect(journal.entries.map((entry) => entry.accountId).sort()).toEqual([
       "liability:gst-tcs-payable", "liability:income-tax-tds-payable", "liability:restaurant-payable:dairy-1"]);
 
+    // Refund in the same month: the Section 52 return adjustment gives back that TCS; TDS is kept for reconciliation.
     const reversed = await reverseOrderTaxWithholding("o1", at + 10, database);
-    expect(reversed?.reversedAt).toBe(at + 10);
-    expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 20_000});
+    expect(reversed).toMatchObject({reversedAt: at + 10,
+      gstTcsReturnAdjustment: {period: "2026-10", sellerAdjustedTcsPaise: 100, sellerUnadjustedTcsPaise: 0},
+      tdsReversal: {status: "PENDING_ADJUSTMENT", sellerTdsPaise: 20}});
+    // Yearly TDS totals untouched: no silent reduction of TDS already deducted.
+    expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 40_000, tdsDeductedPaise: 40});
     expect(await reverseOrderTaxWithholding("o1", at + 20, database)).toMatchObject({reversedAt: at + 10});
   });
 

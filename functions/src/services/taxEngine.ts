@@ -16,9 +16,8 @@ import {
   isScraveitLocalDeliveryGst,
   isStoreSelfDelivery,
   type DeliveryTaxTreatment,
-  type DeliveryComponentClass,
-  type DeliveryComponentTreatment,
-  DEFAULT_DELIVERY_COMPONENTS,
+  normalizeFeeOwnership,
+  type FeeOwnership,
   type CompositeClassification,
   type ServiceTaxLine,
   type DeliveryServiceSupplier,
@@ -39,7 +38,9 @@ import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import type {CatalogItem, PricedOrderItem} from "../types";
 import type {TaxComputation} from "../domain/taxRules";
 import type {CheckoutEconomicsPlan, ServerFees} from "./economics";
+import type {DecodedIdToken} from "firebase-admin/auth";
 import {DomainError} from "../errors";
+import {requireOwnerClaim} from "./authz";
 import {persistLedgerJournalIfAbsent} from "./ledger";
 import {RESTAURANT_PAYOUT_PROFILES_COLLECTION} from "./restaurantPayoutProfiles";
 
@@ -86,8 +87,8 @@ export interface TaxSettings {
   riderTipTdsTreatment: TipTdsTreatment;
   /** Who supplies local delivery by default (RIDER, Zomato-style); a store marked selfDelivery is RESTAURANT. */
   deliveryServiceSupplier: DeliveryServiceSupplier;
-  /** Which delivery-linked charges are the supplier's consideration (per the customer terms / rider agreement). */
-  deliveryComponents: DeliveryComponentTreatment;
+  /** Who each customer charge belongs to (per the customer terms / rider agreement). */
+  feeOwnership: FeeOwnership;
   /** SCRAVEIT's platform/facilitation fee to riders and stores: GST rate and SAC, configurable until classified. */
   supplierFeePolicy: SupplierFeePolicy;
 }
@@ -131,8 +132,9 @@ export function normalizeTaxSettings(value: unknown): TaxSettings {
     riderTipTdsTreatment: normalizeTipTdsTreatment(input.riderTipTdsTreatment),
     // RIDER unless deliberately changed; RESTAURANT is per store, never platform-wide.
     deliveryServiceSupplier: input.deliveryServiceSupplier === "SCRAVEIT" ? "SCRAVEIT" : "RIDER",
-    deliveryComponents: deliveryComponentsOf(input.deliveryComponents),
+    feeOwnership: normalizeFeeOwnership(input.feeOwnership),
     supplierFeePolicy: {
+      platformFeeTaxMode: input.scraveitRiderPlatformFeeTaxMode === "GST_EXCLUSIVE" ? "GST_EXCLUSIVE" : "GST_INCLUSIVE",
       platformFeeGstRateBps: Math.max(0, Math.min(2_800, Math.round(Number(input.scraveitRiderPlatformFeeGstRateBps ?? 1_800) || 0))),
       platformFeeSac: String(input.scraveitRiderPlatformFeeSac ?? "").replace(/[^0-9]/g, "").slice(0, 6),
       storeDeliveryFeeBps: Math.max(0, Math.min(10_000, Math.round(Number(input.scraveitStoreDeliveryFeeBps ?? 0) || 0))),
@@ -140,13 +142,6 @@ export function normalizeTaxSettings(value: unknown): TaxSettings {
   };
 }
 
-function deliveryComponentsOf(value: unknown): DeliveryComponentTreatment {
-  const input = record(value);
-  const pick = (key: keyof DeliveryComponentTreatment): DeliveryComponentClass =>
-    input[key] === "SCRAVEIT_CHARGE" ? "SCRAVEIT_CHARGE" : DEFAULT_DELIVERY_COMPONENTS[key];
-  return {deliverySurge: pick("deliverySurge"), rainDeliveryAmount: pick("rainDeliveryAmount"),
-    lateNightDeliveryAmount: pick("lateNightDeliveryAmount")};
-}
 
 export async function loadTaxSettings(database: FirestoreLike = firestoreDb): Promise<TaxSettings> {
   const snapshot = await database.collection("private").doc(TAX_LAW_DOC).get().catch(() => null);
@@ -235,7 +230,7 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
     ...computeOrderTax(context.settings.law, {
       at: context.at,
       gstApplies: context.settings.gstActive,
-      deliveryComponents: context.settings.deliveryComponents,
+      feeOwnership: context.settings.feeOwnership,
       ...(compositeClassificationOf(context.restaurant) ? {composite: compositeClassificationOf(context.restaurant)} : {}),
       delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant),
         deliveryTaxTreatmentOf(context.restaurant)),
@@ -297,27 +292,39 @@ export function deliveryGstSettlementJournal(orderId: string, at: number, settle
 }
 
 /**
- * Names what SCRAVEIT keeps from a rider's delivery consideration: an explicit
- * platform/facilitation fee to the rider plus SCRAVEIT's GST on it, moved out
- * of the generic platform-fee revenue the operational journal used.
+ * Names what SCRAVEIT keeps from a rider's delivery consideration as its
+ * platform/facilitation fee, moved out of the generic platform-fee revenue the
+ * operational journal used. GST on the fee is output tax (a liability):
+ * GST_INCLUSIVE carves it out of the amount kept; GST_EXCLUSIVE deducts it
+ * from the rider on top.
  */
-export function riderPlatformFeeJournal(orderId: string, at: number, settlement: DeliverySupplierSettlement): LedgerJournal | null {
+export function riderPlatformFeeJournal(orderId: string, at: number, settlement: DeliverySupplierSettlement,
+  reversal = false): LedgerJournal | null {
   const fee = settlement.scraveit_rider_platform_fee;
   const gst = settlement.scraveit_rider_platform_fee_gst;
   if (settlement.delivery_service_supplier !== "RIDER" || fee + gst <= 0) return null;
+  const exclusive = settlement.platform_fee_tax_mode === "GST_EXCLUSIVE";
+  const kept = exclusive ? fee : fee + gst;
+  const debits = [
+    {accountId: "revenue:platform-fees", amountPaise: kept, memo: "Retained from the rider's delivery consideration"},
+    ...(exclusive && gst > 0 ? [{accountId: `liability:rider-earnings:${settlement.supplier_id}`, amountPaise: gst,
+      memo: "GST on SCRAVEIT's fee, charged to the rider on top"}] : []),
+  ];
+  const credits = [
+    ...(fee > 0 ? [{accountId: "revenue:scraveit-rider-platform-fee", amountPaise: fee, memo: "SCRAVEIT platform/facilitation fee to the rider"}] : []),
+    ...(gst > 0 ? [{accountId: "liability:tax-payable", amountPaise: gst, memo: "Output GST on SCRAVEIT's fee to the rider"}] : []),
+  ];
   return createLedgerJournal({
     eventType: "delivery_settlement",
-    eventId: `order:${orderId}:rider-platform-fee`,
+    eventId: `order:${orderId}:rider-platform-fee${reversal ? ":reversed" : ""}`,
     occurredAt: at,
     orderId,
     metadata: {riderId: settlement.supplier_id, grossDeliveryConsideration: settlement.delivery_gross_consideration,
-      platformFeeSac: settlement.scraveit_rider_platform_fee_sac || "pending"},
+      platformFeeTaxMode: settlement.platform_fee_tax_mode, platformFeeSac: settlement.scraveit_rider_platform_fee_sac || "pending",
+      reversal},
     postings: [
-      {accountId: "revenue:platform-fees", side: "debit", amountPaise: fee + gst, memo: "Retained from the rider's delivery consideration"},
-      ...(fee > 0 ? [{accountId: "revenue:scraveit-rider-platform-fee", side: "credit" as const, amountPaise: fee,
-        memo: "SCRAVEIT platform/facilitation fee to the rider"}] : []),
-      ...(gst > 0 ? [{accountId: "liability:tax-payable", side: "credit" as const, amountPaise: gst,
-        memo: "GST on SCRAVEIT's fee to the rider"}] : []),
+      ...debits.map((line) => ({...line, side: reversal ? "credit" as const : "debit" as const})),
+      ...credits.map((line) => ({...line, side: reversal ? "debit" as const : "credit" as const})),
     ],
   });
 }
@@ -352,6 +359,14 @@ export function riderRegistrationRequired(rider: unknown): boolean {
   return context.riderRegistrationLiable && !context.riderGstRegistered;
 }
 
+export type TdsReversalStatus = "NOT_REQUIRED" | "PENDING_ADJUSTMENT" | "ADJUSTED" | "CLAIMABLE_BY_PARTICIPANT";
+export const GST_TCS_PERIODS_COLLECTION = "gstTcsPeriods";
+
+/** IST calendar month, the GSTR-8 period. */
+export function tcsPeriodOf(at: number): string {
+  return new Date(at + 19_800_000).toISOString().slice(0, 7);
+}
+
 export interface WithholdingRecord {
   orderId: string;
   restaurantId: string;
@@ -373,6 +388,15 @@ export interface WithholdingRecord {
   localDelivery?: {riderId: string; basis: string; gstPaise: number; taxComplianceStatus?: string};
   /** The delivery's legal/accounting settlement with its supplier (rider or store). */
   deliverySettlement?: DeliverySupplierSettlement;
+  /** Refund: Section 52 return adjustment in the refund month's TCS period (never a negative carry-forward). */
+  gstTcsReturnAdjustment?: {period: string; sellerReturnedBasePaise: number; sellerAdjustedTcsPaise: number;
+    sellerUnadjustedTcsPaise: number; riderAdjustedTcsPaise: number; riderUnadjustedTcsPaise: number};
+  /** Refund: income-tax TDS already deducted is kept; any permitted adjustment goes through reconciliation. */
+  tdsReversal?: {status: TdsReversalStatus; sellerTdsPaise: number; riderEcommerceTdsPaise: number; returnedGrossPaise: number;
+    resolvedAt?: number; resolvedBy?: string; note?: string};
+  /** Refund of the delivery charge: the delivery settlement's economic entries, reversed. */
+  deliverySettlementReversal?: {reversedAt: number; deliveryGrossConsideration: number; supplierGst: number; platformFee: number;
+    platformFeeGst: number; netSettlement: number; operationalPayKept: number; operationalPayKeptClassification: "PENDING_REVIEW"};
   /** RIDER supplier: income-tax e-commerce TDS on the rider's gross delivery consideration. */
   riderEcommerceTds?: {riderId: string; financialYear: string; basePaise: number; rateBps: number; tdsPaise: number;
     requiredYtdPaise: number; catchUpBasePaise: number};
@@ -505,6 +529,11 @@ export async function recordDeliveredOrderTax(
     const seriesSnaps = await Promise.all(seriesRefs.map((ref) => transaction.get(ref)));
     const year = await transaction.get(yearRef);
     const riderYear = riderEcomApplies ? await transaction.get(riderEcomYearRef) : null;
+    const tcsPeriodSnaps = new Map<string, Record<string, unknown>>();
+    for (const key of [order.restaurantId, riderId].filter(Boolean)) {
+      const id = `${key}_${tcsPeriodOf(recordedAt)}`;
+      tcsPeriodSnaps.set(id, record((await transaction.get(database.collection(GST_TCS_PERIODS_COLLECTION).doc(id))).data()));
+    }
     const yearData = record(year.exists ? year.data() : {});
     const before = Number(yearData.grossPaise ?? 0) || 0;
     const deductedBefore = Number(yearData.tdsDeductedPaise ?? 0) || 0;
@@ -561,6 +590,15 @@ export async function recordDeliveredOrderTax(
     };
     if (tdsApplied) transaction.set(yearRef, {restaurantId: order.restaurantId, financialYear: tax.financialYear,
       grossPaise: tds.yearGrossAfterPaise, tdsDeductedPaise: deductedBefore + tds.tdsPaise, updatedAt: recordedAt}, {merge: true});
+    // TCS collected per supplier per month: the cap for later return adjustments in that period.
+    const period = tcsPeriodOf(recordedAt);
+    for (const [key, amount] of [[order.restaurantId, sellerTcs], [riderId, riderDeliveryTcsPaise]] as const) {
+      if (!key || amount <= 0) continue;
+      const ref = database.collection(GST_TCS_PERIODS_COLLECTION).doc(`${key}_${period}`);
+      const current = tcsPeriodSnaps.get(`${key}_${period}`) ?? {};
+      transaction.set(ref, {supplierId: key, period, tcsCollectedPaise: (Number(current.tcsCollectedPaise) || 0) + amount,
+        updatedAt: recordedAt}, {merge: true});
+    }
     if (riderEcom) transaction.set(riderEcomYearRef, {riderId, financialYear: tax.financialYear,
       legalEntityType: identity.legalEntityType, pan: identity.pan, grossPaise: riderEcom.yearGrossAfterPaise,
       tdsDeductedPaise: riderDeductedBefore + riderEcom.tdsPaise, updatedAt: recordedAt}, {merge: true});
@@ -581,38 +619,181 @@ export async function recordDeliveredOrderTax(
   return entry;
 }
 
-/** Returns a refunded order's withholding to the seller and lowers its yearly total. */
+/**
+ * A refunded (returned) order:
+ * - GST TCS: a Section 52 return adjustment in the refund month's period,
+ *   capped at the TCS collected from that supplier in that period - no
+ *   negative carry-forward. Only the adjusted part goes back to the supplier.
+ * - Income-tax TDS: never handed back as cash. Already deducted TDS is kept,
+ *   the yearly totals are left alone, and the order is marked
+ *   PENDING_ADJUSTMENT for the tax reconciliation (ADJUSTED or
+ *   CLAIMABLE_BY_PARTICIPANT later), or NOT_REQUIRED when none was deducted.
+ * - Delivery charge refunded: the delivery settlement is reversed (gross
+ *   consideration, supplier GST, SCRAVEIT platform fee and its GST); the
+ *   rider keeps its operational pay as a SCRAVEIT-funded amount whose tax
+ *   treatment is pending.
+ */
 export async function reverseOrderTaxWithholding(orderId: string, at: number,
-  database: FirestoreLike = firestoreDb): Promise<WithholdingRecord | null> {
+  database: FirestoreLike = firestoreDb, options: {deliveryConsiderationRefunded?: boolean} = {}): Promise<WithholdingRecord | null> {
+  const deliveryRefunded = options.deliveryConsiderationRefunded !== false;
   const markerRef = database.collection(TAX_WITHHOLDINGS_COLLECTION).doc(orderId);
+  const period = tcsPeriodOf(at);
   const entry = await database.runTransaction(async (transaction: TransactionLike) => {
     const marker = await transaction.get(markerRef);
     if (!marker.exists) return null;
     const value = marker.data() as WithholdingRecord;
     if (value.reversedAt) return value;
-    const yearRef = database.collection(TAX_PARTNER_YEARS_COLLECTION).doc(`${value.restaurantId}_${value.financialYear}`);
-    const year = await transaction.get(yearRef);
-    const riderYearRef = value.riderEcommerceTds ? database.collection(TAX_RIDER_ECOM_YEARS_COLLECTION)
-      .doc(`${value.riderEcommerceTds.riderId}_${value.riderEcommerceTds.financialYear}`) : null;
-    const riderYear = riderYearRef ? record((await transaction.get(riderYearRef)).data()) : {};
-    const yearData = record(year.exists ? year.data() : {});
-    const gross = Number(yearData.grossPaise ?? 0) || 0;
-    const deducted = Number(yearData.tdsDeductedPaise ?? 0) || 0;
-    if (value.tdsApplied !== false) transaction.set(yearRef, {grossPaise: Math.max(0, gross - value.incomeTaxTdsBasePaise),
-      tdsDeductedPaise: Math.max(0, deducted - value.incomeTaxTdsPaise), updatedAt: at}, {merge: true});
-    if (riderYearRef && value.riderEcommerceTds) {
-      transaction.set(riderYearRef, {
-        grossPaise: Math.max(0, (Number(riderYear.grossPaise) || 0) - value.riderEcommerceTds.basePaise),
-        tdsDeductedPaise: Math.max(0, (Number(riderYear.tdsDeductedPaise) || 0) - value.riderEcommerceTds.tdsPaise), updatedAt: at}, {merge: true});
-    }
-    const reversed = {...value, reversedAt: at};
+    const riderId = value.localDelivery?.riderId || value.riderEcommerceTds?.riderId || "";
+    const sellerRef = database.collection(GST_TCS_PERIODS_COLLECTION).doc(`${value.restaurantId}_${period}`);
+    const riderRef = riderId ? database.collection(GST_TCS_PERIODS_COLLECTION).doc(`${riderId}_${period}`) : null;
+    const sellerPeriod = record((await transaction.get(sellerRef)).data());
+    const riderPeriod = riderRef ? record((await transaction.get(riderRef)).data()) : {};
+    const capacity = (doc: Record<string, unknown>) =>
+      Math.max(0, (Number(doc.tcsCollectedPaise) || 0) - (Number(doc.returnAdjustedPaise) || 0));
+    const sellerTcs = value.gstTcsPaise;
+    const riderTcs = deliveryRefunded ? value.riderDeliveryTcsPaise ?? 0 : 0;
+    const sellerAdjusted = Math.min(sellerTcs, capacity(sellerPeriod));
+    const riderAdjusted = Math.min(riderTcs, capacity(riderPeriod));
+    if (sellerAdjusted > 0) transaction.set(sellerRef, {supplierId: value.restaurantId, period,
+      returnAdjustedPaise: (Number(sellerPeriod.returnAdjustedPaise) || 0) + sellerAdjusted, updatedAt: at}, {merge: true});
+    if (riderRef && riderAdjusted > 0) transaction.set(riderRef, {supplierId: riderId, period,
+      returnAdjustedPaise: (Number(riderPeriod.returnAdjustedPaise) || 0) + riderAdjusted, updatedAt: at}, {merge: true});
+    const sellerTds = value.incomeTaxTdsPaise;
+    const riderTds = value.riderEcommerceTds?.tdsPaise ?? 0;
+    const settlement = value.deliverySettlement;
+    const reversed: WithholdingRecord = {
+      ...value,
+      reversedAt: at,
+      gstTcsReturnAdjustment: {period, sellerReturnedBasePaise: value.gstTcs.basePaise, sellerAdjustedTcsPaise: sellerAdjusted,
+        sellerUnadjustedTcsPaise: sellerTcs - sellerAdjusted, riderAdjustedTcsPaise: riderAdjusted,
+        riderUnadjustedTcsPaise: riderTcs - riderAdjusted},
+      tdsReversal: {status: sellerTds + riderTds > 0 ? "PENDING_ADJUSTMENT" : "NOT_REQUIRED", sellerTdsPaise: sellerTds,
+        riderEcommerceTdsPaise: riderTds, returnedGrossPaise: value.incomeTaxTdsBasePaise + (value.riderEcommerceTds?.basePaise ?? 0)},
+      ...(deliveryRefunded && settlement ? {deliverySettlementReversal: {reversedAt: at,
+        deliveryGrossConsideration: settlement.delivery_gross_consideration, supplierGst: settlement.delivery_gst_collected_for_supplier,
+        platformFee: settlement.scraveit_rider_platform_fee, platformFeeGst: settlement.scraveit_rider_platform_fee_gst,
+        netSettlement: settlement.delivery_supplier_net_settlement, operationalPayKept: settlement.operational_pay,
+        operationalPayKeptClassification: "PENDING_REVIEW" as const}} : {}),
+    };
     transaction.set(markerRef, reversed);
     return reversed;
   });
-  if (entry) {
-    const journal = withholdingJournal(entry, true);
-    if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
-    logger.info("TAX_WITHHOLDING_REVERSED", {orderId, tcs: entry.gstTcsPaise, tds: entry.incomeTaxTdsPaise});
+  if (entry && entry.reversedAt === at) {
+    for (const journal of [tcsReturnAdjustmentJournal(entry), ...deliverySettlementReversalJournals(entry)]) {
+      if (journal) await persistLedgerJournalIfAbsent(journal, database as never);
+    }
+    logger.info("TAX_RETURN_RECORDED", {orderId, tcsAdjustment: entry.gstTcsReturnAdjustment, tds: entry.tdsReversal?.status});
+  }
+  return entry;
+}
+
+/** Gives back only the TCS the return adjustment allowed for that period. */
+export function tcsReturnAdjustmentJournal(entry: WithholdingRecord): LedgerJournal | null {
+  const adjustment = entry.gstTcsReturnAdjustment;
+  if (!adjustment) return null;
+  const riderId = entry.localDelivery?.riderId || entry.riderEcommerceTds?.riderId || "";
+  const returns = [
+    {accountId: `liability:restaurant-payable:${entry.restaurantId}`, amountPaise: adjustment.sellerAdjustedTcsPaise},
+    {accountId: `liability:rider-earnings:${riderId}`, amountPaise: riderId ? adjustment.riderAdjustedTcsPaise : 0},
+  ].filter((line) => line.amountPaise > 0);
+  const total = returns.reduce((sum, line) => sum + line.amountPaise, 0);
+  if (total <= 0) return null;
+  return createLedgerJournal({
+    eventType: "tax_withholding_reversal",
+    eventId: `order:${entry.orderId}:tcs-return-adjustment`,
+    occurredAt: entry.reversedAt ?? entry.recordedAt,
+    orderId: entry.orderId,
+    metadata: {restaurantId: entry.restaurantId, period: adjustment.period, kind: "gst_tcs_return_adjustment"},
+    postings: [
+      {accountId: "liability:gst-tcs-payable", side: "debit", amountPaise: total, memo: "Section 52 return adjustment"},
+      ...returns.map((line) => ({...line, side: "credit" as const, memo: "TCS on returned supply adjusted"})),
+    ],
+  });
+}
+
+/** The delivery settlement's economic entries, reversed when the delivery charge was refunded. */
+export function deliverySettlementReversalJournals(entry: WithholdingRecord): LedgerJournal[] {
+  const settlement = entry.deliverySettlement;
+  if (!settlement || !entry.deliverySettlementReversal) return [];
+  const at = entry.deliverySettlementReversal.reversedAt;
+  const journals: LedgerJournal[] = [];
+  const fee = riderPlatformFeeJournal(entry.orderId, at, settlement, true);
+  if (fee) journals.push(fee);
+  if (settlement.delivery_gst_collected_for_supplier > 0) {
+    journals.push(createLedgerJournal({
+      eventType: "delivery_gst_settlement",
+      eventId: `order:${entry.orderId}:delivery-gst:reversed`,
+      occurredAt: at,
+      orderId: entry.orderId,
+      metadata: {supplier: settlement.delivery_service_supplier, supplierId: settlement.supplier_id, reversal: true},
+      postings: [
+        {accountId: supplierPayableAccount(settlement), side: "debit", amountPaise: settlement.delivery_gst_collected_for_supplier,
+          memo: "Supplier's delivery GST reversed: refunded to the customer"},
+        {accountId: "liability:tax-payable", side: "credit", amountPaise: settlement.delivery_gst_collected_for_supplier,
+          memo: "Delivery GST to be refunded"},
+      ],
+    }));
+  }
+  return journals;
+}
+
+/**
+ * Tax reconciliation closes a refunded order's TDS: ADJUSTED (a permitted
+ * adjustment was made - the TDS goes back to the participant) or
+ * CLAIMABLE_BY_PARTICIPANT (deposited TDS stays; the participant claims it).
+ */
+export async function resolveTdsReversal(uid: string, token: DecodedIdToken,
+  input: {orderId: string; status: "ADJUSTED" | "CLAIMABLE_BY_PARTICIPANT"; note: string},
+  database: FirestoreLike = firestoreDb, now = Date.now()): Promise<WithholdingRecord> {
+  requireOwnerClaim(token);
+  const markerRef = database.collection(TAX_WITHHOLDINGS_COLLECTION).doc(input.orderId);
+  const entry = await database.runTransaction(async (transaction: TransactionLike) => {
+    const marker = await transaction.get(markerRef);
+    const value = marker.exists ? marker.data() as WithholdingRecord : null;
+    if (!value?.tdsReversal || value.tdsReversal.status !== "PENDING_ADJUSTMENT") {
+      throw new DomainError("failed-precondition", "This order has no TDS waiting for reconciliation.");
+    }
+    const yearRef = database.collection(TAX_PARTNER_YEARS_COLLECTION).doc(`${value.restaurantId}_${value.financialYear}`);
+    const riderYearRef = value.riderEcommerceTds ? database.collection(TAX_RIDER_ECOM_YEARS_COLLECTION)
+      .doc(`${value.riderEcommerceTds.riderId}_${value.riderEcommerceTds.financialYear}`) : null;
+    const year = record((await transaction.get(yearRef)).data());
+    const riderYear = riderYearRef ? record((await transaction.get(riderYearRef)).data()) : {};
+    if (input.status === "ADJUSTED") {
+      if (value.tdsApplied !== false && value.incomeTaxTdsPaise > 0) transaction.set(yearRef, {
+        grossPaise: Math.max(0, (Number(year.grossPaise) || 0) - value.incomeTaxTdsBasePaise),
+        tdsDeductedPaise: Math.max(0, (Number(year.tdsDeductedPaise) || 0) - value.incomeTaxTdsPaise), updatedAt: now}, {merge: true});
+      if (riderYearRef && value.riderEcommerceTds) transaction.set(riderYearRef, {
+        grossPaise: Math.max(0, (Number(riderYear.grossPaise) || 0) - value.riderEcommerceTds.basePaise),
+        tdsDeductedPaise: Math.max(0, (Number(riderYear.tdsDeductedPaise) || 0) - value.riderEcommerceTds.tdsPaise), updatedAt: now}, {merge: true});
+    }
+    const resolved = {...value, tdsReversal: {...value.tdsReversal, status: input.status, resolvedAt: now, resolvedBy: uid,
+      note: input.note.slice(0, 500)}};
+    transaction.set(markerRef, resolved);
+    transaction.set(database.collection("taxComplianceAudit").doc(`tds-reversal-${input.orderId}-${now}`), {
+      action: "tds_reversal.resolve", orderId: input.orderId, status: input.status, actorId: uid, note: input.note.slice(0, 500), at: now});
+    return resolved;
+  });
+  if (input.status === "ADJUSTED") {
+    const sellerTds = entry.incomeTaxTdsPaise;
+    const riderTds = entry.riderEcommerceTds?.tdsPaise ?? 0;
+    const lines = [
+      {accountId: `liability:restaurant-payable:${entry.restaurantId}`, amountPaise: sellerTds, tdsAccount: "liability:income-tax-tds-payable"},
+      {accountId: `liability:rider-earnings:${entry.riderEcommerceTds?.riderId ?? ""}`, amountPaise: riderTds,
+        tdsAccount: "liability:rider-ecommerce-tds-payable"},
+    ].filter((line) => line.amountPaise > 0);
+    if (lines.length) {
+      await persistLedgerJournalIfAbsent(createLedgerJournal({
+        eventType: "tax_withholding_reversal",
+        eventId: `order:${entry.orderId}:tds-adjusted`,
+        occurredAt: now,
+        orderId: entry.orderId,
+        metadata: {restaurantId: entry.restaurantId, kind: "tds_adjusted", resolvedBy: uid},
+        postings: [
+          ...lines.map((line) => ({accountId: line.tdsAccount, side: "debit" as const, amountPaise: line.amountPaise, memo: "TDS adjusted in reconciliation"})),
+          ...lines.map((line) => ({accountId: line.accountId, side: "credit" as const, amountPaise: line.amountPaise, memo: "Adjusted TDS returned"})),
+        ],
+      }), database as never);
+    }
   }
   return entry;
 }

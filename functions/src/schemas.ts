@@ -875,3 +875,10 @@ export const setRiderTaxClassificationSchema = z.object({
   reason: z.enum(["INDEPENDENT_DELIVERY_PARTNER", "ONBOARDED_AS_EMPLOYEE", "EMPLOYMENT_ENDED", "CORRECTION_APPROVED_BY_CA"]),
   note: z.string().trim().min(1).max(500),
 }).strict();
+
+/** Tax reconciliation: close a refunded order's TDS. */
+export const resolveTdsReversalSchema = z.object({
+  orderId: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
+  status: z.enum(["ADJUSTED", "CLAIMABLE_BY_PARTICIPANT"]),
+  note: z.string().trim().min(1).max(500),
+}).strict();
