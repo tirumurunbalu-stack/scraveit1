@@ -1,4 +1,5 @@
 import type {DeliveryServiceSupplier, ServiceTaxLine} from "./orderTax";
+import type {TdsTriggerFacts} from "./riderPaymentTax";
 
 /**
  * The legal/accounting settlement of one delivery, kept apart from the
@@ -51,6 +52,9 @@ export interface DeliverySupplierSettlement {
   rider_ecommerce_tds_base: number;
   gst_separately_stated: boolean;
   tds_trigger: "CREDIT" | "PAYMENT";
+  participant_credit_at: number | null;
+  participant_payment_at: number | null;
+  tds_trigger_at: number;
   /** Only then is the rider's separately stated GST left out of the TDS base (CBDT Circular 20/2023). */
   gst_separately_identified_at_tds_trigger: boolean;
   /** SCRAVEIT's own liability u/s 9(5) (supplier not liable to register). */
@@ -106,7 +110,9 @@ export function deliverySupplierSettlement(input: {
   riderEcommerceTdsPaise: number;
   storeDeliveryTdsPaise: number;
   policy: SupplierFeePolicy;
-  tdsTrigger?: "CREDIT" | "PAYMENT";
+  /** When this supplier's TDS fell due: the earlier of its credit and its payment. */
+  trigger?: TdsTriggerFacts;
+  /** From the supplier's own settlement record, at that trigger. */
   gstSeparatelyIdentifiedAtTdsTrigger?: boolean;
 }): DeliverySupplierSettlement | null {
   const line = input.line;
@@ -123,8 +129,11 @@ export function deliverySupplierSettlement(input: {
     delivery_gst_collected_for_supplier: gstCollected, delivery_gst_9_5_paid_by_scraveit: gst95,
     rider_gross_service_value: gross, rider_supplier_gst: line.supplier === "rider" ? gstCollected : 0,
     rider_ecommerce_tds_base: input.supplier === "RIDER" ? gross : 0, gst_separately_stated: gstCollected > 0,
-    tds_trigger: input.tdsTrigger ?? "CREDIT",
-    gst_separately_identified_at_tds_trigger: input.gstSeparatelyIdentifiedAtTdsTrigger ?? (input.tdsTrigger ?? "CREDIT") === "CREDIT",
+    tds_trigger: input.trigger?.tdsTriggerType ?? "CREDIT",
+    participant_credit_at: input.trigger?.participantCreditAt ?? null,
+    participant_payment_at: input.trigger?.participantPaymentAt ?? null,
+    tds_trigger_at: input.trigger?.tdsTriggerAt ?? 0,
+    gst_separately_identified_at_tds_trigger: input.gstSeparatelyIdentifiedAtTdsTrigger ?? false,
     rider_contractor_tds: 0, scraveit_rider_platform_fee_sac: input.policy.platformFeeSac,
     platform_fee_tax_mode: input.policy.platformFeeTaxMode,
   };
@@ -152,7 +161,7 @@ export function deliverySupplierSettlement(input: {
     scraveit_platform_deduction_total: fee + gst,
     // The rider's services include a delivery-linked SCRAVEIT top-up (DELIVERY_SERVICE_CONSIDERATION).
     rider_ecommerce_tds_base: input.supplier === "RIDER"
-      ? gross + topUp + (line.supplier === "rider" && !(input.gstSeparatelyIdentifiedAtTdsTrigger ?? true) ? gstCollected : 0) : 0,
+      ? gross + topUp + (line.supplier === "rider" && !(input.gstSeparatelyIdentifiedAtTdsTrigger ?? false) ? gstCollected : 0) : 0,
     operational_pay: pay,
     bonuses_adjustments: topUp,
     delivery_supplier_net_settlement: gross + gstCollected - fee - gst - input.tcsPaise - tds + topUp,

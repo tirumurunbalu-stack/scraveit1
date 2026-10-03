@@ -177,3 +177,38 @@ export function applyTdsOffset(pool: TdsOffsetPool, tdsNormallyDuePaise: number,
   }
   return {offsetPaise: Math.max(0, tdsNormallyDuePaise) - left, tdsActuallyDeductedPaise: left, pool: {...pool, sources}, usage};
 }
+
+// ---------------------------------------------------------------------------
+// When TDS is due: at the earlier of credit or payment to the participant,
+// worked out per transaction from what actually happened - never a setting.
+// ---------------------------------------------------------------------------
+
+export interface TdsTriggerFacts {
+  /** When an identifiable amount was credited to this participant's account. */
+  participantCreditAt: number | null;
+  /** When it was paid or deemed paid to this participant (e.g. cash it collected itself), if before payout. */
+  participantPaymentAt: number | null;
+  tdsTriggerAt: number;
+  tdsTriggerType: "CREDIT" | "PAYMENT";
+}
+
+/** Earlier of credit or payment; a payment strictly before the credit makes it PAYMENT. */
+export function tdsTriggerOf(creditAt: number | null, paymentAt: number | null): TdsTriggerFacts {
+  const credit = creditAt && creditAt > 0 ? creditAt : null;
+  const payment = paymentAt && paymentAt > 0 ? paymentAt : null;
+  const paymentFirst = payment !== null && (credit === null || payment < credit);
+  return {participantCreditAt: credit, participantPaymentAt: payment,
+    tdsTriggerAt: paymentFirst ? payment! : credit ?? payment ?? 0, tdsTriggerType: paymentFirst ? "PAYMENT" : "CREDIT"};
+}
+
+/**
+ * CBDT Circular 20/2023: GST is left out of the TDS base only when TDS falls at
+ * CREDIT and the GST is separately identified in the participant's own invoice
+ * or settlement record at that point; at an earlier PAYMENT, the whole amount.
+ */
+export function ecommerceTdsBase(input: {grossPaise: number; separatelyStatedGstPaise: number; gstIdentifiedOnRecord: boolean;
+  trigger: TdsTriggerFacts}): {basePaise: number; gstSeparatelyIdentifiedAtTdsTrigger: boolean} {
+  const identified = input.trigger.tdsTriggerType === "CREDIT" && input.gstIdentifiedOnRecord && input.separatelyStatedGstPaise > 0;
+  return {basePaise: Math.max(0, input.grossPaise - (identified ? input.separatelyStatedGstPaise : 0)),
+    gstSeparatelyIdentifiedAtTdsTrigger: identified};
+}

@@ -122,9 +122,10 @@ describe("tax on delivery", () => {
     db.seed("private/taxLaw", TDS_ON);
     seedOrder(db, "o1", false);
     const entry = await recordDeliveredOrderTax({id: "o1", restaurantId: "dairy-1", deliveredAt: at}, db as unknown as FirestoreLike);
-    // No GST separately identified (GST_LIVE off): TDS on the full ₹210, not ₹200.
-    expect(entry).toMatchObject({gstApplied: false, tdsApplied: true, gstTcsPaise: 0, incomeTaxTdsPaise: 21, invoices: []});
-    expect(entry!.taxHeads).toMatchObject({seller_income_tax_tds: 21, gst_tcs_section_52: 0, product_gst: 0});
+    // SCRAVEIT's GST switch is off, but the registered seller's own invoice states its ₹10 GST: base ₹200.
+    expect(entry).toMatchObject({gstApplied: false, tdsApplied: true, gstTcsPaise: 0, incomeTaxTdsPaise: 20, invoices: [],
+      sellerTdsTrigger: {tdsTriggerType: "CREDIT", tdsTriggerAt: at, participantPaymentAt: null, gstSeparatelyIdentifiedAtTdsTrigger: true}});
+    expect(entry!.taxHeads).toMatchObject({seller_income_tax_tds: 20, gst_tcs_section_52: 0, product_gst: 0});
     expect(withholdingJournal(entry!)!.entries.map((line) => line.accountId).sort())
       .toEqual(["liability:income-tax-tds-payable", "liability:restaurant-payable:dairy-1"]);
   });

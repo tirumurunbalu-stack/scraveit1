@@ -27,6 +27,8 @@ import {
   perquisiteTdsOnCredit,
   riderPaymentCategoryOf,
   tdsRouteOf,
+  tdsTriggerOf,
+  type TdsTriggerFacts,
   type RiderPaymentTaxCategory,
 } from "../domain/riderPaymentTax";
 import {
@@ -210,6 +212,8 @@ export interface RiderPlatformPayment {
   tdsNormallyDuePaise: number;
   offsetPaise: number;
   tdsPaise: number;
+  /** Credited to the rider when the journal posts; paid only at a later payout. */
+  trigger: TdsTriggerFacts;
 }
 
 export function riderPlatformPaymentJournal(payment: RiderPlatformPayment): LedgerJournal | null {
@@ -306,7 +310,8 @@ export async function applyRiderPlatformPayment(settings: TaxSettings,
     }
     const payment: RiderPlatformPayment = {sourceJournalId: source.journalId, riderId, component, financialYear,
       occurredAt: source.occurredAt, amountPaise: credit.amountPaise, riderPaymentTaxCategory: category, tdsRoute: effectiveRoute,
-      section: employee ? "Salary (payroll)" : section, rateBps, tdsNormallyDuePaise: due, offsetPaise: offset, tdsPaise: deducted};
+      section: employee ? "Salary (payroll)" : section, rateBps, tdsNormallyDuePaise: due, offsetPaise: offset, tdsPaise: deducted,
+      trigger: tdsTriggerOf(source.occurredAt, null)};
     transaction.set(markerRef, payment);
     return {payment, fresh: true};
   });

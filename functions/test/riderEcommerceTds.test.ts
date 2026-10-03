@@ -13,6 +13,8 @@ import {sweepRiderContractorTds} from "../src/services/riderTds";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {platformFeeSplit} from "../src/domain/deliverySupplierSettlement";
 import {normalizeFeeOwnership} from "../src/domain/orderTax";
+import {ecommerceTdsBase, tdsTriggerOf} from "../src/domain/riderPaymentTax";
+import {normalizeTaxSettings} from "../src/services/taxEngine";
 import {
   deliverySettlementReversalJournals,
   recordDeliveredOrderTax,
@@ -185,26 +187,56 @@ describe("SCRAVEIT platform fee: GST-inclusive or GST-exclusive", () => {
   });
 });
 
-describe("rider e-commerce TDS base: separately stated GST excluded only at CREDIT", () => {
-  it("TDS at PAYMENT (before the GST can be identified): base is the whole amount, GST included", async () => {
-    const {database} = setup({panNumber: "ABCCR1234K", legalEntityType: "COMPANY", riderGstRegistered: true, riderGstin: "37ABCCR1234K1Z5"},
-      {...LIVE, tdsTrigger: "PAYMENT"});
-    const entry = (await deliver(database))!;
-    expect(entry.riderEcommerceTds).toMatchObject({basePaise: DELIVERY_FEE + 1_080, tdsPaise: 7});
-    expect(entry.deliverySettlement).toMatchObject({tds_trigger: "PAYMENT", gst_separately_identified_at_tds_trigger: false,
-      rider_ecommerce_tds_base: DELIVERY_FEE + 1_080});
+describe("TDS falls at the earlier of credit or payment, per transaction", () => {
+  const registeredCompany = {panNumber: "ABCCR1234K", legalEntityType: "COMPANY", riderGstRegistered: true, riderGstin: "37ABCCR1234K1Z5"};
+
+  it("works out the trigger from what happened: a payment strictly before the credit makes it PAYMENT", () => {
+    expect(tdsTriggerOf(1_000, null)).toEqual({participantCreditAt: 1_000, participantPaymentAt: null, tdsTriggerAt: 1_000, tdsTriggerType: "CREDIT"});
+    expect(tdsTriggerOf(1_000, 1_000)).toMatchObject({tdsTriggerType: "CREDIT", tdsTriggerAt: 1_000});
+    expect(tdsTriggerOf(1_000, 900)).toMatchObject({tdsTriggerType: "PAYMENT", tdsTriggerAt: 900});
+    expect(normalizeTaxSettings({tdsTrigger: "PAYMENT"})).not.toHaveProperty("tdsTrigger");
   });
 
-  it("seller TDS: goods GST excluded at CREDIT with GST stated, included at PAYMENT", () => {
+  it("credited first with the rider's GST in its settlement record: GST left out (₹60, TDS 6 paise)", async () => {
+    const {database} = setup(registeredCompany);
+    const entry = (await deliver(database))!;
+    expect(entry.riderEcommerceTds).toMatchObject({basePaise: DELIVERY_FEE, tdsPaise: 6,
+      trigger: {tdsTriggerType: "CREDIT", participantCreditAt: at + 1, gstSeparatelyIdentifiedAtTdsTrigger: true}});
+  });
+
+  it("paid before the credit (a recorded advance): PAYMENT rules - the whole ₹70.80", async () => {
+    const {database} = setup(registeredCompany);
+    const entry = (await recordDeliveredOrderTax({id: "o1", restaurantId: "rest-1", riderId: "r1", deliveredAt: at + 1,
+      riderPaidAt: at - 60_000}, database))!;
+    expect(entry.riderEcommerceTds).toMatchObject({basePaise: DELIVERY_FEE + 1_080, tdsPaise: 7,
+      trigger: {tdsTriggerType: "PAYMENT", tdsTriggerAt: at - 60_000, gstSeparatelyIdentifiedAtTdsTrigger: false}});
+    expect(entry.deliverySettlement).toMatchObject({tds_trigger: "PAYMENT", participant_payment_at: at - 60_000,
+      tds_trigger_at: at - 60_000, gst_separately_identified_at_tds_trigger: false, rider_ecommerce_tds_base: DELIVERY_FEE + 1_080});
+  });
+
+  it("cash the rider collects on delivery is a deemed payment at that same moment, not earlier: still CREDIT", async () => {
+    const {database} = setup(registeredCompany);
+    const entry = (await recordDeliveredOrderTax({id: "o1", restaurantId: "rest-1", riderId: "r1", deliveredAt: at + 1,
+      paymentMethod: "cod"}, database))!;
+    expect(entry.riderEcommerceTds!.trigger).toMatchObject({tdsTriggerType: "CREDIT", participantPaymentAt: at + 1});
+  });
+
+  it("seller: its own invoice decides - a GST invoice states the ₹10, a composition bill of supply does not", () => {
     const ghee = [{productId: "g", name: "Ghee", quantity: 1, linePaise: 21_000,
       taxRules: [{effectiveFrom: 0, effectiveTo: 0, hsnCode: "0405", gstRateBps: 500, taxability: "taxable" as const, prepackagedLabelled: true}]}];
     const base = {at, storeKind: "dairy" as const, seller, customerStateCode: "37", items: ghee, sellerDiscountPaise: 0,
       platformDiscountPaise: 0, commissionPaise: 0, fees: {deliveryFeePaise: 0, platformFeePaise: 0, smallOrderFeePaise: 0,
         lateNightFeePaise: 0, rainFeePaise: 0, kitchenFeePaise: 0, riderSurgeFeePaise: 0, riderIncentiveFeePaise: 0}};
-    expect(computeOrderTax(law, {...base, tdsTrigger: "CREDIT"}).incomeTaxTds).toMatchObject({basePaise: 20_000,
-      tdsTrigger: "CREDIT", gstSeparatelyIdentifiedAtTdsTrigger: true});
-    expect(computeOrderTax(law, {...base, tdsTrigger: "PAYMENT"}).incomeTaxTds).toMatchObject({basePaise: 21_000,
-      gstSeparatelyIdentifiedAtTdsTrigger: false});
+    // SCRAVEIT's GST switch makes no difference: only the seller's invoice does.
+    for (const gstApplies of [true, false]) {
+      expect(computeOrderTax(law, {...base, gstApplies}).incomeTaxTds).toMatchObject({basePaise: 20_000, grossBasePaise: 21_000,
+        separatelyStatedGstPaise: 1_000, gstIdentifiedOnInvoice: true});
+    }
+    const composition = computeOrderTax(law, {...base, seller: {...seller, registrationType: "composition"}}).incomeTaxTds;
+    expect(composition).toMatchObject({basePaise: 21_000, separatelyStatedGstPaise: 0, gstIdentifiedOnInvoice: false});
+    // Paid before credit: the whole amount, even with a GST invoice.
+    expect(ecommerceTdsBase({grossPaise: 21_000, separatelyStatedGstPaise: 1_000, gstIdentifiedOnRecord: true,
+      trigger: tdsTriggerOf(2_000, 1_000)})).toEqual({basePaise: 21_000, gstSeparatelyIdentifiedAtTdsTrigger: false});
   });
 });
 
@@ -241,24 +273,30 @@ describe("refunds and reversals", () => {
       scraveitFundedDeliveryCompensation: {amountPaise: TRIP_PAY, taxCategory: "DELIVERY_SERVICE_CONSIDERATION"}});
     const reversals = deliverySettlementReversalJournals(refunded);
     const byEvent = (suffix: string) => reversals.find((journal) => journal.eventId.endsWith(suffix))!;
-    const feeReversal = byEvent("rider-platform-fee:reversed");
     const gstReversal = byEvent("delivery-gst:reversed");
-    // −₹60: the customer's whole delivery consideration reversed (rider ₹45 + SCRAVEIT ₹15) ...
-    const consideration = byEvent("customer-consideration-reversed");
-    expect(consideration.metadata).toMatchObject({customerDeliveryConsiderationReversedPaise: DELIVERY_FEE, riderSharePaise: TRIP_PAY});
+    // 1. −₹60: the rider's whole gross delivery consideration reversed - the ₹60 was the rider's, not split.
+    const consideration = byEvent("rider-consideration-reversed");
+    expect(consideration.metadata).toMatchObject({riderGrossDeliveryConsiderationReversedPaise: DELIVERY_FEE});
     expect(consideration.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "debit", amountPaise: TRIP_PAY}),
-      expect.objectContaining({accountId: "revenue:platform-fees", side: "debit", amountPaise: DELIVERY_FEE - TRIP_PAY}),
+      expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "debit", amountPaise: DELIVERY_FEE}),
       expect.objectContaining({accountId: "asset:refund-settlement-recovery:o1", side: "credit", amountPaise: DELIVERY_FEE})]));
-    // ... then +₹45 separately: SCRAVEIT compensates the rider for the delivery it performed.
+    expect(JSON.stringify(reversals)).not.toMatch(/share/i);
+    // 2. +₹15: SCRAVEIT's platform fee (₹12.71) and its GST (₹2.29) reversed back to the rider's settlement.
+    const feeReversal = byEvent("rider-platform-fee-reversed");
+    expect(feeReversal.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({accountId: "revenue:scraveit-rider-platform-fee", side: "debit", amountPaise: 1_271}),
+      expect.objectContaining({accountId: "liability:tax-payable", side: "debit", amountPaise: 229}),
+      expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "credit", amountPaise: 1_500})]));
+    // 3. +₹45: SCRAVEIT compensates the rider for the delivery it performed. Rider: −60 + 15 + 45 = 0.
     const compensation = byEvent("scraveit-funded-delivery-compensation");
     expect(compensation.metadata).toMatchObject({riderPaymentTaxCategory: "DELIVERY_SERVICE_CONSIDERATION"});
     expect(compensation.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "expense:scraveit-funded-delivery-compensation", side: "debit", amountPaise: TRIP_PAY}),
       expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "credit", amountPaise: TRIP_PAY})]));
-    expect(feeReversal!.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({accountId: "revenue:scraveit-rider-platform-fee", side: "debit", amountPaise: 1_271}),
-      expect.objectContaining({accountId: "liability:tax-payable", side: "debit", amountPaise: 229})]));
+    const riderNet = reversals.filter((journal) => !journal.eventId.endsWith("delivery-gst:reversed")).flatMap((journal) => journal.entries)
+      .filter((line) => line.accountId === "liability:rider-earnings:r1")
+      .reduce((sum, line) => sum + (line.side === "credit" ? line.amountPaise : -line.amountPaise), 0);
+    expect(riderNet).toBe(0);
     expect(gstReversal!.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({accountId: "liability:rider-earnings:r1", side: "debit", amountPaise: 1_080})]));
   });

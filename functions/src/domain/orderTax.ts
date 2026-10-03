@@ -31,6 +31,11 @@ export interface SellerTaxProfile {
   gstin: string;
   /** Not registered although its turnover makes registration compulsory. */
   registrationLiable?: boolean;
+  /**
+   * The seller's own invoice states its GST separately (a regular GST invoice
+   * does; a composition bill of supply does not). Defaults from the registration.
+   */
+  invoiceStatesGstSeparately?: boolean;
   /** Enrolment number for an unregistered seller under Notification 34/2023. */
   ecoEnrolmentNo: string;
   pan: string;
@@ -188,12 +193,7 @@ export interface OrderTaxInput {
   gstApplies?: boolean;
   /** The store's approved composite-supply classification, if any. */
   composite?: CompositeClassification;
-  /**
-   * CBDT Circular 20/2023: separately stated GST is left out of the e-commerce
-   * TDS base only when TDS is deducted at CREDIT and the GST is identified then.
-   * Defaults to: GST applies and the trigger is CREDIT.
-   */
-  tdsTrigger?: "CREDIT" | "PAYMENT";
+
   delivery?: DeliveryTaxContext;
   storeKind: StoreKind;
   seller: SellerTaxProfile;
@@ -309,7 +309,9 @@ export interface OrderTax {
   gstTcs: GstSplit & {basePaise: number; rateBps: number; totalPaise: number; applies: boolean; reason: string};
   /** Base and rate only; the amount is settled at delivery with the seller's yearly total. */
   incomeTaxTds: {section: string; basePaise: number; rateBps: number; individualExemptUptoPaise: number;
-    thresholdApplies: boolean; tdsTrigger?: "CREDIT" | "PAYMENT"; gstSeparatelyIdentifiedAtTdsTrigger?: boolean};
+    thresholdApplies: boolean;
+    /** Whole amount (GST included) and the GST the seller's invoice states separately: the base is decided at the trigger. */
+    grossBasePaise?: number; separatelyStatedGstPaise?: number; gstIdentifiedOnInvoice?: boolean};
   /** In paise, one field per tax. TDS heads are 0 here: they are fixed on delivery / on credit. */
   taxHeads: TaxHeads;
   /** REGISTRATION_REQUIRED when the delivery supplier must register first. */
@@ -507,8 +509,14 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
   // A self-delivering store's delivery service is also its sale through SCRAVEIT (GST excluded).
   const storeDeliveryService = services.find((line) => line.component === "delivery_fee" &&
     (line.supplier === "seller" || line.basis === "store_section_9_5"));
-  const gstIdentifiedAtTds = (input.tdsTrigger ?? "CREDIT") === "CREDIT" && input.gstApplies !== false && goodsTotal > 0;
-  const tdsBase = (isGoods && tdsRule?.baseExcludesGst !== false && gstIdentifiedAtTds ? sale - goodsTotal : sale) +
+  // The seller's invoice fact, not SCRAVEIT's GST switch: a regular GST invoice states the GST separately.
+  const invoiceStatesGst = input.seller.invoiceStatesGstSeparately ??
+    (input.seller.registrationType === "regular" && input.seller.gstin.length === 15);
+  const statedGst = isGoods && tdsRule?.baseExcludesGst !== false && invoiceStatesGst ? goodsTotal : 0;
+  const tdsGross = sale +
+    (storeDeliveryService && storeDeliveryService.basis !== "registration_required" ? storeDeliveryService.basePaise : 0);
+  // Provisional base for a credit-first transaction; the delivery step re-decides it at the actual trigger.
+  const tdsBase = sale - statedGst +
     (storeDeliveryService && storeDeliveryService.basis !== "registration_required" ? storeDeliveryService.basePaise : 0);
   const individual = input.seller.entityType === "individual" || input.seller.entityType === "huf";
 
@@ -553,8 +561,9 @@ export function computeOrderTax(law: TaxLaw, input: OrderTaxInput): OrderTax {
       rateBps: !tdsRule ? 0 : input.seller.panFurnished ? tdsRule.rateBps : tdsRule.noPanRateBps,
       individualExemptUptoPaise: tdsRule?.individualExemptUptoPaise ?? 0,
       thresholdApplies: individual && input.seller.panFurnished,
-      tdsTrigger: input.tdsTrigger ?? "CREDIT",
-      gstSeparatelyIdentifiedAtTdsTrigger: gstIdentifiedAtTds,
+      grossBasePaise: tdsRule ? Math.max(0, tdsGross) : 0,
+      separatelyStatedGstPaise: statedGst,
+      gstIdentifiedOnInvoice: invoiceStatesGst,
     },
   };
 }

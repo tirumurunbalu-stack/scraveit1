@@ -25,7 +25,10 @@ import {
 } from "../domain/orderTax";
 import {
   applyTdsOffset,
+  ecommerceTdsBase,
   normalizeRiderPaymentCategories,
+  tdsTriggerOf,
+  type TdsTriggerFacts,
   type RiderPaymentCategoryMap,
   type RiderPaymentTaxCategory,
   tdsOffsetPoolKey,
@@ -86,8 +89,7 @@ export interface TaxSettings {
   gstActivationBlockers: string[];
   /** Why TDS_LIVE cannot take effect yet (empty when it can). Independent of GST. */
   tdsActivationBlockers: string[];
-  /** When e-commerce TDS is deducted: at CREDIT (GST stated separately can be excluded) or at an earlier PAYMENT. */
-  tdsTrigger: "CREDIT" | "PAYMENT";
+
   /** TDS_LIVE as set. */
   tdsLive: boolean;
   /** TDS_LIVE, a valid TAN, TAN_VERIFIED and every TDS-base-impacting classification confirmed: TDS is actually deducted. */
@@ -178,7 +180,7 @@ export function normalizeTaxSettings(value: unknown): TaxSettings {
     gstActive: gstLive && validGstin(scraveitGstin) && blockers.gst.length === 0,
     gstActivationBlockers: blockers.gst,
     tdsActivationBlockers: blockers.tds,
-    tdsTrigger: input.tdsTrigger === "PAYMENT" ? "PAYMENT" : "CREDIT",
+
     tdsLive,
     tdsActive: tdsLive && validTan(scraveitTan) && tanVerified && blockers.tds.length === 0,
     riderPaymentTaxCategories: normalizeRiderPaymentCategories(input.riderPaymentTaxCategories),
@@ -220,6 +222,7 @@ export function sellerTaxProfile(privateRecord: unknown, defaultStateCode: strin
     gstin,
     ecoEnrolmentNo: String(tax.ecoEnrolmentNo ?? "").slice(0, 40),
     registrationLiable: tax.registrationLiable === true,
+    ...(typeof tax.invoiceStatesGstSeparately === "boolean" ? {invoiceStatesGstSeparately: tax.invoiceStatesGstSeparately} : {}),
     pan,
     panFurnished: tax.panFurnished === true || pan.length === 10,
     entityType: (ENTITY_TYPES as readonly string[]).includes(String(tax.entityType)) ? tax.entityType as EntityType : "other",
@@ -284,7 +287,7 @@ export function checkoutOrderTax(context: CheckoutTaxContext): OrderTax {
     ...computeOrderTax(context.settings.law, {
       at: context.at,
       gstApplies: context.settings.gstActive,
-      tdsTrigger: context.settings.tdsTrigger,
+
       feeOwnership: context.settings.feeOwnership,
       ...(compositeClassificationOf(context.restaurant) ? {composite: compositeClassificationOf(context.restaurant)} : {}),
       delivery: checkoutDeliveryContext(deliverySupplierFor(context.settings, context.restaurant),
@@ -490,6 +493,8 @@ export interface WithholdingRecord {
     resolvedAt?: number; resolvedBy?: string; note?: string};
   /** The seller's PAN when its TDS was worked out: the offset pool's deductee. */
   sellerPan?: string;
+  /** When the seller's TDS fell due (earlier of credit or payment) and whether its invoice GST was left out. */
+  sellerTdsTrigger?: TdsTriggerFacts & {gstSeparatelyIdentifiedAtTdsTrigger: boolean};
   /** Seller e-commerce TDS: what was due, what a returned transaction's TDS covered, what was deducted. */
   incomeTaxTdsNormallyDuePaise?: number;
   incomeTaxTdsOffsetPaise?: number;
@@ -503,6 +508,7 @@ export interface WithholdingRecord {
   riderEcommerceTds?: {riderId: string; financialYear: string; basePaise: number; rateBps: number;
     /** Actually deducted = normally due − offset. */
     tdsPaise: number; tdsNormallyDuePaise: number; offsetPaise: number; pan: string;
+    trigger?: TdsTriggerFacts & {gstSeparatelyIdentifiedAtTdsTrigger: boolean};
     requiredYtdPaise: number; catchUpBasePaise: number};
   /** GST TCS u/s 52 withheld from a GST-registered rider's delivery service. */
   riderDeliveryTcsPaise?: number;
@@ -581,7 +587,9 @@ export function riderDeliveryContext(rider: unknown, supplier: DeliveryServiceSu
 }
 
 export async function recordDeliveredOrderTax(
-  order: {id: string; restaurantId: string; riderId?: string; deliveredAt?: number; updatedAt?: number},
+  order: {id: string; restaurantId: string; riderId?: string; deliveredAt?: number; updatedAt?: number; paymentMethod?: string;
+    /** Actual payments to a participant before the delivery credit (e.g. an advance payout), if any. */
+    riderPaidAt?: number; storePaidAt?: number},
   database: FirestoreLike = firestoreDb,
 ): Promise<WithholdingRecord | null> {
   const economics = await database.collection("orderEconomics").doc(order.id).get();
@@ -651,7 +659,16 @@ export async function recordDeliveredOrderTax(
     const yearData = record(year.exists ? year.data() : {});
     const before = Number(yearData.grossPaise ?? 0) || 0;
     const deductedBefore = Number(yearData.tdsDeductedPaise ?? 0) || 0;
-    const tdsDue = tdsApplied ? incomeTaxTdsAtDelivery(tax.incomeTaxTds, before, deductedBefore)
+    // The seller is credited on delivery. It is paid earlier only by a recorded advance, or - store
+    // self-delivery with cash on delivery - when it collects the customer's money itself (deemed payment).
+    const sellerTrigger = tdsTriggerOf(recordedAt, order.storePaidAt ??
+      (supplier === "RESTAURANT" && order.paymentMethod === "cod" ? recordedAt : null));
+    const sellerBase = ecommerceTdsBase({grossPaise: tax.incomeTaxTds.grossBasePaise ?? tax.incomeTaxTds.basePaise,
+      separatelyStatedGstPaise: tax.incomeTaxTds.separatelyStatedGstPaise ?? 0,
+      gstIdentifiedOnRecord: tax.incomeTaxTds.gstIdentifiedOnInvoice ?? false, trigger: sellerTrigger});
+    // Orders priced before these fields existed keep their stored base.
+    const sellerTdsBasePaise = tax.incomeTaxTds.grossBasePaise === undefined ? tax.incomeTaxTds.basePaise : sellerBase.basePaise;
+    const tdsDue = tdsApplied ? incomeTaxTdsAtDelivery({...tax.incomeTaxTds, basePaise: sellerTdsBasePaise}, before, deductedBefore)
       : {tdsPaise: 0, yearGrossAfterPaise: before, requiredYtdPaise: 0, catchUpBasePaise: 0};
     // tdsNormallyDue − availableTdsOffset = tdsActuallyDeducted
     const sellerOffset = applyTdsOffset(sellerPool, tdsDue.tdsPaise, sellerScope);
@@ -672,11 +689,16 @@ export async function recordDeliveredOrderTax(
     const riderGrossBefore = Number(riderYearData.grossPaise ?? 0) || 0;
     const riderDeductedBefore = Number(riderYearData.tdsDeductedPaise ?? 0) || 0;
     // The rider's services: the customer's consideration plus any delivery-linked SCRAVEIT top-up (a guarantee).
-    // A registered rider's own GST stays out only when TDS is at CREDIT and the GST is identified then.
+    // The rider is credited on delivery. It is paid earlier only by a recorded advance; cash it collects
+    // itself on delivery is a deemed payment at that same moment. The customer's own earlier payment to
+    // SCRAVEIT is not a payment to a rider who was not yet identified.
+    const riderTrigger = tdsTriggerOf(recordedAt, order.riderPaidAt ?? (order.paymentMethod === "cod" ? recordedAt : null));
+    // A registered rider's own GST, actually charged and stated separately in its settlement record.
     const riderSupplierGst = deliveryLine?.supplier === "rider" && gstApplied ? deliveryLine.gstPaise : 0;
-    const riderGstIdentified = settings.tdsTrigger === "CREDIT" && riderSupplierGst > 0;
-    const riderServiceBase = deliveryLine
-      ? Math.max(deliveryLine.basePaise, operationalPay) + (riderSupplierGst > 0 && !riderGstIdentified ? riderSupplierGst : 0) : 0;
+    const riderBase = ecommerceTdsBase({grossPaise: (deliveryLine ? Math.max(deliveryLine.basePaise, operationalPay) : 0) + riderSupplierGst,
+      separatelyStatedGstPaise: riderSupplierGst, gstIdentifiedOnRecord: riderSupplierGst > 0, trigger: riderTrigger});
+    const riderGstIdentified = riderBase.gstSeparatelyIdentifiedAtTdsTrigger;
+    const riderServiceBase = deliveryLine ? riderBase.basePaise : 0;
     const riderEcomDue = riderEcomApplies ? incomeTaxTdsAtDelivery({section: riderEcomRule!.section, basePaise: riderServiceBase,
       rateBps: identity.pan ? riderEcomRule!.rateBps : riderEcomRule!.noPanRateBps,
       individualExemptUptoPaise: riderEcomRule!.individualExemptUptoPaise, thresholdApplies: riderIndividual && !!identity.pan},
@@ -693,7 +715,7 @@ export async function recordDeliveredOrderTax(
       supplier, supplierId: supplier === "RESTAURANT" ? order.restaurantId : riderId, line: deliveryLine,
       operationalPayPaise: operationalPay, tcsPaise: supplierTcs, riderEcommerceTdsPaise: riderEcom?.tdsPaise ?? 0,
       storeDeliveryTdsPaise: storeDeliveryTds, policy: settings.supplierFeePolicy,
-      tdsTrigger: settings.tdsTrigger, gstSeparatelyIdentifiedAtTdsTrigger: riderGstIdentified || riderSupplierGst === 0}) ?? undefined : undefined;
+      trigger: riderTrigger, gstSeparatelyIdentifiedAtTdsTrigger: riderGstIdentified}) ?? undefined : undefined;
     const value: WithholdingRecord = {
       orderId: order.id, restaurantId: order.restaurantId, financialYear: tax.financialYear!,
       gstApplied, tdsApplied, riderDeliveryTcsPaise,
@@ -703,10 +725,12 @@ export async function recordDeliveredOrderTax(
       ...(riderEcom ? {riderEcommerceTds: {riderId, financialYear: tax.financialYear!, basePaise: riderServiceBase,
         rateBps: identity.pan ? riderEcomRule!.rateBps : riderEcomRule!.noPanRateBps, tdsPaise: riderEcom.tdsPaise,
         tdsNormallyDuePaise: riderEcom.tdsNormallyDuePaise, offsetPaise: riderEcom.offsetPaise, pan: identity.pan,
+        trigger: {...riderTrigger, gstSeparatelyIdentifiedAtTdsTrigger: riderGstIdentified},
         requiredYtdPaise: riderEcom.requiredYtdPaise, catchUpBasePaise: riderEcom.catchUpBasePaise}} : {}),
       gstTcsPaise: sellerTcs,
       gstTcs: {cgstPaise: tax.gstTcs.cgstPaise, sgstPaise: tax.gstTcs.sgstPaise, igstPaise: tax.gstTcs.igstPaise, basePaise: tax.gstTcs.basePaise},
-      incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: tax.incomeTaxTds.basePaise,
+      incomeTaxTdsPaise: tds.tdsPaise, incomeTaxTdsBasePaise: sellerTdsBasePaise,
+      sellerTdsTrigger: {...sellerTrigger, gstSeparatelyIdentifiedAtTdsTrigger: sellerBase.gstSeparatelyIdentifiedAtTdsTrigger},
       incomeTaxTdsNormallyDuePaise: tdsDue.tdsPaise, incomeTaxTdsOffsetPaise: sellerOffset.offsetPaise, sellerPan,
       incomeTaxTdsCatchUpBasePaise: tds.catchUpBasePaise, incomeTaxTdsRequiredYtdPaise: tds.requiredYtdPaise,
       taxHeads: {...NO_TAX, ...(gstApplied ? tax.taxHeads ?? {} : {}),
@@ -816,8 +840,8 @@ export async function reverseOrderTaxWithholding(orderId: string, at: number,
     const riderSettlement = deliveryRefunded && settlement && settlement.delivery_service_supplier === "RIDER" ? settlement : null;
     // What the rider still has for the delivery it performed: SCRAVEIT's compensation plus any earlier top-up.
     const compensation = riderSettlement ? riderSettlement.operational_pay : 0;
-    // The rider's share of the customer's consideration, now funded by SCRAVEIT instead.
-    const compensationJournalPaise = riderSettlement ? riderShareOfConsideration(riderSettlement) : 0;
+    // What SCRAVEIT now pays the rider itself for the delivery it performed.
+    const compensationJournalPaise = riderSettlement ? riderCompensationOnRefund(riderSettlement) : 0;
     const riderBase = value.riderEcommerceTds?.basePaise ?? 0;
     // The rider's service base after the refund is only SCRAVEIT's compensation for the delivery it performed.
     const riderReturnedBase = deliveryRefunded && value.riderEcommerceTds ? Math.max(0, riderBase - compensation) : 0;
@@ -892,50 +916,65 @@ export function tcsReturnAdjustmentJournal(entry: WithholdingRecord): LedgerJour
   });
 }
 
-/** The rider's part of the customer's delivery consideration: all of it but what SCRAVEIT kept as its fee. */
-export function riderShareOfConsideration(settlement: DeliverySupplierSettlement): number {
-  const kept = settlement.platform_fee_tax_mode === "GST_EXCLUSIVE" ? settlement.scraveit_rider_platform_fee
-    : settlement.scraveit_rider_platform_fee + settlement.scraveit_rider_platform_fee_gst;
-  return Math.max(0, settlement.delivery_gross_consideration - kept);
+/**
+ * On a full refund, what SCRAVEIT itself pays a rider that performed the
+ * delivery: the rider's gross consideration less SCRAVEIT's platform fee and
+ * its GST (both reversed back to the rider), i.e. what the rider had kept.
+ */
+export function riderCompensationOnRefund(settlement: DeliverySupplierSettlement): number {
+  return Math.max(0, settlement.delivery_gross_consideration - settlement.scraveit_rider_platform_fee -
+    settlement.scraveit_rider_platform_fee_gst);
 }
 
 /**
- * The delivery settlement's economic entries, reversed when the delivery
- * charge was refunded - as an audit trail, not a net figure:
- * 1. the platform fee and its GST go back (fee reversal);
- * 2. the customer's whole delivery consideration is reversed (−₹60: the
- *    rider's share and SCRAVEIT's share, against the refund recovery);
- * 3. SCRAVEIT separately compensates the rider for the delivery it performed
- *    (+₹45, DELIVERY_SERVICE_CONSIDERATION, an explicit SCRAVEIT expense);
- * 4. a registered rider's own GST goes back to be refunded.
+ * The delivery settlement reversed when the delivery charge was refunded, as
+ * an audit trail in the RIDER-supplier model (the whole consideration was the
+ * rider's; SCRAVEIT's fee was a separate charge to the rider):
+ * 1. −₹60: the rider's gross delivery consideration reversed (refund recovery);
+ * 2. +₹15: SCRAVEIT's platform fee and its GST reversed back to the rider;
+ * 3. +₹45: SCRAVEIT-funded compensation for the delivery the rider performed
+ *    (DELIVERY_SERVICE_CONSIDERATION, a SCRAVEIT expense).
+ * Net for the rider: −60 + 15 + 45 = 0; SCRAVEIT bears the ₹45.
+ * 4. A registered rider's own GST goes back to be refunded to the customer.
  */
 export function deliverySettlementReversalJournals(entry: WithholdingRecord): LedgerJournal[] {
   const settlement = entry.deliverySettlement;
   if (!settlement || !entry.deliverySettlementReversal) return [];
   const at = entry.deliverySettlementReversal.reversedAt;
   const journals: LedgerJournal[] = [];
-  const fee = riderPlatformFeeJournal(entry.orderId, at, settlement, true);
-  if (fee) journals.push(fee);
+  const rider = `liability:rider-earnings:${settlement.supplier_id}`;
   if (settlement.delivery_service_supplier === "RIDER" && settlement.delivery_gross_consideration > 0) {
-    const riderShare = riderShareOfConsideration(settlement);
-    const scraveitShare = settlement.delivery_gross_consideration - riderShare;
-    const rider = `liability:rider-earnings:${settlement.supplier_id}`;
     journals.push(createLedgerJournal({
       eventType: "delivery_settlement",
-      eventId: `order:${entry.orderId}:customer-consideration-reversed`,
+      eventId: `order:${entry.orderId}:rider-consideration-reversed`,
       occurredAt: at,
       orderId: entry.orderId,
-      metadata: {riderId: settlement.supplier_id, customerDeliveryConsiderationReversedPaise: settlement.delivery_gross_consideration,
-        riderSharePaise: riderShare, scraveitSharePaise: scraveitShare},
+      metadata: {riderId: settlement.supplier_id, riderGrossDeliveryConsiderationReversedPaise: settlement.delivery_gross_consideration},
       postings: [
-        ...(riderShare > 0 ? [{accountId: rider, side: "debit" as const, amountPaise: riderShare,
-          memo: "Customer delivery consideration reversed: rider's share"}] : []),
-        ...(scraveitShare > 0 ? [{accountId: "revenue:platform-fees", side: "debit" as const, amountPaise: scraveitShare,
-          memo: "Customer delivery consideration reversed: SCRAVEIT's share"}] : []),
+        {accountId: rider, side: "debit", amountPaise: settlement.delivery_gross_consideration,
+          memo: "Rider gross delivery consideration reversed: refunded to the customer"},
         {accountId: `asset:refund-settlement-recovery:${entry.orderId}`, side: "credit", amountPaise: settlement.delivery_gross_consideration,
-          memo: "Refunded delivery consideration recovered"},
+          memo: "Refunded delivery consideration recovered from the rider's settlement"},
       ],
     }));
+    const fee = settlement.scraveit_rider_platform_fee;
+    const feeGst = settlement.scraveit_rider_platform_fee_gst;
+    if (fee + feeGst > 0) {
+      journals.push(createLedgerJournal({
+        eventType: "delivery_settlement",
+        eventId: `order:${entry.orderId}:rider-platform-fee-reversed`,
+        occurredAt: at,
+        orderId: entry.orderId,
+        metadata: {riderId: settlement.supplier_id, platformFeeTaxMode: settlement.platform_fee_tax_mode, reversal: true},
+        postings: [
+          ...(fee > 0 ? [{accountId: "revenue:scraveit-rider-platform-fee", side: "debit" as const, amountPaise: fee,
+            memo: "SCRAVEIT platform fee to the rider reversed"}] : []),
+          ...(feeGst > 0 ? [{accountId: "liability:tax-payable", side: "debit" as const, amountPaise: feeGst,
+            memo: "Output GST on the platform fee reversed"}] : []),
+          {accountId: rider, side: "credit", amountPaise: fee + feeGst, memo: "Platform fee and its GST back to the rider's settlement"},
+        ],
+      }));
+    }
     const compensation = entry.deliverySettlementReversal.scraveitFundedDeliveryCompensation;
     if (compensation.amountPaise > 0) {
       journals.push(createLedgerJournal({
