@@ -176,7 +176,7 @@ public class MainActivity extends ComponentActivity {
     splash.addView(logo, logoParams);
 
     TextView title = new TextView(this);
-    title.setText("SCRAVEIT  ADMIN");
+    title.setText("ADMIN");
     title.setTextColor(Color.rgb(161, 220, 255));
     title.setTextSize(17);
     title.setGravity(Gravity.CENTER);

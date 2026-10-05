@@ -483,6 +483,40 @@ public final class SavrivoOperationsBridge {
         }
     }
 
+    @JavascriptInterface public void verifyRiderAadhaarQr(
+            String requestId, String idToken, String payloadJson) {
+        roleCall(requestId, idToken, payloadJson, "rider", "NATIVE_AADHAAR_UNAVAILABLE",
+                (payload, done) -> SavrivoCallableClient.verifyRiderAadhaarQr(activity, idToken, payload, done));
+    }
+
+    @JavascriptInterface public void getRiderIdentityReview(
+            String requestId, String idToken, String payloadJson) {
+        roleCall(requestId, idToken, payloadJson, "admin", "NATIVE_IDENTITY_REVIEW_UNAVAILABLE",
+                (payload, done) -> SavrivoCallableClient.getRiderIdentityReview(activity, idToken, payload, done));
+    }
+
+    private interface RoleCall { void run(JSONObject payload, SavrivoCallableClient.Callback done); }
+
+    private void roleCall(String requestId, String idToken, String payloadJson, String role, String unavailable, RoleCall call) {
+        try {
+            if (payloadJson == null || payloadJson.length() > 64_000) {
+                respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                return;
+            }
+            JSONObject payload = new JSONObject(payloadJson);
+            invokeOnMain(requestId, unavailable, () -> {
+                if (!valid(requestId, idToken) || !role.equals(SavrivoFirebase.appRole(activity))) {
+                    respond(requestId, false, "{\"error\":{\"message\":\"INVALID_REQUEST\"}}");
+                    return;
+                }
+                call.run(payload, (success, json) -> respond(requestId, success, json));
+            });
+        } catch (Throwable error) {
+            Log.e(TAG, "identity bridge failed", error);
+            respond(requestId, false, "{\"error\":{\"message\":\"" + unavailable + "\"}}");
+        }
+    }
+
     @JavascriptInterface public void resolveRiderFaceReview(
             String requestId, String idToken, String payloadJson) {
         try {

@@ -39,7 +39,7 @@ public final class SavrivoCallableClient {
             "updateRiderRewardSettingsPolicy", "getRestaurantSettlementSummary",
             "getPlatformConfiguration", "updatePlatformConfigurationPolicy",
             "exportPlatformDataWorkbook", "submitRiderFaceCheckCall", "verifyRiderLoginFaceCall",
-            "resolveRiderFaceReviewCall",
+            "resolveRiderFaceReviewCall", "verifyRiderAadhaarQrCall", "getRiderIdentityReviewCall",
             // Economics engine control plane (admin) and restaurant-funded offers.
             "getEconomicsControl", "updateEconomicsControl", "simulateEconomicsOffer",
             "simulateEconomicsGuarantee", "upsertPromotionPolicy", "upsertGrowthBudget",
@@ -56,9 +56,12 @@ public final class SavrivoCallableClient {
             "reviewRestaurantOffer", "getCityEconomics", "upsertCashbackCampaign",
             "listCashbackCampaigns", "listCustomerReferrals", "reviewCustomerReferral",
             "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
-            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral"));
+            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
+            "setRestaurantAgreementTerms", "getRestaurantApplicationReview",
+            "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
-            "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance"));
+            "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
+            "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement"));
 
     public static boolean economicsFunctionAllowed(String appRole, String function) {
         if (function == null) return false;
@@ -230,6 +233,16 @@ public final class SavrivoCallableClient {
     public static void verifyRiderLoginFace(
             Context context, String idToken, JSONObject payload, Callback callback) {
         call(context, "verifyRiderLoginFaceCall", idToken, payload, callback, MAX_FACE_IMAGE_PAYLOAD_BYTES);
+    }
+
+    public static void verifyRiderAadhaarQr(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "verifyRiderAadhaarQrCall", idToken, payload, callback);
+    }
+
+    public static void getRiderIdentityReview(
+            Context context, String idToken, JSONObject payload, Callback callback) {
+        call(context, "getRiderIdentityReviewCall", idToken, payload, callback);
     }
 
     public static void resolveRiderFaceReview(

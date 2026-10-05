@@ -16,6 +16,7 @@ fi
 
 "$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-functions-rules.mjs"
 "$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-query-indexes-stage3.mjs"
+"$NODE_EXECUTABLE" "$TEST_DIR/offer_math.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/boot_smoke.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_session_recovery.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_dashboard_projection.js"

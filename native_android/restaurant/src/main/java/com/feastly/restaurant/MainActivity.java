@@ -103,7 +103,7 @@ public class MainActivity extends ComponentActivity {
     // FINAL RELEASE: restore FLAG_SECURE before production APK/AAB.
     openedAt = System.currentTimeMillis();
     FrameLayout root = new FrameLayout(this);
-    root.setBackgroundColor(Color.rgb(6, 20, 40));
+    root.setBackgroundColor(Color.WHITE);
 
     WebView view = new WebView(this);
     webView = view;
@@ -172,7 +172,9 @@ public class MainActivity extends ComponentActivity {
     splash.addView(logo, logoParams);
 
     TextView title = new TextView(this);
-    title.setText("SCRAVEIT  RESTAURANT");
+    // The logo spells out Scraveit; the line under it names this app (Restaurant, Grocery or Dairy).
+    String storeKind = getString(R.string.app_name).replace("Scraveit", "").trim().toUpperCase(java.util.Locale.ROOT);
+    title.setText(storeKind);
     title.setTextColor(Color.rgb(161, 220, 255));
     title.setTextSize(17);
     title.setGravity(Gravity.CENTER);
@@ -183,7 +185,7 @@ public class MainActivity extends ComponentActivity {
     splash.addView(title, titleParams);
 
     TextView tag = new TextView(this);
-    tag.setText("RUN YOUR RESTAURANT");
+    tag.setText("DAIRY".equals(storeKind) ? "RUN YOUR DAIRY" : "GROCERY".equals(storeKind) ? "RUN YOUR STORE" : "RUN YOUR RESTAURANT");
     tag.setTextColor(Color.rgb(104, 159, 205));
     tag.setTextSize(9);
     tag.setGravity(Gravity.CENTER);
@@ -397,6 +399,11 @@ public class MainActivity extends ComponentActivity {
       String safePath = objectPath == null ? "" : objectPath.trim();
       runOnUiThread(() -> beginPreparedImageUpload(safeRequestId, safeToken, safePath, preparedImageFile));
     }
+    /** Reads the text on the photo just chosen (FSSAI number, PAN, IFSC), on the phone. */
+    @JavascriptInterface public void readPreparedText(String requestId) {
+      String safeRequestId = requestId == null ? "" : requestId.trim();
+      runOnUiThread(() -> recognizePreparedText(safeRequestId, preparedImageFile));
+    }
     @JavascriptInterface public void uploadPreparedThumb(String requestId, String idToken,
                                                           String objectPath) {
       String safeRequestId = requestId == null ? "" : requestId.trim();
@@ -422,7 +429,9 @@ public class MainActivity extends ComponentActivity {
       return;
     }
     boolean validPath = objectPath.matches(
-        "restaurants/[A-Za-z0-9_-]{1,128}/users/[A-Za-z0-9_-]{1,128}/(?:cover|menu/[A-Za-z0-9_-]{1,180})/[A-Za-z0-9_.-]{1,180}\\.jpg");
+        "restaurants/[A-Za-z0-9_-]{1,128}/users/[A-Za-z0-9_-]{1,128}/(?:cover|menu/[A-Za-z0-9_-]{1,180})/[A-Za-z0-9_.-]{1,180}\\.jpg")
+        // Sign-up documents (FSSAI, PAN, bank proof, menu card): private, the applicant's own folder.
+        || objectPath.matches("private/restaurant-onboarding/[A-Za-z0-9_-]{1,128}/[a-z]{2,20}-[0-9]{6,16}\\.jpg");
     if (!requestId.matches("[A-Za-z0-9_-]{1,80}") || idToken.length() < 20
         || idToken.length() > 8192 || !validPath || source == null || !source.isFile()) {
       publishImageUpload(requestId, false,
@@ -442,6 +451,31 @@ public class MainActivity extends ComponentActivity {
             ? "Firebase Storage could not upload this image." : message);
       }
     });
+  }
+
+  private void recognizePreparedText(String requestId, File source) {
+    if (!isTrustedPageLoaded() || !requestId.matches("[A-Za-z0-9_-]{1,80}") || source == null || !source.isFile()) {
+      publishPreparedText(requestId, "");
+      return;
+    }
+    try {
+      com.google.mlkit.vision.common.InputImage image =
+          com.google.mlkit.vision.common.InputImage.fromFilePath(this, Uri.fromFile(source));
+      com.google.mlkit.vision.text.TextRecognition.getClient(
+              com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+          .process(image)
+          .addOnSuccessListener(result -> publishPreparedText(requestId, result.getText()))
+          .addOnFailureListener(error -> publishPreparedText(requestId, ""));
+    } catch (Exception error) {
+      publishPreparedText(requestId, "");
+    }
+  }
+
+  private void publishPreparedText(String requestId, String text) {
+    if (webView == null || !isTrustedPageLoaded()) return;
+    String safe = text == null ? "" : text.length() > 6000 ? text.substring(0, 6000) : text;
+    webView.evaluateJavascript("window.restaurantTextRead&&window.restaurantTextRead(" + JSONObject.quote(requestId)
+        + "," + JSONObject.quote(safe) + ")", null);
   }
 
   private String uploadImageToFirebase(File source, String idToken, String objectPath)

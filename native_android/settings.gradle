@@ -16,6 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "SavrivoAndroid"
 
-include(":customer", ":rider", ":restaurant", ":admin")
+include(":customer", ":rider", ":restaurant", ":admin", ":planner")
 project(":customer").projectDir = file("app")
 
