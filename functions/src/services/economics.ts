@@ -316,6 +316,18 @@ export interface CheckoutEconomicsPlan {
   guardrailEnabled: boolean;
 }
 
+/**
+ * The commission this restaurant agreed to: its own rate when Scraveit has
+ * set one on the restaurant (admin only), otherwise the platform default. A
+ * dated commercial plan, when active, still wins over both.
+ */
+export function restaurantCommissionBps(restaurant: Pick<CatalogRestaurant, "commissionBps">, defaultBps: number): number {
+  const raw = restaurant.commissionBps as unknown;
+  if (raw === undefined || raw === null || raw === "") return defaultBps;
+  const own = Number(raw);
+  return Number.isFinite(own) && own >= 0 && own <= 5_000 ? own : defaultBps;
+}
+
 function smallOrderFeePaise(fees: ServerFees, subtotal: number): number {
   return fees.smallOrderThreshold > 0 && subtotal < fees.smallOrderThreshold ? rupeesToPaise(fees.smallOrderFee) : 0;
 }
@@ -327,7 +339,7 @@ function smallOrderFeePaise(fees: ServerFees, subtotal: number): number {
  */
 export function planCheckoutEconomics(input: {
   control: EconomicsControl;
-  restaurant: Pick<CatalogRestaurant, "id" | "city">;
+  restaurant: Pick<CatalogRestaurant, "id" | "city" | "commissionBps">;
   address: Pick<Address, "area" | "label">;
   subtotal: number;
   fees: ServerFees;
@@ -346,7 +358,7 @@ export function planCheckoutEconomics(input: {
     restaurantId: input.restaurant.id,
   });
   const plan = activeCommercialPlan(input.control.commercialPlans[input.restaurant.id] ?? [], input.now);
-  const commissionBps = plan ? plan.commissionBps : input.defaultCommissionBps;
+  const commissionBps = plan ? plan.commissionBps : restaurantCommissionBps(input.restaurant, input.defaultCommissionBps);
   const subtotalPaise = rupeesToPaise(input.subtotal);
   const deliveryFeePaise = rupeesToPaise(input.fees.deliveryFee);
   // Rider pay comes from the rider trip-pay policy, never from what the

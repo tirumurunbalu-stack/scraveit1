@@ -61,6 +61,8 @@ export interface CatalogRestaurant extends GeoPoint {
   archived: boolean;
   deliveryFee: number;
   platformFee?: number;
+  /** This restaurant's agreed commission, set by Scraveit (1,500 = 15%). */
+  commissionBps?: number;
   etaMin: number;
   etaMax: number;
   phone?: string;
@@ -195,6 +197,14 @@ export interface SavrivoOrder {
   riderId?: string;
   riderName?: string;
   riderPhone?: string;
+  /** The rider's map avatar preset, copied from their profile at assignment. */
+  riderAvatar?: string;
+  /** Squad orders: the squad's code and everyone who put picks in (host included). */
+  squadCode?: string;
+  squadMemberUids?: string[];
+  squadMembers?: Array<{uid: string; name: string; subtotal: number}>;
+  /** When the rider is expected at the restaurant (estimated at assignment). */
+  riderPickupEtaAt?: number;
   /** Shown on the customer's rider card: average rating (once rated) and
    *  delivered orders, copied from the rider profile at assignment. */
   riderRating?: number;

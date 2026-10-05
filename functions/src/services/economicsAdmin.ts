@@ -2,6 +2,7 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
 import {
+  activeCommercialPlan,
   allocateReserves,
   economicsScopeKey,
   formatRupees,
@@ -28,6 +29,7 @@ import {
   ORDER_ECONOMICS_COLLECTION,
   loadEconomicsControl,
   normalizeGrowthBudget,
+  restaurantCommissionBps,
   type GrowthBudget,
 } from "./economics";
 import {LEDGER_JOURNALS_COLLECTION} from "./ledger";
@@ -416,15 +418,30 @@ export async function listRestaurantOffers(
   token: DecodedIdToken,
   restaurantId: string,
   database: FirestoreLike = firestoreDb,
-): Promise<{offers: PromotionTerms[]; autoApproval: {enabled: boolean; maxPercent: number; maxDiscountPaise: number}}> {
+): Promise<{
+  offers: PromotionTerms[];
+  autoApproval: {enabled: boolean; maxPercent: number; maxDiscountPaise: number};
+  /** The commission this restaurant pays right now, for its "you get" figures. */
+  commissionBps: number;
+  commissionSource: "plan" | "restaurant" | "default";
+}> {
   await requireRestaurantManager(uid, token, restaurantId, database);
-  const [snapshot, control] = await Promise.all([
+  const now = Date.now();
+  const [snapshot, control, restaurant, finance] = await Promise.all([
     database.collection("promotions").where("createdByRestaurantId", "==", restaurantId).limit(50).get(),
-    loadEconomicsControl(Date.now(), database),
+    loadEconomicsControl(now, database),
+    restaurantRef(database, restaurantId).get(),
+    loadFinancePolicy(now, database),
   ]);
+  const plan = activeCommercialPlan(control.commercialPlans[restaurantId] ?? [], now);
+  const own = (restaurant.exists ? restaurant.data() : {}) as {commissionBps?: number};
+  const fallback = finance.restaurantCommissionBps;
+  const commissionBps = plan ? plan.commissionBps : restaurantCommissionBps(own, fallback);
   return {
     offers: snapshot.docs.map((doc) => normalizePromotionTerms(doc.id, doc.data())),
     autoApproval: control.restaurantOfferAutoApproval,
+    commissionBps,
+    commissionSource: plan ? "plan" : restaurantCommissionBps(own, -1) >= 0 ? "restaurant" : "default",
   };
 }
 

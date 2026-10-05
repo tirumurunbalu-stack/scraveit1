@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scraveit table</title>
+<style>
+  :root { --ink:#0E1B3D; --soft:#4A5878; --brand:#1460F0; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink);
+    background: linear-gradient(180deg, #FF8E72 0%, #FFD9BF 55%, #FFF4E6 100%); display:grid; place-items:center; padding:24px; }
+  main { width:100%; max-width:380px; background:#fff; border-radius:28px; padding:28px 24px; box-shadow:0 30px 60px -30px rgba(14,27,61,.5); text-align:center; }
+  .word { font-weight:900; font-size:30px; letter-spacing:-.03em; color:var(--brand); }
+  h1 { font-size:26px; margin:14px 0 6px; }
+  p { color:var(--soft); line-height:1.45; margin:0 0 18px; }
+  a.button { display:block; padding:16px; border-radius:16px; background:var(--brand); color:#fff; text-decoration:none; font-weight:800; font-size:17px; }
+  a.alt { display:block; margin-top:12px; color:var(--brand); font-weight:700; text-decoration:none; }
+  .table { display:inline-block; margin-top:6px; padding:6px 14px; border-radius:999px; background:#E7EFFE; color:var(--brand); font-weight:800; }
+</style>
+</head>
+<body>
+<main>
+  <div class="word">Scraveit</div>
+  <h1>You’re at a Scraveit table</h1>
+  <span class="table" id="table-label">Table</span>
+  <p style="margin-top:16px">Open the Scraveit app to see the menu, order from your phone and share one bill with your table.</p>
+  <a class="button" id="open-app" href="#">Open Scraveit</a>
+  <a class="alt" id="get-app" href="https://play.google.com/store/apps/details?id=com.feastly.app">Don’t have the app? Get it</a>
+</main>
+<script>
+  (function () {
+    var parts = location.pathname.split("/").filter(Boolean); // ["t", restaurantId, tableId]
+    var rid = (parts[1] || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
+    var tid = (parts[2] || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 20);
+    document.getElementById("table-label").textContent = tid ? "Table " + tid : "Table";
+    var deep = "scraveit://table/" + rid + "/" + tid;
+    var intent = "intent://table/" + rid + "/" + tid + "#Intent;scheme=scraveit;package=com.feastly.app;S.browser_fallback_url=" +
+      encodeURIComponent("https://play.google.com/store/apps/details?id=com.feastly.app") + ";end";
+    var open = document.getElementById("open-app");
+    open.href = /Android/i.test(navigator.userAgent) ? intent : deep;
+    if (rid && tid && /Android/i.test(navigator.userAgent)) setTimeout(function () { location.href = intent; }, 250);
+  })();
+</script>
+</body>
+</html>

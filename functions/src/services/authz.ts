@@ -98,3 +98,17 @@ export async function requireApprovedRider(uid: string): Promise<Record<string, 
   }
   return rider;
 }
+
+/** Restaurant staff who may run its dine-in tables (owner, manager, or the "orders" permission), or a Scraveit admin. */
+export async function canManageRestaurantOrders(uid: string, token: DecodedIdToken, restaurantId: string): Promise<boolean> {
+  if (privilegedRole(token)) return true;
+  const [normalized, legacy] = await Promise.all([
+    restaurantMemberRef(firestoreDb, restaurantId, uid).get(),
+    legacyStaffRef(firestoreDb, uid).get(),
+  ]);
+  const allows = (member: RestaurantMembership | null, source: RestaurantMembershipSource) =>
+    !!member && isActiveMembershipForRestaurant(member, restaurantId, source) &&
+    (["restaurant_owner", "restaurant_manager"].includes(member.role ?? "") || member.permissions?.orders === true);
+  return allows((normalized.exists ? normalized.data() : null) as RestaurantMembership | null, "path-scoped") ||
+    allows((legacy.exists ? legacy.data() : null) as RestaurantMembership | null, "legacy-global");
+}

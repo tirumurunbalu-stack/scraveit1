@@ -37,6 +37,8 @@ import {
   type RiderClaimRecoveryAction,
   type RiderClaimQueueLike,
 } from "../domain/riderClaimRecovery";
+
+
 export {
   availabilityCityKey,
   activeDispatchJobs,
@@ -79,6 +81,21 @@ import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} 
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 import {riderPublicStats} from "./riderDeliveryCount";
 import {riderRegistrationRequired} from "./taxEngine";
+
+/** Map avatars the customer and rider apps can draw. */
+const RIDER_AVATARS = new Set(["bloom", "lilac", "mint", "classic", "midnight", "forest", "blue"]);
+
+/** When the rider should reach the restaurant: from where they accepted, at town speed on roads. */
+function riderPickupEta(presence: {lat?: unknown; lng?: unknown} | null | undefined,
+  restaurant: {lat: number; lng: number} | undefined, at: number): {riderPickupEtaAt?: number} {
+  const lat = Number(presence?.lat);
+  const lng = Number(presence?.lng);
+  if (!restaurant || !Number.isFinite(lat) || !Number.isFinite(lng) ||
+    !Number.isFinite(Number(restaurant.lat)) || !Number.isFinite(Number(restaurant.lng))) return {};
+  const roadMetres = haversineKm({lat, lng}, restaurant) * 1000 * 1.3;
+  const minutes = Math.min(60, Math.max(1, Math.ceil(roadMetres / 300) + 1));
+  return {riderPickupEtaAt: at + minutes * 60_000};
+}
 
 export interface Presence {
   online?: boolean;
@@ -690,6 +707,10 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
       riderId: uid,
       riderName: String(rider.fullName ?? presence.riderName ?? "Savrivo Partner"),
       ...(rider.phone ? {riderPhone: String(rider.phone).slice(0, 30)} : {}),
+      // The avatar customers see riding on the live map (a fixed preset id).
+      ...(RIDER_AVATARS.has(String(rider.avatar ?? "")) ? {riderAvatar: String(rider.avatar)} : {}),
+      // When the restaurant can expect the rider, shown on the restaurant's order card.
+      ...riderPickupEta(presence, orderValue.restaurantLocation, claimAt),
       ...riderPublicStats(rider),
       riderAssignedAt: claimAt,
       ...(restaurant?.phone ? {restaurantPhone: String(restaurant.phone).slice(0, 30)} : {}),
@@ -783,6 +804,8 @@ async function finalizeRiderAssignment(
     dispatchQueueRef(firestoreDb, order.id).set(nextQueue),
     riderJobRef(firestoreDb, uid, order.id).set(buildRiderJobProjection(order)),
     db.ref(`${ROOT}/riderPresence/${uid}/activeOrderId`).set(activePresenceOrderId),
+    // Who may post live location for this order (checked by the RTDB rules).
+    db.ref(`${ROOT}/trackingAssignments/${order.id}`).set({riderId: uid, customerId: order.customerId, assignedAt: claimAt}),
   ]);
   await reconcileRestaurantOrderProjection(order);
   const offeredRiderIds = allOfferedRiderIds(queue);

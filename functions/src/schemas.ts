@@ -25,6 +25,8 @@ const createOrderBaseSchema = z.object({
   contactless: z.boolean().default(false),
   /** Use wallet money (cashback / referral credit) on this order. */
   useWallet: z.boolean().default(false),
+  /** Placing a squad order: the squad's code (the caller must be its host). */
+  squadCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{6}$/).optional(),
 }).strict();
 
 export const createCodOrderSchema = createOrderBaseSchema;
@@ -881,4 +883,29 @@ export const resolveTdsReversalSchema = z.object({
   orderId: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
   status: z.enum(["CLAIMABLE_BY_PARTICIPANT"]),
   note: z.string().trim().min(1).max(500),
+}).strict();
+
+// ---------------------------------------------------------------------------
+// Restaurant sign-up 2.0
+// ---------------------------------------------------------------------------
+export const restaurantApplicationIdSchema = z.object({appId: identifier}).strict();
+
+export const signRestaurantAgreementSchema = z.object({
+  appId: identifier,
+  hash: z.string().regex(/^[a-f0-9]{64}$/),
+  typedName: z.string().trim().min(2).max(120),
+  consent: z.boolean(),
+  method: z.enum(["in_app", "aadhaar_esign"]).default("in_app"),
+}).strict();
+
+export const restaurantAgreementTermsSchema = z.object({
+  appId: identifier,
+  commissionBps: z.number().int().min(0).max(5_000),
+  termMonths: z.number().int().min(1).max(60).default(12),
+  note: z.string().trim().max(300).default(""),
+}).strict();
+
+export const restaurantApplicationChangesSchema = z.object({
+  appId: identifier,
+  message: z.string().trim().min(3).max(500),
 }).strict();

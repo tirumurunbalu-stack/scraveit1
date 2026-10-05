@@ -1,3 +1,9 @@
+import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_VERSION, refreshRiderIdentity, syncGigRegistry, verifyRiderAadhaarQr} from "./services/riderIdentity";
+import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
+import {attachSquadToOrder} from "./services/squads";
+import * as onboarding from "./services/restaurantOnboarding";
+import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
+import {alertAdmins, applicationAlert, watchStuckOrders} from "./services/adminAlerts";
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
 import {setGlobalOptions} from "firebase-functions/v2";
@@ -7,7 +13,7 @@ import {onCall, onRequest} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
 import {z} from "zod";
-import {db, firestoreDb} from "./admin";
+import {auth, db, firestoreDb} from "./admin";
 import {DATABASE_INSTANCE, DATABASE_REGION, REGION, ROOT} from "./config";
 import {asHttpsError, DomainError} from "./errors";
 import type {TransactionLike, WriteBatchLike} from "./firestoreTypes";
@@ -24,6 +30,8 @@ import {buildRiderJobProjection} from "./domain/riderJob";
 import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
 import {buildPricing, priceCart} from "./domain/order";
 import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weather";
+import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/googleMaps";
+import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
 import {
   resolveRiderFaceReview,
@@ -73,6 +81,10 @@ import {
   updateRiderRewardSettingsSchema,
   upsertRiderRewardCampaignSchema,
   validationMessage,
+  restaurantAgreementTermsSchema,
+  restaurantApplicationChangesSchema,
+  restaurantApplicationIdSchema,
+  signRestaurantAgreementSchema,
 } from "./schemas";
 import {
   exportPlatformDataWorkbook as buildPlatformDataExport,
@@ -259,6 +271,10 @@ export const createCodOrder = onCall({
   try {
     const input = parse(createCodOrderSchema, request.data);
     const result = await createAuthoritativeCodOrder(request.auth.uid, input);
+    if (input.squadCode && !result.recovered) {
+      await attachSquadToOrder(request.auth.uid, input.squadCode, result.order.id, input.restaurantId)
+        .catch((error) => logger.warn("SQUAD_ATTACH_FAILED", {orderId: result.order.id, error: String(error)}));
+    }
     return {
       orderId: result.order.id,
       order: result.order,
@@ -284,6 +300,10 @@ export const createOrder = onCall({
       throw new DomainError("failed-precondition", "Online payments are not available right now.");
     }
     const result = await createAuthoritativeOrder(request.auth.uid, input);
+    if (input.squadCode && !result.recovered) {
+      await attachSquadToOrder(request.auth.uid, input.squadCode, result.order.id, input.restaurantId)
+        .catch((error) => logger.warn("SQUAD_ATTACH_FAILED", {orderId: result.order.id, error: String(error)}));
+    }
     return {
       orderId: result.order.id,
       order: result.order,
@@ -1417,6 +1437,9 @@ export const onOrderUpdated = onDocumentUpdated({
       // `tracking` still lives in RTDB - the rider app's live-location writes
       // have not migrated off it yet.
       db.ref(`${ROOT}/tracking/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingProximity/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingAssignments/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingViewers/${order.id}`).remove(),
     ]);
     await cancelDispatchOffers(order.id, "cancelled");
     // A cancelled order must not keep spending an offer's budget or a
@@ -1456,6 +1479,8 @@ export const onOrderUpdated = onDocumentUpdated({
       await Promise.all([
         batch.commit(),
         db.ref(`${ROOT}/riderPresence/${order.riderId}/activeOrderId`).set(order.id),
+        db.ref(`${ROOT}/trackingAssignments/${order.id}`).set({riderId: order.riderId, customerId: order.customerId,
+          assignedAt: order.riderAssignedAt ?? order.updatedAt}),
       ]);
     } else {
       await jobRef.set(jobProjection);
@@ -1501,6 +1526,9 @@ export const onOrderUpdated = onDocumentUpdated({
     await Promise.all([
       batch.commit(),
       db.ref(`${ROOT}/tracking/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingProximity/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingAssignments/${order.id}`).remove(),
+      db.ref(`${ROOT}/trackingViewers/${order.id}`).remove(),
       ...(order.riderId ? [db.ref(`${ROOT}/riderPresence/${order.riderId}/activeOrderId`).remove()] : []),
     ]);
   }
@@ -1767,8 +1795,11 @@ export const onReviewCreated = onDocumentCreated({
   logger.info("REVIEW_RATINGS_RECORDED", {orderId, restaurantId: order.restaurantId, riderId: order.riderId});
 });
 
+// Runs only for the last stretch to the door: the rider app copies its fixes to
+// trackingProximity/{orderId} once within 1.2 km of the customer, so the arrival
+// check no longer runs for every location update of the whole ride.
 export const onTrackingUpdated = onValueWritten({
-  ref: `/${ROOT}/tracking/{orderId}`,
+  ref: `/${ROOT}/trackingProximity/{orderId}`,
   instance: DATABASE_INSTANCE,
   region: DATABASE_REGION,
   retry: true,
@@ -1933,3 +1964,244 @@ export const simulateRiderReferral = economicsCallable("simulateRiderReferral",
 export const getRestaurantOfferPerformance = economicsCallable("getRestaurantOfferPerformance",
   z.object({restaurantId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/), days: z.number().int().min(1).max(90).default(30)}).strict(),
   (uid, token, input) => readRestaurantOfferPerformance(uid, token, input));
+
+
+// ---------------------------------------------------------------------------
+// Google Maps for the live map: tiles (served via Firebase Hosting's CDN at
+// /maptile/{day|night}/{z}/{x}/{y}) and two-wheeler routes. The Google key
+// stays here; it is the same key the weather check uses.
+// ---------------------------------------------------------------------------
+export const mapTile = onRequest({
+  region: REGION,
+  secrets: [GOOGLE_WEATHER_API_KEY],
+  memory: "256MiB",
+  timeoutSeconds: 20,
+  maxInstances: 20,
+  concurrency: 80,
+}, async (request, response) => {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.status(405).send("Method not allowed");
+    return;
+  }
+  try {
+    const client = String(request.headers["x-forwarded-for"] ?? request.ip ?? "").split(",")[0]!.trim();
+    const tile = await fetchMapTile(request.path, GOOGLE_WEATHER_API_KEY.value(), client);
+    response.set("Cache-Control", tile.cacheControl).set("Content-Type", tile.contentType)
+      .set("Access-Control-Allow-Origin", "*").status(tile.status).send(tile.body);
+  } catch (error) {
+    logger.warn("MAP_TILE_ERROR", {error: String(error)});
+    response.set("Cache-Control", "no-store").status(502).send("");
+  }
+});
+
+export const deliveryRoute = onRequest({
+  region: REGION,
+  secrets: [GOOGLE_WEATHER_API_KEY],
+  memory: "256MiB",
+  timeoutSeconds: 20,
+  maxInstances: 20,
+  concurrency: 80,
+}, async (request, response) => {
+  response.set("Access-Control-Allow-Origin", "*")
+    .set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+    .set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  if (request.method === "OPTIONS") {
+    response.status(204).send("");
+    return;
+  }
+  // Only signed-in app users may ask for routes (each one is a paid Google request).
+  const header = String(request.headers.authorization ?? "");
+  const idToken = header.startsWith("Bearer ") ? header.slice(7) : "";
+  let decoded: DecodedIdTokenLike;
+  try {
+    decoded = await auth.verifyIdToken(idToken) as unknown as DecodedIdTokenLike;
+  } catch {
+    response.status(401).json({code: "Unauthorized"});
+    return;
+  }
+  try {
+    if (!await takeRouteAllowance(decoded.uid)) {
+      response.status(429).json({code: "TooManyRequests"});
+      return;
+    }
+    const role = String((decoded as unknown as Record<string, unknown>).savrivoRole ?? "");
+    const result = await deliveryRouteForOrder({
+      uid: decoded.uid,
+      privileged: role === "owner" || role === "ops_admin",
+      orderId: String(request.query.orderId ?? ""),
+      from: parsePoint(String(request.query.from ?? "")),
+      apiKey: GOOGLE_WEATHER_API_KEY.value(),
+    });
+    response.set("Cache-Control", "private, max-age=300").status(result.status).json(result.payload);
+  } catch (error) {
+    logger.warn("DELIVERY_ROUTE_ERROR", {error: String(error)});
+    response.status(502).json({code: "NoRoute"});
+  }
+});
+
+/** Google Maps usage watch: alerts admins at 80% / 100% of daily caps; daily map-cache check. */
+export const mapsUsageWatch = onSchedule({
+  schedule: "every 30 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+}, async () => {
+  const result = await watchMapsUsage();
+  logger.info("MAPS_USAGE_WATCH", result);
+});
+
+
+// ---------------------------------------------------------------------------
+// Dine-in (Phase 1): bookings, table sessions, rounds, staff actions, watch.
+// ---------------------------------------------------------------------------
+const dineId = z.string().trim().regex(/^[A-Za-z0-9_-]{1,128}$/);
+const dineLine = z.object({
+  itemId: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/),
+  quantity: z.number().int().min(1).max(20),
+  variantId: z.string().trim().max(100).optional(),
+  addOnIds: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
+  note: z.string().trim().max(200).default(""),
+}).strict();
+function dineCallable<S extends z.ZodTypeAny, R>(schema: S, run: (request: {auth: NonNullable<CallableRequestLike["auth"]>; data: z.infer<S>}) => Promise<R>) {
+  return onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in first."));
+    try {
+      return await run({auth: request.auth, data: parse(schema, request.data)});
+    } catch (error) {
+      logger.warn("DINE_IN_REJECTED", {uid: request.auth.uid, error: String(error)});
+      throw asHttpsError(error);
+    }
+  });
+}
+type CallableRequestLike = {auth?: {uid: string; token: import("firebase-admin/auth").DecodedIdToken}};
+
+export const dineInBookTable = dineCallable(z.object({restaurantId: dineId, slotAt: z.number().int().positive(), party: z.number().int().min(1).max(30), note: z.string().trim().max(200).default("")}).strict(),
+  ({auth, data}) => bookTable(auth.uid, data));
+export const dineInCancelBooking = dineCallable(z.object({bookingId: dineId}).strict(), ({auth, data}) => cancelBooking(auth.uid, data));
+export const dineInRespondBooking = dineCallable(z.object({bookingId: dineId, accept: z.boolean()}).strict(), ({auth, data}) => respondToBooking({...auth.token, uid: auth.uid}, data));
+export const dineInOpenTable = dineCallable(z.object({restaurantId: dineId, tableId: z.string().trim().regex(/^[A-Za-z0-9_-]{1,20}$/)}).strict(), ({auth, data}) => openTable(auth.uid, data));
+export const dineInPlaceRound = dineCallable(z.object({sessionId: dineId, items: z.array(dineLine).min(1).max(40)}).strict(), ({auth, data}) => placeTableRound(auth.uid, data));
+export const dineInTableRequest = dineCallable(z.object({sessionId: dineId, kind: z.enum(["waiter", "bill"])}).strict(), ({auth, data}) => tableRequest(auth.uid, data));
+export const dineInStaff = dineCallable(z.object({sessionId: dineId, action: z.enum(["cooking", "served", "reopen", "paid", "close", "ackWaiter"]), roundId: dineId.optional(), paidAmount: z.number().min(0).max(1_000_000).optional()}).strict(),
+  ({auth, data}) => dineInStaffAction({...auth.token, uid: auth.uid}, data));
+
+/** Dine-in watch: booking reminders, 15-minute no-show release, stale tables. */
+export const dineInWatch = onSchedule({schedule: "every 10 minutes", region: REGION, timeoutSeconds: 120, memory: "256MiB"}, async () => {
+  await watchDineIn();
+});
+
+
+// ---------------------------------------------------------------------------
+// Rider identity: Aadhaar Secure QR (UIDAI-signed), face match, PAN checks,
+// admin review links, document retention and the gig-worker register.
+// ---------------------------------------------------------------------------
+const awsKeys = () => ({id: AWS_ACCESS_KEY_ID.value(), secret: AWS_SECRET_ACCESS_KEY.value()});
+
+export const verifyRiderAadhaarQrCall = onCall({
+  region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to verify your identity."));
+  try {
+    const input = parse(z.object({qrData: z.string().trim().min(100).max(12_000).regex(/^\d+$/), consentVersion: z.literal(IDENTITY_CONSENT_VERSION)}).strict(), request.data);
+    return await verifyRiderAadhaarQr(request.auth.uid, input, awsKeys());
+  } catch (error) {
+    logger.warn("verifyRiderAadhaarQr rejected", {uid: request.auth.uid, error: String(error)});
+    throw asHttpsError(error);
+  }
+});
+
+export const getRiderIdentityReviewCall = onCall({
+  region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in first."));
+  try {
+    const input = parse(z.object({riderUid: z.string().trim().min(10).max(128).regex(/^[A-Za-z0-9_-]+$/)}).strict(), request.data);
+    return await getRiderIdentityReview(request.auth.uid, request.auth.token, input, awsKeys());
+  } catch (error) {
+    logger.warn("getRiderIdentityReview rejected", {uid: request.auth.uid, error: String(error)});
+    throw asHttpsError(error);
+  }
+});
+
+/** Recompute a rider's identity checks when their PAN, face scan or name changes. */
+export const onRiderIdentitySourceWritten = onDocumentWritten({
+  document: "riders/{riderId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "512MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (event) => {
+  const after = event.data?.after?.data() as Record<string, unknown> | undefined;
+  if (!after) return;
+  const before = (event.data?.before?.data() ?? {}) as Record<string, unknown>;
+  const keys = ["panNumber", "faceReferenceObjectPath", "faceMatchStatus", "fullName", "identityFallback", "status"];
+  if (keys.every((key) => JSON.stringify(before[key] ?? null) === JSON.stringify(after[key] ?? null))) return;
+  await refreshRiderIdentity(event.params.riderId, awsKeys()).catch((error) => logger.warn("RIDER_IDENTITY_REFRESH_FAILED", {uid: event.params.riderId, error: String(error)}));
+});
+
+/** Daily: delete Aadhaar images 7 days after a rider is approved or rejected. */
+export const riderIdentityRetention = onSchedule({schedule: "every 24 hours", region: REGION, timeoutSeconds: 300, memory: "256MiB"}, async () => {
+  await enforceRiderIdentityRetention();
+});
+
+/** Hourly: keep the gig-worker register (joiners and exits) current for Shram Suvidha. */
+export const gigRegistrySync = onSchedule({schedule: "every 60 minutes", region: REGION, timeoutSeconds: 300, memory: "256MiB"}, async () => {
+  await syncGigRegistry();
+});
+
+// ---------------------------------------------------------------------------
+// Restaurant sign-up 2.0: the partner agreement and approval
+// ---------------------------------------------------------------------------
+export const getRestaurantAgreement = economicsCallable("getRestaurantAgreement", restaurantApplicationIdSchema,
+  (uid, token, input) => onboarding.getRestaurantAgreement(uid, token, input.appId));
+
+/** Signing records the IP and device, so it reads the raw request. */
+export const signRestaurantAgreement = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+  try {
+    const raw = request.rawRequest;
+    const forwarded = String(raw?.headers?.["x-forwarded-for"] ?? "").split(",")[0]?.trim() ?? "";
+    return await onboarding.signRestaurantAgreement(request.auth.uid, request.auth.token, parse(signRestaurantAgreementSchema, request.data ?? {}),
+      {ip: forwarded || String(raw?.ip ?? ""), userAgent: String(raw?.headers?.["user-agent"] ?? "")});
+  } catch (error) {
+    logger.warn("signRestaurantAgreement rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
+export const setRestaurantAgreementTerms = economicsCallable("setRestaurantAgreementTerms", restaurantAgreementTermsSchema,
+  (uid, token, input) => onboarding.setRestaurantAgreementTerms(uid, token, input));
+
+export const getRestaurantApplicationReview = economicsCallable("getRestaurantApplicationReview", restaurantApplicationIdSchema,
+  (uid, token, input) => onboarding.getRestaurantApplicationReview(uid, token, input.appId));
+
+export const requestRestaurantApplicationChanges = economicsCallable("requestRestaurantApplicationChanges", restaurantApplicationChangesSchema,
+  async (uid, token, input) => { await onboarding.requestRestaurantApplicationChanges(uid, token, input); return {ok: true}; });
+
+export const approveRestaurantApplication = economicsCallable("approveRestaurantApplication", restaurantApplicationIdSchema,
+  (uid, token, input) => onboarding.approveRestaurantApplication(uid, token, input.appId));
+
+// ---------------------------------------------------------------------------
+// Admin app 2.0: today at a glance and urgent alerts
+// ---------------------------------------------------------------------------
+export const getAdminToday = economicsCallable("getAdminToday", z.object({days: z.number().int().min(1).max(30).default(1)}).strict(),
+  (_uid, token, input) => readAdminToday(token, input));
+
+export const getStorePayoutsDue = economicsCallable("getStorePayoutsDue", z.object({}).strict(),
+  (uid, token) => readStorePayoutsDue(uid, token));
+
+/** Tell the owner when a store applies, and when it signs and is ready to approve. */
+export const onRestaurantApplicationWritten = onDocumentWritten({
+  document: "restaurantApplications/{appId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  const before = (event.data?.before?.data() ?? null) as Record<string, unknown> | null;
+  const after = (event.data?.after?.data() ?? null) as Record<string, unknown> | null;
+  const alert = applicationAlert(event.params.appId, before, after);
+  if (alert) await alertAdmins(alert.key, alert.title, alert.body, "restaurantApplications");
+});
+
+/** Every 5 minutes: orders not accepted, cooking too long, or waiting for a rider. */
+export const adminStuckOrderWatch = onSchedule({schedule: "every 5 minutes", region: REGION, timeoutSeconds: 120, memory: "256MiB"}, async () => {
+  const count = await watchStuckOrders();
+  if (count) logger.info("ADMIN_STUCK_ORDERS", {count});
+});
+

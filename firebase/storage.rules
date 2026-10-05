@@ -48,6 +48,16 @@ service firebase.storage {
         && request.resource.contentType.matches('image/(jpeg|png|webp)');
     }
 
+    // Restaurant sign-up documents (FSSAI, PAN, bank proof, menu card):
+    // only the applicant and Scraveit admins. Admin review uses short-lived
+    // signed links from Cloud Functions.
+    match /private/restaurant-onboarding/{uid}/{allPaths=**} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow write: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

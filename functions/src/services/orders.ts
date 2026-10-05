@@ -42,6 +42,7 @@ import {
   promotionReservationRefs,
   reservePromotionSpend,
   resolveCheckoutPromotion,
+  restaurantCommissionBps,
 } from "./economics";
 import {economicsScopeKey, rupeesToPaise, settlementTerms} from "../domain/economics";
 import {planWalletRedemption, reserveWalletRedemption} from "./wallet";
@@ -771,10 +772,9 @@ export async function transitionOrderFromTracking(
  */
 async function resolveRestaurantCommissionBps(order: SavrivoOrder, financePolicy: FinancePolicy): Promise<number> {
   const snapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
-  const override = snapshot.exists ? (snapshot.data() as Record<string, unknown>).commissionBps : undefined;
-  return Number.isFinite(Number(override)) && Number(override) >= 0 && Number(override) <= 5_000
-    ? Number(override)
-    : financePolicy.restaurantCommissionBps;
+  // The same rule checkout uses, so the locked order terms and the ledger agree.
+  return restaurantCommissionBps((snapshot.exists ? snapshot.data() : {}) as {commissionBps?: number},
+    financePolicy.restaurantCommissionBps);
 }
 
 export async function recordCodLedger(order: SavrivoOrder): Promise<void> {

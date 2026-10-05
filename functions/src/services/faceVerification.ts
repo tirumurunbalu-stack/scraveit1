@@ -204,3 +204,29 @@ export async function compareRiderLoginFace(
     .reduce((best, match) => Math.max(best, Number(match.Similarity ?? 0)), 0);
   return {verified: bestSimilarity >= LOGIN_SIMILARITY_THRESHOLD, similarity: bestSimilarity};
 }
+
+/**
+ * How alike two faces are (0-100), for matching the live selfie to the
+ * photo inside the rider's Aadhaar QR. That photo is small and can be years
+ * old, so this returns the raw similarity and leaves the decision to the
+ * caller instead of applying the strict login threshold.
+ */
+export async function faceSimilarity(
+  accessKeyId: string,
+  secretAccessKey: string,
+  sourceImage: Buffer,
+  targetImage: Buffer,
+): Promise<number> {
+  const rekognition = rekognitionClient(accessKeyId, secretAccessKey);
+  try {
+    const result = await rekognition.send(new CompareFacesCommand({
+      SourceImage: {Bytes: sourceImage},
+      TargetImage: {Bytes: targetImage},
+      SimilarityThreshold: 0,
+    }));
+    return (result.FaceMatches ?? []).reduce((best, match) => Math.max(best, Number(match.Similarity ?? 0)), 0);
+  } catch (error) {
+    logger.warn("REKOGNITION_AADHAAR_COMPARE_FAILED", {error: String(error)});
+    return -1;
+  }
+}

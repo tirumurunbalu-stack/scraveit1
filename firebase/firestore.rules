@@ -112,8 +112,9 @@ service cloud.firestore {
         // Removing them (the one-time clean-up) is the only allowed change.
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['payoutProfile'])
           || !('payoutProfile' in request.resource.data))
-        // Restaurant, grocery store or dairy is set by Scraveit at approval.
-        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery', 'deliveryTaxTreatment',
+        // Restaurant, grocery store or dairy is set by Scraveit at approval,
+        // and so is the commission rate the restaurant agreed to.
+        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery', 'deliveryTaxTreatment', 'commissionBps', 'commissionTermMonths', 'agreementVersion', 'agreementSignedAt', 'fssaiNumber', 'fssaiKind', 'fssaiExpiresOn',
           'compositeTreatmentApproved', 'compositeTreatmentEffectiveFrom', 'principalSupplyTaxCode', 'principalSupplyType',
           'principalSupplyGstRateBps']));
     }
@@ -174,11 +175,28 @@ service cloud.firestore {
     match /restaurantApplications/{appId} {
       allow read: if isPrivileged() || (signedIn() &&
         appId in [request.auth.uid, request.auth.uid + '_grocery', request.auth.uid + '_dairy']);
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid && (
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid
+        && !request.resource.data.keys().hasAny(['terms', 'agreement', 'reviewedAt', 'reviewedBy', 'restaurantId', 'approvedAt'])
+        && request.resource.data.get('status', 'submitted') in ['draft', 'submitted'] && (
         (appId == request.auth.uid && request.resource.data.get('storeType', 'restaurant') == 'restaurant')
         || (appId == request.auth.uid + '_grocery' && request.resource.data.storeType == 'grocery')
         || (appId == request.auth.uid + '_dairy' && request.resource.data.storeType == 'dairy'));
-      allow update, delete: if isPrivileged();
+      // The applicant fills and edits their own application until it is
+      // approved; the agreed terms, the signed agreement and the review are
+      // written only by Scraveit (Admin app or Cloud Functions).
+      allow update: if isPrivileged() || (signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid
+        && resource.data.get('status', 'submitted') in ['draft', 'submitted', 'changes_requested']
+        && request.resource.data.get('status', 'draft') in ['draft', 'submitted']
+        && resource.data.get('agreement', {}).get('status', '') != 'signed'
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['uid', 'storeType', 'terms', 'agreement',
+          'reviewedAt', 'reviewedBy', 'reviewMessage', 'restaurantId', 'approvedAt']));
+      allow delete: if isPrivileged();
+    }
+
+    match /restaurantAgreements/{recordId} {
+      allow read, write: if isPrivileged();
     }
 
     // ---------------------------------------------------------------
@@ -212,7 +230,10 @@ service cloud.firestore {
         || (isApprovedRider() && resource.data.riderId == request.auth.uid)
         || canManageRestaurant(resource.data.restaurantId, 'orders')
         || canManageRestaurant(resource.data.restaurantId, 'handover')
-        || canManageRestaurant(resource.data.restaurantId, 'tracking');
+        || canManageRestaurant(resource.data.restaurantId, 'tracking')
+        // Friends in a squad order follow it on their own phones (read only).
+        || (signedIn() && resource.data.get('squadMemberUids', []) is list
+            && request.auth.uid in resource.data.get('squadMemberUids', []));
 
       // Orders are created only by the createOrder / createCodOrder callables
       // (Admin SDK), which price them on the server. A client-written order
@@ -307,6 +328,12 @@ service cloud.firestore {
       // may not rewrite that verdict (or the indexed face id) while doing so
       // - closing the one path that would otherwise let a duplicate account
       // skip the check entirely by writing straight to Firestore.
+      // A rider can always change their map avatar (and nothing else) with
+      // this path - one of the fixed presets the apps know how to draw.
+      allow update: if isOwnUser(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avatar', 'avatarUpdatedAt'])
+        && request.resource.data.avatar in ['bloom', 'lilac', 'mint', 'classic', 'midnight', 'forest', 'blue']
+        && request.resource.data.avatarUpdatedAt is int;
       allow update: if isPrivileged() || (
         isOwnUser(uid)
         && request.resource.data.status == 'submitted'
@@ -316,13 +343,25 @@ service cloud.firestore {
         // Tax and compliance fields are set by the server / restricted
         // controls only (contractor vs employee lives in riderTaxClassifications).
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['taxClassification',
-          'legalEntityType', 'panEntityType', 'panVerified', 'riderGstRegistered', 'riderGstin', 'riderRegistrationLiable'])
+          'legalEntityType', 'panEntityType', 'panVerified', 'riderGstRegistered', 'riderGstin', 'riderRegistrationLiable',
+          // Identity results are written only by the verification functions.
+          'identity', 'aadhaarLast4', 'identityConsentVersion', 'identityConsentAt'])
         // Who referred a rider can be set once and never switched later (the
         // referral itself is frozen server-side in riderReferrals/{uid}).
         && (!('referredByCode' in resource.data)
           || request.resource.data.get('referredByCode', null) == resource.data.referredByCode)
       );
       allow delete: if isPrivileged();
+    }
+
+    // Gig-worker register for the Shram Suvidha portal (Social Security
+    // (Central) Rules 2026, Rule 48): kept by gigRegistrySync, read and
+    // marked "reported" by admins only.
+    match /gigRegistry/{uid} {
+      allow read: if isPrivileged();
+      allow update: if isPrivileged()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinReportedAt', 'exitReportedAt', 'eShramUan']);
+      allow create, delete: if false;
     }
 
     match /riderDocuments/{uid} {
@@ -382,6 +421,69 @@ service cloud.firestore {
     match /customerBroadcasts/{id} {
       allow read: if signedIn();
       allow write: if isPrivileged();
+    }
+
+    // Live weather per store (Google Weather, refreshed every 15 minutes):
+    // rain, its fee and the condition. Public, like the store listing.
+    match /pricingSignals/{restaurantId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Dine-in (Phase 1). Every write goes through the dine-in callables, so the
+    // apps only read: a customer their own bookings and the tables they sit at,
+    // restaurant staff their own restaurant's bookings and tables.
+    match /dineBookings/{bookingId} {
+      allow read: if signedIn() && (resource.data.customerId == request.auth.uid
+        || isPrivileged() || canManageRestaurant(resource.data.restaurantId, 'orders'));
+      allow write: if false;
+    }
+    match /tableSessions/{sessionId} {
+      allow read: if signedIn() && (request.auth.uid in resource.data.get('memberUids', [])
+        || isPrivileged() || canManageRestaurant(resource.data.restaurantId, 'orders'));
+      allow write: if false;
+      match /rounds/{roundId} {
+        allow read: if signedIn() && (request.auth.uid in get(/databases/$(database)/documents/tableSessions/$(sessionId)).data.get('memberUids', [])
+          || isPrivileged() || canManageRestaurant(get(/databases/$(database)/documents/tableSessions/$(sessionId)).data.restaurantId, 'orders'));
+        allow write: if false;
+      }
+    }
+
+    // Squad orders: a host opens a squad at one restaurant and shares its
+    // 6-character code; friends who have the code put their picks in (one
+    // document each). The host locks it and checks out the combined cart as a
+    // normal order, which the server prices as usual. The code is the invite,
+    // so squads can be fetched one by one but never listed.
+    match /squads/{code} {
+      function squadOpen() {
+        return get(/databases/$(database)/documents/squads/$(code)).data.status == 'open'
+          && get(/databases/$(database)/documents/squads/$(code)).data.expiresAt > request.time.toMillis();
+      }
+      allow get: if signedIn() && code.matches('^[A-Z0-9]{6}$');
+      allow list: if false;
+      allow create: if signedIn() && code.matches('^[A-Z0-9]{6}$')
+        && request.resource.data.keys().hasOnly(['hostUid', 'hostName', 'restaurantId', 'restaurantName', 'status', 'createdAt', 'expiresAt', 'orderId'])
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.status == 'open'
+        && request.resource.data.restaurantId is string && request.resource.data.restaurantId.size() <= 128
+        && request.resource.data.restaurantName is string && request.resource.data.restaurantName.size() <= 120
+        && request.resource.data.hostName is string && request.resource.data.hostName.size() <= 60
+        && request.resource.data.expiresAt is int
+        && request.resource.data.expiresAt <= request.time.toMillis() + 4 * 60 * 60 * 1000;
+      allow update: if signedIn() && resource.data.hostUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'orderId'])
+        && request.resource.data.status in ['open', 'locked', 'ordered', 'closed'];
+      allow delete: if false;
+
+      match /picks/{uid} {
+        allow read: if signedIn() && code.matches('^[A-Z0-9]{6}$');
+        allow create, update: if isOwnUser(uid) && squadOpen()
+          && request.resource.data.keys().hasOnly(['name', 'items', 'subtotal', 'updatedAt'])
+          && request.resource.data.name is string && request.resource.data.name.size() <= 60
+          && request.resource.data.items is list && request.resource.data.items.size() <= 30
+          && request.resource.data.subtotal is number;
+        allow delete: if isOwnUser(uid) && squadOpen();
+      }
     }
 
     match /settings/{doc} {

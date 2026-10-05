@@ -46,8 +46,8 @@
       "tracking": {
         ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
         "$orderId": {
-          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || data.child('customerId').val() === auth.uid || data.child('riderId').val() === auth.uid)",
-          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (!newData.exists() && data.child('riderId').val() === auth.uid) || (newData.exists() && newData.child('riderId').val() === auth.uid))",
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || data.child('customerId').val() === auth.uid || data.child('riderId').val() === auth.uid || root.child('feastly/trackingViewers').child($orderId).child(auth.uid).val() === true)",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (!newData.exists() && data.child('riderId').val() === auth.uid) || (newData.exists() && newData.child('riderId').val() === auth.uid && root.child('feastly/trackingAssignments').child($orderId).child('riderId').val() === auth.uid))",
           ".validate": "!newData.exists() || (newData.hasChildren(['customerId','orderId','riderId','riderName','lat','lng','updatedAt','status','phase']) && newData.child('orderId').val() === $orderId && (!data.exists() || (newData.child('customerId').val() === data.child('customerId').val() && newData.child('riderId').val() === data.child('riderId').val())))",
           "customerId": {
             ".validate": "newData.isString() && newData.val().length <= 128"
@@ -117,6 +117,66 @@
           },
           "$other": {
             ".validate": false
+          }
+        }
+      },
+      "trackingProximity": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$orderId": {
+          ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || data.child('riderId').val() === auth.uid)",
+          ".write": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin' || (!newData.exists() && data.child('riderId').val() === auth.uid) || (newData.exists() && newData.child('riderId').val() === auth.uid && root.child('feastly/trackingAssignments').child($orderId).child('riderId').val() === auth.uid))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['customerId','orderId','riderId','riderName','lat','lng','updatedAt','status','phase']) && newData.child('orderId').val() === $orderId && (!data.exists() || (newData.child('customerId').val() === data.child('customerId').val() && newData.child('riderId').val() === data.child('riderId').val())))",
+          "customerId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "orderId": {
+            ".validate": "newData.isString() && newData.val() === $orderId"
+          },
+          "riderId": {
+            ".validate": "newData.isString() && newData.val().length <= 128"
+          },
+          "riderName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 10000"
+          },
+          "bearing": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 360"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 300000"
+          },
+          "status": {
+            ".validate": "newData.val() === 'live' || newData.val() === 'location_off' || newData.val() === 'stopped'"
+          },
+          "phase": {
+            ".validate": "newData.val() === 'pickup' || newData.val() === 'delivery'"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "trackingAssignments": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$orderId": {
+          ".read": "auth != null && data.child('riderId').val() === auth.uid",
+          ".write": false
+        }
+      },
+      "trackingViewers": {
+        ".read": "auth != null && (auth.token.savrivoRole === 'owner' || auth.token.savrivoRole === 'ops_admin')",
+        "$orderId": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid",
+            ".write": false
           }
         }
       }

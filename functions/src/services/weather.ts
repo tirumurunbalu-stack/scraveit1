@@ -1,6 +1,7 @@
 import {logger} from "firebase-functions";
 import {defineSecret} from "firebase-functions/params";
 import {firestoreDb} from "../admin";
+import {mapsAllowed, recordMapsUsage} from "./mapsGuard";
 import {
   normalizeCityKey,
   resolveRainFee,
@@ -115,8 +116,21 @@ export async function refreshRainPricingSignals(apiKey: string, now = Date.now()
   const batch = firestoreDb.batch();
   let written = 0;
 
+  // One weather check per ~2 km area, shared by every open store in it, and
+  // none at all once switched off or past today's cap (settings/maps).
+  const areaKey = (r: CatalogRestaurant) => `${Math.round(Number(r.lat) * 50)}_${Math.round(Number(r.lng) * 50)}`;
+  const areas = new Map<string, CatalogRestaurant>();
+  for (const restaurant of restaurants) if (!areas.has(areaKey(restaurant))) areas.set(areaKey(restaurant), restaurant);
+  if (!await mapsAllowed("weather", areas.size, now)) {
+    logger.warn("WEATHER_CHECK_SKIPPED_BY_GUARD", {areas: areas.size});
+    return {checked: 0, written: 0};
+  }
+  const readings = new Map<string, Promise<PrecipitationReading | null>>();
+  for (const [key, restaurant] of areas) readings.set(key, fetchPrecipitation(Number(restaurant.lat), Number(restaurant.lng), apiKey));
+  await recordMapsUsage("weather", areas.size, now);
+
   await Promise.all(restaurants.map(async (restaurant) => {
-    const reading = await fetchPrecipitation(Number(restaurant.lat), Number(restaurant.lng), apiKey);
+    const reading = await readings.get(areaKey(restaurant));
     if (!reading) return;
     const cityKey = normalizeCityKey(restaurant.city);
     const fees = feeSchedule(settings, cityKey);

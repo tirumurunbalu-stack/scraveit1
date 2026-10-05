@@ -21,6 +21,7 @@ import {
 } from "../domain/restaurantAccess";
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike, WriteBatchLike} from "../firestoreTypes";
+import {FieldValue} from "../firestoreTypes";
 import {legacyStaffRef, menuItemRef, restaurantMemberRef, restaurantRef, riderRef} from "../firestorePaths";
 import {checkRiderFaceUniqueness, compareRiderLoginFace, indexRiderFaceDirectly} from "./faceVerification";
 
@@ -416,13 +417,8 @@ export async function submitRiderFaceCheck(
     const result = await checkRiderFaceUniqueness(awsAccessKeyId, awsSecretAccessKey, uid, image.buffer);
     const saved = await saveObject(objectPath, image, uid, "private", {savrivoPurpose: "rider-face-reference"});
     const now = Date.now();
-    // Same download-token URL pattern used for riderDocuments (KYC
-    // photos): lets the Admin app show this face photo with a plain
-    // <img src>, no signed-URL round trip, so a reviewer comparing a
-    // flagged match can see both faces without any native app change.
-    const faceReferenceUrl = saved.downloadToken
-      ? privateObjectUrl(storage.bucket().name, objectPath, saved.downloadToken)
-      : publicObjectUrl(storage.bucket().name, objectPath, saved.generation);
+    // No permanent download link is stored: the admin views this photo
+    // through a 5-minute signed link (getRiderIdentityReviewCall), logged.
     const batch: WriteBatchLike = firestoreDb.batch();
     batch.set(riderFaceObjectRef(firestoreDb, uid), {
       objectPath,
@@ -437,13 +433,13 @@ export async function submitRiderFaceCheck(
       rekognitionFaceId: result.rekognitionFaceId,
       faceMatchCandidates: [],
       faceReferenceObjectPath: objectPath,
-      faceReferenceUrl,
+      faceReferenceUrl: FieldValue.delete(),
       faceIndexedAt: now,
     } : {
       faceMatchStatus: "needs_review",
       faceMatchCandidates: result.status === "needs_review" ? result.candidates : [],
       faceReferenceObjectPath: objectPath,
-      faceReferenceUrl,
+      faceReferenceUrl: FieldValue.delete(),
       faceCheckedAt: now,
     }, {merge: true});
     await batch.commit();

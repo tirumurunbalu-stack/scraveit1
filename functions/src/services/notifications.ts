@@ -539,3 +539,73 @@ export async function notifyRiderRewardUpdate(input: {
     outcome: result.outcome,
   });
 }
+
+
+/** A Google Maps usage warning to one admin's devices (admin app). */
+export async function notifyAdminMapsAlert(input: {uid: string; deduplicationKey: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "ADMIN_MAPS_USAGE_ALERT",
+    aggregateType: "maps_usage",
+    aggregateId: input.deduplicationKey,
+    deduplicationKey: `${input.deduplicationKey}:${input.uid}`,
+    recipient: {kind: "admin", id: input.uid, app: "admin"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "ADMIN_MAPS_USAGE_ALERT"},
+      android: {priority: "high", notification: {channelId: "savrivo_control_orders_v2", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+
+/** An urgent to-do for one admin's devices: new application, signed agreement, stuck order. */
+export async function notifyAdminTodo(input: {uid: string; key: string; title: string; body: string; route: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "ADMIN_TODO",
+    aggregateType: "admin_todo",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `admin-todo:${input.key}:${input.uid}`,
+    recipient: {kind: "admin", id: input.uid, app: "admin"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "ADMIN_TODO", route: input.route},
+      android: {priority: "high", notification: {channelId: "savrivo_control_orders_v2", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** Dine-in alerts to everyone running a restaurant (bookings, rounds, waiter calls, bills). */
+export async function notifyRestaurantDineIn(input: {restaurantId: string; key: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "RESTAURANT_DINE_IN",
+    aggregateType: "dine_in",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `restaurant-dine-in:${input.key}`,
+    recipient: {kind: "restaurant", id: input.restaurantId, app: "restaurant"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "DINE_IN", restaurantId: input.restaurantId},
+      android: {priority: "high", notification: {sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** Dine-in updates to one customer (booking answers, reminders, food served, bill settled). */
+export async function notifyUserDineIn(input: {uid: string; key: string; title: string; body: string; data?: Record<string, string>}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_DINE_IN",
+    aggregateType: "dine_in",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-dine-in:${input.key}:${input.uid}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "DINE_IN", ...(input.data ?? {})},
+      android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
