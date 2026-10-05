@@ -139,8 +139,11 @@
     return fallback || "restaurant-placeholder.svg";
   }
   function icon(name, extra) { return '<svg class="icon '+h(extra || "")+'" viewBox="0 0 24 24" aria-hidden="true">'+(ICONS[name] || ICONS.info)+"</svg>"; }
+  // The Scraveit wordmark (Manrope ExtraBold outlines, same as the launcher icon).
+  const WORDMARK_PATH="M28.49 59.57Q27.3 59.57 26.34 59.15Q25.39 58.73 24.78 57.95Q24.16 57.16 24 56.08L26.11 55.77Q26.33 56.69 27.03 57.19Q27.73 57.68 28.62 57.68Q29.12 57.68 29.58 57.53Q30.05 57.37 30.35 57.07Q30.65 56.76 30.65 56.32Q30.65 56.15 30.61 56Q30.56 55.85 30.45 55.72Q30.33 55.58 30.13 55.46Q29.93 55.34 29.61 55.25L26.84 54.43Q26.52 54.34 26.11 54.18Q25.7 54.01 25.31 53.71Q24.93 53.41 24.67 52.9Q24.42 52.4 24.42 51.64Q24.42 50.56 24.96 49.85Q25.5 49.14 26.41 48.79Q27.31 48.44 28.41 48.45Q29.52 48.46 30.39 48.82Q31.25 49.19 31.84 49.88Q32.43 50.58 32.69 51.58L30.5 51.95Q30.39 51.43 30.07 51.07Q29.75 50.72 29.31 50.53Q28.86 50.35 28.38 50.33Q27.91 50.32 27.49 50.46Q27.07 50.61 26.8 50.88Q26.54 51.16 26.54 51.53Q26.54 51.88 26.75 52.1Q26.97 52.32 27.3 52.46Q27.62 52.59 27.97 52.68L29.82 53.18Q30.24 53.29 30.74 53.48Q31.25 53.66 31.71 53.98Q32.18 54.3 32.48 54.83Q32.78 55.36 32.78 56.17Q32.78 57.03 32.42 57.67Q32.06 58.31 31.45 58.73Q30.84 59.15 30.07 59.36Q29.3 59.57 28.49 59.57ZM37.87 59.57Q36.62 59.57 35.73 59.01Q34.84 58.46 34.37 57.5Q33.89 56.54 33.89 55.34Q33.89 54.12 34.38 53.16Q34.88 52.2 35.78 51.65Q36.68 51.1 37.9 51.1Q39.32 51.1 40.28 51.82Q41.24 52.54 41.51 53.78L39.49 54.31Q39.31 53.69 38.87 53.34Q38.43 52.99 37.87 52.99Q37.23 52.99 36.82 53.3Q36.42 53.61 36.22 54.14Q36.03 54.67 36.03 55.34Q36.03 56.38 36.49 57.03Q36.96 57.68 37.87 57.68Q38.55 57.68 38.91 57.37Q39.27 57.06 39.45 56.48L41.51 56.91Q41.17 58.19 40.22 58.88Q39.27 59.57 37.87 59.57ZM42.92 59.35V51.33H44.7V53.29L44.51 53.03Q44.67 52.62 44.93 52.28Q45.19 51.94 45.56 51.71Q45.85 51.53 46.2 51.43Q46.54 51.33 46.9 51.31Q47.26 51.28 47.63 51.33V53.21Q47.29 53.11 46.85 53.14Q46.41 53.18 46.05 53.35Q45.7 53.51 45.45 53.78Q45.21 54.05 45.08 54.42Q44.96 54.79 44.96 55.25V59.35ZM51.19 59.57Q50.33 59.57 49.73 59.24Q49.14 58.91 48.83 58.36Q48.52 57.8 48.52 57.13Q48.52 56.58 48.69 56.12Q48.86 55.66 49.24 55.3Q49.63 54.95 50.27 54.71Q50.72 54.55 51.33 54.42Q51.95 54.3 52.73 54.18Q53.51 54.07 54.45 53.93L53.72 54.33Q53.72 53.61 53.38 53.28Q53.03 52.95 52.23 52.95Q51.79 52.95 51.3 53.16Q50.82 53.38 50.63 53.93L48.8 53.35Q49.11 52.35 49.95 51.73Q50.78 51.1 52.23 51.1Q53.29 51.1 54.12 51.43Q54.94 51.76 55.37 52.56Q55.6 53 55.65 53.45Q55.69 53.9 55.69 54.45V59.35H53.93V57.7L54.18 58.04Q53.59 58.85 52.91 59.21Q52.23 59.57 51.19 59.57ZM51.62 57.98Q52.18 57.98 52.56 57.78Q52.95 57.59 53.17 57.33Q53.4 57.08 53.48 56.91Q53.64 56.58 53.66 56.15Q53.69 55.72 53.69 55.43L54.28 55.57Q53.38 55.72 52.83 55.82Q52.27 55.92 51.93 56Q51.59 56.09 51.33 56.18Q51.03 56.3 50.85 56.44Q50.67 56.58 50.58 56.74Q50.5 56.9 50.5 57.1Q50.5 57.38 50.63 57.58Q50.77 57.77 51.02 57.88Q51.27 57.98 51.62 57.98ZM59.72 59.35 56.81 51.33H58.83L60.73 56.88L62.63 51.33H64.65L61.74 59.35ZM69.64 59.57Q68.41 59.57 67.47 59.04Q66.53 58.51 66 57.58Q65.47 56.64 65.47 55.44Q65.47 54.13 65.99 53.15Q66.5 52.18 67.42 51.64Q68.33 51.1 69.52 51.1Q70.78 51.1 71.67 51.7Q72.55 52.29 72.97 53.37Q73.4 54.45 73.27 55.9H71.27V55.16Q71.27 53.93 70.88 53.39Q70.49 52.86 69.61 52.86Q68.58 52.86 68.09 53.48Q67.6 54.11 67.6 55.34Q67.6 56.46 68.09 57.07Q68.58 57.68 69.52 57.68Q70.11 57.68 70.54 57.42Q70.96 57.16 71.18 56.67L73.2 57.25Q72.75 58.35 71.77 58.96Q70.8 59.57 69.64 59.57ZM66.98 55.9V54.4H72.3V55.9ZM75.01 50.21V48.43H77.03V50.21ZM75.01 59.35V51.33H77.03V59.35ZM84 59.35Q83.17 59.5 82.37 59.48Q81.57 59.47 80.94 59.2Q80.32 58.94 79.99 58.35Q79.69 57.8 79.68 57.23Q79.66 56.67 79.66 55.95V49.1H81.68V55.83Q81.68 56.29 81.69 56.67Q81.71 57.04 81.85 57.27Q82.11 57.69 82.7 57.73Q83.29 57.76 84 57.67ZM78.3 52.89V51.33H84V52.89Z";
+  function wordmark(extra){return '<svg class="wordmark '+h(extra||"")+'" viewBox="23.4 47.9 61.2 12.2" role="img" aria-label="Scraveit"><path fill="currentColor" d="'+WORDMARK_PATH+'"/></svg>';}
   function logo(extra) {
-    return '<span class="logo-mark '+h(extra || "")+'" aria-hidden="true"><svg viewBox="0 0 64 64"><path fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" d="M48 18c-8-7-24-7-30 1-7 10 7 13 15 14 9 1 16 5 12 12-5 9-22 9-31 1"/><path fill="none" stroke="#73d7ff" stroke-width="5" stroke-linecap="round" d="M15 22h-8M13 32H4M17 42H8"/></svg></span>';
+    return '<span class="logo-mark '+h(extra || "")+'" aria-hidden="true">'+wordmark()+'</span>';
   }
   function money(value) { return "₹" + Math.round(Number(value || 0)).toLocaleString("en-IN"); }
   function searchKey(value) { return String(value == null ? "" : value).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
@@ -228,7 +231,7 @@
     const value = themeValue();
     document.documentElement.dataset.theme = value;
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = value === "dark" ? "#071426" : "#F6F9FD";
+    if (meta) meta.content = value === "dark" ? "#071426" : "#FFFFFF";
   }
 
   function persistProfile() { saveJSON("savrivo.customer.profile", state.profile); }
@@ -293,7 +296,7 @@
 
   function homeSummary(restaurant){
     const summary={};
-    ["id","name","image","imageUrl","imageThumb","imageThumbUrl","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","updatedAt"].forEach(key=>{
+    ["id","name","dineIn","image","imageUrl","imageThumb","imageThumbUrl","coverImages","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","fssaiNumber","updatedAt"].forEach(key=>{
       if(restaurant[key]!==undefined)summary[key]=restaurant[key];
     });
     summary.menuIndex=discoveryIndex((restaurant.menu&&restaurant.menu.length)?restaurant.menu:restaurant.menuIndex);
@@ -410,6 +413,10 @@
           FeastlyNative.unregisterPushToken(requestId, firebaseIdToken);
         } else if (operation === "getDeliveryOtp") {
           FeastlyNative.getDeliveryOtp(requestId, String(payload && payload.orderId || ""));
+        } else if (operation === "invokeDineIn") {
+          FeastlyNative.invokeDineIn(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
+        } else if (operation === "scanTableQr") {
+          FeastlyNative.scanTableQr(requestId);
         } else if (operation === "recoverDeliveryOtp") {
           FeastlyNative.recoverDeliveryOtp(requestId, firebaseIdToken, String(payload && payload.orderId || ""));
         } else {
@@ -568,6 +575,11 @@
     // every restaurant displaying correctly before it has one (existing
     // uploads, or an upload path that hasn't started producing one yet).
     data.imageThumb = data.imageThumbUrl || data.imageThumb || data.image;
+    // Store-uploaded cover photos (up to 10), shown as a looping slideshow on
+    // the restaurant page; a store with none keeps its single cover image.
+    data.coverImages = (Array.isArray(data.coverImages) ? data.coverImages : [])
+      .map(x=>typeof x==="string"?x:x&&x.url).filter(Boolean).slice(0,10);
+    if(!data.coverImages.length) data.coverImages=[data.image].filter(Boolean);
     data.cuisines = Array.isArray(data.cuisines) ? data.cuisines : String(data.type || "Food").split(/[·,]/).map(x=>x.trim()).filter(Boolean);
     data.menu = Array.isArray(data.menu) ? data.menu : data.items && typeof data.items === "object" ? Object.keys(data.items).map(key => Object.assign({id:key}, data.items[key])) : [];
     data.menu = data.menu
@@ -1160,7 +1172,9 @@
     const sessionUid=String(state.session.uid||""),reviewSequence=++state.reviewSyncSequence,previousFingerprint=ordersFingerprint(state.orders);
     try {
       const pair = await Promise.all([
-        ordersQuery(sessionUid).get().then(snap=>recordsFromSnapshot(snap)),
+        Promise.all([ordersQuery(sessionUid).get().then(snap=>recordsFromSnapshot(snap)),
+          squadOrdersQuery(sessionUid).get().then(snap=>recordsFromSnapshot(snap)).catch(()=>({}))])
+          .then(([own,squad])=>Object.assign({},squad,own)),
         reviewsQuery(sessionUid).get().then(snap=>{
           const byOrderId={};
           snap.forEach(doc=>{const data=doc.data();byOrderId[data.orderId||doc.id]=data});
@@ -1401,6 +1415,8 @@
     // Each stream owns its own reconnect lifecycle. A temporary catalogue
     // failure must never tear down healthy order or live-tracking streams.
     await Promise.allSettled([ensureRealtimeWatcher("catalog"),ensureRealtimeWatcher("orders")]);
+    ensureSquadOrderWatch();
+    dineInStart();
     await refreshTrackingStreams(activeOrders());
   }
 
@@ -1458,7 +1474,7 @@
     state.timers.push(setInterval(()=>{ if(document.visibilityState === "visible" && state.online) syncOrders(true); }, 120000));
     state.timers.push(setInterval(()=>{ if(document.visibilityState === "visible" && state.online) Promise.allSettled([syncCatalog(),syncSecondaryHomeData()]); }, 300000));
   }
-  function stopPolling() { state.timers.forEach(clearInterval); state.timers = []; stopRealtime(); }
+  function stopPolling() { state.timers.forEach(clearInterval); state.timers = []; stopRealtime(); stopSquadOrderWatch(); dineInStop(); }
 
   function toast(message, type) {
     clearTimeout(state.toastTimer);
@@ -1636,7 +1652,7 @@
   }
   function addressMapMarkup(){
     const point=state.addressMapDraft||addressMapSeed(null),zoom=Math.max(12,Math.min(18,Number(state.addressMapZoom)||16)),world=mapWorld(point.lat,point.lng,zoom),tileX=Math.floor(world.x/256),tileY=Math.floor(world.y/256),max=Math.pow(2,zoom),tiles=[];
-    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let tx=(tileX+dx)%max;if(tx<0)tx+=max;const ty=Math.max(0,Math.min(max-1,tileY+dy)),left=(tileX+dx)*256-world.x,top=(tileY+dy)*256-world.y;tiles.push('<img alt="" aria-hidden="true" src="https://tile.openstreetmap.org/'+zoom+'/'+tx+'/'+ty+'.png" style="position:absolute;width:256px;height:256px;left:calc(50% + '+left.toFixed(1)+'px);top:calc(50% + '+top.toFixed(1)+'px);max-width:none">');}
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let tx=(tileX+dx)%max;if(tx<0)tx+=max;const ty=Math.max(0,Math.min(max-1,tileY+dy)),left=(tileX+dx)*256-world.x,top=(tileY+dy)*256-world.y;const gsrc=mapTileSrc(zoom,tx,ty,false),osrc=osmTileSrc(zoom,tx,ty);tiles.push('<img alt="" aria-hidden="true" src="'+gsrc+'" data-osm="'+osrc+'"'+(gsrc===osrc?' class="osm"':'')+' style="position:absolute;width:256px;height:256px;left:calc(50% + '+left.toFixed(1)+'px);top:calc(50% + '+top.toFixed(1)+'px);max-width:none">');}
     return '<div class="stack"><div class="cluster between"><div><strong>Delivery pin</strong><div class="caption">Tap the map to move the pin. Use phone location for your exact position.</div></div><div class="cluster"><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="-1" aria-label="Zoom out">−</button><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="1" aria-label="Zoom in">+</button></div></div><div data-action="address-map-pick" class="map-picker" role="button" tabindex="0" aria-label="Choose delivery location on map" style="height:250px;position:relative;overflow:hidden;border-radius:18px;border:1px solid var(--border);background:#dce7ef;touch-action:manipulation">'+tiles.join("")+'<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);font-size:34px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35));pointer-events:none">📍</div></div><div class="cluster wrap"><button type="button" class="button tonal grow" data-action="detect-address-location">'+icon("target","small")+' Use phone location</button><span class="caption">'+point.lat.toFixed(5)+', '+point.lng.toFixed(5)+'</span></div></div>';
   }
   function restaurant(id){return state.catalog[id||state.selectedRestaurantId]||null;}
@@ -1675,7 +1691,7 @@
   function firstOrderOfferAvailable(){
     const uid=String(state.session&&state.session.uid||"");
     if(!uid||!state.ordersHydrated||state.ordersHydratedUid!==uid)return false;
-    return state.orders.length===0;
+    return state.orders.filter(o=>!isGuestOrder(o)).length===0;
   }
   function promotionEligible(promotion,restaurantId,subtotal,now){
     if(!promotion||promotion.active!==true)return false;
@@ -1717,6 +1733,7 @@
   function refreshAutoOffer(){
     if(!state.cart.length){state.coupon=null;state.couponAuto=false;state.couponDismissedFor="";return;}
     const restaurantId=state.cart[0].restaurantId;
+    if(state.pendingCoupon&&state.pendingCoupon.restaurantId===restaurantId){const code=state.pendingCoupon.code,picked=(state.promotions||[]).find(p=>String(p.code||"").toUpperCase()===code);state.pendingCoupon=null;if(picked){state.coupon=picked;state.couponAuto=false;state.couponDismissedFor="";return;}}
     if(state.coupon&&!state.couponAuto)return;
     if(state.couponDismissedFor&&state.couponDismissedFor===restaurantId)return;
     const best=bestOfferFor(restaurantId,cartSubtotal(),Date.now());
@@ -1803,7 +1820,7 @@
       addOnIds:addOns.map(x=>String(x.id||x.name||"")).filter(Boolean),
       addOnTotal:addOns.reduce((sum,x)=>sum+Number(x.priceDelta!=null?x.priceDelta:x.price||0),0), note:custom&&custom.note||""
     });
-    persistCart(); closeSheet(); toast(item.name+" added to cart.","success"); render({preserveScroll:true});
+    persistCart(); closeSheet(); toast(item.name+" added to cart.","success"); render({preserveScroll:true}); cartWin();
   }
   function updateCart(key, delta) {
     const item = state.cart.find(x=>x.key===key); if(!item)return;
@@ -2125,8 +2142,11 @@
     if (liveOrderRoute()) {
       if (state.trackingMap) state.trackingMap.tileKey = "";
       refreshTrackingTiles();
+      if (window.Rider3D && document.getElementById("tracking-map-card")) Rider3D.attach(trackingRider3DState);
       refreshTrackingCarousel();
     }
+    refreshAdRails();
+    afterHomeRender();
     renderSheet();
     // After a reconcile the scroller survived untouched, so there is no
     // position to restore - only an explicit non-preserving render still has
@@ -2139,7 +2159,7 @@
   // the keyboard handling depends on), so web content cannot be drawn under
   // the status bar. Colour the bar to match the screen instead: the seam
   // disappears without touching the keyboard behaviour.
-  const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#F6F9FD";
+  const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#F6F9FD", STATUS_BAR_HERO_LIGHT="#FFFFFF", STATUS_BAR_CANVAS_LIGHT="#FFFFFF";
   let statusBarApplied="";
   // The live map (restaurant, home, dotted plan line, then the partner) shows
   // from the moment an order is placed, not only once a partner is assigned.
@@ -2154,12 +2174,18 @@
     const dark=document.documentElement.dataset.theme==="dark";
     // The app draws beneath the status bar, so its icons follow what is
     // behind them: white on the blue live hero and on the dark theme.
-    const darkIcons=!hero&&!dark;
-    const next=(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS)+(darkIcons?":dark":":light");
+    // Light theme (cream cloud): the hero is light blue too, so icons stay dark on both.
+    let darkIcons=!dark;
+    let color=dark?(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS):(hero?STATUS_BAR_HERO_LIGHT:STATUS_BAR_CANVAS_LIGHT);
+    // Home 2.0: the sky runs up under the clock, so the bar takes its colour.
+    const sky=state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2"))||(state.route==="welcome"&&document.querySelector(".welcome2")));
+    if(sky){color=state.heroTheme.top;darkIcons=!state.heroTheme.dark;}
+    const scrim=statusScrimElement();if(scrim)scrim.style.background=sky?state.heroTheme.top:"";
+    const next=color+(darkIcons?":dark":":light");
     updateStatusScrim(hero);
     if(next===statusBarApplied)return;
     statusBarApplied=next;
-    try{ if(window.FeastlyNative&&FeastlyNative.setStatusBarStyle)FeastlyNative.setStatusBarStyle(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS,darkIcons); }catch(_){}
+    try{ if(window.FeastlyNative&&FeastlyNative.setStatusBarStyle)FeastlyNative.setStatusBarStyle(color,darkIcons); }catch(_){}
   }
   // A blurred strip behind the status bar that fades in once the page is
   // scrolled, so the clock and battery never sit on top of moving content.
@@ -2183,10 +2209,16 @@
   function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
 
   function screenWelcome() {
-    return '<main class="welcome-screen no-nav">'
-      +'<div class="cluster">'+logo()+'<div><div class="brand-word">'+BRAND+'</div><div class="caption">Food, thoughtfully delivered</div></div></div>'
-      +'<div class="welcome-art" aria-label="A calm delivery route illustration"><div class="route-line"><svg viewBox="0 0 360 270" fill="none" aria-hidden="true"><path d="M47 207C82 118 121 233 169 151c41-70 85-20 144-95" stroke="rgba(255,255,255,.35)" stroke-width="24" stroke-linecap="round"/><path d="M47 207C82 118 121 233 169 151c41-70 85-20 144-95" stroke="white" stroke-width="5" stroke-linecap="round" stroke-dasharray="9 14"/><circle cx="47" cy="207" r="18" fill="#4DD6A4" stroke="white" stroke-width="6"/><path d="M306 44c0-18 27-18 27 0 0 15-13.5 29-13.5 29S306 59 306 44Z" fill="#fff"/><circle cx="319.5" cy="44" r="5" fill="#155EEF"/><rect x="134" y="114" width="74" height="58" rx="18" fill="rgba(7,20,38,.72)"/><path d="M151 144h40m-26-13h26m-40 26h27" stroke="#73D7FF" stroke-width="7" stroke-linecap="round"/></svg></div></div>'
-      +'<div class="stack-lg"><div><p class="eyebrow">Made for your neighbourhood</p><h1 class="display" style="margin-top:8px">Good food.<br>Clear journeys.</h1><p class="body muted" style="margin-top:14px">Discover trusted kitchens, order without surprises and follow every step to your door.</p></div><div class="welcome-actions"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button><div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button><p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></div></div>'
+    const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};
+    const foods=["🍕","🧋","🍗","🍩","🌮","🍜","🍦","🥘"];
+    return '<main class="welcome-screen welcome2 no-nav'+(theme.dark?' dark':'')+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
+      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'<span class="welcome2-city">Nellore</span></header>'
+      +'<section class="welcome2-stage" aria-hidden="true">'+foods.map((f,i)=>'<span class="welcome2-food f'+i+'">'+f+'</span>').join("")
+        +'<div id="welcome-rider-slot" class="welcome2-rider" data-action="mascot-tap"></div><div class="hero2-road welcome2-road"><span></span></div></section>'
+      +'<section class="welcome2-copy"><p class="welcome2-eyebrow">'+h(theme.kind==="festival"?theme.head:"Hungry? Same.")+'</p><h1>Cravings,<br>sorted in minutes.</h1>'
+        +'<p>Nellore’s favourite kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
+        +(mascot?'<span class="welcome2-chip">Today’s rider · '+h(mascot.rider)+' 👋</span>':'')+'</section>'
+      +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button><div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button><p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
       +'</main>';
   }
 
@@ -2222,8 +2254,15 @@
   }
 
   function homeHeader() {
-    const address=currentAddress();
-    return '<header class="cluster between home-header"><button class="location-pill" data-action="open-address-picker" aria-label="Change delivery location"><span class="location-dot">'+icon("target")+'</span><span class="location-copy"><span>Deliver to</span><strong>'+(address?h(address.label||address.area):"Choose a location")+'</strong><small>'+h(address&&(address.city||address.area)||(address?"Add a location pin":"Select a saved address"))+'</small></span>'+icon("chevron","small")+'</button><div class="home-header-actions"><button class="cart-shortcut" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button><button class="cart-shortcut" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+(activeOrders().length?'<span>'+activeOrders().length+'</span>':'')+'</button>'+(cartCount()?'<button class="cart-shortcut" data-action="go" data-route="cart" aria-label="Open cart with '+cartCount()+' items">'+icon("cart")+'<span>'+cartCount()+'</span></button>':'')+'<button class="avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></header>';
+    const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
+    const title=address?(address.label||address.area||"Delivery address"):"Choose a location";
+    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":"Select a saved address";
+    const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
+    return '<header class="home-header hh2"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
+      +'<div class="hh2-actions"><button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
+      +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
+      +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
+      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></header>';
   }
   function orderProgress(order) { const progress=Math.min(100,Math.max(6,(statusIndex(order.status)+1)/ORDER_FLOW.length*100)); return progress; }
   function audienceMatch(record){
@@ -2249,15 +2288,67 @@
   function activeLocalAds(){
     const now=Date.now(), a=currentAddress()||{}, city=keyName(a.city||a.area), area=keyName(a.area);
     return (state.localAds||[]).filter(ad=>ad&&ad.active!==false&&Number(ad.startAt||0)<=now&&(!ad.endAt||Number(ad.endAt)>=now))
-      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0)).slice(0,8);
+      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0)).slice(0,20);
   }
   function activeLocalAd(){ return activeLocalAds()[0]||null; }
-  function localAdMarkup(){const ad=activeLocalAd();if(!ad)return'<section class="card brand-card promo-card"><div><p class="eyebrow" style="color:#bfe9ff">SCRAVEIT STANDARD</p><h2 class="section-title" style="font-size:25px;margin-top:7px">Clear pricing. Careful delivery.</h2><p class="supporting" style="margin-top:8px">Every charge is shown before you place an order.</p></div><span class="promo-code">NO SURPRISES</span></section>';return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
-  function latestDeliveredNeedingReview(){if(!reviewStateReady())return null;return state.orders.find(o=>o.status==="Delivered"&&!state.reviews[o.id])||null}
+  /** Every live ad as one swipeable row (left/right), dots below; falls back to the brand card. */
+  function adRailMarkup(trackId){
+    const ads=activeLocalAds();
+    if(!ads.length)return localAdMarkup();
+    return '<section class="ad-rail" aria-label="Offers"><div class="ad-rail-track" id="'+h(trackId)+'">'
+      +ads.map(ad=>'<button type="button" class="ad-rail-slide" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'
+        +((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async">':'')
+        +'<div class="ad-rail-copy"><span class="sponsored-label">Sponsored'+(ad.area||ad.city?' · '+h(ad.area||ad.city):'')+'</span><h2>'+h(ad.title||"Nearby offer")+'</h2>'+(ad.message?'<p>'+h(ad.message)+'</p>':'')+'<span class="ad-rail-cta">'+h(ad.cta||"Explore")+'</span></div></button>').join("")
+      +'</div>'+(ads.length>1?'<div class="ad-rail-dots" data-dots-for="'+h(trackId)+'">'+ads.map((_,i)=>'<span class="ad-dot'+(i===0?' active':'')+'"></span>').join("")+'</div>':'')
+      +'</section>';
+  }
+  // Ad rails swipe natively (scroll-snap); this only keeps the dots in step
+  // and moves to the next ad every few seconds while nobody is touching it.
+  let adRailTimer=null, adRailTouchedAt=0;
+  const AD_RAIL_INTERVAL_MS=5000;
+  function adRailIndex(track){return track.clientWidth?Math.round(track.scrollLeft/track.clientWidth):0;}
+  function syncAdRailDots(track){
+    const dots=document.querySelector('[data-dots-for="'+track.id+'"]');
+    if(!dots)return;
+    const index=adRailIndex(track);
+    Array.from(dots.children).forEach((dot,i)=>dot.classList.toggle("active",i===index));
+  }
+  function refreshAdRails(){
+    clearInterval(adRailTimer);adRailTimer=null;
+    const tracks=Array.from(document.querySelectorAll(".ad-rail-track"));
+    tracks.forEach(syncAdRailDots);
+    if(!tracks.some(track=>track.children.length>1))return;
+    adRailTimer=setInterval(()=>{
+      if(Date.now()-adRailTouchedAt<AD_RAIL_INTERVAL_MS)return;
+      const live=Array.from(document.querySelectorAll(".ad-rail-track")).filter(track=>track.children.length>1);
+      if(!live.length){clearInterval(adRailTimer);adRailTimer=null;return;}
+      live.forEach(track=>{const next=(adRailIndex(track)+1)%track.children.length;track.scrollTo({left:next*track.clientWidth,behavior:"smooth"});});
+    },AD_RAIL_INTERVAL_MS);
+  }
+  /** Restaurants the customer had delivered before, newest first: one tap reorders. */
+  function orderAgainMarkup(){
+    const seen=new Set(),list=[];
+    for(const o of state.orders){
+      if(o.status!=="Delivered"||!o.restaurantId||seen.has(o.restaurantId))continue;
+      const r=restaurant(o.restaurantId);if(!r)continue;
+      seen.add(o.restaurantId);list.push({r,o});if(list.length>=8)break;
+    }
+    if(!list.length)return"";
+    return '<section class="stack"><h2 class="section-title">Order again</h2><div class="order-again-row">'
+      +list.map(({r,o})=>'<button type="button" class="order-again-card" data-action="reorder" data-order-id="'+h(o.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+h((o.items||[]).map(x=>x.name).slice(0,1).join("")||"Reorder")+'</span></button>').join("")
+      +'</div></section>';
+  }
+  function localAdMarkup(){const ad=activeLocalAd();if(!ad)return'<button type="button" class="promise-card" data-action="go" data-route="offers"><span class="promise-copy"><span class="promise-eyebrow">The Scraveit promise</span><strong>No surprise charges.</strong><span>Every rupee is shown before you pay.</span><span class="ad-rail-cta">See today’s offers</span></span><span class="promise-art" aria-hidden="true"><i>₹</i><b>✓</b></span></button>';return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
+  function latestDeliveredNeedingReview(){if(!reviewStateReady())return null;return state.orders.find(o=>o.status==="Delivered"&&!isGuestOrder(o)&&!state.reviews[o.id])||null}
   function postDeliveryCard(){const o=latestDeliveredNeedingReview();if(!o)return"";return'<section class="post-order-card"><p class="eyebrow">Delivered</p><h2 class="section-title">How was '+h(o.restaurant||"your order")+'?</h2><p class="supporting">Your rating helps customers, restaurants and delivery partners improve.</p><div class="star-row">'+[1,2,3,4,5].map(n=>'<button class="star-choice" data-action="quick-rate" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' stars">'+icon("star","large")+'</button>').join("")+'</div><button class="button tonal full" data-action="go" data-route="review" data-order-id="'+h(o.id)+'">Rate restaurant & delivery partner</button></section>'}
 
   function activeOrderCard(order) {
-    return '<button class="active-order" data-action="open-order" data-order-id="'+h(order.id)+'"><div class="cluster between"><span class="status-pill" style="background:rgba(255,255,255,.18);color:white">'+h(order.status)+'</span><strong>'+h(etaText(order))+'</strong></div><div><h2 class="section-title">'+h(order.restaurant||"Your order")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div><div class="status-progress"><span style="width:'+orderProgress(order)+'%"></span></div><div class="cluster between supporting"><span>Order '+h(order.id)+'</span><span>View journey '+icon("chevron","small")+'</span></div></button>';
+    const id=String(order.id||""),shortId=id.length>8?id.slice(-6):id;
+    return '<button class="active-order ao2" data-action="open-order" data-order-id="'+h(id)+'">'
+      +'<div class="ao2-top"><span class="ao2-status">'+h(order.status)+'</span><span class="ao2-eta">'+h(etaText(order))+'</span></div>'
+      +'<div class="ao2-main"><span class="ao2-icon">'+icon("orders")+'</span><div class="ao2-copy"><h2 class="section-title">'+h(order.restaurant||"Your order")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div></div>'
+      +'<div class="status-progress"><span style="width:'+orderProgress(order)+'%"></span></div>'
+      +'<div class="ao2-foot"><span class="caption">Order #'+h(shortId)+'</span><span class="ao2-cta">View journey '+icon("chevron","small")+'</span></div></button>';
   }
   function discoveryItems(restaurant){return restaurant&&restaurant.menuLoaded?(restaurant.menu||[]):(restaurant&&restaurant.menuIndex||[])}
   // -----------------------------------------------------------------------
@@ -2392,9 +2483,25 @@
   // advertising itself. promotionEligible() applies the same rules the server
   // uses to honour the code.
   function restaurantHasOffer(r){
-    return !!(r.offer||r.discount||r.offerText||restaurantOfferPercent(r)>0);
+    return !!(r.offer||r.discount||r.offerText||restaurantOfferPercent(r)>0||liveOffersFor(r,true).length);
   }
+  // ---- Offer ranking ("Top offers near you"). Shared maths:
+  // shared/web/scraveit-offer-math.js. A restaurant's offers only lift it when
+  // it is open, delivers here and is rated 3.5 or more, and only offers that
+  // have been live for 2 hours count, so a flash offer can't jump the queue.
+  const OM=window.ScraveitOfferMath,OFFER_RANK_MIN_RATING=3.5,OFFER_RANK_LIVE_MS=2*60*60*1000;
+  function liveOffersFor(r,includeAll){const now=Date.now();return(state.promotions||[]).filter(p=>promotionEligible(p,r&&r.id,Infinity,now)&&(includeAll||(Array.isArray(p.restaurantIds)&&p.restaurantIds.length)))}
+  function offerLiveSince(p){return Math.max(Number(p.startsAt||0),Number(p.reviewedAt||0)||Number(p.createdAt||0))}
+  function offerRankable(r){return r&&r.archived!==true&&r.open!==false&&storeKind(r)==="restaurant"&&Number(ratingForRestaurant(r).value||0)>=OFFER_RANK_MIN_RATING&&restaurantServiceable(r)}
+  function restaurantOfferScore(r){if(!offerRankable(r))return 0;const now=Date.now();return OM.offerScore(liveOffersFor(r).filter(p=>now-offerLiveSince(p)>=OFFER_RANK_LIVE_MS)).score}
+  function topOfferRestaurants(){const key=(state.promotions||[]).length+"|"+Object.keys(state.catalog||{}).length+"|"+Math.floor(Date.now()/60000)+"|"+(currentAddress()&&currentAddress().id||"");if(state.topOffersKey===key)return state.topOffers;const distance=r=>{const d=restaurantDistanceKm(r);return d==null?999999:d};const list=Object.values(state.catalog||{}).map(r=>({r,score:restaurantOfferScore(r)})).filter(x=>x.score>=1).sort((a,b)=>b.score-a.score||Number(ratingForRestaurant(b.r).value||0)-Number(ratingForRestaurant(a.r).value||0)||distance(a.r)-distance(b.r)).map(x=>x.r);state.topOffersKey=key;state.topOffers=list;return list}
+  function offerAreaName(){const a=currentAddress()||{};return String(a.area||a.city||"your area").split(",")[0].trim()||"your area"}
+  function isBestOfferHere(r){const top=topOfferRestaurants();return !!(top[0]&&top[0].id===r.id)}
+  function topOffersShelf(){if(homeMode()!=="delivery")return"";const top=topOfferRestaurants().slice(0,6);if(!top.length)return"";return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Top offers near you</h2><p class="supporting">Big savings from top-rated places nearby</p></div><button class="text-button" data-action="offers-sort">See all</button></div><div class="restaurant-list">'+top.slice(0,3).map(r=>restaurantCard(r,true)).join("")+'</div></section>'}
+  function restaurantOffersStrip(r){const offers=liveOffersFor(r,true).filter(p=>p.code);if(!offers.length)return"";const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase();return'<section class="offer-strip" aria-label="Offers">'+offers.slice(0,4).map(p=>{const code=String(p.code).toUpperCase(),on=applied===code;return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">'+h(promotionSponsor(p))+(p.firstOrderOnly?' · first order':'')+'</span></div><button class="offer-apply'+(on?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(on?'✓ '+h(code):'Apply '+h(code))+'</button></div>'}).join("")+'</section>'}
   function restaurantOfferLabel(r){
+    const offers=liveOffersFor(r,true);
+    if(offers.length){const best=OM.offerScore(offers).best;if(best)return OM.offerLabel(best)}
     const percent=restaurantOfferPercent(r);
     if(percent>0)return Math.round(percent)+"% OFF";
     return restaurantHasOffer(r)?"Offer":"";
@@ -2450,7 +2557,14 @@
 
     const openValue=r=>r.open===false?1:0;
 
-    if(state.sort==="nearby") {
+    if(state.sort==="offers") {
+      list.sort((a,b)=>
+        openValue(a)-openValue(b)
+        ||restaurantOfferScore(b)-restaurantOfferScore(a)
+        ||Number(b.rating||0)-Number(a.rating||0)
+        ||distanceValue(a)-distanceValue(b)
+      );
+    } else if(state.sort==="nearby") {
       list.sort((a,b)=>
         openValue(a)-openValue(b)
         ||distanceValue(a)-distanceValue(b)
@@ -2485,7 +2599,7 @@
 
     return list;
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),distance=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),distanceText=distance==null?"":distance.toFixed(distance<10?1:0)+" km",rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New";return'<article class="restaurant-card '+(horizontal?'horizontal':'')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="restaurant-media"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="media-badge">'+(r.open?'Open':'Closed')+'</span><button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-copy"><div class="restaurant-title-row"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rating compact">'+icon("star","small")+'<strong>'+h(ratingText)+'</strong></span></div><div class="cluster wrap restaurant-badges">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span>':'')+(restaurantOfferLabel(r)?'<span class="offer-badge">'+h(restaurantOfferLabel(r))+'</span>':'')+'<span class="rating-caption">'+h(rating.label)+'</span></div><p class="supporting restaurant-cuisines">'+h((r.cuisines||[]).join(" · "))+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</span>'+(distanceText?'<span>'+icon("pin","small")+' '+h(distanceText)+'</span>':'')+'<span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></div></div></article>'}
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · ");return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button><span class="rc2-eta">'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed')+'</span></div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating">'+h(ratingText)+' ★</span></div><p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+(cuisines?' · ':'')+(fee===0?'Free delivery':money(fee)+' delivery')+'</p></div></article>'}
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenStoreKind(kind) {
@@ -2498,6 +2612,728 @@
         :'<section class="card kind-soon"><span class="kind-soon-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+STORE_KINDS.find(k=>k[0]===kind)[2]+'</svg></span><div><h2 class="section-title">'+(kind==="grocery"?"Grocery stores":"Dairies")+' are coming soon</h2><p class="supporting">'+(kind==="grocery"?"Partner grocery stores":"Partner dairies")+' near you will appear here as they join Scraveit.</p></div></section>')
       +'</div>'+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
   }
+  // =========================================================================
+  // Home 2.0: a living sky (time of day, festivals, rain), a daily 3D rider
+  // mascot, the Craving Wheel, mood picks, your food story (streak, savings,
+  // badges, stickers), a shareable month card, and small celebrations.
+  // Everything is worked out from real orders and the live catalogue.
+  // =========================================================================
+  const prefersCalm=()=>!!(window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches);
+  function haptic(ms){try{if(window.FeastlyNative&&FeastlyNative.haptic)FeastlyNative.haptic(ms||12);else if(navigator.vibrate)navigator.vibrate(ms||12);}catch(_){}}
+  // Paper confetti: two side cannons (or one burst), each piece tumbling in 3D
+  // (it narrows and darkens as it turns edge-on), fluttering side to side and
+  // drifting down under air drag. Runs about five seconds, then fades.
+  function confetti(opts){
+    if(prefersCalm())return;const o=opts||{},W=window.innerWidth,H=window.innerHeight,d=Math.min(2,window.devicePixelRatio||1);
+    const cv=document.createElement("canvas");cv.className="confetti-layer";cv.width=W*d;cv.height=H*d;document.body.appendChild(cv);
+    const g=cv.getContext("2d");g.scale(d,d);
+    const cols=[[20,96,240],[255,143,184],[143,227,207],[244,168,58],[110,155,255],[255,210,122],[181,160,255],[255,255,255]];
+    const total=Math.round((o.count||140)*1.5),ps=[],rnd=(a,b)=>a+Math.random()*(b-a);
+    const make=(x,y,angle,spread,power,delay)=>{const a=angle+rnd(-spread,spread),v=rnd(power*0.5,power),kind=Math.random();
+      return{x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,w:rnd(8,14),h:rnd(5,8),tilt:rnd(0,6.28),dt:rnd(0.07,0.2),spin:rnd(0,6.28),ds:rnd(-0.1,0.1),
+        sway:rnd(0,6.28),dsw:rnd(0.03,0.07),c:cols[(Math.random()*cols.length)|0],shape:kind<0.6?"rect":kind<0.84?"strip":"dot",delay};};
+    // A gentle shower from above the screen, so the whole screen celebrates.
+    const shower=n=>{for(let i=0;i<n;i++)ps.push(make(rnd(0,W),rnd(-60,-10),Math.PI/2,0.5,rnd(1,3),rnd(0,1400)));};
+    if(o.y!=null||o.x!=null){
+      // A pop from one spot (a tap): out in every direction, then drifting down.
+      const x=o.x!=null?o.x:W/2,y=o.y!=null?o.y:H*0.3;
+      for(let i=0;i<total*0.6;i++)ps.push(make(x,y,rnd(0,6.283),0,rnd(5,12),rnd(0,90)));
+      shower(Math.round(total*0.5));
+    }else{
+      // Big moments: two cannons from the bottom corners, then the shower.
+      for(let i=0;i<total;i++){const left=i%2===0;ps.push(make(left?-8:W+8,H*0.86,left?-Math.PI*0.37:-Math.PI*0.63,0.3,rnd(18,26),rnd(0,420)));}
+      shower(Math.round(total*0.6));
+    }
+    const start=performance.now(),life=o.duration||5600;let last=start;
+    (function step(t){
+      const e=t-start,k=Math.min(2.2,(t-last)/16.67);last=t;g.clearRect(0,0,W,H);
+      const fade=e>life-900?Math.max(0,(life-e)/900):1;let alive=0;
+      for(const p of ps){
+        if(e<p.delay)continue;
+        p.vy=Math.min(p.vy+0.32*k,3.2+Math.sin(p.sway)*0.6);p.vx*=Math.pow(0.975,k);
+        p.sway+=p.dsw*k;p.x+=(p.vx+Math.sin(p.sway)*1.15)*k;p.y+=p.vy*k;p.tilt+=p.dt*k;p.spin+=p.ds*k;
+        if(p.y>H+30)continue;alive++;
+        const turn=Math.cos(p.tilt),shade=0.62+0.38*Math.abs(turn),c=p.c;
+        g.save();g.translate(p.x,p.y);g.rotate(p.spin);g.globalAlpha=fade;
+        g.fillStyle="rgb("+Math.round(c[0]*shade)+","+Math.round(c[1]*shade)+","+Math.round(c[2]*shade)+")";
+        if(p.shape==="dot"){g.beginPath();g.ellipse(0,0,p.h*0.6,p.h*0.6*Math.max(0.15,Math.abs(turn)),0,0,6.283);g.fill();}
+        else if(p.shape==="strip"){g.scale(1,Math.max(0.12,Math.abs(turn)));g.fillRect(-p.w*0.9,-1.6,p.w*1.8,3.2);}
+        else{g.scale(Math.max(0.1,Math.abs(Math.sin(p.tilt*0.5+1))),Math.max(0.12,Math.abs(turn)));g.fillRect(-p.w/2,-p.h/2,p.w,p.h);}
+        g.restore();
+      }
+      if(e<life&&(alive||e<600))requestAnimationFrame(step);else cv.remove();
+    })(start);
+  }
+  function winToast(emoji,eyebrow,title,copy){
+    const el=document.createElement("div");el.className="win-toast";el.setAttribute("role","status");
+    el.innerHTML='<span class="win-toast-emoji" aria-hidden="true">'+h(emoji)+'</span><span class="win-toast-copy"><small>'+h(eyebrow)+'</small><strong>'+h(title)+'</strong>'+(copy?'<span>'+h(copy)+'</span>':'')+'</span>';
+    document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("show"));
+    setTimeout(()=>{el.classList.remove("show");setTimeout(()=>el.remove(),450);},3800);
+  }
+  function dayNumber(date){const d=date||new Date();return Math.floor((Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()))/86400000);}
+  function dayStamp(date){const d=date||new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+
+  // ---- the sky: time of day, then festivals and rain on top ----------------
+  function daySlot(date){const hr=(date||new Date()).getHours();return hr>=5&&hr<11?"morning":hr>=11&&hr<17?"day":hr>=17&&hr<22?"evening":"night";}
+  const SKY_SLOTS={
+    morning:{top:"#FFC9A3",bottom:"#FFF4E6",dark:false,greet:"Good morning",heads:["Idli or dosa first?","Filter coffee time?","Breakfast, sorted?"]},
+    day:{top:"#86C2FF",bottom:"#EEF7FF",dark:false,greet:"Good afternoon",heads:["Biryani o'clock.","Lunch break, upgraded.","Meals or biryani?"]},
+    evening:{top:"#FF8E72",bottom:"#FFD9BF",dark:false,greet:"Good evening",heads:["What's for dinner?","Chai and snacks time?","Dinner plans? Sorted."]},
+    night:{top:"#141B45",bottom:"#3A3C88",dark:true,greet:"Still up",heads:["Midnight cravings?","Late-night bites?","One more snack?"]}};
+  // Festival skies turn on by themselves on their dates. Fixed-date ones repeat
+  // every year; the rest carry their dates for 2026 and 2027 (Scraveit admins
+  // can add or override events in settings/customer.homeThemes).
+  const FESTIVAL_SKIES=[
+    {id:"newyear",md:["12-31","01-01"],top:"#1B1446",bottom:"#5B2A86",dark:true,deco:"✨🎆✨🎇✨",head:"Happy New Year!",sub:"Start the year with something delicious"},
+    {id:"sankranti",md:["01-13","01-14","01-15","01-16"],top:"#FFB347",bottom:"#FFF1C9",deco:"🪁 🪁 🪁",head:"Happy Sankranti!",sub:"Pongal, pulihora and sweets nearby"},
+    {id:"republic",md:["01-26"],top:"#FF9F43",bottom:"#E5F6EC",deco:"🇮🇳",head:"Happy Republic Day!",sub:"A tricolour treat is a tap away"},
+    {id:"independence",md:["08-15"],top:"#FF9F43",bottom:"#E5F6EC",deco:"🇮🇳",head:"Happy Independence Day!",sub:"Celebrate with a feast"},
+    {id:"christmas",md:["12-24","12-25","12-26"],top:"#B3243A",bottom:"#FDE8E8",dark:true,deco:"🎄 ⭐ 🎁",head:"Merry Christmas!",sub:"Cakes and feasts, delivered"},
+    {id:"holi",days:["2026-03-03","2026-03-04","2027-03-21","2027-03-22"],top:"#FF5FA2",bottom:"#FFF0B8",deco:"🎨 💛 💗 💚",head:"Happy Holi!",sub:"Gujiya and thandai time"},
+    {id:"ugadi",days:["2026-03-19","2027-04-07"],top:"#7BC67E",bottom:"#FFF6D6",deco:"🌿 🥭 🌸",head:"Ugadi Subhakankshalu!",sub:"Ugadi pachadi and festive meals"},
+    {id:"eid",days:["2026-03-20","2026-03-21","2027-03-10","2027-03-11"],top:"#0F5C4D",bottom:"#E3F4EC",dark:true,deco:"🌙 ✨",head:"Eid Mubarak!",sub:"Biryani, haleem and sheer khurma"},
+    {id:"vinayaka",days:["2026-09-14","2026-09-15","2027-09-04","2027-09-05"],top:"#FF8A3D",bottom:"#FFEED9",deco:"🌺 🪔 🌺",head:"Happy Vinayaka Chavithi!",sub:"Modak and kudumulu nearby"},
+    {id:"dussehra",days:["2026-10-19","2026-10-20","2026-10-21","2027-10-08","2027-10-09"],top:"#F06A2B",bottom:"#FFF0D9",deco:"🏹 🌼 🌼",head:"Happy Dussehra!",sub:"Festive thalis and sweets"},
+    {id:"diwali",days:["2026-11-07","2026-11-08","2026-11-09","2027-10-28","2027-10-29","2027-10-30"],top:"#2A1250",bottom:"#7A3A92",dark:true,deco:"🪔 🪔 🪔 🪔 🪔",head:"Happy Diwali!",sub:"Sweets, snacks and celebrations"}];
+  function adminThemes(){const list=state.settings&&Array.isArray(state.settings.homeThemes)?state.settings.homeThemes:[];
+    return list.filter(t=>t&&/^\d{4}-\d{2}-\d{2}$/.test(String(t.from||""))&&/^\d{4}-\d{2}-\d{2}$/.test(String(t.to||""))&&/^#[0-9a-fA-F]{6}$/.test(String(t.top||""))&&/^#[0-9a-fA-F]{6}$/.test(String(t.bottom||""))&&t.head)
+      .map(t=>({id:"admin_"+String(t.id||t.from).slice(0,40),from:t.from,to:t.to,top:t.top,bottom:t.bottom,dark:t.dark===true,deco:String(t.deco||"").slice(0,24),head:String(t.head).slice(0,40),sub:String(t.sub||"").slice(0,70)}));}
+  function festivalToday(date){
+    const stamp=dayStamp(date),md=stamp.slice(5);
+    const admin=adminThemes().find(t=>stamp>=t.from&&stamp<=t.to);if(admin)return admin;
+    return FESTIVAL_SKIES.find(f=>(f.md&&f.md.includes(md))||(f.days&&f.days.includes(stamp)))||null;
+  }
+  function homeRaining(){
+    const near=restaurantsFiltered().find(r=>storeKind(r)==="restaurant"&&r.open!==false);
+    if(!near)return false;
+    const w=state.storeWeather&&state.storeWeather[near.id];
+    if(!w||Date.now()-Number(w.readAt||0)>10*60*1000)loadStoreWeather(near.id);
+    return!!(w&&w.validUntil>Date.now()&&w.rain);
+  }
+  function skyTheme(){
+    const now=new Date(),slot=daySlot(now),base=SKY_SLOTS[slot],fest=festivalToday(now),rain=!fest&&homeRaining();
+    const heads=base.heads,head=heads[dayNumber(now)%heads.length];
+    if(fest)return{slot,kind:"festival",id:fest.id,top:fest.top,bottom:fest.bottom,dark:!!fest.dark,deco:fest.deco,greet:base.greet,head:fest.head,sub:fest.sub};
+    if(rain)return{slot,kind:"rain",id:"rain",top:"#7C93B5",bottom:"#DCE6F2",dark:false,deco:"",greet:base.greet,head:"Rainy day? Chai and pakoda?",sub:"Hot picks for the weather"};
+    const late=slot==="night"&&(now.getHours()>=23||now.getHours()<4);
+    return{slot,kind:"slot",id:late?"late":slot,top:late?"#1A0B3B":base.top,bottom:late?"#4B1D7A":base.bottom,dark:base.dark,deco:"",greet:base.greet,head,sub:""};
+  }
+  // "Default" looks exactly like Classic, so it is not a separate sticker.
+  function mascotPresets(){return((window.AV&&AV.PRESETS)||[]).filter(p=>p.id!=="blue");}
+  function todaysMascot(){const list=mascotPresets();return list.length?list[dayNumber()%list.length]:null;}
+  function firstName(){return String(state.profile.name||"").trim().split(/\s+/)[0]||"";}
+  function skyDecor(theme){
+    let html="";
+    if(theme.dark){for(let i=0;i<28;i++){const x=(i*37)%100,y=(i*53)%62;html+='<i class="sky-star" style="left:'+x+'%;top:'+(6+y)+'%;animation-delay:'+((i%7)*0.4)+'s"></i>';}}
+    if(theme.id==="day")html+='<i class="sky-cloud c1"></i><i class="sky-cloud c2"></i>';
+    if(!theme.dark&&theme.kind==="slot")html+='<i class="sky-sun"></i>';
+    if(theme.kind==="rain")html+='<i class="sky-rain"></i>';
+    if(theme.deco)html+='<span class="sky-deco">'+h(theme.deco)+'</span>';
+    return'<div class="hero2-sky" aria-hidden="true">'+html+'</div>';
+  }
+  function searchHints(){
+    if(state.searchHintsCache&&Date.now()-state.searchHintsCache.at<60000)return state.searchHintsCache.list;
+    const seen=new Set(),list=[];
+    restaurantsFiltered().forEach(r=>discoveryItems(r).forEach(item=>{const n=String(item.name||"").trim();if(item.available!==false&&(item.popular||list.length<6)&&n.length>3&&n.length<26&&!seen.has(n.toLowerCase())){seen.add(n.toLowerCase());list.push(n);}}));
+    const out=(list.length?list:["chicken biryani","masala dosa","filter coffee","paneer butter masala","chocolate waffle"]).slice(0,12);
+    state.searchHintsCache={at:Date.now(),list:out};return out;
+  }
+  let heroHintTimer=null,heroHintIndex=0;
+  function startHeroHints(){
+    if(heroHintTimer)return;
+    heroHintTimer=setInterval(()=>{const el=document.getElementById("hero-search-hint");if(!el){clearInterval(heroHintTimer);heroHintTimer=null;return;}
+      const hints=searchHints();heroHintIndex=(heroHintIndex+1)%hints.length;el.classList.add("swap");
+      setTimeout(()=>{el.textContent="Search ‘"+hints[heroHintIndex]+"’";el.classList.remove("swap");},220);},2800);
+  }
+  function homeHero(){
+    const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};state.heroThemeKind=theme.kind;
+    const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
+    const title=address?(address.label||address.area||"Delivery address"):"Choose a location";
+    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":"Select a saved address";
+    const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
+    const hints=searchHints(),name=firstName();
+    return '<header class="hero2'+(theme.dark?' dark':'')+' sky-'+h(theme.id)+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
+      +'<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
+      +'<div class="hh2-actions"><button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
+      +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
+      +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
+      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></div>'
+      +'<div class="hero2-body"><div class="hero2-copy"><p class="hero2-greet">'+h(theme.greet+(name?", "+name:""))+'</p><h1 class="hero2-head">'+h(theme.head)+'</h1>'
+      +(theme.sub?'<p class="hero2-sub">'+h(theme.sub)+'</p>':'')
+      +(mascot?'<button class="hero2-chip" data-action="mascot-tap">Today’s rider · '+h(mascot.rider)+'</button>':'')+'</div>'
+      +'<div class="hero2-stage"><div id="hero-rider-slot" class="hero2-rider" data-action="mascot-tap" role="button" tabindex="0" aria-label="'+h(mascot?"Today’s rider, "+mascot.rider+". Tap to say hi":"Scraveit rider")+'"></div><div class="hero2-road"><span></span></div></div></div>'
+      +'<button class="hero2-search" data-action="go" data-route="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'
+      +'</header>';
+  }
+  function mascotTap(){
+    const mascot=todaysMascot();haptic(15);
+    if(window.HeroRider)HeroRider.hop();
+    const slot=document.getElementById("hero-rider-slot")||document.getElementById("welcome-rider-slot");
+    if(slot&&!prefersCalm()){for(let i=0;i<5;i++){const heart=document.createElement("span");heart.className="hero2-heart";heart.textContent=["💖","💙","💛"][i%3];heart.style.left=(30+Math.random()*40)+"%";heart.style.animationDelay=(i*0.08)+"s";slot.appendChild(heart);setTimeout(()=>heart.remove(),1400);}}
+    if(mascot&&state.session){const got=loadJSON("savrivo.customer.stickers",{});
+      if(!got[mascot.id]){got[mascot.id]=Date.now();saveJSON("savrivo.customer.stickers",got);winToast("✨","Sticker collected",mascot.rider+" joined your sticker book",stickerCount()+" of "+mascotPresets().length+" riders");confetti({count:60,y:160});}}
+  }
+
+  // ---- your food story: streak, savings, badges, stickers ------------------
+  function weekIndex(ms){return Math.floor((Number(ms)+3*86400000)/(7*86400000));}
+  function foodStats(){
+    const done=(state.orders||[]).filter(o=>o.status==="Delivered"),byRest={},weeks=new Set();
+    let saved=0,night=0,early=0,rain=0,weekend=0;
+    done.forEach(o=>{const at=new Date(Number(o.createdAt)||0),hr=at.getHours(),p=o.pricing||{};
+      byRest[o.restaurantId]=(byRest[o.restaurantId]||0)+1;if(!isGuestOrder(o))saved+=Math.max(0,Number(p.discount)||0);
+      if(hr>=22||hr<4)night++;if(hr>=5&&hr<9)early++;if(Number(p.rainFee)>0)rain++;if(at.getDay()===0||at.getDay()===6)weekend++;weeks.add(weekIndex(at.getTime()));});
+    let streak=0,w=weekIndex(Date.now());if(!weeks.has(w))w--;while(weeks.has(w)){streak++;w--;}
+    const dine=state.dineHistory||[];
+    return{dineIns:dine.length,bigTable:dine.filter(t=>(t.memberUids||[]).length>=6).length,orders:done.length,places:Object.keys(byRest).length,maxSame:Math.max(0,...Object.values(byRest)),saved:Math.round(saved),night,early,rain,weekend,streak};
+  }
+  const FOOD_BADGES=[["first_bite","🍽️","First bite","Your first order",s=>s.orders>=1],["regular","🔁","Regular","5 orders",s=>s.orders>=5],["foodie","🏆","Foodie","15 orders",s=>s.orders>=15],
+    ["night_owl","🦉","Night owl","Order after 10 pm",s=>s.night>=1],["early_bird","🌅","Early bird","Order before 9 am",s=>s.early>=1],["explorer","🧭","Explorer","5 different places",s=>s.places>=5],
+    ["loyal_fan","❤️","Loyal fan","3 orders, same place",s=>s.maxSame>=3],["rain_warrior","🌧️","Rain warrior","Order in the rain",s=>s.rain>=1],["weekend","🎈","Weekend treat","Order on a weekend",s=>s.weekend>=1],["table_regular","🍽️","Table regular","Dine in 3 times",s=>s.dineIns>=3],["big_table","🎊","Big table","Dine with 6+ people",s=>s.bigTable>=1],["big_saver","💸","Big saver","Save ₹500",s=>s.saved>=500]];
+  function earnedBadges(stats){return FOOD_BADGES.filter(b=>b[4](stats)).map(b=>b[0]);}
+  function stickerSet(){const got=Object.assign({},loadJSON("savrivo.customer.stickers",{}));(state.orders||[]).forEach(o=>{if(o.status==="Delivered"&&o.riderAvatar){const id=o.riderAvatar==="blue"?"classic":o.riderAvatar;got[id]=got[id]||Number(o.updatedAt)||1;}});return got;}
+  function stickerCount(){const got=stickerSet();return(mascotPresets()).filter(p=>got[p.id]).length;}
+  function foodStoryStrip(){
+    const s=foodStats();if(!s.orders)return"";
+    const badges=earnedBadges(s).length;
+    const pill=(e,t)=>'<span class="story-pill"><span aria-hidden="true">'+e+'</span>'+h(t)+'</span>';
+    return'<button class="story-strip" data-action="open-food-story" aria-label="Open your food story">'
+      +(s.streak>=2?pill("🔥",s.streak+"-week streak"):pill("🛵",s.orders+(s.orders===1?" order":" orders")))
+      +(s.saved>0?pill("💰",money(s.saved)+" saved"):"")+pill("🏅",badges+(badges===1?" badge":" badges"))+'</button>';
+  }
+  function foodStorySheet(){
+    const s=foodStats(),earned=new Set(earnedBadges(s)),got=stickerSet(),riders=mascotPresets();
+    stickerThumbsReady();const thumbs=state.stickerThumbs||{};
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet story-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Your food story"><div class="sheet-handle"></div>'
+      +'<h2 class="title">Your food story</h2><p class="supporting">Everything here comes from your real orders.</p>'
+      +'<div class="story-stats"><div><span>🔥</span><strong>'+(s.streak||0)+(s.streak===1?" week":" weeks")+'</strong><small>streak</small></div><div><span>🛵</span><strong>'+s.orders+'</strong><small>orders</small></div><div><span>💰</span><strong>'+money(s.saved)+'</strong><small>saved</small></div></div>'
+      +'<h3 class="section-title">Badges · '+earned.size+' of '+FOOD_BADGES.length+'</h3><div class="badge-grid">'
+      +FOOD_BADGES.map(b=>'<div class="badge-tile'+(earned.has(b[0])?' got':'')+'"><span class="badge-emoji" aria-hidden="true">'+b[1]+'</span><strong>'+h(b[2])+'</strong><small>'+h(earned.has(b[0])?"Unlocked":b[3])+'</small></div>').join("")+'</div>'
+      +(riders.length?'<h3 class="section-title">Rider sticker book · '+riders.filter(p=>got[p.id]).length+' of '+riders.length+'</h3><p class="caption">Collect a rider when they deliver to you, or tap today’s rider on the home screen.</p><div class="sticker-grid">'
+        +riders.map(p=>'<div class="sticker'+(got[p.id]?' got':'')+'">'+(thumbs[p.id]?'<img src="'+thumbs[p.id]+'" alt="">':'<span class="sticker-wait"></span>')+'<small>'+h(got[p.id]?p.rider:"???")+'</small></div>').join("")+'</div>':'')
+      +(s.orders?'<button class="button primary full" data-action="open-wrapped">✨ Make my month-in-food card</button>':'')
+      +'<button class="button secondary full" data-action="close-sheet">Close</button></section></div>';
+  }
+  // New badges and stickers are celebrated once, the moment they appear.
+  function checkFoodWins(){
+    if(!state.session||!state.orders)return;
+    const ids=earnedBadges(foodStats()).concat(Object.keys(stickerSet()).map(id=>"sticker_"+id));
+    const seen=loadJSON("savrivo.customer.winsSeen",null);
+    if(!seen){saveJSON("savrivo.customer.winsSeen",ids);return;}
+    const fresh=ids.filter(id=>!seen.includes(id));if(!fresh.length)return;
+    saveJSON("savrivo.customer.winsSeen",seen.concat(fresh));
+    const id=fresh[0],badge=FOOD_BADGES.find(b=>b[0]===id);
+    if(badge){winToast(badge[1],"Badge unlocked",badge[2],badge[3]+" · "+earnedBadges(foodStats()).length+" of "+FOOD_BADGES.length+" badges");confetti({count:80,y:110});haptic(25);}
+    else if(id.startsWith("sticker_")){const p=(mascotPresets()).find(x=>"sticker_"+x.id===id);if(p)winToast("✨","Sticker collected",p.rider+" joined your sticker book","");}
+  }
+  // A delivered order is a moment worth a small party.
+  function checkDeliveredMoments(){
+    const seen=loadJSON("savrivo.customer.lastStatuses",{}),next={};let party=null;
+    (state.orders||[]).slice(0,30).forEach(o=>{next[o.id]=o.status;if(seen[o.id]&&seen[o.id]!=="Delivered"&&o.status==="Delivered"&&Date.now()-Number(o.updatedAt||o.createdAt||0)<3*3600000)party=o;});
+    saveJSON("savrivo.customer.lastStatuses",next);
+    if(party){confetti({count:120});haptic(30);const s=foodStats();winToast("😋","Delivered",(party.restaurant||"Your order")+" has arrived. Enjoy!","Order number "+s.orders+" with Scraveit");}
+  }
+
+  // ---- the Craving Wheel ---------------------------------------------------
+  const WHEEL_COLORS=["#1460F0","#FF8FB8","#8FE3CF","#F4A83A","#6E9BFF","#FFB3CF","#7FD8C1","#FFD27A"];
+  function wheelPicks(){
+    const open=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false);
+    const shuffled=open.slice().sort(()=>Math.random()-0.5).slice(0,8),picks=[];
+    shuffled.forEach(r=>{const items=discoveryItems(r).filter(i=>i.available!==false&&String(i.name||"").trim());
+      const item=(items.filter(i=>i.popular)[0])||items[(Math.random()*items.length)|0];
+      const label=item?String(item.name).split(/\s+/).slice(0,2).join(" "):String((r.cuisines||[])[0]||r.name);
+      picks.push({restaurantId:r.id,label:label.length>13?label.slice(0,12)+"…":label,dish:item?item.name:"",name:r.name});});
+    return picks;
+  }
+  function wheelCard(){
+    const count=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false).length;if(count<3)return"";
+    return'<button class="wheel-card" data-action="open-wheel"><span class="wheel-mini" aria-hidden="true"></span><span class="grow"><strong>Can’t decide?</strong><span>Spin the Craving Wheel</span></span><span class="wheel-spin-pill">Spin</span></button>';
+  }
+  function wheelSvg(items){
+    const n=items.length,R=140,parts=[];
+    items.forEach((item,i)=>{const a0=(i/n)*Math.PI*2-Math.PI/2,a1=((i+1)/n)*Math.PI*2-Math.PI/2,large=a1-a0>Math.PI?1:0;
+      parts.push('<path d="M0 0 L'+(R*Math.cos(a0)).toFixed(2)+' '+(R*Math.sin(a0)).toFixed(2)+' A'+R+' '+R+' 0 '+large+' 1 '+(R*Math.cos(a1)).toFixed(2)+' '+(R*Math.sin(a1)).toFixed(2)+' Z" fill="'+WHEEL_COLORS[i%WHEEL_COLORS.length]+'"/>');
+      const mid=((i+0.5)/n)*360-90;
+      parts.push('<text transform="rotate('+mid.toFixed(1)+') translate('+(R*0.58).toFixed(1)+' 0)'+(mid>90&&mid<270?' rotate(180)':'')+'" text-anchor="middle" dominant-baseline="middle" fill="'+([0,4].includes(i%8)?'#FFFFFF':'#0E1B3D')+'" font-size="12.5" font-weight="700">'+h(item.label)+'</text>');});
+    return'<svg viewBox="-150 -150 300 300" aria-hidden="true"><circle r="148" fill="#FFFFFF"/>'+parts.join("")+'<circle r="'+R+'" fill="none" stroke="#FFFFFF" stroke-width="5"/></svg>';
+  }
+  function wheelSheet(){
+    const w=state.wheel||{items:[]},pick=w.result!=null?w.items[w.result]:null,r=pick?restaurant(pick.restaurantId):null,slot=daySlot();
+    const word=slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night";
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div>'
+      +'<h2 class="title" style="text-align:center">Craving Wheel</h2><p class="supporting" style="text-align:center">Spin and let Nellore decide</p>'
+      +'<div class="wheel-wrap"><span class="wheel-pointer" aria-hidden="true"></span><div class="wheel-dial" id="wheel-dial" style="transform:rotate('+Number(w.rotation||0).toFixed(1)+'deg)">'+wheelSvg(w.items)+'</div>'
+      +'<button class="wheel-hub" data-action="spin-wheel" aria-label="Spin the wheel"'+(w.spinning?' disabled':'')+'>'+(w.spinning?'…':pick?'🎉':'SPIN')+'</button></div>'
+      +(pick&&r?'<div class="wheel-result"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><small>'+h(word)+' pick</small><strong>'+h(pick.dish?pick.dish+" at "+r.name:r.name)+'</strong><span>'+h([ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New",(r.etaMin||25)+"–"+(r.etaMax||35)+" min"].join(" · "))+'</span></div></div>'
+        +'<div class="cluster" style="gap:10px"><button class="button primary grow" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">Open the menu</button><button class="button secondary" data-action="spin-wheel">Spin again</button></div>'
+        :'<p class="caption" style="text-align:center">'+(w.spinning?'Spinning…':'Tap SPIN in the middle')+'</p>')
+      +'</section></div>';
+  }
+  function openWheel(){state.wheel={items:wheelPicks(),rotation:0,spinning:false,result:null};if(state.wheel.items.length<3){toast("Not enough places are open right now to spin.","danger");return;}setSheet({type:"wheel"});}
+  function spinWheel(){
+    const w=state.wheel;if(!w||w.spinning||!w.items.length)return;
+    const n=w.items.length,idx=(Math.random()*n)|0,seg=360/n,landing=-(idx+0.5)*seg,current=Number(w.rotation||0);
+    const offset=((landing-current)%360+360)%360;w.rotation=current+360*(prefersCalm()?1:5)+offset;w.spinning=true;w.result=null;
+    renderSheet();
+    requestAnimationFrame(()=>{const dial=document.getElementById("wheel-dial");if(dial)dial.style.transform="rotate("+w.rotation.toFixed(1)+"deg)";});
+    haptic(10);
+    setTimeout(()=>{if(state.wheel!==w)return;w.spinning=false;w.result=idx;renderSheet();confetti({count:110,y:window.innerHeight*0.45});haptic(35);},prefersCalm()?400:3800);
+  }
+
+  // ---- mood picks (and the rain shelf) -------------------------------------
+  const MOODS=[["tired","😴","Tired",["biryani","meals","thali","curd rice","khichdi","pulao","fried rice","noodles","dal"]],
+    ["celebrate","🎉","Celebrating",["cake","dessert","ice cream","pizza","biryani","waffle","sweet","brownie","kunafa"]],
+    ["rainy","🌧️","Rainy",["chai","tea","coffee","pakoda","pakora","bajji","samosa","soup","maggi","corn"]],
+    ["budget","💸","Budget",null],["healthy","🥗","Healthy",["salad","grill","juice","fruit","sprout","oats","protein","millet","idli","tandoori"]],
+    ["late","🌙","Late night",["shawarma","burger","maggi","roll","fries","sandwich","momos","pizza"]]];
+  function activeMood(){if(state.homeMood==="off")return"";if(state.homeMood)return state.homeMood;const t=state.heroThemeKind;return t==="rain"?"rainy":"";}
+  function moodPicks(id){
+    const mood=MOODS.find(m=>m[0]===id);if(!mood)return[];const words=mood[3],out=[],per={};
+    restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false).forEach(r=>{
+      discoveryItems(r).filter(i=>i.available!==false).sort((a,b)=>(b.popular?1:0)-(a.popular?1:0)).forEach(item=>{
+        if(out.length>=12||(per[r.id]||0)>=2)return;const text=(String(item.name||"")+" "+String(item.category||"")).toLowerCase();
+        const fits=words?words.some(w=>text.includes(w)):Number(item.price||0)>0&&Number(item.price)<=129;
+        if(fits){out.push({r,item});per[r.id]=(per[r.id]||0)+1;}});});
+    return out;
+  }
+  function moodSection(){
+    const current=activeMood(),picks=current?moodPicks(current):[],mood=MOODS.find(m=>m[0]===current);
+    return'<section class="stack mood-section"><h2 class="section-title">What’s your mood?</h2><div class="mood-row">'
+      +MOODS.map(m=>'<button class="mood-chip'+(m[0]===current?' active':'')+'" data-action="home-mood" data-value="'+m[0]+'" aria-pressed="'+(m[0]===current)+'"><span aria-hidden="true">'+m[1]+'</span>'+h(m[2])+'</button>').join("")+'</div>'
+      +(current?(picks.length?'<div class="mood-picks">'+picks.map(({r,item})=>'<button class="mood-pick" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async"><strong>'+h(item.name)+'</strong><small>'+h(r.name)+' · '+money(item.price)+'</small></button>').join("")+'</div>'
+        :'<p class="caption">Nothing open for “'+h(mood?mood[2]:"")+'” right now. Try another mood.</p>'):'')
+      +'</section>';
+  }
+
+  // ---- my month in food: a card to share -----------------------------------
+  function monthStats(){
+    const now=new Date(),inMonth=(o,y,m)=>{const d=new Date(Number(o.createdAt)||0);return d.getFullYear()===y&&d.getMonth()===m;};
+    let y=now.getFullYear(),m=now.getMonth(),list=(state.orders||[]).filter(o=>o.status==="Delivered"&&inMonth(o,y,m));
+    if(!list.length){m-=1;if(m<0){m=11;y-=1;}list=(state.orders||[]).filter(o=>o.status==="Delivered"&&inMonth(o,y,m));}
+    const byRest={},byDish={},slots={morning:0,day:0,evening:0,night:0};let saved=0;
+    list.forEach(o=>{byRest[o.restaurant||"Somewhere tasty"]=(byRest[o.restaurant||"Somewhere tasty"]||0)+1;saved+=Math.max(0,Number(o.pricing&&o.pricing.discount)||0);
+      (o.items||[]).forEach(it=>{byDish[it.name]=(byDish[it.name]||0)+Number(it.quantity||1);});slots[daySlot(new Date(Number(o.createdAt)||0))]++;});
+    const top=obj=>Object.keys(obj).sort((a,b)=>obj[b]-obj[a])[0]||"";
+    const slot=top(slots),persona={morning:["🌅","Early bird"],day:["☀️","Lunch lover"],evening:["🌆","Dinner devotee"],night:["🦉","Night owl"]}[slot]||["🍽️","Foodie"];
+    return{month:new Date(y,m,1).toLocaleString("en-IN",{month:"long"}),year:y,orders:list.length,place:top(byRest),dish:top(byDish),saved:Math.round(saved),persona,badges:earnedBadges(foodStats()).length};
+  }
+  async function makeWrappedCard(){
+    const s=monthStats(),W=1080,H=1350,cv=document.createElement("canvas");cv.width=W;cv.height=H;const g=cv.getContext("2d");
+    const gr=g.createLinearGradient(0,0,W,H);gr.addColorStop(0,"#1460F0");gr.addColorStop(0.6,"#7B5CFF");gr.addColorStop(1,"#FF8FB8");g.fillStyle=gr;g.fillRect(0,0,W,H);
+    for(let i=0;i<60;i++){g.fillStyle="rgba(255,255,255,"+(0.08+(i%5)*0.03)+")";g.beginPath();g.arc((i*197)%W,(i*131)%H,(i%4)+2,0,7);g.fill();}
+    const text=(t,x,y,size,weight,color,align)=>{g.font=weight+" "+size+"px 'DM Sans', Arial, sans-serif";g.fillStyle=color;g.textAlign=align||"left";g.fillText(t,x,y);};
+    text("MY MONTH IN FOOD",80,130,34,"800","rgba(255,255,255,.85)");
+    text(s.month+" "+s.year,80,220,92,"800","#FFFFFF");
+    const box=(x,y,w,hh,r)=>{g.beginPath();if(g.roundRect)g.roundRect(x,y,w,hh,r);else g.rect(x,y,w,hh);g.fill();};
+    const tile=(x,y,w,label,value)=>{g.fillStyle="rgba(255,255,255,.16)";box(x,y,w,170,36);text(label,x+36,y+60,30,"600","rgba(255,255,255,.85)");text(value,x+36,y+130,56,"800","#FFFFFF");};
+    tile(80,290,440,"Orders",String(s.orders));tile(560,290,440,"Saved",money(s.saved));
+    g.fillStyle="rgba(255,255,255,.16)";box(80,500,920,400,40);
+    text("Favourite place",120,570,30,"600","rgba(255,255,255,.85)");text((s.place||"—").slice(0,26),120,630,50,"800","#FFFFFF");
+    text("Most ordered",120,720,30,"600","rgba(255,255,255,.85)");text((s.dish||"—").slice(0,28),120,780,50,"800","#FFFFFF");
+    text(s.persona[0]+"  "+s.persona[1]+"  ·  "+s.badges+" badges",120,860,40,"700","#FFE7A3");
+    const mascot=todaysMascot();
+    if(mascot&&window.HeroRider&&HeroRider.snapshot){const img=HeroRider.snapshot(mascot.id,460,460);if(img)g.drawImage(img,560,880,440,440);}
+    text("Scraveit",80,1230,72,"800","#FFFFFF");text("Food, delivered with love · Nellore",80,1285,30,"500","rgba(255,255,255,.85)");
+    return cv.toDataURL("image/png");
+  }
+  async function openWrapped(){
+    try{state.wrappedImage=await makeWrappedCard();setSheet({type:"wrapped"});haptic(20);}catch(_){toast("Could not make your card right now.","danger");}
+  }
+  function wrappedSheet(){
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Your month in food"><div class="sheet-handle"></div>'
+      +'<h2 class="title">Your month in food</h2><p class="supporting">Share it on your story or send it to friends.</p>'
+      +(state.wrappedImage?'<img class="wrapped-preview" src="'+state.wrappedImage+'" alt="Your month in food card">':'')
+      +'<button class="button primary full" data-action="share-wrapped">Share</button><button class="button secondary full" data-action="close-sheet">Close</button></section></div>';
+  }
+  function shareWrapped(){
+    if(!state.wrappedImage)return;
+    const s=monthStats(),text="My "+s.month+" in food on Scraveit: "+s.orders+" orders, "+s.persona[1]+" "+s.persona[0];
+    try{if(window.FeastlyNative&&FeastlyNative.shareImage){FeastlyNative.shareImage(state.wrappedImage,text);return;}}catch(_){}
+    toast("Sharing is available in the latest app.","danger");
+  }
+  function stickerThumbsReady(){
+    if(state.stickerThumbs||!window.HeroRider||!HeroRider.snapshot||!window.AV)return;
+    state.stickerThumbs={};mascotPresets().forEach(p=>{const c=HeroRider.snapshot(p.id,140,140,true);if(c)state.stickerThumbs[p.id]=c.toDataURL("image/png");});
+  }
+
+  // ---- celebrations at the right moments -----------------------------------
+  function cartWin(){
+    haptic(12);
+    const bar=document.querySelector(".floating-cart");
+    if(bar&&!prefersCalm()){bar.classList.remove("pop");void bar.offsetWidth;bar.classList.add("pop");
+      const plus=document.createElement("span");plus.className="plus-one";plus.textContent="+1";bar.appendChild(plus);setTimeout(()=>plus.remove(),900);}
+  }
+  function orderPlacedMoment(order){
+    haptic(40);
+    if(prefersCalm())return;
+    const mascot=todaysMascot(),el=document.createElement("div");el.className="placed-moment";el.setAttribute("role","status");
+    const img=mascot&&window.HeroRider&&HeroRider.snapshot?HeroRider.snapshot(mascot.id,320,320,false,"wave"):null;
+    el.innerHTML=(img?'<img src="'+img.toDataURL("image/png")+'" alt="">':'')+'<strong>Order placed!</strong><span>'+h((order&&order.restaurant?order.restaurant:"The restaurant")+" is getting started.")+'</span>';
+    document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("show"));confetti({count:150,y:window.innerHeight*0.3});
+    const close=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),400);};el.addEventListener("click",close);setTimeout(close,2600);
+  }
+  function afterHomeRender(){
+    if(state.route==="welcome"){const ws=document.getElementById("welcome-rider-slot"),m=todaysMascot();if(ws&&m&&window.HeroRider)HeroRider.mount(ws,m.id);return;}
+    if(state.route!=="home"||state.homeKind==="grocery"||state.homeKind==="dairy")return;
+    const slot=document.getElementById("hero-rider-slot"),mascot=todaysMascot();
+    if(slot&&mascot&&window.HeroRider)HeroRider.mount(slot,mascot.id);
+    startHeroHints();checkFoodWins();checkDeliveredMoments();resumeSquad();
+  }
+
+  // ---- squad order: friends put their picks into one order -----------------
+  const SQUAD_KEY="savrivo.customer.squad",SQUAD_ALPHABET="ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  function newSquadCode(){let c="";const b=new Uint32Array(6);(window.crypto||{}).getRandomValues?crypto.getRandomValues(b):b.forEach((_,i)=>b[i]=Math.random()*1e9);b.forEach(n=>{c+=SQUAD_ALPHABET[n%SQUAD_ALPHABET.length];});return c;}
+  function squadRef(code){return fs.collection("squads").doc(code);}
+  // An order a friend placed for the squad: members follow it, the host owns it.
+  function isGuestOrder(o){return!!(o&&state.session&&o.customerId&&o.customerId!==state.session.uid);}
+  function squadOrdersQuery(uid){return fs.collection("orders").where("squadMemberUids","array-contains",uid);}
+  function ensureSquadOrderWatch(){
+    const uid=state.session&&state.session.uid;if(!uid||state.squadOrderWatchUid===uid)return;
+    if(state.squadOrderUnsub)try{state.squadOrderUnsub()}catch(_){}
+    state.squadOrderWatchUid=uid;
+    try{state.squadOrderUnsub=squadOrdersQuery(uid).onSnapshot(()=>scheduleScopedSync("orders"),()=>{state.squadOrderWatchUid="";});}catch(_){state.squadOrderWatchUid="";}
+  }
+  function stopSquadOrderWatch(){if(state.squadOrderUnsub)try{state.squadOrderUnsub()}catch(_){}state.squadOrderUnsub=null;state.squadOrderWatchUid="";}
+  function squadCodeForCheckout(restaurantId){
+    const s=state.squad;
+    return s&&s.data&&squadIsHost()&&s.data.restaurantId===restaurantId&&s.data.status==="locked"&&state.squadShares&&state.squadShares.code===s.code?s.code:"";
+  }
+  function squadIsHost(){return!!(state.squad&&state.squad.data&&state.session&&state.squad.data.hostUid===state.session.uid);}
+  function squadPickList(){const s=state.squad;if(!s)return[];return Object.keys(s.picks||{}).map(uid=>Object.assign({uid},s.picks[uid])).filter(p=>(p.items||[]).length).sort((a,b)=>(a.uid===(s.data&&s.data.hostUid)?-1:0)-(b.uid===(s.data&&s.data.hostUid)?-1:0));}
+  function squadSubtotal(){return squadPickList().reduce((sum,p)=>sum+Number(p.subtotal||0),0);}
+  function stopSquadWatch(){const s=state.squad;if(s&&s.unsub)s.unsub.forEach(u=>{try{u()}catch(_){}});}
+  function watchSquad(code){
+    stopSquadWatch();state.squad={code,data:null,picks:{},unsub:[]};saveJSON(SQUAD_KEY,{code,at:Date.now()});
+    const refresh=()=>{if(state.sheet&&state.sheet.type==="squad")renderSheet();else if(state.route==="home"||state.route==="restaurant")render({preserveScroll:true});};
+    state.squad.unsub.push(squadRef(code).onSnapshot(snap=>{if(!state.squad||state.squad.code!==code)return;
+      if(!snap.exists){leaveSquad(true);toast("That squad has ended.","danger");return;}
+      const prev=state.squad.data&&state.squad.data.status;state.squad.data=snap.data();
+      if(state.squad.data.expiresAt<Date.now()&&state.squad.data.status==="open"){leaveSquad(true);return;}
+      if(prev&&prev!==state.squad.data.status&&state.squad.data.status==="ordered"){syncOrders(true).then(()=>refresh());if(!squadIsHost()){haptic(25);confetti({});winToast("🎉","Squad order placed",state.squad.data.hostName+" placed the order","Tap the squad to track it live");}}
+      refresh();},()=>{leaveSquad(true);}));
+    state.squad.unsub.push(squadRef(code).collection("picks").onSnapshot(snap=>{if(!state.squad||state.squad.code!==code)return;const picks={};snap.forEach(d=>{picks[d.id]=d.data();});state.squad.picks=picks;refresh();},()=>{}));
+  }
+  function leaveSquad(silent){stopSquadWatch();state.squad=null;localStorage.removeItem(SQUAD_KEY);if(!silent){closeSheet();render({preserveScroll:true});}}
+  function resumeSquad(){
+    if(state.squad||!state.session)return;const saved=loadJSON(SQUAD_KEY,null);
+    if(saved&&saved.code&&Date.now()-Number(saved.at||0)<4*3600000)watchSquad(saved.code);
+  }
+  async function startSquad(restaurantId){
+    if(!state.session){toast("Sign in to start a squad order.","danger");return;}
+    const r=restaurant(restaurantId);if(!r)return;
+    if(state.squad&&state.squad.data&&state.squad.data.status==="open"){setSheet({type:"squad"});return;}
+    const code=newSquadCode(),now=Date.now();
+    try{
+      await squadRef(code).set({hostUid:state.session.uid,hostName:(firstName()||"Your friend").slice(0,60),restaurantId:r.id,restaurantName:String(r.name||"").slice(0,120),status:"open",createdAt:now,expiresAt:now+3*3600000});
+      watchSquad(code);haptic(20);confetti({count:70});
+      if(state.route!=="restaurant"||state.selectedRestaurantId!==r.id){go("restaurant",{restaurantId:r.id});ensureRestaurantMenu(r.id);}
+      setSheet({type:"squad"});
+      if(state.cart.length&&state.cart[0].restaurantId===r.id)putCartInSquad(true);
+    }catch(_){toast("Could not start a squad right now. Try again.","danger");}
+  }
+  async function joinSquad(raw){
+    const code=String(raw||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if(code.length!==6){toast("Squad codes have 6 letters and numbers.","danger");return;}
+    if(!state.session){toast("Sign in to join a squad.","danger");return;}
+    try{const snap=await squadRef(code).get();
+      if(!snap.exists||snap.data().status!=="open"||snap.data().expiresAt<Date.now()){toast("That squad is closed or the code is wrong.","danger");return;}
+      watchSquad(code);state.squad.data=snap.data();haptic(20);confetti({count:70});
+      go("restaurant",{restaurantId:snap.data().restaurantId});ensureRestaurantMenu(snap.data().restaurantId);
+      winToast("👥","You joined the squad","Pick your food from "+snap.data().restaurantName,"Then tap ‘Put my picks in’");
+    }catch(_){toast("That squad is closed or the code is wrong.","danger");}
+  }
+  function squadLine(item){return{key:String(item.key||""),restaurantId:String(item.restaurantId||""),restaurantName:String(item.restaurantName||""),itemId:String(item.itemId||""),name:String(item.name||"").slice(0,120),price:Number(item.price||0),image:String(item.image||"").slice(0,500),diet:String(item.diet||"veg"),quantity:Math.max(1,Math.min(50,Math.floor(Number(item.quantity||1)))),variant:String(item.variant||""),variantId:String(item.variantId||""),variantPrice:Number(item.variantPrice||0),addOns:(item.addOns||[]).slice(0,12).map(a=>({id:String(a.id||a.name||""),name:String(a.name||""),price:Number(a.priceDelta!=null?a.priceDelta:a.price||0)})),addOnIds:(item.addOnIds||[]).slice(0,12).map(String),addOnTotal:Number(item.addOnTotal||0),note:String(item.note||"").slice(0,200)};}
+  function lineTotal(item){return(Number(item.price||0)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||1);}
+  async function putCartInSquad(quiet){
+    const s=state.squad;if(!s||!s.data||s.data.status!=="open")return;
+    const mine=state.cart.filter(i=>i.restaurantId===s.data.restaurantId).map(squadLine);
+    if(!mine.length){toast("Add something from "+s.data.restaurantName+" first.","danger");return;}
+    try{await squadRef(s.code).collection("picks").doc(state.session.uid).set({name:(firstName()||"Friend").slice(0,60),items:mine,subtotal:Math.round(mine.reduce((a,i)=>a+lineTotal(i),0)),updatedAt:Date.now()});
+      state.cart=[];persistCart();haptic(15);if(!quiet){winToast("🛒","Picks added","Your "+mine.length+(mine.length===1?" item is":" items are")+" in the squad","");setSheet({type:"squad"});}
+    }catch(_){toast("Could not add your picks. Try again.","danger");}
+  }
+  async function takeBackPicks(){
+    const s=state.squad;if(!s||!s.picks[state.session.uid])return;
+    state.cart=(s.picks[state.session.uid].items||[]).map(i=>Object.assign({},i));persistCart();
+    try{await squadRef(s.code).collection("picks").doc(state.session.uid).delete();}catch(_){}
+    closeSheet();go("restaurant",{restaurantId:s.data.restaurantId});
+  }
+  async function squadCheckout(){
+    const s=state.squad;if(!squadIsHost()||!s)return;const people=squadPickList();
+    if(!people.length){toast("Nobody has added picks yet.","danger");return;}
+    try{await squadRef(s.code).update({status:"locked"});}catch(_){toast("Could not lock the squad. Try again.","danger");return;}
+    const merged={};people.forEach(p=>(p.items||[]).forEach(i=>{const k=i.key;if(merged[k])merged[k].quantity+=Number(i.quantity||1);else merged[k]=Object.assign({},i,{addOns:(i.addOns||[]).map(a=>({id:a.id,name:a.name,price:a.price,priceDelta:a.price}))});}));
+    state.cart=Object.values(merged);persistCart();state.squadShares={code:s.code,people:people.map(p=>({name:p.uid===state.session.uid?"You":p.name,subtotal:Number(p.subtotal||0)}))};
+    haptic(20);go("cart");
+  }
+  function squadSplitMarkup(total){
+    const shares=state.squadShares;if(!shares||!shares.people.length)return"";
+    const sum=shares.people.reduce((a,p)=>a+p.subtotal,0)||1;
+    return'<div class="squad-split">'+shares.people.map(p=>'<div class="squad-split-row"><span>'+h(p.name)+'</span><strong>'+money(total*p.subtotal/sum)+'</strong></div>').join("")+'<p class="caption">Fees and taxes are shared in the same proportion as each person’s food.</p></div>';
+  }
+  function squadSheet(){
+    const s=state.squad;if(!s||!s.data)return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Squad order"><div class="sheet-handle"></div><p class="supporting">Loading the squad…</p></section></div>';
+    const host=squadIsHost(),people=squadPickList(),me=state.session&&s.picks[state.session.uid],status=s.data.status,myCart=state.cart.filter(i=>i.restaurantId===s.data.restaurantId);
+    const order=s.data.orderId?state.orders.find(o=>o.id===s.data.orderId):null;
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet squad-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Squad order"><div class="sheet-handle"></div>'
+      +'<p class="eyebrow">Squad order · '+h(s.data.restaurantName)+'</p><h2 class="title">'+(status==="ordered"?"Order placed 🎉":host?"Your squad":h(s.data.hostName)+"’s squad")+'</h2>'
+      +'<div class="squad-code"><span>Code</span><strong>'+h(s.code.slice(0,3)+" "+s.code.slice(3))+'</strong>'+(status==="open"?'<button class="button tonal" data-action="share-squad">Invite friends</button>':'')+'</div>'
+      +'<div class="squad-people">'+(people.length?people.map(p=>'<div class="squad-person"><span class="squad-face">'+h(String(p.name||"?").charAt(0).toUpperCase())+'</span><div class="grow"><strong>'+h(p.uid===state.session.uid?"You":p.name)+(p.uid===s.data.hostUid?' · host':'')+'</strong><small>'+h((p.items||[]).map(i=>i.quantity+"× "+i.name).join(", "))+'</small></div><span class="squad-amt">'+money(p.subtotal)+'</span></div>').join(""):'<p class="caption">Nobody has added picks yet. Share the code, then everyone picks from the menu.</p>')+'</div>'
+      +(people.length?'<div class="squad-total"><span>Food total</span><strong>'+money(squadSubtotal())+'</strong></div>':'')
+      +(status==="ordered"&&order?'<h3 class="section-title">Who pays what</h3>'+(state.squadShares&&state.squadShares.code===s.code?squadSplitMarkup(Number(order.total||0)||squadSubtotal()):squadSplitFromPicks(order)):'')
+      +(status==="open"?(myCart.length?'<button class="button primary full" data-action="squad-put-cart">Put my '+myCart.length+(myCart.length===1?' pick':' picks')+' in · '+money(myCart.reduce((a,i)=>a+lineTotal(i),0))+'</button>':
+          (me?'<button class="button secondary full" data-action="squad-take-back">Change my picks</button>':'<button class="button secondary full" data-action="open-restaurant" data-restaurant-id="'+h(s.data.restaurantId)+'">Pick from the menu</button>'))
+        +(host?'<button class="button primary full" data-action="squad-checkout"'+(people.length?'':' disabled')+'>Lock and check out · '+money(squadSubtotal())+'</button>':'<p class="caption" style="text-align:center">'+h(s.data.hostName)+' will check out and pay for everyone.</p>')
+        :status==="locked"?'<p class="caption" style="text-align:center">'+(host?"Finish checkout to place the order.":h(s.data.hostName)+" is checking out now…")+'</p>':'')
+      +(status==="ordered"&&s.data.orderId?'<button class="button primary full" data-action="open-order" data-order-id="'+h(s.data.orderId)+'">Track the order live</button>':'')
+      +'<button class="text-button" data-action="leave-squad">'+(status==="ordered"?"Close squad":"Leave squad")+'</button></section></div>';
+  }
+  function squadSplitFromPicks(order){
+    const people=squadPickList(),sum=people.reduce((a,p)=>a+Number(p.subtotal||0),0)||1,total=Number(order&&order.total||0)||sum;
+    return'<div class="squad-split">'+people.map(p=>'<div class="squad-split-row"><span>'+h(p.uid===state.session.uid?"You":p.name)+'</span><strong>'+money(total*Number(p.subtotal||0)/sum)+'</strong></div>').join("")+'</div>';
+  }
+  function shareSquad(){
+    const s=state.squad;if(!s||!s.data)return;
+    const text="Join my Scraveit squad order from "+s.data.restaurantName+"! Open Scraveit › Home › Squad order and enter code "+s.code;
+    try{if(window.FeastlyNative&&FeastlyNative.shareText){FeastlyNative.shareText(text);return;}}catch(_){}
+    if(navigator.share){navigator.share({text}).catch(()=>{});return;}
+    try{navigator.clipboard.writeText(text);toast("Invite copied.","success");}catch(_){toast("Code: "+s.code,"success");}
+  }
+  function squadHomeCard(){
+    const s=state.squad;
+    if(s&&s.data)return'<button class="squad-card live" data-action="open-squad"><span class="squad-card-icon" aria-hidden="true">👥</span><span class="grow"><strong>Squad order · '+h(s.data.restaurantName)+'</strong><span>'+(s.data.status==="ordered"?"Order placed · see who pays what":squadPickList().length+(squadPickList().length===1?" person has":" people have")+" added picks · code "+h(s.code))+'</span></span><span class="wheel-spin-pill">Open</span></button>';
+    return'<div class="squad-card"><span class="squad-card-icon" aria-hidden="true">👥</span><div class="grow"><strong>Squad order</strong><span>Order with friends, pay once. Start one and share the code, or join with a friend’s code.</span><span class="squad-card-actions"><button class="wheel-spin-pill" data-action="open-squad-start">Start</button><button class="wheel-spin-pill ghost" data-action="open-squad-join">Join with code</button></span></div></div>';
+  }
+  function squadStartSheet(){
+    const open=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false);
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Start a squad"><div class="sheet-handle"></div>'
+      +'<h2 class="title">Start a squad</h2><p class="supporting">Pick where you’re ordering from. You’ll get a code to share; friends add their own picks and you pay once.</p>'
+      +(open.length?'<div class="squad-pick-list">'+open.map(r=>'<button class="squad-pick" data-action="start-squad" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy"><span class="grow"><strong>'+h(r.name)+'</strong><small>'+h((r.cuisines||[]).slice(0,2).join(" · "))+' · '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</small></span>'+icon("chevron","small")+'</button>').join("")+'</div>'
+        :'<p class="caption">No restaurants are open right now.</p>')
+      +'<button class="button secondary full" data-action="close-sheet">Cancel</button></section></div>';
+  }
+  function squadJoinSheet(){
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Join a squad"><div class="sheet-handle"></div>'
+      +'<h2 class="title">Join a squad</h2><p class="supporting">Enter the 6-character code your friend shared.</p>'
+      +'<input id="squad-code-input" class="input squad-code-input" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABC 123" aria-label="Squad code">'
+      +'<button class="button primary full" data-action="squad-join">Join squad</button><button class="button secondary full" data-action="close-sheet">Cancel</button></section></div>';
+  }
+  function restaurantSquadBanner(r){
+    if(!r||r.open===false)return"";const s=state.squad;
+    if(s&&s.data&&s.data.restaurantId===r.id)return'<button class="squad-banner live" data-action="open-squad"><span aria-hidden="true">👥</span><span class="grow"><strong>Squad '+h(s.code)+'</strong><small>'+(s.data.status==="open"?"Add to cart, then put your picks in":"See the squad")+'</small></span>'+icon("chevron","small")+'</button>';
+    if(s&&s.data&&s.data.status==="open")return"";
+    return'<button class="squad-banner" data-action="start-squad" data-restaurant-id="'+h(r.id)+'"><span aria-hidden="true">👥</span><span class="grow"><strong>Ordering with friends?</strong><small>Start a squad order: everyone picks, you pay once</small></span>'+icon("chevron","small")+'</button>';
+  }
+
+  // =========================================================================
+  // Dine-in (Phase 1): book a table, scan the table's QR, order in rounds,
+  // everyone at the table on one bill, pay at the restaurant.
+  // =========================================================================
+  const TABLE_KEY="savrivo.customer.table",HOME_MODE_KEY="savrivo.customer.homeMode";
+  function dineSettings(r){
+    const d=r&&r.dineIn&&typeof r.dineIn==="object"?r.dineIn:null;if(!d||d.enabled!==true)return null;
+    const tables=Array.isArray(d.tables)?d.tables.filter(t=>t&&t.id):[];if(!tables.length)return null;
+    const slot=[15,30,60].includes(Number(d.slotMinutes))?Number(d.slotMinutes):30,tm=v=>/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v||""))?String(v):"";
+    return{tables,slotMinutes:slot,openFrom:tm(d.openFrom)||"12:00",openTo:tm(d.openTo)||"22:30",maxParty:Math.max(1,Math.min(30,Number(d.maxParty)||10)),autoAccept:d.autoAccept!==false};
+  }
+  function dineRestaurants(){return restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&dineSettings(r));}
+  function homeMode(){if(!state.homeModeLoaded){state.homeModeLoaded=true;try{state.homeMode=localStorage.getItem(HOME_MODE_KEY)||"delivery";}catch(_){state.homeMode="delivery";}}return state.homeMode==="dinein"?"dinein":"delivery";}
+  async function dineCall(fn,data){
+    if(!nativeAvailable("invokeDineIn"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to use dine-in."});
+    await ensureSession();
+    return nativeInvoke("invokeDineIn",{fn,data},{idToken:state.session.idToken,timeoutMs:25000});
+  }
+  const dineError=e=>(e&&e.userMessage)||"That didn’t work. Check your connection and try again.";
+  function homeModeSwitch(){
+    const mode=homeMode(),n=dineRestaurants().length;
+    return'<div class="mode-switch" role="tablist" aria-label="Delivery or dine-in"><button role="tab" aria-selected="'+(mode==="delivery")+'" class="'+(mode==="delivery"?'active':'')+'" data-action="home-mode" data-value="delivery">🛵 Delivery</button><button role="tab" aria-selected="'+(mode==="dinein")+'" class="'+(mode==="dinein"?'active':'')+'" data-action="home-mode" data-value="dinein">🍽️ Dine-in'+(n?'<span class="mode-count">'+n+'</span>':'')+'</button></div>';
+  }
+  // After 6 pm, the delivery home gently suggests eating out.
+  function eatOutShelf(){
+    const n=dineRestaurants().length,hr=new Date().getHours();if(!n||hr<18||hr>22||homeMode()!=="delivery")return"";
+    return'<button class="eatout-card" data-action="home-mode" data-value="dinein"><span aria-hidden="true">🍽️</span><span class="grow"><strong>Eat out tonight?</strong><span>'+n+(n===1?' place near you takes':' places near you take')+' tables. Book or just walk in.</span></span><span class="wheel-spin-pill">See</span></button>';
+  }
+
+  // ---- slots ----------------------------------------------------------------
+  function dineDays(){const out=[],base=new Date();base.setHours(0,0,0,0);for(let i=0;i<7;i++){const d=new Date(base.getTime()+i*86400000);out.push({key:dayStamp(d),label:i===0?"Today":i===1?"Tomorrow":d.toLocaleDateString("en-IN",{weekday:"short",day:"numeric"}),at:d.getTime()});}return out;}
+  function dineSlots(settings,dayAt){
+    const [fh,fm]=settings.openFrom.split(":").map(Number),[th,tmm]=settings.openTo.split(":").map(Number),out=[];
+    for(let m=fh*60+fm;m<=th*60+tmm-settings.slotMinutes;m+=settings.slotMinutes){
+      const d=new Date(dayAt);d.setHours(0,m,0,0);if(d.getTime()<Date.now()+15*60000)continue;
+      out.push({at:d.getTime(),label:d.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"})});
+    }
+    return out;
+  }
+  function dineBookSheet(sheet){
+    const r=restaurant(sheet.restaurantId),settings=dineSettings(r);
+    if(!r||!settings)return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Book a table"><div class="sheet-handle"></div><p class="supporting">This restaurant isn’t taking bookings right now.</p></section></div>';
+    const b=state.dineBook||(state.dineBook={day:dineDays()[0].key,slotAt:0,party:2,note:""}),days=dineDays(),day=days.find(d=>d.key===b.day)||days[0],slots=dineSlots(settings,day.at);
+    if(b.slotAt&&!slots.some(s=>s.at===b.slotAt))b.slotAt=0;
+    const chosen=slots.find(s=>s.at===b.slotAt);
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet dine-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Book a table"><div class="sheet-handle"></div>'
+      +'<p class="eyebrow">Dine-in · '+h(r.name)+'</p><h2 class="title">Book a table</h2>'
+      +'<h3 class="dine-label">Day</h3><div class="dine-chips">'+days.map(d=>'<button class="dine-chip'+(d.key===day.key?' active':'')+'" data-action="dine-day" data-value="'+d.key+'">'+h(d.label)+'</button>').join("")+'</div>'
+      +'<h3 class="dine-label">Time</h3>'+(slots.length?'<div class="dine-chips wrap">'+slots.map(s=>'<button class="dine-chip'+(s.at===b.slotAt?' active':'')+'" data-action="dine-slot" data-value="'+s.at+'">'+h(s.label)+'</button>').join("")+'</div>':'<p class="caption">No times left on this day. Try another day.</p>')
+      +'<h3 class="dine-label">People</h3><div class="dine-party"><button class="icon-button" data-action="dine-party" data-value="-1" aria-label="Fewer people">'+icon("minus")+'</button><strong>'+b.party+'</strong><button class="icon-button" data-action="dine-party" data-value="1" aria-label="More people">'+icon("plus")+'</button><span class="caption">up to '+settings.maxParty+'</span></div>'
+      +'<input id="dine-note" class="input" maxlength="200" placeholder="Anything to know? (birthday, high chair…)" value="'+h(b.note)+'">'
+      +'<p class="caption">'+(settings.autoAccept?'Confirmed straight away.':'The restaurant confirms it in a few minutes.')+' Free to cancel up to an hour before. We hold the table for 15 minutes.</p>'
+      +'<button class="button primary full" data-action="dine-confirm"'+(chosen&&!state.dineBusy?'':' disabled')+'>'+(state.dineBusy?'Booking…':chosen?'Book for '+b.party+' · '+h(day.label)+' '+h(chosen.label):'Pick a time')+'</button></section></div>';
+  }
+  async function confirmDineBooking(restaurantId){
+    const b=state.dineBook;if(!b||!b.slotAt||state.dineBusy)return;
+    const note=(document.getElementById("dine-note")||{}).value||"";b.note=note;
+    state.dineBusy=true;renderSheet();
+    try{
+      const booking=await dineCall("dineInBookTable",{restaurantId,slotAt:b.slotAt,party:b.party,note:String(note).slice(0,200)});
+      state.dineBusy=false;state.dineBook=null;closeSheet();haptic(30);confetti({});
+      winToast("🍽️",booking.status==="confirmed"?"Table booked":"Booking requested",(booking.restaurantName||"The restaurant")+" · "+new Date(booking.slotAt).toLocaleString("en-IN",{weekday:"short",hour:"numeric",minute:"2-digit"}),booking.status==="confirmed"?"Scan the table QR when you sit down":"We’ll tell you when they confirm");
+      refreshDineBookings();
+    }catch(e){state.dineBusy=false;renderSheet();toast(dineError(e),"danger");}
+  }
+
+  // ---- bookings ---------------------------------------------------------------
+  function watchDineBookings(){
+    const uid=state.session&&state.session.uid;if(!uid||state.dineBookingsUid===uid)return;
+    if(state.dineBookingsUnsub)try{state.dineBookingsUnsub()}catch(_){}
+    state.dineBookingsUid=uid;
+    try{state.dineBookingsUnsub=fs.collection("dineBookings").where("customerId","==",uid).where("slotAt",">=",Date.now()-6*3600000).onSnapshot(snap=>{
+      const prev={};(state.dineBookings||[]).forEach(b=>prev[b.id]=b.status);
+      state.dineBookings=snap.docs.map(d=>d.data()).sort((a,b)=>a.slotAt-b.slotAt);
+      state.dineBookings.forEach(b=>{if(prev[b.id]==="requested"&&b.status==="confirmed"){confetti({});winToast("🎉","Table confirmed",b.restaurantName,new Date(b.slotAt).toLocaleString("en-IN",{weekday:"short",hour:"numeric",minute:"2-digit"}));}});
+      if(["home","orders","restaurant"].includes(state.route))render({preserveScroll:true});
+    },()=>{state.dineBookingsUid="";});}catch(_){state.dineBookingsUid="";}
+  }
+  function refreshDineBookings(){state.dineBookingsUid="";watchDineBookings();}
+  function upcomingBookings(){return(state.dineBookings||[]).filter(b=>["requested","confirmed"].includes(b.status)&&b.slotAt>Date.now()-15*60000);}
+  function bookingCard(b){
+    const when=new Date(b.slotAt),soon=b.slotAt-Date.now()<60*60000,label={requested:"Waiting for the restaurant",confirmed:"Confirmed"}[b.status]||b.status;
+    return'<section class="booking-card"><div class="booking-date"><strong>'+when.getDate()+'</strong><span>'+h(when.toLocaleDateString("en-IN",{month:"short"}))+'</span></div><div class="grow"><p class="eyebrow">'+h(label)+'</p><strong>'+h(b.restaurantName)+'</strong><span>'+h(when.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"}))+' · '+b.party+(b.party===1?' person':' people')+'</span></div>'
+      +'<div class="booking-actions">'+(soon&&b.status==="confirmed"?'<button class="wheel-spin-pill" data-action="scan-table">Scan table</button>':'')+'<button class="text-button" data-action="dine-cancel" data-booking-id="'+h(b.id)+'">Cancel</button></div></section>';
+  }
+  async function cancelDineBooking(id){
+    const b=(state.dineBookings||[]).find(x=>x.id===id);if(!b)return;
+    const late=b.slotAt-Date.now()<60*60000;
+    if(!window.confirm(late?"It’s less than an hour away, so this counts as a missed booking. Cancel anyway?":"Cancel this booking?"))return;
+    try{await dineCall("dineInCancelBooking",{bookingId:id});toast("Booking cancelled.","success");}catch(e){toast(dineError(e),"danger");}
+  }
+
+  // ---- the table ----------------------------------------------------------------
+  function stopTableWatch(){const t=state.table;if(t&&t.unsub)t.unsub.forEach(u=>{try{u()}catch(_){}});}
+  function watchTable(sessionId){
+    stopTableWatch();state.table={id:sessionId,data:null,rounds:[],unsub:[],seen:{}};
+    try{localStorage.setItem(TABLE_KEY,sessionId);}catch(_){}
+    const redraw=()=>{if(["table","home","restaurant","cart"].includes(state.route))render({preserveScroll:true});};
+    state.table.unsub.push(fs.collection("tableSessions").doc(sessionId).onSnapshot(snap=>{
+      const t=state.table;if(!t||t.id!==sessionId)return;
+      if(!snap.exists){leaveTable(true);return;}
+      const prev=t.data&&t.data.status;t.data=snap.data();
+      if(prev&&prev!==t.data.status&&t.data.status==="paid"){loadDineHistory();haptic(40);confetti({});winToast("💙","Thanks for dining in",t.data.restaurantName,"Hope you loved it!");setTimeout(()=>leaveTable(true),400);}
+      else if(prev&&prev!==t.data.status&&t.data.status==="closed"){toast("The restaurant closed this table.","success");leaveTable(true);}
+      redraw();
+    },()=>{leaveTable(true);}));
+    state.table.unsub.push(fs.collection("tableSessions").doc(sessionId).collection("rounds").onSnapshot(snap=>{
+      const t=state.table;if(!t||t.id!==sessionId)return;
+      const rounds=snap.docs.map(d=>d.data()).sort((a,b)=>a.number-b.number);
+      rounds.forEach(r=>{const was=t.seen[r.id];if(was&&was!=="served"&&r.status==="served"){haptic(35);confetti({});winToast("🎉","Food’s here!","Round "+r.number+" is on the table","Enjoy!");}t.seen[r.id]=r.status;});
+      t.rounds=rounds;redraw();
+    },()=>{}));
+  }
+  function leaveTable(silent){
+    stopTableWatch();state.table=null;try{localStorage.removeItem(TABLE_KEY);}catch(_){}
+    if(state.route==="table")go("home");else if(!silent)render({preserveScroll:true});
+  }
+  async function resumeTable(){
+    if(state.table||!state.session)return;
+    let sid="";try{sid=localStorage.getItem(TABLE_KEY)||"";}catch(_){}
+    if(sid){watchTable(sid);return;}
+    try{const snap=await fs.collection("tableSessions").where("memberUids","array-contains",state.session.uid).where("status","in",["open","bill"]).limit(1).get();
+      if(!snap.empty&&!state.table)watchTable(snap.docs[0].id);}catch(_){}
+  }
+  async function openTableLink(link){
+    const m=String(link||"").match(/^([A-Za-z0-9_-]{1,128})\/([A-Za-z0-9_-]{1,20})$/);if(!m){toast("That QR isn’t a Scraveit table.","danger");return;}
+    if(!state.session){state.pendingTableLink=link;toast("Sign in to order from your table.","success");return;}
+    toast("Opening your table…","success");
+    try{
+      const res=await dineCall("dineInOpenTable",{restaurantId:m[1],tableId:m[2]});
+      watchTable(res.sessionId);haptic(25);confetti({});
+      go("table");ensureRestaurantMenu(m[1]);
+    }catch(e){toast(dineError(e),"danger");}
+  }
+  async function scanTable(){
+    if(!nativeAvailable("scanTableQr")){toast("Update Scraveit to scan table codes.","danger");return;}
+    try{const res=await nativeInvoke("scanTableQr",{},{timeoutMs:120000});
+      if(res&&res.link)openTableLink(res.link);else toast("That QR isn’t a Scraveit table.","danger");
+    }catch(e){if(String(e.message)!=="CANCELLED")toast(dineError(e),"danger");}
+  }
+  function tableHere(restaurantId){const t=state.table;return!!(t&&t.data&&t.data.restaurantId===restaurantId&&t.data.status==="open");}
+  function tableStatusLabel(s){return{sent:"Sent to kitchen",cooking:"Cooking",served:"Served"}[s]||s;}
+  function screenTable(){
+    const t=state.table,d=t&&t.data;
+    if(!d)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Your table","")+'<section class="card stack" style="text-align:center"><p class="supporting">'+(t?'Opening your table…':'You’re not at a table right now.')+'</p><button class="button primary full" data-action="scan-table">Scan a table QR</button></section></div>'+nav()+'</main>';
+    const members=d.members||[],totals=d.memberTotals||{},sub=Number(d.subtotal||0),me=state.session&&state.session.uid;
+    const status=d.status==="bill"?'<span class="table-status bill">Bill asked</span>':'<span class="table-status">Ordering</span>';
+    return'<main class="screen"><div class="screen-content page-stack table-screen">'
+      +'<header class="table-hero"><div class="table-hero-top"><button class="icon-button" data-action="back" aria-label="Back">'+icon("back")+'</button>'+status+'</div>'
+      +'<p class="eyebrow">Dine-in · '+h(d.restaurantName)+'</p><h1>'+h(d.tableLabel)+'</h1>'
+      +'<div class="table-members">'+members.map(m=>'<span class="table-face" title="'+h(m.name)+'">'+h(String(m.name||"?").charAt(0).toUpperCase())+'</span>').join("")+'<span class="caption">'+members.length+(members.length===1?' person':' people')+' at this table</span></div></header>'
+      +(d.status==="open"?'<button class="button primary full" data-action="open-restaurant" data-restaurant-id="'+h(d.restaurantId)+'">'+(t.rounds.length?'Order more':'Open the menu')+'</button>':'<div class="notice info">'+icon("receipt","small")+'<div><strong>The bill is on its way</strong><div class="caption">Pay at the counter or to your server. The restaurant marks it paid here.</div></div></div>')
+      +'<div class="table-actions"><button class="button tonal grow" data-action="table-request" data-value="waiter">🙋 Call waiter</button>'+(d.status==="open"&&t.rounds.length?'<button class="button tonal grow" data-action="table-request" data-value="bill">🧾 Ask for bill</button>':'')+'</div>'
+      +'<section class="stack"><h2 class="section-title">Rounds</h2>'+(t.rounds.length?t.rounds.map(r=>'<div class="round-card"><div class="cluster between"><strong>Round '+r.number+' · '+h(r.byUid===me?"You":r.byName)+'</strong><span class="round-status '+h(r.status)+'">'+h(tableStatusLabel(r.status))+'</span></div><p class="supporting">'+h((r.items||[]).map(i=>i.quantity+'× '+i.name+(i.variant?' ('+i.variant+')':'')).join(", "))+'</p><span class="caption">'+money(r.subtotal)+'</span></div>').join(""):'<p class="caption">Nothing ordered yet. Tap Open the menu, add dishes, then Send to kitchen.</p>')+'</section>'
+      +(sub>0?'<section class="card stack"><h2 class="section-title">Table bill</h2>'+members.filter(m=>Number(totals[m.uid]||0)>0).map(m=>'<div class="price-row"><span>'+h(m.uid===me?"You":m.name)+'</span><strong>'+money(totals[m.uid])+'</strong></div>').join("")
+        +'<div class="price-row total"><span>Food total</span><span>'+money(sub)+'</span></div><p class="caption">Taxes and service charge, if any, are added on the restaurant’s own bill. Split fairly: each person pays their food plus the same share of taxes.</p></section>':'')
+      +'<button class="text-button" data-action="leave-table">Leave this table on my phone</button>'
+      +'</div>'+nav()+'</main>';
+  }
+  function tableRoundSheet(){
+    const t=state.table,d=t&&t.data,lines=state.cart;
+    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Send to kitchen"><div class="sheet-handle"></div>'
+      +'<p class="eyebrow">'+h(d?d.tableLabel+' · '+d.restaurantName:"Your table")+'</p><h2 class="title">Send this round?</h2>'
+      +'<div class="stack">'+lines.map(i=>'<div class="price-row"><span>'+i.quantity+'× '+h(i.name)+(i.variant?' ('+h(i.variant)+')':'')+'</span><strong>'+money((Number(i.price||0)+Number(i.variantPrice||0)+Number(i.addOnTotal||0))*i.quantity)+'</strong></div>').join("")+'</div>'
+      +'<p class="caption">It goes straight to the kitchen with your table number. Prices are checked by the restaurant’s live menu.</p>'
+      +'<button class="button primary full" data-action="send-round"'+(state.dineBusy?' disabled':'')+'>'+(state.dineBusy?'Sending…':'Send to kitchen')+'</button><button class="button secondary full" data-action="close-sheet">Keep adding</button></section></div>';
+  }
+  async function sendTableRound(){
+    const t=state.table;if(!t||!t.data||state.dineBusy)return;
+    const items=callableCartItems();if(!items.length){closeSheet();return;}
+    state.dineBusy=true;renderSheet();
+    try{await dineCall("dineInPlaceRound",{sessionId:t.id,items});state.dineBusy=false;state.cart=[];persistCart();closeSheet();haptic(25);confetti({count:90,y:window.innerHeight*0.4});toast("Sent to the kitchen.","success");go("table");}
+    catch(e){state.dineBusy=false;renderSheet();toast(dineError(e),"danger");}
+  }
+  async function tableRequestAction(kind){
+    const t=state.table;if(!t)return;
+    try{await dineCall("dineInTableRequest",{sessionId:t.id,kind});haptic(15);toast(kind==="bill"?"Asked for the bill.":"A waiter is on the way.","success");}catch(e){toast(dineError(e),"danger");}
+  }
+  function activeTableCard(){
+    const t=state.table,d=t&&t.data;if(!d)return"";
+    const cooking=(t.rounds||[]).filter(r=>r.status!=="served").length;
+    return'<button class="active-table" data-action="go" data-route="table"><span aria-hidden="true">🍽️</span><span class="grow"><strong>'+h(d.tableLabel)+' · '+h(d.restaurantName)+'</strong><span>'+(d.status==="bill"?'Bill asked':cooking?cooking+(cooking===1?' round':' rounds')+' on the way':'You’re at the table')+'</span></span><span class="wheel-spin-pill">Open</span></button>';
+  }
+  function restaurantDineCard(r){
+    const settings=dineSettings(r);if(!settings)return"";
+    if(tableHere(r.id))return'<button class="squad-banner live" data-action="go" data-route="table"><span aria-hidden="true">🍽️</span><span class="grow"><strong>You’re at '+h(state.table.data.tableLabel)+'</strong><small>Add dishes, then Send to kitchen</small></span>'+icon("chevron","small")+'</button>';
+    return'<section class="dine-card"><span aria-hidden="true">🍽️</span><div class="grow"><strong>Dine-in here</strong><small>'+settings.tables.length+' tables · '+h(settings.openFrom)+'–'+h(settings.openTo)+'</small></div><button class="wheel-spin-pill" data-action="dine-book" data-restaurant-id="'+h(r.id)+'">Book</button><button class="wheel-spin-pill ghost" data-action="scan-table">At a table?</button></section>';
+  }
+  function dineInHome(){
+    const list=dineRestaurants(),bookings=upcomingBookings();
+    return activeTableCard()
+      +'<button class="scan-card" data-action="scan-table"><span class="scan-icon" aria-hidden="true">▣</span><span class="grow"><strong>At the restaurant?</strong><span>Scan the QR on your table to order from your phone</span></span><span class="wheel-spin-pill">Scan</span></button>'
+      +(bookings.length?'<section class="stack"><h2 class="section-title">Your bookings</h2>'+bookings.map(bookingCard).join("")+'</section>':'')
+      +'<section class="stack"><div><h2 class="section-title">Book a table</h2><p class="supporting">'+(list.length?list.length+(list.length===1?' restaurant takes':' restaurants take')+' dine-in here':'No restaurants near you take dine-in yet')+'</p></div>'
+      +(list.length?'<div class="restaurant-list">'+list.map(r=>{const s=dineSettings(r);return'<article class="dine-row"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async"><div class="grow"><strong>'+h(r.name)+'</strong><span>'+h((r.cuisines||[]).slice(0,2).join(" · "))+'</span><span class="caption">'+s.tables.length+' tables · open '+h(s.openFrom)+'–'+h(s.openTo)+'</span></div><div class="dine-row-actions"><button class="wheel-spin-pill" data-action="dine-book" data-restaurant-id="'+h(r.id)+'">Book</button><button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">Menu</button></div></article>';}).join("")+'</div>':emptyState("search","Dine-in is coming","Restaurants near you can switch on dine-in from their Scraveit app.","home-mode-delivery","Order delivery"))
+      +'</section>';
+  }
+  function loadDineHistory(){
+    const uid=state.session&&state.session.uid;if(!uid)return;
+    fs.collection("tableSessions").where("memberUids","array-contains",uid).where("status","==","paid").limit(50).get()
+      .then(snap=>{state.dineHistory=snap.docs.map(d=>d.data());}).catch(()=>{});
+  }
+  function dineInStart(){
+    watchDineBookings();resumeTable();loadDineHistory();
+    try{const link=window.FeastlyNative&&FeastlyNative.takeTableLink?FeastlyNative.takeTableLink():"";if(link)openTableLink(link);}catch(_){}
+    if(state.pendingTableLink){const l=state.pendingTableLink;state.pendingTableLink="";openTableLink(l);}
+  }
+  function dineInStop(){stopTableWatch();if(state.dineBookingsUnsub)try{state.dineBookingsUnsub()}catch(_){}state.dineBookingsUnsub=null;state.dineBookingsUid="";}
+  window.scraveitTableLink=function(event){if(event&&event.link)openTableLink(event.link);};
+
   function screenHome() {
     if(!state.catalogLoaded)return '<main class="screen"><div class="screen-content page-stack">'+homeHeader()+homeSkeletonMarkup()+'</div>'+nav()+'</main>';
     if(state.homeStatus==="errorWithoutCache")return'<main class="screen"><div class="screen-content page-stack">'+homeHeader()+emptyState("warning","Restaurants could not be loaded","Check your connection and try again. Your saved address is still selected.","refresh","Retry")+'</div>'+nav()+'</main>';
@@ -2505,17 +3341,22 @@
     const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),recommended=restaurants.slice(0,3),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
     if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
-    return '<main class="screen '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
-      +'<section class="home-lead"><p class="eyebrow">'+(new Date().getHours()<12?'Good morning':new Date().getHours()<17?'Good afternoon':'Good evening')+'</p><h1 class="display">What tastes <em>good</em>, '+h(firstName())+'?</h1><p class="supporting">Showing restaurants in '+h(address&&address.city||"your selected city")+'</p></section>'
+    return '<main class="screen home2 '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
-      +(active?activeOrderCard(active):postDeliveryCard())
-      +'<button class="search-trigger" data-action="go" data-route="search">'+icon("search")+'<span>Search dishes, restaurants or cuisines</span></button>'
-      +'<div class="home-promo">'+localAdMarkup()+'</div>'
+      +homeModeSwitch()
+      +(homeMode()==="dinein"?dineInHome():''      +(active?activeOrderCard(active):postDeliveryCard())
+      +foodStoryStrip()+activeTableCard()+eatOutShelf()
+      +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
+      +'<div class="play-row">'+wheelCard()+squadHomeCard()+'</div>'
+      +moodSection()
+      +topOffersShelf()
+      +orderAgainMarkup()
       +'<section class="stack">'
       // The heading only earns its place when there is something under it to
       // browse; the filter row below stands on its own either way.
       +(categoryChipsHtml()?'<div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div>'+categoryChipsHtml():'')
-      +'<div class="chip-rowdiscovery-filters"><button class="chip" data-action="open-filters">'+icon("filter","small")+' Filters</button><button class="chip '+(state.homeFilter==="under250"?'active':'')+'" data-action="home-filter" data-value="under250">Under ₹250</button><button class="chip '+(state.homeFilter==="offers"?'active':'')+'" data-action="home-filter" data-value="offers">Offers</button><button class="chip '+(state.homeFilter==="pureveg"?'active':'')+'" data-action="home-filter" data-value="pureveg">Pure veg</button></div></section>'
+      // Filters live in search now; one that is still on is shown here so it never hides restaurants silently.
+      +(state.homeFilter&&state.homeFilter!=="all"?'<div class="chip-row"><button class="chip active" data-action="home-filter" data-value="all">Filter on · Clear</button></div>':'')+'</section>'
       +'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div>'+(recommended.length?'<div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No matches in this city","Try another address, category or filter.","open-filters","Change filters"))+'</section>'
       +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All restaurants</h2><p class="supporting">'+restaurants.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch restaurant rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
       +(restaurants.length?'<div class="restaurant-list">'+restaurants.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No restaurants are live","Choose another saved address or clear the filters.","open-filters","Change filters"))
@@ -2525,6 +3366,7 @@
       +(state.catalogHasMore?(state.catalogLoadingMore
         ?loadingRow("Loading more restaurants…")
         :'<button class="button secondary full" data-action="load-more-restaurants">Show more restaurants</button>'):"")+'</section>'
+      )
       +(state.catalogMode==="packaged"?'<div class="notice warning">'+icon("info","small")+'<div><strong>Live menu unavailable</strong><div class="caption">Ordering is paused until the latest restaurant catalogue is available.</div></div></div>':'')
       +'</div>'+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
   }
@@ -2579,16 +3421,24 @@
       return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'" aria-label="'+(item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
     }).join("")+'</div></section>').join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
   }
+  /** All the store's cover photos, swiping left to right on their own and looping (see refreshAdRails). */
+  function restaurantCoverMarkup(r){
+    const photos=(r.coverImages&&r.coverImages.length?r.coverImages:[r.image]).slice(0,10);
+    const img=(url,i)=>'<img class="cover-slide" src="'+h(safeUrl(url,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+(photos.length>1?' photo '+(i+1):' restaurant')+'"'+(i?' loading="lazy"':'')+' decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">';
+    if(photos.length<2)return img(photos[0],0);
+    return '<div class="ad-rail-track cover-track" id="cover-track-'+h(r.id)+'">'+photos.map(img).join("")+'</div>'
+      +'<div class="ad-rail-dots cover-dots" data-dots-for="cover-track-'+h(r.id)+'">'+photos.map((_,i)=>'<span class="ad-dot'+(i===0?' active':'')+'"></span>').join("")+'</div>';
+  }
   function screenRestaurant() {
     const r=restaurant();if(!r)return'<main class="screen"><div class="screen-content">'+topbar("Restaurant unavailable","This restaurant is no longer in the live catalogue.")+emptyState("search","Restaurant unavailable","Return home to find another restaurant.","go-home","Back to home")+'</div>'+nav()+'</main>';
     const categories=["All",...new Set(discoveryItems(r).map(x=>x.category||"Menu"))],pureVeg=isPureVegRestaurant(r);const liked=(state.profile.favourites||[]).includes(r.id),rating=ratingForRestaurant(r);
     const menuContent=state.menuLoading[r.id]&&!r.menuLoaded?menuSkeletonMarkup():state.menuErrors[r.id]&&!r.menuLoaded?emptyState("warning","Menu could not be loaded","The restaurant is visible, but its menu refresh failed.","retry-menu","Retry menu"):restaurantMenu(r);
-    return '<main class="screen flush '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content"><section class="restaurant-hero"><img src="'+h(safeUrl(r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' restaurant"><div class="restaurant-hero-actions"><button class="icon-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><button class="icon-button '+(liked?'active':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-hero-copy"><h1 class="page-title" style="font-size:30px">'+h(r.name)+'</h1><p class="supporting">'+h((r.cuisines||[]).join(" · "))+'</p></div></section>'
+    return '<main class="screen flush '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content"><section class="restaurant-hero">'+restaurantCoverMarkup(r)+'<div class="restaurant-hero-actions"><button class="icon-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><button class="icon-button '+(liked?'active':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-hero-copy"><h1 class="page-title" style="font-size:30px">'+h(r.name)+'</h1><p class="supporting">'+h((r.cuisines||[]).join(" · "))+'</p></div></section>'
       +'<div class="restaurant-body">'+networkBanner()+'<section class="service-strip"><div class="service-stat"><strong>'+h(rating.value?rating.value.toFixed(1):"New")+' ★</strong><span>'+h(rating.label)+'</span></div><div class="service-stat"><strong>'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</strong><span>Delivery</span></div><div class="service-stat"><strong>'+(deliveryFeeForRestaurant(r,0)===0?'Free':money(deliveryFeeForRestaurant(r,0)))+'</strong><span>Delivery fee</span></div></section>'
-      +'<div class="notice '+(r.open?'success':'warning')+'">'+icon(r.open?'check':'clock',"small")+'<div><strong>'+(r.open?'Accepting orders':'Currently closed')+'</strong><div class="caption">'+h(r.address||"Location provided by the restaurant")+(r.opensUntil?' · Until '+h(r.opensUntil):'')+'</div></div></div>'
+      +'<div class="notice '+(r.open?'success':'warning')+'">'+icon(r.open?'check':'clock',"small")+'<div><strong>'+(r.open?'Accepting orders':'Currently closed')+'</strong><div class="caption">'+h(r.address||"Location provided by the restaurant")+(r.opensUntil?' · Until '+h(r.opensUntil):'')+'</div></div></div>'+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)
       +'<section class="stack menu-discovery"><div class="cluster between"><div><h2 class="section-title">Menu</h2><p class="supporting">Choose items and customise before adding.</p></div>'+(pureVeg?'<span class="pure-veg-badge large">Pure vegetarian</span>':'')+'</div><div class="chip-row menu-primary-filters"><button class="chip" data-action="open-menu-filters">'+icon("filter","small")+' Filters</button>'+(!pureVeg?'<button class="chip '+(state.diet==="all"?'active':'')+'" data-action="menu-diet" data-value="all">All</button><button class="chip '+(state.diet==="veg"?'active':'')+'" data-action="menu-diet" data-value="veg">Veg</button><button class="chip '+(state.diet==="nonveg"?'active':'')+'" data-action="menu-diet" data-value="nonveg">Non-veg</button>':'')+'</div><div class="chip-row menu-categories">'+categories.map(c=>'<button class="chip '+(state.selectedMenuCategory===c?'active':'')+'" data-action="menu-category" data-value="'+h(c)+'">'+h(c)+'</button>').join("")+'</div></section>'+menuContent
-      +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div></section></div></div>'
-      +(cartCount()?'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
+      +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div>'+(/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="caption fssai-line">FSSAI '+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</p>':'')+'</section></div></div>'
+      +(cartCount()?(tableHere(r.id)?'<div class="floating-cart"><button class="button primary full" data-action="table-round"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>Send to kitchen · '+money(cartSubtotal())+'</span></button></div>':'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>'):'')+nav()+'</main>';
   }
 
   function cartItemMarkup(item) {
@@ -2612,7 +3462,7 @@
         +'<button class="button tonal full" data-action="go-home">Browse live restaurants</button></div>'+nav()+'</main>';
     }
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Your cart",r?r.name:"Ready when you are")+networkBanner()
-      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+priceBreakdown(true)+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
+      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+billSummaryRow()+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
   }
 
   function addressSummary(address) {
@@ -2682,19 +3532,54 @@
   function paymentOption(id,title,copy,enabled) {
     return '<button class="settings-row" data-action="select-payment" data-value="'+h(id)+'" '+(enabled?'':'disabled')+'><span class="settings-icon">'+icon(id==="cod"?"receipt":"card")+'</span><span class="grow"><strong>'+h(title)+'</strong><span class="supporting">'+h(copy)+'</span></span><span class="'+(state.checkout.payment===id?'status-pill success':'caption')+'">'+(state.checkout.payment===id?'Selected':enabled?'Choose':'Connect gateway')+'</span></button>';
   }
+  /** "Total bill · you saved · incl. taxes" - the whole breakdown opens from the bottom. */
+  function billSummaryRow(){
+    const saved=discount();
+    return '<button type="button" class="bill-row" data-action="open-bill"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+(saved>0?'<s class="bill-was">'+money(orderTotal()+saved)+'</s> ':'')+money(orderTotal())+'</strong>'+(saved>0?'<span class="saved-pill">You saved '+money(saved)+'</span>':'')+'<span class="caption">Incl. taxes and charges</span></span>'+icon("chevron","small")+'</button>';
+  }
+  function tipChooserMarkup(){
+    return '<section class="stack tip-block"><div><h2 class="section-title">Tip your delivery partner</h2><p class="supporting">Choose an optional amount for your Scraveit Partner.</p></div><div class="segmented"><button class="segment '+(Number(state.tip||0)===0?'active':'')+'" data-action="set-tip" data-value="0">No tip</button><button class="segment '+(Number(state.tip)===20?'active':'')+'" data-action="set-tip" data-value="20">₹20</button><button class="segment '+(Number(state.tip)===30?'active':'')+'" data-action="set-tip" data-value="30">₹30</button><button class="segment '+(Number(state.tip)===50?'active':'')+'" data-action="set-tip" data-value="50">₹50</button></div><div class="cluster"><input id="custom-tip" class="input grow" type="number" min="0" max="1000" step="1" placeholder="Custom tip"><button class="button secondary" data-action="apply-custom-tip">Apply</button></div></section>';
+  }
+  function billSheet(){
+    return sheetShell("Bill summary","",'<div class="stack-lg"><section class="bill-card">'+priceBreakdown(true)+'</section>'+(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')+tipChooserMarkup()+'<p class="caption">The secure Scraveit server checks menu prices, discounts, distance and any weather or demand fee. The confirmed total replaces this estimate on your receipt.</p></div>');
+  }
+  function paySheet(){
+    return sheetShell("Pay using","Only verified payment methods can be selected.",'<section class="card settings-list">'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>');
+  }
+  /** A delivered or live order's own bill, from what the server saved with it. */
+  function orderBillSheet(sheet){
+    const order=(state.orders||[]).find(o=>o.id===sheet.orderId);if(!order)return sheetShell("Bill summary","","<p class=\"supporting\">This bill is not available on this device.</p>");
+    const p=order.pricing||{},line=(label,value,cls)=>Number(value)>0?'<div class="price-row'+(cls?' '+cls:'')+'"><span>'+h(label)+'</span><span>'+(cls==="success-text"?'−':'')+money(value)+'</span></div>':'';
+    return sheetShell("Bill summary",h(order.restaurant||""),'<section class="bill-card stack">'+orderItemsSummary(order)
+      +'<div class="price-row"><span>Item total</span><span>'+money(p.subtotal||0)+'</span></div>'+line("Discount",p.discount,"success-text")
+      +'<div class="price-row"><span>Delivery fee</span><span>'+(Number(p.deliveryFee)>0?money(p.deliveryFee):'<span class="success-text">Free</span>')+'</span></div>'
+      +line("Rain fee",p.rainFee)+line("Demand fee",p.surgeFee)+line("Late-night fee",Number(p.lateNightFee||0)+Number(p.riderIncentiveFee||0))+line("Small-order fee",p.smallOrderFee)
+      +line("Platform fee",p.platformFee)+line("Taxes",p.tax)+line("Delivery partner tip",p.tip)
+      +'<div class="price-row total"><span>'+(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'To pay on delivery':'Paid')+'</span><span>'+money(order.total)+'</span></div></section>');
+  }
   function screenCheckout() {
-    const address=currentAddress();
+    const address=currentAddress(),r=cartRestaurant();
     reconcileCheckoutPaymentSelection();
     const paymentAvailable=paymentMethodEnabled(state.checkout.payment),paymentWarning=!enabledCheckoutMethods().length?'<div class="notice warning">'+icon("warning","small")+'<span>No checkout payment method is available right now. Please try again in a moment.</span></div>':"";
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Review your order","Confirm contact, delivery and payment details.")+networkBanner()
-      +'<section class="card stack"><div class="cluster between"><h2 class="section-title">Delivering to</h2><button class="text-button" data-action="go" data-route="addresses">Change</button></div>'+addressSummary(address)+'</section>'
-      +'<section class="card stack"><h2 class="section-title">Delivery time</h2><div class="segmented"><button class="segment '+(state.checkout.deliveryMode==="asap"?'active':'')+'" data-action="delivery-mode" data-value="asap">As soon as possible</button><button class="segment '+(state.checkout.deliveryMode==="scheduled"?'active':'')+'" data-action="delivery-mode" data-value="scheduled">Schedule</button></div>'+(state.checkout.deliveryMode==="scheduled"?'<div class="notice info">'+icon("clock","small")+'<span>Scheduled delivery needs restaurant and dispatch scheduling services. It will be activated with the production backend.</span></div>':'')+'</section>'
-      +'<section class="card stack"><h2 class="section-title">Delivery preferences</h2><label class="field"><span>Instructions for the rider</span><textarea id="checkout-instructions" class="textarea" maxlength="180" placeholder="Landmark, gate or delivery note">'+h(state.checkout.instructions)+'</textarea></label><button class="settings-row" data-action="toggle-contactless"><span class="settings-icon">'+icon("shield")+'</span><span class="grow"><strong>Contactless delivery</strong><span class="supporting">Leave the order at the door and notify me.</span></span><span class="switch '+(state.checkout.contactless?'on':'')+'" aria-hidden="true"></span></button></section>'
-      +'<section class="card stack"><div><h2 class="section-title">Tip your delivery partner</h2><p class="supporting">Choose an optional amount for your Scraveit Partner.</p></div><div class="segmented"><button class="segment '+(Number(state.tip||0)===0?'active':'')+'" data-action="set-tip" data-value="0">No tip</button><button class="segment '+(Number(state.tip)===20?'active':'')+'" data-action="set-tip" data-value="20">₹20</button><button class="segment '+(Number(state.tip)===30?'active':'')+'" data-action="set-tip" data-value="30">₹30</button><button class="segment '+(Number(state.tip)===50?'active':'')+'" data-action="set-tip" data-value="50">₹50</button></div><div class="cluster"><input id="custom-tip" class="input grow" type="number" min="0" max="1000" step="1" placeholder="Custom tip"><button class="button secondary" data-action="apply-custom-tip">Apply</button></div></section>'
-      +'<section class="card settings-list"><div style="padding:18px 16px 8px"><h2 class="section-title">Payment</h2><p class="supporting">Only verified payment methods can be selected.</p></div>'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>'
-      +paymentWarning
-      +walletToggle()+'<section class="card">'+priceBreakdown(true)+'</section><div class="notice info">'+icon("shield","small")+'<span>The secure Scraveit server validates menu prices, discounts, distance and any weather or demand fee. The server-confirmed order total replaces this estimate in your final receipt.</span></div>'
-      +'<button class="button primary full" data-action="place-order" '+(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Placing order…':checkoutPrimaryLabel())+'</button></div>'+nav()+'</main>';
+    const canPlace=!(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable);
+    return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r?r.name:"Checkout",r?((r.etaMin||25)+'–'+(r.etaMax||35)+' min to '+(address?(address.label||address.area||"you"):"you")):"Review your order")+networkBanner()
+      +(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')
+      +adRailMarkup("checkout-ad-track")
+      +'<section class="card checkout-card">'
+        +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(r&&r.etaMin||25)+'–'+h(r&&r.etaMax||35)+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
+        +'<div class="checkout-divider"></div>'
+        +'<button type="button" class="checkout-line" data-action="go" data-route="addresses">'+addressSummary(address)+icon("chevron","small")+'</button>'
+        +'<div class="checkout-divider"></div>'
+        +'<label class="field compact"><span>Instructions for your delivery partner</span><textarea id="checkout-instructions" class="textarea" maxlength="180" rows="2" placeholder="Landmark, gate or delivery note">'+h(state.checkout.instructions)+'</textarea></label>'
+        +'<button class="settings-row" data-action="toggle-contactless"><span class="settings-icon">'+icon("shield")+'</span><span class="grow"><strong>Contactless delivery</strong><span class="supporting">Leave at the door and notify me.</span></span><span class="switch '+(state.checkout.contactless?'on':'')+'" aria-hidden="true"></span></button>'
+        +'<div class="checkout-divider"></div>'
+        +billSummaryRow()
+      +'</section>'
+      +walletToggle()+paymentWarning
+      +'</div>'
+      +'<div class="floating-cart pay-dock"><button type="button" class="pay-using" data-action="open-pay-sheet"><span class="caption">PAY USING ▲</span><strong>'+h(paymentMethodTitle(state.checkout.payment||"cod"))+'</strong></button>'
+      +'<button class="button primary pay-cta" data-action="place-order" '+(canPlace?'':'disabled')+'>'+(state.loading?'<span class="spinner"></span> Placing…':'<span class="pay-cta-total"><strong>'+money(orderTotal())+'</strong><small>TOTAL</small></span><span>Place order</span>')+'</button></div>'
+      +nav()+'</main>';
   }
 
   function orderItemsSummary(order) {
@@ -2707,6 +3592,8 @@
     const active=state.orders.filter(o=>!TERMINAL_STATES.has(o.status)),past=state.orders.filter(o=>TERMINAL_STATES.has(o.status));
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header class="cluster between"><div><p class="eyebrow">Your orders</p><h1 class="page-title">Every journey, in one place.</h1></div><button class="icon-button" data-action="refresh" aria-label="Refresh orders">'+icon("refresh")+'</button></header>'
       +(state.loading?loadingRow("Checking live orders…"):'')
+      +activeTableCard()
+      +(upcomingBookings().length?'<section class="stack"><div><h2 class="section-title">Table bookings</h2><p class="supporting">Dine-in, coming up</p></div>'+upcomingBookings().map(bookingCard).join("")+'</section>':'')
       +(active.length?'<section class="stack"><div><h2 class="section-title">In progress</h2><p class="supporting">Live status and rider updates</p></div>'+active.map(orderCard).join("")+'</section>':'')
       +(past.length?'<section class="stack"><div><h2 class="section-title">Past orders</h2><p class="supporting">Receipts, reorder and support</p></div>'+past.map(orderCard).join("")+'</section>':'')
       +(!state.orders.length&&!state.loading?emptyState("orders","No orders yet","Your first Scraveit order will appear here.","go-home","Explore restaurants"):'')+'</div>'+nav()+'</main>';
@@ -2812,19 +3699,22 @@
     const savedReview=state.reviews[order.id]||null,restaurantReviewRating=Number(savedReview&&savedReview.rating||0),riderReviewRating=Number(savedReview&&savedReview.riderRating||0);
     const submittedReviewMarkup=savedReview?'<section class="card stack"><div><p class="eyebrow">Your feedback</p><h2 class="section-title">Ratings submitted</h2></div><div class="price-row"><span>Restaurant & food</span><strong>'+h(restaurantReviewRating.toFixed(1))+' / 5</strong></div>'+(riderReviewRating>0?'<div class="price-row"><span>Delivery partner</span><strong>'+h(riderReviewRating.toFixed(1))+' / 5</strong></div>':'')+'<p class="caption">Saved to this delivered order.</p></section>':'';
     const reviewAction=order.status!=="Delivered"?'':savedReview?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' View your rating</button>':reviewStateReady()?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' Rate order</button>':'<button class="button tonal grow" disabled><span class="spinner"></span> Checking feedback…</button>';
-    const live=state.tracking[order.id]||{};
+    const live=state.tracking[order.id]||{},guest=isGuestOrder(order);
     if(riderLive)ensureTrackingRoute(order,live);
+    const me=guest&&(order.squadMembers||[]).find(m=>m.uid===state.session.uid),host=(order.squadMembers||[]).find(m=>m.uid===order.customerId);
+    const foodSum=(order.squadMembers||[]).reduce((a,m)=>a+Number(m.subtotal||0),0)||1;
+    const squadNote=order.squadCode?'<section class="squad-order-note"><span aria-hidden="true">👥</span><div class="grow"><strong>'+(guest?'Squad order by '+h(host?host.name:"your friend"):'Your squad order')+'</strong><span>'+(guest?'You’re following along live'+(me?' · your share about '+money(Number(order.total||0)*Number(me.subtotal||0)/foodSum):''):(order.squadMembers||[]).length+' people are following this order')+'</span></div></section>':'';
     return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
-      +orderLiveModule(order,live,canTrack)
-      +(orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
-      +(showDeliveryOtp?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
+      +orderLiveModule(order,live,canTrack)+squadNote
+      +(!guest&&orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
+      +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
       +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
       +onlinePaymentNotice(order)
       +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
-      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<div class="price-row total"><span>Paid / due</span><span>'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod||"Payment")+'</span></div></section>'
+      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?'Paid by UPI':order.paymentMethod==="card"?'Paid by card':order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
       +'<section class="card stack"><h2 class="section-title">Delivery details</h2>'+addressSummary(order.address||{})+(order.instructions?'<div class="notice info">'+icon("info","small")+'<span>'+h(order.instructions)+'</span></div>':'')+'</section>'+submittedReviewMarkup
       +(order.status!=="Cancelled"?adminContactMarkup():'')
-      +'<div class="cluster wrap">'+(order.status==="Delivered"?'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>'+reviewAction:'')+(["Order placed","Accepted"].includes(order.status)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Request cancellation</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>'
+      +(guest?'':'<div class="cluster wrap">'+(order.status==="Delivered"?'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>'+reviewAction:'')+(["Order placed","Accepted"].includes(order.status)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Request cancellation</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>')
       +'</div>'+nav()+'</main>';
   }
 
@@ -2886,6 +3776,89 @@
     const local=trackingLocalPoint(ms,focus);
     ms.panX=-local.x;ms.panY=-local.y;ms.userPanned=false;ms.userZoomed=false;ms.tileKey="";
   }
+  // ---- camera style, night and rain ----------------------------------------
+  // "follow": the map tilts and turns so the rider always rides up the screen,
+  // like navigation. "north": the classic flat map with north at the top.
+  // Dragging the map drops back to the flat map (pan maths stay simple);
+  // Recentre returns to following.
+  // ---- map provider: Google Maps tiles, OpenStreetMap until Google answers --
+  // Google tiles come through our own server (the key never reaches the app)
+  // and Firebase Hosting's CDN. If they fail, the map quietly uses
+  // OpenStreetMap and tries Google again a few minutes later.
+  const GOOGLE_TILE_BASE="https://savrivo-app.web.app/maptile/",DELIVERY_ROUTE_URL="https://asia-south1-savrivo-app.cloudfunctions.net/deliveryRoute";
+  let googleTilesFailedAt=0;
+  function osmTileSrc(z,x,y){return"https://tile.openstreetmap.org/"+z+"/"+x+"/"+y+".png";}
+  function mapTileSrc(z,x,y,night){return Date.now()-googleTilesFailedAt<10*60*1000?osmTileSrc(z,x,y):GOOGLE_TILE_BASE+(night?"night":"day")+"/"+z+"/"+x+"/"+y;}
+  function markMapProvider(google){document.querySelectorAll(".map-attribution").forEach(el=>{el.textContent=google?"Map data ©"+new Date().getFullYear()+" Google":"© OpenStreetMap";});}
+  document.addEventListener("load",event=>{const img=event.target;if(img&&img.tagName==="IMG"&&img.dataset&&img.dataset.osm&&!img.classList.contains("osm"))markMapProvider(true);},true);
+  document.addEventListener("error",event=>{const img=event.target;if(!img||img.tagName!=="IMG"||!img.dataset||!img.dataset.osm||img.classList.contains("osm"))return;
+    googleTilesFailedAt=Date.now();img.classList.add("osm");img.src=img.dataset.osm;markMapProvider(false);},true);
+  const TRACKING_TILT_DEG=45, TRACKING_CAMERA_KEY="savrivo.customer.trackingCamera";
+  function trackingCameraPreference(){try{return localStorage.getItem(TRACKING_CAMERA_KEY)==="north"?"north":"follow";}catch(_){return"follow";}}
+  function trackingFollowActive(ms){return!!ms&&ms.mode!=="north"&&!ms.userPanned;}
+  function trackingPlaneTransform(ms){return trackingFollowActive(ms)?"rotateX("+TRACKING_TILT_DEG+"deg) rotateZ("+(-ms.bearing).toFixed(1)+"deg)":"none";}
+  function trackingIsNight(){const hour=new Date().getHours();return hour>=19||hour<6;}
+  // Rain on the map follows live weather (Google Weather, refreshed every 15
+  // minutes near the store); before it has been read, the order's verified rain fee.
+  function trackingIsRaining(order){
+    if(!order)return false;
+    const w=state.storeWeather&&state.storeWeather[order.restaurantId];
+    if(w&&w.validUntil>Date.now())return w.rain;
+    if(!w||Date.now()-w.readAt>5*60*1000)loadStoreWeather(order.restaurantId);
+    return!!(order.pricing&&Number(order.pricing.rainFee)>0);
+  }
+  async function loadStoreWeather(restaurantId){
+    if(!restaurantId)return;state.storeWeather=state.storeWeather||{};
+    const previous=state.storeWeather[restaurantId];
+    if(previous&&previous.loading)return;
+    state.storeWeather[restaurantId]=Object.assign({},previous||{},{loading:true,readAt:Date.now()});
+    try{
+      const snap=await firebase.firestore().collection("pricingSignals").doc(restaurantId).get(),d=snap.exists?snap.data():{};
+      const rain=Number(d.rainFee)>0||/RAIN|SHOWER|THUNDER|DRIZZLE/i.test(String(d.conditionType||""));
+      const before=previous&&previous.validUntil>Date.now()?previous.rain:null;
+      state.storeWeather[restaurantId]={rain,validUntil:Math.max(Number(d.validUntil)||0,Date.now()+5*60*1000),readAt:Date.now()};
+      if(before!==rain&&liveOrderRoute())render({preserveScroll:true});
+    }catch(_){state.storeWeather[restaurantId]={rain:false,validUntil:0,readAt:Date.now()};}
+  }
+  function applyTrackingPlane(){
+    const ms=state.trackingMap,card=document.getElementById("tracking-map-card"),plane=document.getElementById("tracking-map-plane");
+    if(!ms||!card||!plane)return;
+    const follow=trackingFollowActive(ms);
+    if(follow&&Number.isFinite(ms.riderHeading)){
+      // Turn the map the shorter way round, and ignore tiny wobbles in heading.
+      const delta=((ms.riderHeading-ms.bearing)%360+540)%360-180;
+      if(Math.abs(delta)>6)ms.bearing+=delta;
+    }
+    plane.style.transform=trackingPlaneTransform(ms);
+    card.classList.toggle("follow",follow);
+    card.style.setProperty("--map-bearing",(follow?ms.bearing:0).toFixed(1)+"deg");
+  }
+  function trackingRider3DState(){
+    const ms=state.trackingMap;
+    if(!ms||!liveOrderRoute())return null;
+    const order=orderById(ms.orderId);if(!order)return null;
+    const live=state.tracking[ms.orderId]||{};
+    const fresh=!!(live.updatedAt&&Date.now()-Number(live.updatedAt)<45000);
+    const follow=trackingFollowActive(ms),status=String(order.status||""),stillFor=Date.now()-Number(ms.lastRiderMoveAt||0);
+    const onTheRoad=["Out for delivery","Near you"].includes(status);
+    const pose=status==="Arrived"?"wave":(!onTheRoad&&stillFor>25000?"park":"ride");
+    return {avatar:String(order.riderAvatar||"blue"),heading:Number.isFinite(ms.riderHeading)?ms.riderHeading:0,
+      bearing:follow?ms.bearing:0,elevation:follow?45:62,moving:fresh&&pose==="ride"&&stillFor<8000,pose,
+      night:trackingIsNight(),stale:!fresh,size:({16:120,15:108,14:96,13:88})[ms.zoom]||80};
+  }
+  // Live, or how long ago the rider's phone last sent a location (weak signal).
+  function trackingSignalText(live,fresh){
+    if(fresh)return"LIVE";
+    const at=Number(live&&live.updatedAt||0);
+    if(!at)return"Waiting for signal";
+    const mins=Math.max(1,Math.round((Date.now()-at)/60000));
+    return mins>=60?"Signal lost":"Last seen "+mins+" min ago";
+  }
+  function trackingGoogleRouteShown(order,live){
+    if(!trackingDeliveryLegActive(order,live||{}))return false;
+    const route=trackingRoutePoints(order,live||{});
+    return!!(route&&route.source==="google");
+  }
   function trackingMapState(order,points){
     const current=state.trackingMap;
     if(current&&current.orderId===order.id)return current;
@@ -2893,7 +3866,8 @@
     if(!all.length)return null;
     const fitted=fitTrackingMapView(all);
     state.trackingMap={orderId:order.id,zoom:fitted.zoom,anchorLat:fitted.center.lat,anchorLng:fitted.center.lng,
-      panX:0,panY:0,userPanned:false,userZoomed:false,tileKey:"",tilePanX:0,tilePanY:0,tileTimer:null};
+      panX:0,panY:0,userPanned:false,userZoomed:false,tileKey:"",tilePanX:0,tilePanY:0,tileTimer:null,
+      mode:trackingCameraPreference(),bearing:0,lastRiderPoint:null,lastRiderMoveAt:0};
     return state.trackingMap;
   }
   function trackingLocalPoint(ms,point){
@@ -2908,6 +3882,14 @@
   }
   function trackingTileRange(ms){
     const anchor=mapWorld(ms.anchorLat,ms.anchorLng,ms.zoom),size=trackingViewportSize();
+    if(trackingFollowActive(ms)){
+      // Tilted and turned, the screen can show road in any direction and much
+      // further ahead, so load a square around the rider instead of the box.
+      const cx=anchor.x-ms.panX,cy=anchor.y-ms.panY,reach=Math.max(size.width,size.height)*1.35;
+      return {originX:anchor.x,originY:anchor.y,
+        minTileX:Math.floor((cx-reach)/TRACKING_TILE_PX),maxTileX:Math.floor((cx+reach)/TRACKING_TILE_PX),
+        minTileY:Math.floor((cy-reach)/TRACKING_TILE_PX),maxTileY:Math.floor((cy+reach)/TRACKING_TILE_PX)};
+    }
     const above=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100),below=size.height-above;
     const minX=anchor.x-ms.panX-size.width/2-TRACKING_TILE_PX,maxX=anchor.x-ms.panX+size.width/2+TRACKING_TILE_PX;
     const minY=anchor.y-ms.panY-above-TRACKING_TILE_PX,maxY=anchor.y-ms.panY+below+TRACKING_TILE_PX;
@@ -2926,9 +3908,9 @@
       for(let tx=range.minTileX;tx<=range.maxTileX;tx++){
         let wrapped=tx%max;if(wrapped<0)wrapped+=max;
         tiles.push({key:ms.zoom+"/"+tx+"/"+ty,
-          src:"https://tile.openstreetmap.org/"+ms.zoom+"/"+wrapped+"/"+ty+".png",
+          src:mapTileSrc(ms.zoom,wrapped,ty,trackingIsNight()),osm:osmTileSrc(ms.zoom,wrapped,ty),
           left:tx*TRACKING_TILE_PX-range.originX,top:ty*TRACKING_TILE_PX-range.originY});
-        if(tiles.length>=TRACKING_MAX_TILES)return trackingOrderTiles(ms,tiles);
+        if(tiles.length>=(trackingFollowActive(ms)?160:TRACKING_MAX_TILES))return trackingOrderTiles(ms,tiles);
       }
     }
     return trackingOrderTiles(ms,tiles);
@@ -3028,7 +4010,8 @@
     if(polyline){
       const decoded=decodePolyline(polyline);
       if(decoded.length>=2){
-        state.trackingRoutes[key]=trackingRouteMetrics(decoded);
+        const entry=readTrackingRouteCache()[key]||{};
+        state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(decoded),{durationS:Number(entry.durationS)||0,source:entry.source||"osrm"});
         return state.trackingRoutes[key];
       }
     }
@@ -3056,14 +4039,26 @@
       const url=TRACKING_ROUTE_ENDPOINT
         +from.lng.toFixed(6)+","+from.lat.toFixed(6)+";"+to.lng.toFixed(6)+","+to.lat.toFixed(6)
         +"?overview=full&geometries=polyline";
-      const response=await fetch(url,{method:"GET",cache:"force-cache"});
+      let response=null,source="osrm";
+      // After handover our server shares one Google two-wheeler route per order
+      // (it decides when a new one is really needed); before that, the free router.
+      if(trackingDeliveryLegActive(order,live)&&destination===points.customerPoint){
+        try{
+          await ensureSession();
+          response=await fetch(DELIVERY_ROUTE_URL+"?orderId="+encodeURIComponent(order.id)+"&from="+from.lng.toFixed(5)+","+from.lat.toFixed(5),
+            {method:"GET",headers:{Authorization:"Bearer "+state.session.idToken}});
+          if(response.ok)source="google";else response=null;
+        }catch(_){response=null;}
+      }
+      if(!response)response=await fetch(url,{method:"GET",cache:"force-cache"});
       if(!response.ok)throw new Error("route request failed");
       const payload=await response.json();
       const polyline=payload&&payload.code==="Ok"&&Array.isArray(payload.routes)&&payload.routes[0]?payload.routes[0].geometry:"";
       const decoded=typeof polyline==="string"&&polyline.length>1?decodePolyline(polyline):[];
       if(decoded.length<2)throw new Error("route had no usable geometry");
-      state.trackingRoutes[key]=trackingRouteMetrics(decoded);
-      writeTrackingRouteCache(key,{polyline:polyline,at:Date.now()});
+      const durationS=source==="google"?Number(payload.routes[0].duration)||0:0;
+      state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(decoded),{durationS,source});
+      writeTrackingRouteCache(key,{polyline:polyline,durationS,source,at:Date.now()});
       if(liveOrderRoute())render({preserveScroll:true});
     }catch(_){
       state.trackingRoutes[key]={failedAt:Date.now()};
@@ -3315,19 +4310,21 @@
     const promisedMax=Number(order.etaMax||0);
     const promiseLeft=promisedMax>0?Math.ceil((Number(order.createdAt||Date.now())+promisedMax*60000-Date.now())/60000):null;
     const points=trackingGeoPoints(order,live||{});
-    let metres=null,extra=0;
+    let metres=null,extra=0,trafficMinutes=null;
     if(points.customerPoint&&points.riderPoint){
       if(trackingDeliveryLegActive(order,live||{})){
         const ms=state.trackingMap,view=ms&&ms.orderId===order.id?trackingRouteView(order,live||{}):null;
         metres=view&&view.snapped?Math.max(0,view.route.total-(Number.isFinite(ms.routeProgress)?ms.routeProgress:view.progress))
           :trackingMetres(points.riderPoint,points.customerPoint)*ARRIVAL_ROAD_FACTOR;
         extra=1;
+        // Google's two-wheeler time includes live traffic; use its share for the road left.
+        if(view&&view.snapped&&view.route.durationS>0&&view.route.total>0)trafficMinutes=view.route.durationS/60*(metres/view.route.total);
       }else if(points.restaurantPoint){
         metres=(trackingMetres(points.riderPoint,points.restaurantPoint)+trackingMetres(points.restaurantPoint,points.customerPoint))*ARRIVAL_ROAD_FACTOR;
         extra=2;
       }
     }
-    let minutes=metres==null?null:Math.max(1,Math.ceil(metres/ARRIVAL_METRES_PER_MIN+extra));
+    let minutes=metres==null?null:Math.max(1,Math.ceil((trafficMinutes!=null?trafficMinutes:metres/ARRIVAL_METRES_PER_MIN)+extra));
     const kitchenBusy=["Order placed","Accepted","Preparing"].includes(status);
     if(promiseLeft!=null&&(minutes==null||kitchenBusy))minutes=Math.max(minutes||0,promiseLeft);
     return minutes;
@@ -3389,21 +4386,27 @@
     // tapping it back open shows the map already current, not stale.
     // In compact mode the tap target is the .map-thumb wrapper around this,
     // not the card itself - see trackingMapThumbMarkup().
-    return '<section class="card map-card'+(compact?' compact':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'" style="--rider-w:'+trackingRiderWidth(ms.zoom)+'px">'
+    const follow=trackingFollowActive(ms),rain=trackingIsRaining(order);
+    return '<section class="card map-card'+(compact?' compact':'')+(follow?' follow':'')+(trackingIsNight()?' night':'')+(rain?' rain':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'" style="--rider-w:'+trackingRiderWidth(ms.zoom)+'px;--map-bearing:'+(follow?ms.bearing:0).toFixed(1)+'deg">'
+      +'<div class="map-plane" id="tracking-map-plane" style="transform:'+trackingPlaneTransform(ms)+'">'
       +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
       +'<div class="map-tiles">'+trackingTileMarkup(ms)+'</div>'
       +(trackingDeliveryLegActive(order,live)?trackingRouteMarkup(ms,order,live):trackingPlannedLineMarkup(ms,points))
       +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
       +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","bike",fresh)
-      +'</div>'
+      +'</div></div>'
+      +'<div class="map-haze" aria-hidden="true"></div>'+(rain?'<div class="map-rain" aria-hidden="true"></div>':'')
       // Zoom/recentre controls and the LIVE/STALE badge only make sense at
       // full size - omitting them in compact mode (rather than hiding with
       // CSS) also means a tap anywhere on the thumbnail always resolves to
       // the section's own tracking-expand-map action, never a stray control.
       +(compact?"":'<button type="button" class="map-control map-minimize" data-action="tracking-collapse-map" aria-label="Minimise map">'+icon("minimize")+'</button>'
-      +'<div class="map-overlay"><span class="status-pill map-status-pill '+(fresh?'success':'warning')+'">'+(fresh?'LIVE':'STALE')+'</span><span class="map-attribution">© OpenStreetMap</span></div>'
+      +(trackingGoogleRouteShown(order,live)?'<p class="map-beta">Bike route by Google (beta): some lanes may be missing.</p>':'')
+      +'<div class="map-overlay"><span class="status-pill map-status-pill '+(fresh?'success':'warning')+'">'+h(trackingSignalText(live,fresh))+'</span><span class="map-attribution">© OpenStreetMap</span></div>'
       +'<div class="map-controls">'
+      +'<button type="button" class="map-control map-mode" data-action="tracking-camera-mode" aria-pressed="'+(ms.mode!=="north")+'" aria-label="'+(ms.mode==="north"?'Follow the rider':'Keep north at the top')+'">'
+        +(ms.mode==="north"?'<span class="map-mode-n">N</span>':'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 17-7-4-7 4z" fill="currentColor"/></svg>')+'</button>'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="1" aria-label="Zoom in">+</button>'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="-1" aria-label="Zoom out">&#8722;</button>'
       +'<button type="button" class="map-control'+(ms.userPanned||ms.userZoomed?'':' hidden')+'" id="tracking-recenter" data-action="tracking-recenter" aria-label="Recentre the map">'+icon("target")+'</button>'
@@ -3438,6 +4441,7 @@
       img.alt="";img.setAttribute("aria-hidden","true");img.setAttribute("data-tile",tile.key);
       img.style.left=tile.left.toFixed(0)+"px";img.style.top=tile.top.toFixed(0)+"px";
       img.addEventListener("load",function(){img.classList.add("ready");});
+      img.dataset.osm=tile.osm;if(tile.src===tile.osm)img.classList.add("osm");
       img.src=tile.src;
       if(img.complete)img.classList.add("ready");
       layer.appendChild(img);
@@ -3526,6 +4530,10 @@
     const routeView=trackingRouteView(order,live);
     updateTrackingHeading(ms,routeView,points.riderPoint);
     applyTrackingRiderHeading(card,ms);
+    if(points.riderPoint){
+      if(!ms.lastRiderPoint||trackingMetres(ms.lastRiderPoint,points.riderPoint)>5){ms.lastRiderPoint=points.riderPoint;ms.lastRiderMoveAt=Date.now();}
+    }
+    applyTrackingPlane();
     patchArrivalPill(order,live);
     if(routeView&&routeView.snapped){
       let target=routeView.progress;
@@ -3539,7 +4547,7 @@
       setTrackingPin(card,".map-pin.rider",ms,points.riderPoint,fresh);
     }
     trackingCameraFollow(points,live);
-    const pillEl=card.querySelector(".map-status-pill");if(pillEl){pillEl.textContent=fresh?"LIVE":"STALE";pillEl.className="status-pill map-status-pill "+(fresh?"success":"warning");}
+    const pillEl=card.querySelector(".map-status-pill");if(pillEl){pillEl.textContent=trackingSignalText(live,fresh);pillEl.className="status-pill map-status-pill "+(fresh?"success":"warning");}
     const lastLocEl=document.getElementById("tracking-last-location");if(lastLocEl)lastLocEl.textContent=live.updatedAt?dateTime(live.updatedAt):"Not received";
     const accuracyEl=document.getElementById("tracking-accuracy");if(accuracyEl)accuracyEl.textContent=live.accuracy?Math.round(live.accuracy)+" m":"Not available";
     const sharingEl=document.getElementById("tracking-sharing-state");if(sharingEl)sharingEl.textContent=live.status||"Waiting";
@@ -3635,6 +4643,8 @@
       ms.userPanned=true;
       const button=document.getElementById("tracking-recenter");
       if(button)button.classList.remove("hidden");
+      applyTrackingPlane();
+      ms.tileKey="";
     }
     clearTimeout(ms.tileTimer);
     applyTrackingCamera(false);
@@ -3787,6 +4797,32 @@
   // this ticks every few seconds purely for ambient rotation, and a full
   // re-render on that cadence is exactly the kind of self-inflicted "page
   // glitching" this app has already been burned by elsewhere.
+  // Tracking ad hero swipe: the slide follows the finger; a short flick moves
+  // one ad and restarts the rotation; the tap that ends a swipe never opens an ad.
+  let adSwipe=null, adSwipeSuppressUntil=0;
+  function adSwipeStart(event){
+    const track=event.target.closest&&event.target.closest("#tracking-ad-track");
+    if(!track||track.children.length<2)return;
+    adSwipe={x:event.clientX,y:event.clientY,dx:0,track};
+    track.style.transition="none";
+  }
+  function adSwipeMove(event){
+    if(!adSwipe)return;
+    adSwipe.dx=event.clientX-adSwipe.x;
+    if(Math.abs(adSwipe.dx)<6)return;
+    adSwipe.track.style.transform="translateX(calc(-"+(trackingCarouselIndex*100)+"% + "+adSwipe.dx+"px))";
+  }
+  function adSwipeEnd(){
+    if(!adSwipe)return;
+    const {track,dx}=adSwipe;adSwipe=null;
+    track.style.transition="";
+    const slides=track.children.length;
+    if(Math.abs(dx)>40){
+      trackingCarouselIndex=(trackingCarouselIndex+(dx<0?1:-1)+slides)%slides;
+      adSwipeSuppressUntil=Date.now()+450;
+      refreshTrackingCarousel();
+    }else applyTrackingCarouselFrame(track);
+  }
   function applyTrackingCarouselFrame(track){
     track.style.transform="translateX(-"+(trackingCarouselIndex*100)+"%)";
     document.querySelectorAll("#tracking-ad-dots .ad-dot").forEach((dot,i)=>dot.classList.toggle("active",i===trackingCarouselIndex));
@@ -3898,7 +4934,7 @@
     return '<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="'+h(title)+'"><div class="sheet-handle"></div><div class="cluster between"><div><h2 class="sheet-title">'+h(title)+'</h2>'+(copy?'<p class="supporting">'+h(copy)+'</p>':'')+'</div><button class="icon-button flat" data-action="close-sheet" aria-label="Close">'+icon("close")+'</button></div><div style="margin-top:20px">'+content+'</div></section></div>';
   }
   function filterSheet() {
-    return sheetShell("Filters and sorting","Choose what matters for this search.",'<div class="stack-lg"><div class="field"><label for="sort-select">Sort restaurants by</label><select id="sort-select" class="select"><option value="recommended" '+(state.sort==="recommended"?'selected':'')+'>Recommended near me</option><option value="nearby" '+(state.sort==="nearby"?'selected':'')+'>Nearest first</option><option value="rating" '+(state.sort==="rating"?'selected':'')+'>Highest rated</option><option value="delivery" '+(state.sort==="delivery"?'selected':'')+'>Fastest delivery</option><option value="fee" '+(state.sort==="fee"?'selected':'')+'>Lowest delivery fee</option></select></div><div><p class="card-title">Dietary filter</p><div class="segmented three" style="margin-top:10px"><button class="segment '+(state.diet==="all"?'active':'')+'" data-action="diet" data-value="all">All</button><button class="segment '+(state.diet==="veg"?'active':'')+'" data-action="diet" data-value="veg">Veg</button><button class="segment '+(state.diet==="nonveg"?'active':'')+'" data-action="diet" data-value="nonveg">Non-veg</button></div></div><button class="button primary full" data-action="apply-filters">Show '+restaurantsFiltered().length+' restaurants</button></div>');
+    return sheetShell("Filters and sorting","Choose what matters for this search.",'<div class="stack-lg"><div class="field"><label for="sort-select">Sort restaurants by</label><select id="sort-select" class="select"><option value="recommended" '+(state.sort==="recommended"?'selected':'')+'>Recommended near me</option><option value="offers" '+(state.sort==="offers"?'selected':'')+'>Best offers first</option><option value="nearby" '+(state.sort==="nearby"?'selected':'')+'>Nearest first</option><option value="rating" '+(state.sort==="rating"?'selected':'')+'>Highest rated</option><option value="delivery" '+(state.sort==="delivery"?'selected':'')+'>Fastest delivery</option><option value="fee" '+(state.sort==="fee"?'selected':'')+'>Lowest delivery fee</option></select></div><div><p class="card-title">Dietary filter</p><div class="segmented three" style="margin-top:10px"><button class="segment '+(state.diet==="all"?'active':'')+'" data-action="diet" data-value="all">All</button><button class="segment '+(state.diet==="veg"?'active':'')+'" data-action="diet" data-value="veg">Veg</button><button class="segment '+(state.diet==="nonveg"?'active':'')+'" data-action="diet" data-value="nonveg">Non-veg</button></div></div><button class="button primary full" data-action="apply-filters">Show '+restaurantsFiltered().length+' restaurants</button></div>');
   }
   function menuFilterSheet(){
     return sheetShell("Menu filters","Filter dishes by price and sort the menu.",'<div class="stack-lg"><div class="field"><label for="menu-sort-select">Sort dishes by</label><select id="menu-sort-select" class="select"><option value="recommended" '+(state.menuSort==="recommended"?'selected':'')+'>Recommended</option><option value="rating" '+(state.menuSort==="rating"?'selected':'')+'>Popular first</option><option value="priceLow" '+(state.menuSort==="priceLow"?'selected':'')+'>Price: low to high</option><option value="priceHigh" '+(state.menuSort==="priceHigh"?'selected':'')+'>Price: high to low</option></select></div><div><p class="card-title">Price</p><div class="chip-row" style="margin-top:10px"><button class="chip '+(state.menuPrice==="all"?'active':'')+'" data-action="menu-price" data-value="all">Any price</button><button class="chip '+(state.menuPrice==="under150"?'active':'')+'" data-action="menu-price" data-value="under150">Under ₹150</button><button class="chip '+(state.menuPrice==="under250"?'active':'')+'" data-action="menu-price" data-value="under250">Under ₹250</button><button class="chip '+(state.menuPrice==="above250"?'active':'')+'" data-action="menu-price" data-value="above250">Above ₹250</button></div></div><button class="button primary full" data-action="apply-menu-filters">Apply menu filters</button></div>');
@@ -3993,6 +5029,17 @@
     else if(sheet.type==="deletion")html=deletionSheet();
     else if(sheet.type==="signout")html=signoutSheet();
     else if(sheet.type==="payment")html=paymentInfoSheet();
+    else if(sheet.type==="bill")html=billSheet();
+    else if(sheet.type==="pay")html=paySheet();
+    else if(sheet.type==="orderBill")html=orderBillSheet(sheet);
+    else if(sheet.type==="wheel")html=wheelSheet();
+    else if(sheet.type==="story")html=foodStorySheet();
+    else if(sheet.type==="wrapped")html=wrappedSheet();
+    else if(sheet.type==="squad")html=squadSheet();
+    else if(sheet.type==="squadJoin")html=squadJoinSheet();
+    else if(sheet.type==="squadStart")html=squadStartSheet();
+    else if(sheet.type==="dineBook")html=dineBookSheet(sheet);
+    else if(sheet.type==="tableRound")html=tableRoundSheet();
     sheetRegion.innerHTML=html;
     if(html)requestAnimationFrame(()=>{const focus=sheetRegion.querySelector("input,select,textarea,button");if(focus)focus.focus({preventScroll:true});});
   }
@@ -4007,6 +5054,11 @@
     if(deliveryOtp)state.deliveryOtps[orderId]=deliveryOtp;
     state.cart=[];state.coupon=null;state.tip=0;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
     toast(recovered?"Your existing order was restored safely.":"Order placed successfully.","success");go("order",{orderId:orderId});
+    if(!recovered)orderPlacedMoment(saved);
+    const squad=state.squad;
+    if(squad&&squadIsHost()&&state.squadShares&&state.squadShares.code===squad.code&&saved.restaurantId===squad.data.restaurantId){
+      setTimeout(()=>{if(state.route==="order")setSheet({type:"squad"});},2700);
+    }
   }
 
   function orderIdempotencyKey(){
@@ -4069,7 +5121,8 @@
       couponCode:String(eligibleCoupon()&&state.coupon.code||"").trim().toUpperCase(),tip:Number(state.tip||0),
       deliveryMode:"asap",instructions:String(state.checkout.instructions||"").slice(0,500),contactless:state.checkout.contactless===true,
       paymentMethod:String(state.checkout.payment||"cod"),useWallet:state.useWallet===true&&walletBalance()>0,
-      ...(isOnlinePaymentMethod(state.checkout.payment)?{paymentProvider:paymentMethodProvider(state.checkout.payment)}:{})
+      ...(isOnlinePaymentMethod(state.checkout.payment)?{paymentProvider:paymentMethodProvider(state.checkout.payment)}:{}),
+      ...(squadCodeForCheckout(r.id)?{squadCode:squadCodeForCheckout(r.id)}:{})
     };
     try{
       await ensureSession();
@@ -4210,7 +5263,7 @@
   async function applyReferral(form){const code=String(new FormData(form).get("code")||"").trim();if(!code)return;try{const res=await nativeInvoke("applyCustomerReferral",{code,installId:installId()},{timeoutMs:15000});toast(res&&res.status==="review"?"Code linked. Scraveit will check it before rewarding.":"Code linked. Your reward arrives after your first delivered order.","success");await loadWallet(true)}catch(e){toast(friendlyError(e),"danger")}}
   function shareReferral(){const ref=state.walletData&&state.walletData.referral;if(!ref)return;const text=ref.shareText;if(navigator.share){navigator.share({text}).catch(()=>{});return}try{navigator.clipboard.writeText(text);toast("Invite copied. Paste it in any chat.","success")}catch(_){toast(text,"info")}}
   Object.assign(SCREENS, {
-    launch:screenLaunch, welcome:screenWelcome, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
+    launch:screenLaunch, welcome:screenWelcome, table:screenTable, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
@@ -4252,10 +5305,43 @@
   async function handleActionClick(event){
     const control=event.target.closest("[data-action]");if(!control)return;
     const action=control.dataset.action;
+    if(action==="open-ad"&&Date.now()<adSwipeSuppressUntil)return;
     if(action==="close-sheet"){
       if(control.classList.contains("sheet-backdrop")&&event.target.closest("[data-sheet-surface]"))return;
       closeSheet();return;
     }
+    if(action==="open-bill"){setSheet({type:"bill"});return;}
+    if(action==="mascot-tap"){mascotTap();return;}
+    if(action==="open-wheel"){openWheel();return;}
+    if(action==="spin-wheel"){spinWheel();return;}
+    if(action==="home-mood"){const v=control.dataset.value||"";state.homeMood=activeMood()===v?"off":v;haptic(8);render({preserveScroll:true});return;}
+    if(action==="open-food-story"){setSheet({type:"story"});return;}
+    if(action==="open-wrapped"){openWrapped();return;}
+    if(action==="share-wrapped"){shareWrapped();return;}
+    if(action==="start-squad"){startSquad(control.dataset.restaurantId);return;}
+    if(action==="open-squad"){setSheet({type:"squad"});return;}
+    if(action==="open-squad-join"){setSheet({type:"squadJoin"});return;}
+    if(action==="open-squad-start"){setSheet({type:"squadStart"});return;}
+    if(action==="home-mode"||action==="home-mode-delivery"){state.homeMode=action==="home-mode-delivery"?"delivery":(control.dataset.value==="dinein"?"dinein":"delivery");try{localStorage.setItem(HOME_MODE_KEY,state.homeMode)}catch(_){}haptic(10);if(state.route!=="home")go("home");else render({preserveScroll:true});return;}
+    if(action==="dine-book"){state.dineBook=null;setSheet({type:"dineBook",restaurantId:control.dataset.restaurantId});return;}
+    if(action==="dine-day"){state.dineBook.day=control.dataset.value;state.dineBook.slotAt=0;renderSheet();return;}
+    if(action==="dine-slot"){state.dineBook.slotAt=Number(control.dataset.value);haptic(8);renderSheet();return;}
+    if(action==="dine-party"){const r=restaurant(state.sheet&&state.sheet.restaurantId),st=dineSettings(r),n=state.dineBook.party+Number(control.dataset.value||0);state.dineBook.note=(document.getElementById("dine-note")||{}).value||state.dineBook.note;state.dineBook.party=Math.max(1,Math.min(st?st.maxParty:10,n));renderSheet();return;}
+    if(action==="dine-confirm"){confirmDineBooking(state.sheet&&state.sheet.restaurantId);return;}
+    if(action==="dine-cancel"){cancelDineBooking(control.dataset.bookingId);return;}
+    if(action==="scan-table"){scanTable();return;}
+    if(action==="table-round"){setSheet({type:"tableRound"});return;}
+    if(action==="send-round"){sendTableRound();return;}
+    if(action==="table-request"){tableRequestAction(control.dataset.value==="bill"?"bill":"waiter");return;}
+    if(action==="leave-table"){if(window.confirm("Leave this table on your phone? Your food stays on the table’s bill."))leaveTable(false);return;}
+    if(action==="squad-join"){const input=document.getElementById("squad-code-input");joinSquad(input&&input.value);return;}
+    if(action==="share-squad"){shareSquad();return;}
+    if(action==="squad-put-cart"){putCartInSquad(false);return;}
+    if(action==="squad-take-back"){takeBackPicks();return;}
+    if(action==="squad-checkout"){squadCheckout();return;}
+    if(action==="leave-squad"){leaveSquad(false);return;}
+    if(action==="open-pay-sheet"){setSheet({type:"pay"});return;}
+    if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}
     if(action==="home-kind"){state.homeKind=control.dataset.value||"restaurant";if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
     if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
@@ -4264,6 +5350,8 @@
     if(action==="back"){goBack();return;}
     if(action==="tracking-zoom"){trackingZoomBy(Number(control.dataset.delta||0));return;}
     if(action==="tracking-recenter"){trackingRecenter();return;}
+    if(action==="tracking-camera-mode"){const ms=state.trackingMap;if(ms){ms.mode=ms.mode==="north"?"follow":"north";ms.userPanned=false;ms.tileKey="";
+      try{localStorage.setItem(TRACKING_CAMERA_KEY,ms.mode);}catch(_){}render({preserveScroll:true});}return;}
     if(action==="tracking-expand-map"){expandTrackingMap();return;}
     if(action==="tracking-collapse-map"){collapseTrackingMap();return;}
     if(action==="tracking-ad-dot"){
@@ -4333,6 +5421,8 @@
     if(action==="clear-unavailable-cart"){state.cart=[];state.coupon=null;state.tip=0;persistCart();toast("Unavailable cart removed.","success");go("home");return;}
     if(action==="cart-quantity"){updateCart(control.dataset.key,Number(control.dataset.delta||0));return;}
     if(action==="go-checkout"){if(!state.cart.length)return;go("checkout");refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});return;}
+    if(action==="apply-offer-code"){const code=control.dataset.code,rid=control.dataset.restaurantId;state.pendingCoupon={code,restaurantId:rid};if(state.cart.length&&state.cart[0].restaurantId===rid)refreshAutoOffer();toast(code+" will be applied in your cart.","success");render({preserveScroll:true});return;}
+    if(action==="offers-sort"){state.sort="offers";state.homeFilter="offers";go("search");return;}
     if(action==="apply-coupon"){
       const code=String((document.getElementById("coupon-input")||{}).value||"").trim().toUpperCase();const promo=state.promotions.find(p=>String(p.code||"").toUpperCase()===code&&p.active===true);
       if(!promo){state.coupon=null;toast("That code is not an active Scraveit offer.","danger");render({preserveScroll:true});return;}
@@ -4369,7 +5459,7 @@
     }
     if(action==="delivery-mode"){if(control.dataset.value==="scheduled"){toast("Scheduling activates with the production dispatch backend.");return;}state.checkout.deliveryMode="asap";render({preserveScroll:true});return;}
     if(action==="toggle-contactless"){state.checkout.contactless=!state.checkout.contactless;render({preserveScroll:true});return;}
-    if(action==="select-payment"){const value=String(control.dataset.value||"cod");if(!paymentMethodEnabled(value)){toast(paymentMethodCopy(value),"warning");return;}state.checkout.payment=value;render({preserveScroll:true});return;}
+    if(action==="select-payment"){const value=String(control.dataset.value||"cod");if(!paymentMethodEnabled(value)){toast(paymentMethodCopy(value),"warning");return;}state.checkout.payment=value;if(state.sheet&&state.sheet.type==="pay")state.sheet=null;render({preserveScroll:true});return;}
     if(action==="place-order"){submitOrder();return;}
     if(action==="open-order"){go("order",{orderId:control.dataset.orderId});return;}if(action==="open-order-chat"){const o=state.orders.find(x=>x.id===control.dataset.orderId);if(o)openOrderChat(o,control.dataset.channel,control.dataset.channel==="customerRider"?"Chat with delivery partner":"Chat with restaurant");return;}
     if(action==="pay-order"){const o=orderById(control.dataset.orderId);if(o)startOnlinePayment(o);return;}
@@ -4419,6 +5509,32 @@
   }
   app.addEventListener("click",handleActionClick);
   sheetRegion.addEventListener("click",handleActionClick);
+  // Pull a bottom sheet down to close it: from the handle area, or anywhere
+  // once its content is scrolled to the top.
+  (function sheetSwipe(){
+    let drag=null;
+    sheetRegion.addEventListener("touchstart",event=>{
+      const sheet=event.target.closest&&event.target.closest(".sheet");if(!sheet||event.touches.length!==1)return;
+      if(event.target.closest("input,textarea,select,.wheel-wrap,.mood-picks,.chip-row"))return;
+      const top=sheet.getBoundingClientRect().top,y=event.touches[0].clientY;
+      if(sheet.scrollTop>0&&y-top>56)return;
+      drag={sheet,startY:y,startT:Date.now(),dy:0,active:false};
+    },{passive:true});
+    sheetRegion.addEventListener("touchmove",event=>{
+      if(!drag)return;const dy=event.touches[0].clientY-drag.startY;
+      if(!drag.active){if(dy<-4){drag=null;return;}if(dy<8)return;drag.active=true;drag.sheet.style.transition="none";drag.sheet.style.animation="none";}
+      drag.dy=Math.max(0,dy);drag.sheet.style.transform="translateY("+drag.dy+"px)";
+      const back=drag.sheet.closest(".sheet-backdrop");if(back)back.style.background="rgba(3,12,24,"+(0.56*Math.max(0,1-drag.dy/400)).toFixed(3)+")";
+      if(event.cancelable)event.preventDefault();
+    },{passive:false});
+    const end=()=>{
+      if(!drag)return;const d=drag;drag=null;if(!d.active)return;
+      const fast=d.dy>40&&(d.dy/Math.max(1,Date.now()-d.startT))>0.6;
+      if(d.dy>Math.min(140,d.sheet.offsetHeight*0.25)||fast){d.sheet.style.transition="transform .18s ease";d.sheet.style.transform="translateY(100%)";setTimeout(closeSheet,170);}
+      else{d.sheet.style.transition="transform .2s ease";d.sheet.style.transform="";const back=d.sheet.closest(".sheet-backdrop");if(back)back.style.background="";}
+    };
+    sheetRegion.addEventListener("touchend",end);sheetRegion.addEventListener("touchcancel",end);
+  })();
   // Bound to #app rather than the map itself: every render replaces the map's
   // DOM, but #app survives, so these stay attached for the life of the session.
   // Safety net for the live map. The realtime stream is the primary source, but
@@ -4441,6 +5557,12 @@
     if(document.visibilityState==="visible"&&liveOrderRoute())pollTrackingFallback();
   });
   app.addEventListener("pointerdown",trackingMapPointerDown);
+  app.addEventListener("pointerdown",adSwipeStart);
+  window.addEventListener("pointermove",adSwipeMove,{passive:true});
+  window.addEventListener("pointerup",adSwipeEnd);
+  window.addEventListener("pointercancel",adSwipeEnd);
+  app.addEventListener("scroll",event=>{if(event.target&&event.target.classList&&event.target.classList.contains("ad-rail-track")){adRailTouchedAt=Date.now();syncAdRailDots(event.target);}},true);
+  app.addEventListener("touchstart",event=>{if(event.target.closest&&event.target.closest(".ad-rail-track"))adRailTouchedAt=Date.now();},{passive:true});
   document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
   document.addEventListener("pointerup",trackingMapPointerUp);
   document.addEventListener("pointercancel",trackingMapPointerUp);

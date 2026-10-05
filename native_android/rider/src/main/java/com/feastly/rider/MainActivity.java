@@ -24,7 +24,17 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.animation.DecelerateInterpolator;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.util.Base64;
 import android.webkit.JavascriptInterface;
+import com.google.mlkit.vision.barcode.BarcodeScanner;
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions;
+import com.google.mlkit.vision.barcode.BarcodeScanning;
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
+import com.google.mlkit.vision.common.InputImage;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -220,7 +230,7 @@ public class MainActivity extends ComponentActivity {
         splash.addView(logo, logoParams);
 
         TextView brand = new TextView(this);
-        brand.setText("SCRAVEIT  PARTNER");
+        brand.setText("PARTNER");
         brand.setTextColor(Color.rgb(185, 224, 255));
         brand.setTextSize(17);
         brand.setGravity(Gravity.CENTER);
@@ -342,7 +352,24 @@ public class MainActivity extends ComponentActivity {
                 || name.endsWith(".json") || name.endsWith(".svg") ? "UTF-8" : null;
     }
 
+    /** Matches the system bars to the page: white with dark icons in light mode, navy in dark. */
+    @SuppressWarnings("deprecation")
+    private void applyAppearance(boolean dark) {
+        int color = dark ? CANVAS : Color.WHITE;
+        getWindow().setStatusBarColor(color);
+        getWindow().setNavigationBarColor(color);
+        View decor = getWindow().getDecorView();
+        int flags = decor.getSystemUiVisibility();
+        int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0);
+        decor.setSystemUiVisibility(dark ? (flags & ~light) : (flags | light));
+        if (webView != null) webView.setBackgroundColor(color);
+    }
+
     private class RiderBridge {
+        @JavascriptInterface public void setAppearance(final boolean dark) {
+            runOnUiThread(() -> { if (isTrustedPageLoaded()) applyAppearance(dark); });
+        }
         @JavascriptInterface public void signInWithGoogle() {
             runOnUiThread(() -> {
                 if (!isTrustedPageLoaded()) return;
@@ -358,6 +385,53 @@ public class MainActivity extends ComponentActivity {
         @JavascriptInterface public void requestLocationAccess() {
             runOnUiThread(() -> {
                 if (isTrustedPageLoaded()) requestLocationAccessInternal();
+            });
+        }
+
+        /** Scan the Secure QR on the rider's Aadhaar with Google's scanner (no camera permission needed). */
+        @JavascriptInterface public void scanAadhaarQr() {
+            runOnUiThread(() -> {
+                if (!isTrustedPageLoaded()) return;
+                GmsBarcodeScannerOptions options = new GmsBarcodeScannerOptions.Builder()
+                        .setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build();
+                GmsBarcodeScanning.getClient(MainActivity.this, options).startScan()
+                        .addOnSuccessListener(barcode -> publishAadhaarQr(barcode.getRawValue(), ""))
+                        .addOnCanceledListener(() -> publishAadhaarQr("", "cancelled"))
+                        .addOnFailureListener(error -> publishAadhaarQr("", "The scanner couldn’t start. Upload a photo or screenshot of the QR instead."));
+            });
+        }
+
+        /** Read the Secure QR from a photo or e-Aadhaar screenshot the rider picked. */
+        @JavascriptInterface public void readAadhaarQrFromImage(String base64Image) {
+            runOnUiThread(() -> {
+                if (!isTrustedPageLoaded()) return;
+                try {
+                    if (base64Image == null || base64Image.length() > 14_000_000) { publishAadhaarQr("", "That image is too large."); return; }
+                    byte[] bytes = Base64.decode(base64Image, Base64.DEFAULT);
+                    BitmapFactory.Options bounds = new BitmapFactory.Options();
+                    bounds.inJustDecodeBounds = true;
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+                    int sample = 1;
+                    while (Math.max(bounds.outWidth, bounds.outHeight) / sample > 3000) sample *= 2;
+                    BitmapFactory.Options decode = new BitmapFactory.Options();
+                    decode.inSampleSize = sample;
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, decode);
+                    if (bitmap == null) { publishAadhaarQr("", "That file isn’t a picture we can read."); return; }
+                    BarcodeScanner scanner = BarcodeScanning.getClient(new BarcodeScannerOptions.Builder()
+                            .setBarcodeFormats(Barcode.FORMAT_QR_CODE).build());
+                    scanner.process(InputImage.fromBitmap(bitmap, 0))
+                            .addOnSuccessListener(codes -> {
+                                String best = "";
+                                for (Barcode code : codes) {
+                                    String raw = code.getRawValue();
+                                    if (raw != null && raw.length() > best.length()) best = raw;
+                                }
+                                publishAadhaarQr(best, best.isEmpty() ? "No QR code found in that picture. Crop closer to the QR and try again." : "");
+                            })
+                            .addOnFailureListener(error -> publishAadhaarQr("", "The QR couldn’t be read. Try a clearer picture."));
+                } catch (Throwable error) {
+                    publishAadhaarQr("", "The QR couldn’t be read. Try a clearer picture.");
+                }
             });
         }
 
@@ -466,6 +540,17 @@ public class MainActivity extends ComponentActivity {
                 startService(service);
             });
         }
+    }
+
+    private void publishAadhaarQr(String raw, String error) {
+        JSONObject result = new JSONObject();
+        try {
+            String value = raw == null ? "" : raw.trim();
+            result.put("raw", value.length() > 12_000 ? "" : value);
+            result.put("error", error == null ? "" : error);
+        } catch (Exception ignored) { }
+        if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(
+                "window.aadhaarQrRead&&window.aadhaarQrRead(" + result.toString() + ")", null);
     }
 
     private void publishGoogleToken(String token) {

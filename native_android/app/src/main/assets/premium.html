@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#F6F9FD">
+  <meta name="theme-color" content="#FFFFFF">
   <meta name="color-scheme" content="light dark">
   <!-- RTDB origin stays: tracking/{orderId} (live rider GPS during delivery)
        is still RTDB-authoritative until the rider app's presence-write path
        itself moves (a later phase) - only everything else here moved to
        Firestore. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com https://router.project-osrm.org; img-src 'self' data: https://tile.openstreetmap.org https://firebasestorage.googleapis.com https://savrivo-image-cdn.tirumurunbalu.workers.dev; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com https://router.project-osrm.org https://asia-south1-savrivo-app.cloudfunctions.net; img-src 'self' data: https://savrivo-app.web.app https://tile.openstreetmap.org https://firebasestorage.googleapis.com https://savrivo-image-cdn.tirumurunbalu.workers.dev; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Scraveit</title>
   <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="premium.css">
@@ -30,6 +30,10 @@
   <script src="firebase-app-compat.js"></script>
   <script src="firebase-auth-compat.js"></script>
   <script src="firebase-firestore-compat.js"></script>
+  <script src="three.min.js"></script>
+  <script src="avatars.js"></script>
+  <script src="rider3d.js"></script>
+  <script src="scraveit-offer-math.js"></script>
   <script src="premium.js"></script>
 </body>
 </html>

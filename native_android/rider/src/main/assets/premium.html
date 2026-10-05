@@ -8,7 +8,7 @@
   <!-- RTDB origin stays: riderPresence (live GPS heartbeats) is still
        RTDB-authoritative until the client presence-write path itself moves
        (a later phase) - only everything else here moved to Firestore. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com; img-src 'self' data: https://tile.openstreetmap.org https://firebasestorage.googleapis.com; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com; img-src 'self' data: https://savrivo-app.web.app https://tile.openstreetmap.org https://firebasestorage.googleapis.com; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Scraveit Partner</title>
   <link rel="stylesheet" href="premium.css">
 </head>
@@ -21,6 +21,8 @@
   <script src="firebase-app-compat.js"></script>
   <script src="firebase-auth-compat.js"></script>
   <script src="firebase-firestore-compat.js"></script>
+  <script src="three.min.js"></script>
+  <script src="avatars.js"></script>
   <script src="premium.js"></script>
 </body>
 </html>

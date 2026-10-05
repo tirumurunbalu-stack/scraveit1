@@ -24,8 +24,8 @@ android {
         applicationId "com.feastly.app"
         minSdk 24
         targetSdk 36
-        versionCode 84
-        versionName "3.10.0"
+        versionCode 107
+        versionName "3.21.0"
         manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
         buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
     }
@@ -43,6 +43,10 @@ android {
             shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), rootProject.file("proguard-rules.pro")
         }
+    }
+
+    sourceSets {
+        main.assets.srcDir rootProject.file("shared/web")
     }
 
     compileOptions {
@@ -69,6 +73,7 @@ dependencies {
     implementation "androidx.credentials:credentials-play-services-auth:1.6.0"
     implementation "com.google.android.libraries.identity.googleid:googleid:1.2.0"
     implementation "com.google.android.gms:play-services-maps:20.0.0"
+    implementation "com.google.android.gms:play-services-code-scanner:16.1.0"
 
     implementation platform("com.google.firebase:firebase-bom:34.18.0")
     implementation "com.google.firebase:firebase-messaging"

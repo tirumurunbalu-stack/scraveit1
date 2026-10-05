@@ -25,6 +25,14 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.util.Log;
 
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.GoogleApiAvailability;
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.Priority;
 import com.google.firebase.FirebaseApp;
 import com.savrivo.firebase.SavrivoFirebase;
 
@@ -59,6 +67,12 @@ public class TrackingService extends Service implements LocationListener {
     private static final String SESSION_PREFS = "savrivo_partner_tracking_session";
     private static final String SESSION_KEY_ALIAS = "savrivo_partner_tracking_key_v1";
     private static final long HEARTBEAT_INTERVAL_MS = 5_000L;
+    // Online status feeds dispatch (fresh for 90 s) and online-hours incentives
+    // (90 s timeout); every 15 s is plenty and cuts server work by most of it.
+    private static final long PRESENCE_INTERVAL_MS = 15_000L;
+    // Only the last stretch to the door is sent to the server's arrival check,
+    // so it runs for the final minutes of a delivery instead of the whole ride.
+    private static final float PROXIMITY_SEND_METERS = 1_200f;
     private static final long JOB_CHECK_INTERVAL_MS = 30_000L;
     private static final long MAX_LIVE_FIX_AGE_MS = 60_000L;
     private static final long MAX_LAST_KNOWN_AGE_MS = 45_000L;
@@ -108,6 +122,16 @@ public class TrackingService extends Service implements LocationListener {
     private long lastUploadAt;
     private long lastAcceptedElapsedNanos;
     private long lastHeartbeatAt;
+    private long lastPresenceAt;
+    // Google's fused location (GPS + Wi-Fi + cell + motion sensors): faster first
+    // fix indoors and less battery. Falls back to the plain providers without Play services.
+    private FusedLocationProviderClient fusedClient;
+    private final LocationCallback fusedCallback = new LocationCallback() {
+        @Override public void onLocationResult(LocationResult result) {
+            if (result == null) return;
+            for (Location location : result.getLocations()) handleLocation(location, false);
+        }
+    };
     private long lastJobCheckAt;
     private long authFailureAt;
     private int missingJobChecks;
@@ -382,7 +406,7 @@ public class TrackingService extends Service implements LocationListener {
             return;
         }
         if (locationManager != null) {
-            try { locationManager.removeUpdates(this); } catch (Exception ignored) { }
+            try { stopLocationUpdates(); } catch (Exception ignored) { }
         }
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         if (locationManager == null) {
@@ -400,8 +424,32 @@ public class TrackingService extends Service implements LocationListener {
         }
     }
 
+    private void stopLocationUpdates() {
+        if (fusedClient != null) {
+            try { fusedClient.removeLocationUpdates(fusedCallback); } catch (Exception ignored) { }
+        }
+        if (locationManager != null) {
+            try { locationManager.removeUpdates(this); } catch (Exception ignored) { }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private void requestUpdatesAtActiveInterval() {
+        if (fusedClient == null) {
+            try {
+                if (GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS) {
+                    fusedClient = LocationServices.getFusedLocationProviderClient(this);
+                }
+            } catch (Exception ignored) { fusedClient = null; }
+        }
+        if (fusedClient != null) {
+            LocationRequest request = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, activeLocationIntervalMs)
+                    .setMinUpdateIntervalMillis(Math.max(1_000L, activeLocationIntervalMs / 2))
+                    .setWaitForAccurateLocation(false)
+                    .build();
+            fusedClient.requestLocationUpdates(request, fusedCallback, Looper.getMainLooper());
+            return;
+        }
         if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
             locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, activeLocationIntervalMs, 0, this);
         if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
@@ -431,7 +479,7 @@ public class TrackingService extends Service implements LocationListener {
             if (locationManager == null || stopping || targetIntervalMs == activeLocationIntervalMs) return;
             activeLocationIntervalMs = targetIntervalMs;
             try {
-                locationManager.removeUpdates(this);
+                stopLocationUpdates();
                 requestUpdatesAtActiveInterval();
             } catch (Exception ignored) { }
         });
@@ -518,23 +566,31 @@ public class TrackingService extends Service implements LocationListener {
                     latitude, longitude, accuracy, bearing, timestamp, json(phase));
             boolean trackingWritten = writePatch("/feastly/tracking/" + orderId, payload);
             int trackingResponse = lastWriteResponseCode;
+            if (trackingWritten && "delivery".equals(phase) && !Double.isNaN(customerLat) && !Double.isNaN(customerLng)) {
+                float[] toDoor = new float[1];
+                Location.distanceBetween(latitude, longitude, customerLat, customerLng, toDoor);
+                if (toDoor[0] <= PROXIMITY_SEND_METERS) writePatch("/feastly/trackingProximity/" + orderId, payload);
+            }
             if (trackingWritten) deniedTrackingWrites = 0;
             else if (trackingResponse == HttpURLConnection.HTTP_FORBIDDEN) {
                 deniedTrackingWrites++;
                 if (deniedTrackingWrites >= 2) requestStop("assignment_terminal");
             }
         }
-        if (!stopping) publishPresence(timestamp, latitude, longitude, accuracy);
+        if (!stopping && timestamp - lastPresenceAt >= PRESENCE_INTERVAL_MS) {
+            if (publishPresence(timestamp, latitude, longitude, accuracy)) lastPresenceAt = timestamp;
+        }
         lastHeartbeatAt = timestamp;
     }
 
     private void heartbeatAndVerify(long timestamp) {
         if (stopping || riderId.length() == 0) return;
-        if (timestamp - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS - 1_000L) {
+        if (timestamp - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS - 1_000L
+                && timestamp - lastPresenceAt >= PRESENCE_INTERVAL_MS - 1_000L) {
             double latitude = lastLocation == null ? Double.NaN : lastLocation.getLatitude();
             double longitude = lastLocation == null ? Double.NaN : lastLocation.getLongitude();
             float accuracy = lastLocation == null ? Float.NaN : lastLocation.getAccuracy();
-            publishPresence(timestamp, latitude, longitude, accuracy);
+            if (publishPresence(timestamp, latitude, longitude, accuracy)) lastPresenceAt = timestamp;
             lastHeartbeatAt = timestamp;
         }
         if (!availabilityOnly && orderId.length() > 0
@@ -563,18 +619,19 @@ public class TrackingService extends Service implements LocationListener {
     }
 
     private void verifyActiveJob() {
-        ReadResult result = readValue("/feastly/riderJobs/" + riderId + "/" + orderId);
+        ReadResult result = readJobDocument();
+        if (result.code == HttpURLConnection.HTTP_NOT_FOUND) {
+            missingJobChecks++;
+            if (missingJobChecks >= 2) requestStop("assignment_removed");
+            return;
+        }
         if (result.code < 200 || result.code >= 300) return;
         try {
-            if (result.body == null || "null".equals(result.body.trim())) {
-                missingJobChecks++;
-                if (missingJobChecks >= 2) requestStop("assignment_removed");
-                return;
-            }
-            JSONObject pointer = new JSONObject(result.body);
-            String status = pointer.optString("status", "");
-            String orderStatus = pointer.optString("orderStatus", "");
-            String customer = pointer.optString("customerId", "");
+            JSONObject fields = new JSONObject(result.body).optJSONObject("fields");
+            if (fields == null) fields = new JSONObject();
+            String status = firestoreString(fields, "status");
+            String orderStatus = firestoreString(fields, "orderStatus");
+            String customer = firestoreString(fields, "customerId");
             if (!customerId.equals(customer) || "completed".equals(status) || "cancelled".equals(status)
                     || "Delivered".equals(orderStatus) || "Cancelled".equals(orderStatus)) {
                 requestStop("assignment_terminal");
@@ -586,7 +643,7 @@ public class TrackingService extends Service implements LocationListener {
                 lastProximityStatus = "Near you";
             }
             applyLocationUpdateRate();
-            String serverPhase = pointer.optString("phase", "");
+            String serverPhase = firestoreString(fields, "phase");
             String nextPhase = ("delivery".equals(serverPhase) || "arrived".equals(serverPhase))
                     ? "delivery" : "pickup";
             if (!phase.equals(nextPhase)) {
@@ -707,18 +764,17 @@ public class TrackingService extends Service implements LocationListener {
         }
     }
 
-    private ReadResult readValue(String path) {
+    private static String firestoreString(JSONObject fields, String key) {
+        JSONObject value = fields.optJSONObject(key);
+        return value == null ? "" : value.optString("stringValue", "");
+    }
+
+    /** The rider's job card, read from Firestore with the rider's own sign-in. */
+    private ReadResult readJobDocument() {
         ReadResult result = new ReadResult(-1, "");
         for (int attempt = 0; attempt < 3 && !stopping; attempt++) {
-            result = sendGet(path);
-            if (result.code >= 200 && result.code < 300) {
-                consecutiveSyncFailures = 0;
-                if (syncFailureReported) {
-                    syncFailureReported = false;
-                    publishState("active", "Live delivery tracking recovered.");
-                }
-                return result;
-            }
+            result = sendFirestoreGet("riderJobs/" + riderId + "_" + orderId);
+            if ((result.code >= 200 && result.code < 300) || result.code == HttpURLConnection.HTTP_NOT_FOUND) return result;
             if (result.code == HttpURLConnection.HTTP_UNAUTHORIZED) {
                 if (refreshIdToken()) continue;
                 handleAuthenticationFailure();
@@ -727,29 +783,20 @@ public class TrackingService extends Service implements LocationListener {
             if (!transientResponse(result.code) || attempt == 2) break;
             backoff(attempt);
         }
-        if (result.code == HttpURLConnection.HTTP_FORBIDDEN) {
-            consecutiveSyncFailures = 0;
-            syncFailureReported = true;
-            publishState("sync_error", "The active assignment can no longer be read.");
-            return result;
-        }
-        consecutiveSyncFailures++;
-        if (consecutiveSyncFailures >= 2) {
-            syncFailureReported = true;
-            publishState("sync_error", "The active assignment could not be verified. Tracking will retry.");
-        }
         return result;
     }
 
-    private ReadResult sendGet(String path) {
+    private ReadResult sendFirestoreGet(String documentPath) {
         HttpURLConnection connection = null;
         try {
-            String databaseRoot = firebaseDatabaseRoot();
-            if (databaseRoot.length() == 0) return new ReadResult(-1, "");
-            String endpoint = databaseRoot + path + ".json?auth="
-                    + java.net.URLEncoder.encode(token, "UTF-8");
+            FirebaseApp firebaseApp = SavrivoFirebase.ensureInitialized(this);
+            String projectId = firebaseApp == null ? "" : safe(firebaseApp.getOptions().getProjectId());
+            if (projectId.length() == 0 || !safeFirebaseKey(riderId) || !safeFirebaseKey(orderId)) return new ReadResult(-1, "");
+            String endpoint = "https://firestore.googleapis.com/v1/projects/" + projectId
+                    + "/databases/(default)/documents/" + documentPath;
             connection = (HttpURLConnection) new URL(endpoint).openConnection();
             connection.setRequestMethod("GET");
+            connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.setConnectTimeout(9000);
             connection.setReadTimeout(9000);
             int code = connection.getResponseCode();
@@ -935,7 +982,7 @@ public class TrackingService extends Service implements LocationListener {
         stopping = true;
         mainHandler.removeCallbacks(heartbeatTask);
         if (locationManager != null) {
-            try { locationManager.removeUpdates(this); } catch (Exception ignored) { }
+            try { stopLocationUpdates(); } catch (Exception ignored) { }
         }
         final String safeReason = reason.length() == 0 ? "stopped" : reason;
         if ("location_off".equals(safeReason)) {
@@ -959,13 +1006,18 @@ public class TrackingService extends Service implements LocationListener {
         appendPatch(changes, "riderPresence/" + riderId + "/updatedAt", String.valueOf(timestamp));
         appendPatch(changes, "riderPresence/" + riderId + "/city", "\"" + json(riderCity) + "\"");
         appendPatch(changes, "riderPresence/" + riderId + "/activeOrderId", "\"\"");
-        if (offline && !availabilityOnly && orderId.length() > 0) {
-            appendPatch(changes, "tracking/" + orderId + "/status",
-                    "\"" + ("location_off".equals(reason) ? "location_off" : "stopped") + "\"");
-            appendPatch(changes, "tracking/" + orderId + "/updatedAt", String.valueOf(timestamp));
-        }
         changes.append('}');
         writePatch("/feastly", changes.toString());
+        // Sent on its own: once a delivery has ended the server withdraws this
+        // rider's right to write the order's location, and a refusal there must
+        // never also block the offline status above.
+        if (offline && !availabilityOnly && orderId.length() > 0) {
+            StringBuilder trackingChanges = new StringBuilder("{");
+            appendPatch(trackingChanges, "status", "\"" + ("location_off".equals(reason) ? "location_off" : "stopped") + "\"");
+            appendPatch(trackingChanges, "updatedAt", String.valueOf(timestamp));
+            trackingChanges.append('}');
+            writePatch("/feastly/tracking/" + orderId, trackingChanges.toString());
+        }
     }
 
     private void finishStop(String reason) {
@@ -1011,7 +1063,7 @@ public class TrackingService extends Service implements LocationListener {
         stopping = true;
         mainHandler.removeCallbacks(heartbeatTask);
         if (locationManager != null) {
-            try { locationManager.removeUpdates(this); } catch (Exception ignored) { }
+            try { stopLocationUpdates(); } catch (Exception ignored) { }
         }
         clearPersistedSession();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
@@ -1023,7 +1075,7 @@ public class TrackingService extends Service implements LocationListener {
     @Override public void onDestroy() {
         mainHandler.removeCallbacks(heartbeatTask);
         if (locationManager != null) {
-            try { locationManager.removeUpdates(this); } catch (Exception ignored) { }
+            try { stopLocationUpdates(); } catch (Exception ignored) { }
         }
         network.shutdownNow();
         super.onDestroy();

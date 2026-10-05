@@ -37,6 +37,9 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -118,6 +121,7 @@ public class MainActivity extends ComponentActivity {
     JSONObject launchedFromPush = CustomerMessagingService.eventFromIntent(getIntent());
     JSONObject storedPush = CustomerMessagingService.consumePendingEvent(this);
     pendingPushEvent = launchedFromPush != null ? launchedFromPush : storedPush;
+    pendingTableLink = tableLinkFrom(getIntent());
     credentialManager = CredentialManager.create(this);
     getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
       @Override public void handleOnBackPressed() {
@@ -127,7 +131,7 @@ public class MainActivity extends ComponentActivity {
     getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
     final FrameLayout root = new FrameLayout(this);
-    root.setBackgroundColor(Color.rgb(246, 249, 253));
+    root.setBackgroundColor(Color.rgb(255, 255, 255));
     // Draw behind the status bar on every Android version (Android 15+ does
     // this anyway), so a screen's own colour - such as the live-order ad hero -
     // fills it. The page pads itself by the insets published below; the
@@ -231,6 +235,8 @@ public class MainActivity extends ComponentActivity {
     FrameLayout.LayoutParams brandParams = new FrameLayout.LayoutParams(dp(260), dp(34), Gravity.CENTER);
     brandParams.topMargin = dp(140);
     splash.addView(brand, brandParams);
+    // The logo itself now spells out the name.
+    brand.setVisibility(View.GONE);
 
     TextView tagline = new TextView(this);
     tagline.setText(R.string.splash_tagline);
@@ -241,7 +247,7 @@ public class MainActivity extends ComponentActivity {
     tagline.setAlpha(0f);
     tagline.setTranslationY(dp(12));
     FrameLayout.LayoutParams tagParams = new FrameLayout.LayoutParams(dp(340), dp(24), Gravity.CENTER);
-    tagParams.topMargin = dp(184);
+    tagParams.topMargin = dp(150);
     splash.addView(tagline, tagParams);
     root.addView(splash, new FrameLayout.LayoutParams(
         FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
@@ -390,7 +396,48 @@ public class MainActivity extends ComponentActivity {
     });
   }
 
+  private String pendingTableLink = "";
+  private static final java.util.Set<String> DINE_IN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+      "dineInBookTable", "dineInCancelBooking", "dineInOpenTable", "dineInPlaceRound", "dineInTableRequest"));
+
   private class NativeBridge {
+    /** The table link the app was opened with (once), as "restaurantId/tableId". */
+    @JavascriptInterface public String takeTableLink() {
+      String link = pendingTableLink == null ? "" : pendingTableLink;
+      pendingTableLink = "";
+      return link;
+    }
+
+    /** Dine-in server calls (bookings, tables, rounds), through the same App Check client as orders. */
+    @JavascriptInterface public void invokeDineIn(String requestId, String firebaseIdToken, String function, String payloadJson) {
+      if (function == null || !DINE_IN_FUNCTIONS.contains(function)) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "invokeDineIn", "INVALID_ARGUMENT", "That action isn’t available."));
+        return;
+      }
+      invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Dine-in isn’t available right now.");
+    }
+
+    /** Scan a table's QR code with Google's scanner (no camera permission needed). */
+    @JavascriptInterface public void scanTableQr(String requestId) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        GmsBarcodeScannerOptions options = new GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build();
+        GmsBarcodeScanning.getClient(MainActivity.this, options).startScan()
+            .addOnSuccessListener(barcode -> {
+              String raw = barcode.getRawValue() == null ? "" : barcode.getRawValue();
+              JSONObject data = new JSONObject();
+              try {
+                data.put("raw", raw.length() > 500 ? raw.substring(0, 500) : raw);
+                data.put("link", tableLinkFromUri(Uri.parse(raw)));
+              } catch (Exception ignored) { }
+              publishNativeSuccess(requestId, "scanTableQr", data);
+            })
+            .addOnCanceledListener(() -> publishNativeFailure(requestId, "scanTableQr", "CANCELLED", "Scan cancelled."))
+            .addOnFailureListener(error -> publishNativeFailure(requestId, "scanTableQr", "SCAN_FAILED", "The scanner couldn’t start. Enter the table code instead."));
+      });
+    }
+
     @JavascriptInterface public void setStatusBarStyle(final String hex, final boolean darkIcons) {
       if (hex == null || !hex.matches("#[0-9a-fA-F]{6}")) return;
       // WebView.getUrl() (inside isTrustedPageLoaded) may only be called on
@@ -435,6 +482,60 @@ public class MainActivity extends ComponentActivity {
         @Override public void run() {
           if (isTrustedPageLoaded()) chooseGoogleAccount();
         }
+      });
+    }
+
+    /** A short buzz for small wins (add to cart, wheel result, badge). */
+    @JavascriptInterface public void haptic(int millis) {
+      final int ms = Math.max(5, Math.min(120, millis));
+      runOnUiThread(() -> {
+        try {
+          android.os.Vibrator vibrator = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+          if (vibrator == null || !vibrator.hasVibrator()) return;
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+          } else {
+            vibrator.vibrate(ms);
+          }
+        } catch (Exception ignored) { }
+      });
+    }
+
+    /** Share a picture the app made (the monthly food story card) through Android's share sheet. */
+    @JavascriptInterface public void shareImage(String base64Png, String text) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded()) return;
+        try {
+          String data = String.valueOf(base64Png);
+          int comma = data.indexOf(',');
+          if (comma >= 0) data = data.substring(comma + 1);
+          byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+          if (bytes.length == 0 || bytes.length > 8 * 1024 * 1024) return;
+          java.io.File dir = new java.io.File(getCacheDir(), "share");
+          if (!dir.exists() && !dir.mkdirs()) return;
+          java.io.File file = new java.io.File(dir, "scraveit-story.png");
+          try (java.io.FileOutputStream out = new java.io.FileOutputStream(file)) { out.write(bytes); }
+          Uri uri = androidx.core.content.FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".share", file);
+          Intent intent = new Intent(Intent.ACTION_SEND);
+          intent.setType("image/png");
+          intent.putExtra(Intent.EXTRA_STREAM, uri);
+          if (text != null && text.length() > 0) intent.putExtra(Intent.EXTRA_TEXT, text.length() > 500 ? text.substring(0, 500) : text);
+          intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+          startActivity(Intent.createChooser(intent, "Share your food story"));
+        } catch (Exception error) {
+          Toast.makeText(MainActivity.this, "Could not share right now.", Toast.LENGTH_SHORT).show();
+        }
+      });
+    }
+
+    /** Share plain text (a squad order invite) through Android's share sheet. */
+    @JavascriptInterface public void shareText(String text) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || text == null || text.length() == 0) return;
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TEXT, text.length() > 1000 ? text.substring(0, 1000) : text);
+        startActivity(Intent.createChooser(intent, "Invite to your squad"));
       });
     }
 
@@ -726,6 +827,24 @@ public class MainActivity extends ComponentActivity {
     publishJsonCallback("savrivoNativeResult", response);
   }
 
+  /** A dine-in table link: scraveit://table/{restaurantId}/{tableId} or https://savrivo-app.web.app/t/{restaurantId}/{tableId}. */
+  static String tableLinkFrom(Intent intent) {
+    if (intent == null || intent.getData() == null) return "";
+    return tableLinkFromUri(intent.getData());
+  }
+
+  static String tableLinkFromUri(Uri uri) {
+    if (uri == null) return "";
+    java.util.List<String> parts = uri.getPathSegments();
+    String scheme = uri.getScheme() == null ? "" : uri.getScheme();
+    String host = uri.getHost() == null ? "" : uri.getHost();
+    String rid = "", tid = "";
+    if ("scraveit".equals(scheme) && "table".equals(host) && parts.size() >= 2) { rid = parts.get(0); tid = parts.get(1); }
+    else if ("https".equals(scheme) && "savrivo-app.web.app".equals(host) && parts.size() >= 3 && "t".equals(parts.get(0))) { rid = parts.get(1); tid = parts.get(2); }
+    if (!rid.matches("[A-Za-z0-9_-]{1,128}") || !tid.matches("[A-Za-z0-9_-]{1,20}")) return "";
+    return rid + "/" + tid;
+  }
+
   private void publishJsonCallback(String callback, JSONObject value) {
     if (webView == null || value == null) return;
     String encoded = Base64.encodeToString(
@@ -844,6 +963,13 @@ public class MainActivity extends ComponentActivity {
     super.onNewIntent(intent);
     setIntent(intent);
     queuePushEvent(CustomerMessagingService.eventFromIntent(intent));
+    String link = tableLinkFrom(intent);
+    if (!link.isEmpty()) {
+      pendingTableLink = link;
+      JSONObject event = new JSONObject();
+      try { event.put("link", link); } catch (Exception ignored) { }
+      publishJsonCallback("scraveitTableLink", event);
+    }
   }
 
   @SuppressLint("UnspecifiedRegisterReceiverFlag")
