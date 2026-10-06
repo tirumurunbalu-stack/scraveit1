@@ -59,9 +59,12 @@ window.Rider3D=(function(){
     const anchor=card.querySelector(".map-pin.rider");
     if(!anchor||anchor.style.display==="none"){hide();return;}
     const ar=anchor.getBoundingClientRect(),cr=card.getBoundingClientRect(),size=d.size||110;
+    // Screen distances are divided by the card's own scale, so the scooter
+    // lands on its pin even when the card is drawn smaller than its layout size.
+    const scale=card.offsetWidth?cr.width/card.offsetWidth:1,k=scale>0.05?1/scale:1;
     canvas.style.display="";canvas.style.width=size+"px";canvas.style.height=size+"px";
-    canvas.style.transform="translate3d("+(ar.left+ar.width/2-cr.left-size/2).toFixed(1)+"px,"+(ar.top+ar.height/2-cr.top-size*0.66).toFixed(1)+"px,0)";
-    canvas.style.opacity=d.stale?"0.6":"1";
+    canvas.style.transform="translate3d("+((ar.left+ar.width/2-cr.left)*k-size/2).toFixed(1)+"px,"+((ar.top+ar.height/2-cr.top)*k-size*0.66).toFixed(1)+"px,0)";
+    canvas.style.opacity="1";
     const a=avatar(d.avatar,d.pose||"ride");
     // direction on screen, eased along the shorter way round
     const target=(((d.heading-d.bearing)%360)+360)%360;
@@ -130,6 +133,9 @@ window.HeroRider=(function(){
     if(t-last<33)return;const dt=last?Math.min(0.1,(t-last)/1000):0.033;last=t;
     const box=slotEl.getBoundingClientRect(),w=Math.round(box.width),h=Math.round(box.height);
     if(!w||!h){canvas.style.display="none";return;}
+    // Scrolled out of view: keep the loop alive but draw nothing, so the
+    // phone isn't rendering 3D frames nobody can see.
+    if(box.bottom<-40||box.top>window.innerHeight+40)return;
     const spot=Math.round(box.left+window.scrollX)+","+Math.round(box.top+window.scrollY)+","+w+","+h;
     if(spot!==placed){placed=spot;const [x,y]=spot.split(",");canvas.style.left=x+"px";canvas.style.top=y+"px";canvas.style.width=w+"px";canvas.style.height=h+"px";}
     if(canvas.style.display==="none")canvas.style.display="block";

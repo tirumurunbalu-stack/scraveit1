@@ -532,6 +532,7 @@
       state.profile.addresses = Array.isArray(remote.addresses) ? remote.addresses : state.profile.addresses || [];
       state.profile.favourites = Array.isArray(remote.favourites) ? remote.favourites : state.profile.favourites || [];
       migrateSavedAddresses();persistProfile();applyTheme();
+      loadDemographics().then(()=>{maybeAskAboutYou();if(["offers","account","cart"].includes(state.route))render({preserveScroll:true})});
       if(previousScope!==homeScope(currentAddress())){
         // A profile refresh may select a different saved address while an older
         // catalogue request is still in flight. Invalidate that request before
@@ -1483,7 +1484,7 @@
     state.toastTimer = setTimeout(()=>{ toastRegion.innerHTML=""; }, durationMs);
   }
   function setSheet(sheet) { state.sheet = sheet; renderSheet(); }
-  function closeSheet() { state.sheet = null; renderSheet(); }
+  function closeSheet() { state.sheet = null; renderSheet(); if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
   // Without this, an uncaught exception inside an event handler (a form
   // submit, a tap action) is swallowed by the browser with no on-screen
   // trace at all - the WebView's console isn't wired to logcat, so it looks
@@ -1693,8 +1694,30 @@
     if(!uid||!state.ordersHydrated||state.ordersHydratedUid!==uid)return false;
     return state.orders.filter(o=>!isGuestOrder(o)).length===0;
   }
+  // ---- About you: optional gender and date of birth, saved only with consent.
+  // Used to show offers made for the customer's group and for overall
+  // insights; never shown to restaurants or riders. Removing it deletes it.
+  function demoDoc(){return fs.collection("customerDemographics").doc(state.session.uid)}
+  async function loadDemographics(){if(!state.session)return;try{const snap=await demoDoc().get();state.demographics=snap.exists?snap.data():null;state.demographicsLoaded=true}catch(_){}}
+  // Every customer is asked once, right after sign-up or on the next app open.
+  // It stays optional (DPDP Act s.6(1): gender and age aren't needed to
+  // deliver food, so they can't be a condition of ordering); a skip is asked
+  // again a week later.
+  const ABOUT_SKIP_KEY="scraveit.customer.aboutYouSkippedAt.";
+  function aboutYouSkippedRecently(){try{return Date.now()-Number(localStorage.getItem(ABOUT_SKIP_KEY+(state.session&&state.session.uid))||0)<7*86400000}catch(_){return false}}
+  function maybeAskAboutYou(){if(!state.session||!state.demographicsLoaded||state.demographics||state.route!=="home"||aboutYouSkippedRecently())return;if(state.sheet){state.aboutYouPending=true;return}state.aboutYouPending=false;go("aboutYou",{},true)}
+  function ageFromBirthDate(value){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||""));if(!m)return null;const now=new Date();let age=now.getFullYear()-Number(m[1]);if(now.getMonth()+1<Number(m[2])||(now.getMonth()+1===Number(m[2])&&now.getDate()<Number(m[3])))age--;return age}
+  function myAgeBand(){const d=state.demographics;if(!d||d.consent!==true)return"";const a=ageFromBirthDate(d.birthDate);if(a==null||a<18)return"";return a<=24?"18-24":a<=34?"25-34":a<=44?"35-44":a<=54?"45-54":"55+"}
+  function myGender(){const d=state.demographics;return d&&d.consent===true&&["female","male","other"].includes(d.gender)&&!(d.birthDate&&ageFromBirthDate(d.birthDate)<18)?d.gender:""}
+  function areaKeyOf(v){return String(v||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")}
+  function promotionTargeted(p){const a=p&&p.audience||{};return!!((a.genders||[]).length||(a.ageBands||[]).length||(a.areaKeys||[]).length)}
+  /** Whether a group offer is meant for this customer - the same test the server makes at checkout. */
+  function promotionForMe(p){const a=p&&p.audience||{},g=a.genders||[],b=a.ageBands||[],areas=a.areaKeys||[];if(g.length&&!g.includes(myGender()))return false;if(b.length&&!b.includes(myAgeBand()))return false;if(areas.length){const addr=currentAddress();if(!addr||!areas.includes(areaKeyOf(addr.area)))return false}return true}
+  /** An offer on chosen dishes applies to those dishes in the cart only. */
+  function promotionBase(p,subtotal){const ids=p&&Array.isArray(p.itemIds)?p.itemIds:[];if(!ids.length)return subtotal;return state.cart.filter(x=>ids.includes(x.itemId)).reduce((s,x)=>s+lineTotal(x),0)}
   function promotionEligible(promotion,restaurantId,subtotal,now){
     if(!promotion||promotion.active!==true)return false;
+    if(!promotionForMe(promotion))return false;
     if(promotion.approvalStatus==="pending"||promotion.approvalStatus==="rejected")return false;
     if(promotion.startsAt&&Number(now)<Number(promotion.startsAt))return false;
     if(promotion.expiresAt&&Number(now)>Number(promotion.expiresAt))return false;
@@ -1710,7 +1733,7 @@
     let best=null,bestValue=0;
     (state.promotions||[]).forEach(promotion=>{
       if(!promotionEligible(promotion,restaurantId,subtotal,now))return;
-      const value=promotionDiscount(promotion,subtotal);
+      const value=promotionDiscount(promotion,promotionBase(promotion,subtotal));
       if(value>bestValue){best=promotion;bestValue=value;}
     });
     return best;
@@ -1743,12 +1766,12 @@
   }
   function eligibleCoupon(){
     if(!state.coupon||!state.cart.length)return null;
-    return promotionEligible(state.coupon,state.cart[0].restaurantId,cartSubtotal(),Date.now())?state.coupon:null;
+    return promotionEligible(state.coupon,state.cart[0].restaurantId,cartSubtotal(),Date.now())&&promotionBase(state.coupon,cartSubtotal())>0?state.coupon:null;
   }
   /** The server's own answer for this exact cart and code, when it has one:
    *  it applies the profitability cap and who-pays split the order will get. */
   function serverOffer(){const coupon=eligibleCoupon(),p=state.dynamicPricing&&state.dynamicPricing.offer;if(!coupon||!p||p.valid!==true||String(p.code)!==String(coupon.code)||Math.abs(Number(p.subtotal)-cartSubtotal())>0.001)return null;return p}
-  function discount(){const server=serverOffer();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(eligibleCoupon(),cartSubtotal());}
+  function discount(){const server=serverOffer(),coupon=eligibleCoupon();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(coupon,promotionBase(coupon,cartSubtotal()));}
   function tax(){return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
   function smallOrderFee(){return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
   function lateNightFee(){if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
@@ -2326,21 +2349,46 @@
     },AD_RAIL_INTERVAL_MS);
   }
   /** Restaurants the customer had delivered before, newest first: one tap reorders. */
-  function orderAgainMarkup(){
-    const seen=new Set(),list=[];
-    for(const o of state.orders){
-      if(o.status!=="Delivered"||!o.restaurantId||seen.has(o.restaurantId))continue;
-      const r=restaurant(o.restaurantId);if(!r)continue;
-      seen.add(o.restaurantId);list.push({r,o});if(list.length>=8)break;
-    }
+  /** Open restaurants that deliver here, nearest first. */
+  function nearbyRestaurantsMarkup(){
+    const list=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false)
+      .map(r=>({r,d:restaurantDistanceKm(r)})).sort((a,b)=>(a.d==null?999:a.d)-(b.d==null?999:b.d)).slice(0,10);
     if(!list.length)return"";
-    return '<section class="stack"><h2 class="section-title">Order again</h2><div class="order-again-row">'
-      +list.map(({r,o})=>'<button type="button" class="order-again-card" data-action="reorder" data-order-id="'+h(o.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+h((o.items||[]).map(x=>x.name).slice(0,1).join("")||"Reorder")+'</span></button>').join("")
+    return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Restaurants near you</h2><p class="supporting">Closest first</p></div><button class="text-button" data-action="go" data-route="search">See all</button></div><div class="order-again-row">'
+      +list.map(({r,d})=>{const rating=ratingForRestaurant(r);return'<button type="button" class="order-again-card near-card" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+(d!=null&&Number.isFinite(d)?(d<1?Math.round(d*1000)+' m':d.toFixed(1)+' km')+' away':'Nearby')+'</span><span class="caption">'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min'+(rating.value?' · '+rating.value.toFixed(1)+'★':'')+'</span></button>'}).join("")
       +'</div></section>';
   }
+  // Bottom capsule: rate the last order, or order it again. Swipe it left or
+  // right to dismiss; it stays dismissed for that order.
+  const CAPSULE_KEY="scraveit.customer.capsuleDismissed";
+  function capsuleDismissed(){try{return JSON.parse(localStorage.getItem(CAPSULE_KEY)||"{}")||{}}catch(_){return{}}}
+  function dismissCapsule(key){if(!key)return;const d=capsuleDismissed();d[key]=Date.now();const out={};Object.keys(d).sort((a,b)=>d[b]-d[a]).slice(0,60).forEach(k=>out[k]=d[k]);try{localStorage.setItem(CAPSULE_KEY,JSON.stringify(out))}catch(_){}}
+  function capsuleImg(r){return'<img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'}
+  function homeCapsule(){
+    if(state.capsuleSwiped)return"";
+    const gone=capsuleDismissed(),recent=o=>Date.now()-Number(o.deliveredAt||o.updatedAt||o.createdAt||0)<3*86400000;
+    const toRate=latestDeliveredNeedingReview();
+    if(toRate&&recent(toRate)&&!gone["rate:"+toRate.id]){const r=restaurant(toRate.restaurantId)||{};
+      return'<div class="home-capsule" data-capsule="rate:'+h(toRate.id)+'" role="group" aria-label="Rate your last order">'+capsuleImg(r)+'<div class="capsule-copy"><strong>How was '+h(toRate.restaurant||r.name||"your order")+'?</strong><span class="capsule-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="capsule-star" data-action="quick-rate" data-order-id="'+h(toRate.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">★</button>').join("")+'</span></div><button type="button" class="capsule-x" data-action="capsule-dismiss" aria-label="Dismiss">×</button></div>';}
+    const last=state.orders.find(o=>o.status==="Delivered"&&o.restaurantId&&!isGuestOrder(o)&&restaurant(o.restaurantId));
+    if(!last||gone["again:"+last.id])return"";
+    const r=restaurant(last.restaurantId)||{},item=(last.items||[]).map(x=>x.name).filter(Boolean)[0]||"your last order";
+    return'<div class="home-capsule" data-capsule="again:'+h(last.id)+'" role="group" aria-label="Order again">'+capsuleImg(r)+'<div class="capsule-copy"><strong>Order again?</strong><span>'+h(item)+' · '+h(r.name||last.restaurant||"")+'</span></div><button type="button" class="capsule-go" data-action="reorder" data-order-id="'+h(last.id)+'">Reorder</button><button type="button" class="capsule-x" data-action="capsule-dismiss" aria-label="Dismiss">×</button></div>';
+  }
+  function slideCapsuleAway(el,dir){if(!el||el.dataset.gone)return;el.dataset.gone="1";state.capsuleSwiped=true;dismissCapsule(el.dataset.capsule);el.style.transition="transform .22s ease-in, opacity .22s ease-in";el.style.transform="translate3d("+(dir<0?-120:120)+"%,0,0)";el.style.opacity="0";setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el)},240);haptic(8)}
+  let capsuleDrag=null;
+  document.addEventListener("pointerdown",e=>{const el=e.target.closest&&e.target.closest(".home-capsule");if(!el||el.dataset.gone)return;capsuleDrag={el,x:e.clientX,y:e.clientY,dx:0,moved:false,id:e.pointerId}},{passive:true});
+  document.addEventListener("pointermove",e=>{const d=capsuleDrag;if(!d||e.pointerId!==d.id)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;
+    if(!d.moved){if(Math.abs(dy)>12&&Math.abs(dy)>Math.abs(dx)){capsuleDrag=null;return}if(Math.abs(dx)>8){d.moved=true;d.el.style.transition="none"}}
+    if(d.moved){d.dx=dx;d.el.style.transform="translate3d("+dx+"px,0,0)";d.el.style.opacity=String(Math.max(.25,1-Math.abs(dx)/280))}},{passive:true});
+  function endCapsuleDrag(e){const d=capsuleDrag;if(!d||(e&&e.pointerId!==d.id))return;capsuleDrag=null;if(!d.moved)return;
+    // A drag never also counts as a tap on the capsule's buttons.
+    const stop=ev=>{ev.stopPropagation();ev.preventDefault()};d.el.addEventListener("click",stop,{capture:true,once:true});setTimeout(()=>d.el.removeEventListener("click",stop,{capture:true}),350);
+    if(e.type!=="pointercancel"&&Math.abs(d.dx)>Math.min(100,d.el.offsetWidth*.28))slideCapsuleAway(d.el,d.dx);
+    else{d.el.style.transition="transform .2s ease, opacity .2s ease";d.el.style.transform="";d.el.style.opacity=""}}
+  document.addEventListener("pointerup",endCapsuleDrag);document.addEventListener("pointercancel",endCapsuleDrag);
   function localAdMarkup(){const ad=activeLocalAd();if(!ad)return'<button type="button" class="promise-card" data-action="go" data-route="offers"><span class="promise-copy"><span class="promise-eyebrow">The Scraveit promise</span><strong>No surprise charges.</strong><span>Every rupee is shown before you pay.</span><span class="ad-rail-cta">See today’s offers</span></span><span class="promise-art" aria-hidden="true"><i>₹</i><b>✓</b></span></button>';return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
   function latestDeliveredNeedingReview(){if(!reviewStateReady())return null;return state.orders.find(o=>o.status==="Delivered"&&!isGuestOrder(o)&&!state.reviews[o.id])||null}
-  function postDeliveryCard(){const o=latestDeliveredNeedingReview();if(!o)return"";return'<section class="post-order-card"><p class="eyebrow">Delivered</p><h2 class="section-title">How was '+h(o.restaurant||"your order")+'?</h2><p class="supporting">Your rating helps customers, restaurants and delivery partners improve.</p><div class="star-row">'+[1,2,3,4,5].map(n=>'<button class="star-choice" data-action="quick-rate" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' stars">'+icon("star","large")+'</button>').join("")+'</div><button class="button tonal full" data-action="go" data-route="review" data-order-id="'+h(o.id)+'">Rate restaurant & delivery partner</button></section>'}
 
   function activeOrderCard(order) {
     const id=String(order.id||""),shortId=id.length>8?id.slice(-6):id;
@@ -2703,18 +2751,36 @@
     const admin=adminThemes().find(t=>stamp>=t.from&&stamp<=t.to);if(admin)return admin;
     return FESTIVAL_SKIES.find(f=>(f.md&&f.md.includes(md))||(f.days&&f.days.includes(stamp)))||null;
   }
-  function homeRaining(){
+  /** What the sky is doing right now near the customer, from the nearest open
+   *  restaurant's live weather reading. Follows the actual condition, not the
+   *  rain fee (charged on a likely-rain forecast): cloudy until it really rains. */
+  function homeWeather(){
     const near=restaurantsFiltered().find(r=>storeKind(r)==="restaurant"&&r.open!==false);
-    if(!near)return false;
+    if(!near)return"clear";
     const w=state.storeWeather&&state.storeWeather[near.id];
     if(!w||Date.now()-Number(w.readAt||0)>10*60*1000)loadStoreWeather(near.id);
-    return!!(w&&w.validUntil>Date.now()&&w.rain);
+    return w&&w.validUntil>Date.now()&&w.kind?w.kind:"clear";
+  }
+  /** Google Weather condition type -> clear | cloudy | rain | heavy_rain | thunder. */
+  function weatherKind(conditionType,rainFee){
+    const t=String(conditionType||"").toUpperCase();
+    if(!t)return Number(rainFee)>0?"cloudy":"clear";
+    if(/THUNDER/.test(t))return"thunder";
+    if(/CHANCE_OF/.test(t))return"cloudy";
+    if(/(RAIN|SHOWER)/.test(t)&&/HEAVY/.test(t))return"heavy_rain";
+    if(/(RAIN|SHOWER|DRIZZLE)/.test(t))return"rain";
+    if(/PARTLY|MOSTLY_CLEAR|CLEAR|SUNNY/.test(t))return"clear";
+    if(/CLOUD|OVERCAST|FOG|MIST|HAZE/.test(t))return"cloudy";
+    return"clear";
   }
   function skyTheme(){
-    const now=new Date(),slot=daySlot(now),base=SKY_SLOTS[slot],fest=festivalToday(now),rain=!fest&&homeRaining();
+    const now=new Date(),slot=daySlot(now),base=SKY_SLOTS[slot],fest=festivalToday(now),sky=fest?"clear":homeWeather(),night=!!base.dark||now.getHours()>=19||now.getHours()<6;
     const heads=base.heads,head=heads[dayNumber(now)%heads.length];
     if(fest)return{slot,kind:"festival",id:fest.id,top:fest.top,bottom:fest.bottom,dark:!!fest.dark,deco:fest.deco,greet:base.greet,head:fest.head,sub:fest.sub};
-    if(rain)return{slot,kind:"rain",id:"rain",top:"#7C93B5",bottom:"#DCE6F2",dark:false,deco:"",greet:base.greet,head:"Rainy day? Chai and pakoda?",sub:"Hot picks for the weather"};
+    if(sky==="thunder")return{slot,kind:"rain",weather:"thunder",id:"thunder",top:"#1E2640",bottom:"#5E6B88",dark:true,deco:"",greet:base.greet,head:"Thunderstorm outside? Stay in.",sub:"We’ll bring something hot to your door"};
+    if(sky==="rain"||sky==="heavy_rain")return{slot,kind:"rain",weather:sky,id:"rain",top:night?"#24304D":"#6F86AA",bottom:night?"#55658A":"#D5DFEC",dark:night,deco:"",greet:base.greet,head:"Rainy day? Chai and pakoda?",sub:"Hot picks for the weather"};
+    if(sky==="cloudy")return night?{slot,kind:"cloudy",weather:"cloudy",id:"cloudy-night",top:"#1B2236",bottom:"#424B68",dark:true,deco:"",greet:base.greet,head,sub:""}
+      :{slot,kind:"cloudy",weather:"cloudy",id:"cloudy",top:"#9DAEC6",bottom:"#E6EBF2",dark:false,deco:"",greet:base.greet,head:"Cloudy outside. Something hot?",sub:"Comfort food for a grey day"};
     const late=slot==="night"&&(now.getHours()>=23||now.getHours()<4);
     return{slot,kind:"slot",id:late?"late":slot,top:late?"#1A0B3B":base.top,bottom:late?"#4B1D7A":base.bottom,dark:base.dark,deco:"",greet:base.greet,head,sub:""};
   }
@@ -2723,11 +2789,16 @@
   function todaysMascot(){const list=mascotPresets();return list.length?list[dayNumber()%list.length]:null;}
   function firstName(){return String(state.profile.name||"").trim().split(/\s+/)[0]||"";}
   function skyDecor(theme){
+    const w=theme.weather||"clear",wet=w==="rain"||w==="heavy_rain"||w==="thunder",grey=w==="cloudy"||wet,dim=w==="thunder"||theme.dark?' dark':'';
     let html="";
-    if(theme.dark){for(let i=0;i<28;i++){const x=(i*37)%100,y=(i*53)%62;html+='<i class="sky-star" style="left:'+x+'%;top:'+(6+y)+'%;animation-delay:'+((i%7)*0.4)+'s"></i>';}}
-    if(theme.id==="day")html+='<i class="sky-cloud c1"></i><i class="sky-cloud c2"></i>';
-    if(!theme.dark&&theme.kind==="slot")html+='<i class="sky-sun"></i>';
-    if(theme.kind==="rain")html+='<i class="sky-rain"></i>';
+    if(theme.dark&&!grey){for(let i=0;i<28;i++){const x=(i*37)%100,y=(i*53)%62;html+='<i class="sky-star" style="left:'+x+'%;top:'+(6+y)+'%;animation-delay:'+((i%7)*0.4)+'s"></i>';}}
+    if(theme.id==="day"&&!grey)html+='<i class="sky-cloud c1"></i><i class="sky-cloud c2"></i>';
+    if(!theme.dark&&theme.kind==="slot"&&!grey)html+='<i class="sky-sun"></i>';
+    // Low, slow grey clouds before and during rain; darker in a storm or at night.
+    if(grey)html+='<i class="sky-deck'+dim+'"></i><i class="sky-cloud grey g1'+dim+'"></i><i class="sky-cloud grey g2'+dim+'"></i><i class="sky-cloud grey g3'+dim+'"></i>';
+    // Three depths of slanted drops at different speeds, so it reads as rain, not a pattern.
+    if(wet)html+='<i class="sky-rain'+(w==="rain"?'':' heavy')+'"><b class="r1"></b><b class="r2"></b><b class="r3"></b></i><i class="sky-mist"></i>';
+    if(w==="thunder")html+='<i class="sky-flash"></i><i class="sky-bolt"></i>';
     if(theme.deco)html+='<span class="sky-deco">'+h(theme.deco)+'</span>';
     return'<div class="hero2-sky" aria-hidden="true">'+html+'</div>';
   }
@@ -2752,7 +2823,9 @@
     const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":"Select a saved address";
     const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
     const hints=searchHints(),name=firstName();
-    return '<header class="hero2'+(theme.dark?' dark':'')+' sky-'+h(theme.id)+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
+    // "theme-", not "sky-": a "sky-rain" class on the header collided with the
+    // rain-streak layer's own .sky-rain style and pulled the whole header over the page.
+    return '<header class="hero2'+(theme.dark?' dark':'')+' theme-'+h(theme.id)+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
       +'<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
       +'<div class="hh2-actions"><button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
       +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
@@ -2880,27 +2953,44 @@
   }
 
   // ---- mood picks (and the rain shelf) -------------------------------------
-  const MOODS=[["tired","😴","Tired",["biryani","meals","thali","curd rice","khichdi","pulao","fried rice","noodles","dal"]],
-    ["celebrate","🎉","Celebrating",["cake","dessert","ice cream","pizza","biryani","waffle","sweet","brownie","kunafa"]],
-    ["rainy","🌧️","Rainy",["chai","tea","coffee","pakoda","pakora","bajji","samosa","soup","maggi","corn"]],
-    ["budget","💸","Budget",null],["healthy","🥗","Healthy",["salad","grill","juice","fruit","sprout","oats","protein","millet","idli","tandoori"]],
-    ["late","🌙","Late night",["shawarma","burger","maggi","roll","fries","sandwich","momos","pizza"]]];
-  function activeMood(){if(state.homeMood==="off")return"";if(state.homeMood)return state.homeMood;const t=state.heroThemeKind;return t==="rain"?"rainy":"";}
+  // A mood only appears when open restaurants nearby have dishes that fit it,
+  // so tapping one never lands on "nothing here". Words match at the start of
+  // a word in the dish name or category ("waffle" finds "Waffles", "tea" does
+  // not find "steamed").
+  const MOODS=[
+    ["tired","😴","Tired",["biryani","meals","thali","rice","curd rice","khichdi","pulao","fried rice","noodles","dal","curry","roti","chapati","paratha","parotta","dosa","idli","pongal","upma","combo","bowl","pasta","maggi","sandwich"]],
+    ["celebrate","🎉","Celebrating",["cake","pastry","dessert","ice cream","sundae","pizza","biryani","waffle","pancake","sweet","brownie","kunafa","shake","milkshake","chocolate","mandi","platter","family","bucket","jamun","rasmalai","kulfi","falooda"]],
+    ["rainy","🌧️","Rainy",["chai","tea","coffee","pakoda","pakora","bajji","bonda","mirchi","samosa","soup","maggi","corn","cutlet","vada","punugulu","hot chocolate","momos","fries"]],
+    ["budget","💸","Budget",null],
+    ["healthy","🥗","Healthy",["salad","grill","grilled","juice","fruit","sprout","oats","protein","millet","ragi","jowar","quinoa","idli","tandoori","steamed","soup","smoothie","curd","yogurt","multigrain","brown rice","boiled","egg white"]],
+    ["late","🌙","Late night",["shawarma","burger","maggi","roll","fries","sandwich","momos","pizza","noodles","fried rice","biryani","waffle","shake","coffee","wrap","nuggets"]]];
+  const MOOD_MATCHERS={};
+  function moodMatcher(id,words){if(!MOOD_MATCHERS[id])MOOD_MATCHERS[id]=new RegExp("(^|[^a-z])("+words.map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|")+")","i");return MOOD_MATCHERS[id];}
+  /** Rainy only in wet or grey weather, late night only late at night. */
+  function moodInSeason(id){const hr=new Date().getHours(),sky=state.heroThemeKind;
+    if(id==="rainy")return sky==="rain"||sky==="cloudy";if(id==="late")return hr>=21||hr<4;return true;}
   function moodPicks(id){
-    const mood=MOODS.find(m=>m[0]===id);if(!mood)return[];const words=mood[3],out=[],per={};
+    const mood=MOODS.find(m=>m[0]===id);if(!mood||!moodInSeason(id))return[];const words=mood[3],match=words&&moodMatcher(id,words),out=[],per={};
     restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false).forEach(r=>{
       discoveryItems(r).filter(i=>i.available!==false).sort((a,b)=>(b.popular?1:0)-(a.popular?1:0)).forEach(item=>{
-        if(out.length>=12||(per[r.id]||0)>=2)return;const text=(String(item.name||"")+" "+String(item.category||"")).toLowerCase();
-        const fits=words?words.some(w=>text.includes(w)):Number(item.price||0)>0&&Number(item.price)<=129;
+        if(out.length>=12||(per[r.id]||0)>=3)return;const text=String(item.name||"")+" "+String(item.category||"");
+        const fits=match?match.test(text):Number(item.price||0)>0&&Number(item.price)<=129;
         if(fits){out.push({r,item});per[r.id]=(per[r.id]||0)+1;}});});
     return out;
   }
+  /** Moods that have something to show right now, with their picks. */
+  function liveMoods(){return MOODS.map(m=>({m,picks:moodPicks(m[0])})).filter(x=>x.picks.length);}
+  function activeMood(){if(state.homeMood==="off")return"";if(state.homeMood)return moodPicks(state.homeMood).length?state.homeMood:"";const t=state.heroThemeKind;
+    // Rain suggests the rainy mood, but only when something open matches it.
+    return t==="rain"&&moodPicks("rainy").length?"rainy":"";}
   function moodSection(){
-    const current=activeMood(),picks=current?moodPicks(current):[],mood=MOODS.find(m=>m[0]===current);
+    const live=liveMoods();
+    // One lonely chip isn't a choice; the section waits until there are two.
+    if(live.length<2)return"";
+    const current=activeMood(),now=live.find(x=>x.m[0]===current),picks=now?now.picks:[];
     return'<section class="stack mood-section"><h2 class="section-title">What’s your mood?</h2><div class="mood-row">'
-      +MOODS.map(m=>'<button class="mood-chip'+(m[0]===current?' active':'')+'" data-action="home-mood" data-value="'+m[0]+'" aria-pressed="'+(m[0]===current)+'"><span aria-hidden="true">'+m[1]+'</span>'+h(m[2])+'</button>').join("")+'</div>'
-      +(current?(picks.length?'<div class="mood-picks">'+picks.map(({r,item})=>'<button class="mood-pick" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async"><strong>'+h(item.name)+'</strong><small>'+h(r.name)+' · '+money(item.price)+'</small></button>').join("")+'</div>'
-        :'<p class="caption">Nothing open for “'+h(mood?mood[2]:"")+'” right now. Try another mood.</p>'):'')
+      +live.map(({m})=>'<button class="mood-chip'+(m[0]===current?' active':'')+'" data-action="home-mood" data-value="'+m[0]+'" aria-pressed="'+(m[0]===current)+'"><span aria-hidden="true">'+m[1]+'</span>'+h(m[2])+'</button>').join("")+'</div>'
+      +(picks.length?'<div class="mood-picks">'+picks.map(({r,item})=>'<button class="mood-pick" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async"><strong>'+h(item.name)+'</strong><small>'+h(r.name)+' · '+money(item.price)+'</small></button>').join("")+'</div>':'')
       +'</section>';
   }
 
@@ -3344,13 +3434,13 @@
     return '<main class="screen home2 '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
       +homeModeSwitch()
-      +(homeMode()==="dinein"?dineInHome():''      +(active?activeOrderCard(active):postDeliveryCard())
+      +(homeMode()==="dinein"?dineInHome():''      +(active?activeOrderCard(active):'')
       +foodStoryStrip()+activeTableCard()+eatOutShelf()
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
       +'<div class="play-row">'+wheelCard()+squadHomeCard()+'</div>'
       +moodSection()
       +topOffersShelf()
-      +orderAgainMarkup()
+      +nearbyRestaurantsMarkup()
       +'<section class="stack">'
       // The heading only earns its place when there is something under it to
       // browse; the filter row below stands on its own either way.
@@ -3368,7 +3458,7 @@
         :'<button class="button secondary full" data-action="load-more-restaurants">Show more restaurants</button>'):"")+'</section>'
       )
       +(state.catalogMode==="packaged"?'<div class="notice warning">'+icon("info","small")+'<div><strong>Live menu unavailable</strong><div class="caption">Ordering is paused until the latest restaurant catalogue is available.</div></div></div>':'')
-      +'</div>'+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
+      +'</div>'+(!cartCount()&&!active&&homeMode()!=="dinein"?homeCapsule():'')+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
   }
 
   function persistRecentSearches(){
@@ -3762,8 +3852,35 @@
   // and door sits nowhere near either of them, which read as the map not
   // following the rider at all even though it was panning correctly toward
   // that midpoint on every update.
+  // Expanded, the camera frames the whole remaining trip (rider, the road
+  // ahead and where they are heading) and re-frames as the rider moves. The
+  // small map beside the status keeps the rider in the middle instead.
   function trackingCameraFocus(points,live){
+    if(!state.trackingMapCollapsed){const b=trackingFrameBounds(points,live);if(b)return trackingBoundsCenter(b);}
     return points.riderPoint||trackingDestination(points,live)||null;
+  }
+  function trackingFrameBounds(points,live){
+    const dest=trackingDestination(points,live);
+    if(!points.riderPoint||!dest)return null;
+    const pts=[points.riderPoint,dest],ms=state.trackingMap,order=ms&&orderById(ms.orderId);
+    const view=order&&trackingRouteView(order,live||{});
+    if(view&&view.route)trackingRemainingRoute(view.route,Number.isFinite(ms.routeProgress)?ms.routeProgress:view.progress).forEach(p=>pts.push(p));
+    let minLat=pts[0].lat,maxLat=minLat,minLng=pts[0].lng,maxLng=minLng;
+    for(const p of pts){minLat=Math.min(minLat,p.lat);maxLat=Math.max(maxLat,p.lat);minLng=Math.min(minLng,p.lng);maxLng=Math.max(maxLng,p.lng);}
+    return {minLat,maxLat,minLng,maxLng};
+  }
+  function trackingBoundsCenter(b){return {lat:(b.minLat+b.maxLat)/2,lng:(b.minLng+b.maxLng)/2};}
+  // Always measured against the full-size map, so the small map beside the
+  // status never changes the zoom the customer sees when it opens.
+  function trackingFrameZoom(b,extra){
+    const w=window.innerWidth||360,h=Math.min(610,Math.max(410,Math.round((window.innerHeight||720)*0.61)));
+    // Room for the back/refresh buttons above, the signal pill below and the zoom buttons at the side.
+    const mx=w-2*(60+(extra||0)),my=h-2*(96+(extra||0));
+    for(let zoom=TRACKING_MAP_MAX_ZOOM;zoom>TRACKING_MAP_MIN_ZOOM;zoom--){
+      const a=mapWorld(b.maxLat,b.minLng,zoom),c=mapWorld(b.minLat,b.maxLng,zoom);
+      if(c.x-a.x<=mx&&c.y-a.y<=my)return zoom;
+    }
+    return TRACKING_MAP_MIN_ZOOM;
   }
   /** Re-aim the camera when the map changes size, so the switch does not
    *  leave the partner parked outside the frame it moved into. */
@@ -3777,8 +3894,11 @@
     ms.panX=-local.x;ms.panY=-local.y;ms.userPanned=false;ms.userZoomed=false;ms.tileKey="";
   }
   // ---- camera style, night and rain ----------------------------------------
-  // "follow": the map tilts and turns so the rider always rides up the screen,
-  // like navigation. "north": the classic flat map with north at the top.
+  // "follow": the map tilts like a 3D view and stays centred on the rider, with
+  // north kept up. It used to turn with the rider too, but the map is made of
+  // picture tiles, so every street name turned upside down whenever the rider
+  // headed south. The scooter itself turns to face where it is going.
+  // "north": the classic flat map.
   // Dragging the map drops back to the flat map (pan maths stay simple);
   // Recentre returns to following.
   // ---- map provider: Google Maps tiles, OpenStreetMap until Google answers --
@@ -3795,8 +3915,10 @@
     googleTilesFailedAt=Date.now();img.classList.add("osm");img.src=img.dataset.osm;markMapProvider(false);},true);
   const TRACKING_TILT_DEG=45, TRACKING_CAMERA_KEY="savrivo.customer.trackingCamera";
   function trackingCameraPreference(){try{return localStorage.getItem(TRACKING_CAMERA_KEY)==="north"?"north":"follow";}catch(_){return"follow";}}
-  function trackingFollowActive(ms){return!!ms&&ms.mode!=="north"&&!ms.userPanned;}
-  function trackingPlaneTransform(ms){return trackingFollowActive(ms)?"rotateX("+TRACKING_TILT_DEG+"deg) rotateZ("+(-ms.bearing).toFixed(1)+"deg)":"none";}
+  // One flat map, always: the tilted view showed mostly empty country beyond
+  // the rider, and switching views made the page feel unsettled.
+  function trackingFollowActive(ms){return false;}
+  function trackingPlaneTransform(ms){return trackingFollowActive(ms)?"rotateX("+TRACKING_TILT_DEG+"deg)":"none";}
   function trackingIsNight(){const hour=new Date().getHours();return hour>=19||hour<6;}
   // Rain on the map follows live weather (Google Weather, refreshed every 15
   // minutes near the store); before it has been read, the order's verified rain fee.
@@ -3807,6 +3929,7 @@
     if(!w||Date.now()-w.readAt>5*60*1000)loadStoreWeather(order.restaurantId);
     return!!(order.pricing&&Number(order.pricing.rainFee)>0);
   }
+  function trackingRainHeavy(order){const w=order&&state.storeWeather&&state.storeWeather[order.restaurantId];return!!(w&&w.validUntil>Date.now()&&(w.kind==="heavy_rain"||w.kind==="thunder"));}
   async function loadStoreWeather(restaurantId){
     if(!restaurantId)return;state.storeWeather=state.storeWeather||{};
     const previous=state.storeWeather[restaurantId];
@@ -3814,21 +3937,18 @@
     state.storeWeather[restaurantId]=Object.assign({},previous||{},{loading:true,readAt:Date.now()});
     try{
       const snap=await firebase.firestore().collection("pricingSignals").doc(restaurantId).get(),d=snap.exists?snap.data():{};
-      const rain=Number(d.rainFee)>0||/RAIN|SHOWER|THUNDER|DRIZZLE/i.test(String(d.conditionType||""));
-      const before=previous&&previous.validUntil>Date.now()?previous.rain:null;
-      state.storeWeather[restaurantId]={rain,validUntil:Math.max(Number(d.validUntil)||0,Date.now()+5*60*1000),readAt:Date.now()};
+      const kind=weatherKind(d.conditionType,d.rainFee),rain=kind==="rain"||kind==="heavy_rain"||kind==="thunder";
+      const before=previous&&previous.validUntil>Date.now()?previous.rain:null,beforeKind=previous&&previous.validUntil>Date.now()?previous.kind:"clear";
+      state.storeWeather[restaurantId]={rain,kind,validUntil:Math.max(Number(d.validUntil)||0,Date.now()+5*60*1000),readAt:Date.now()};
       if(before!==rain&&liveOrderRoute())render({preserveScroll:true});
-    }catch(_){state.storeWeather[restaurantId]={rain:false,validUntil:0,readAt:Date.now()};}
+      else if(beforeKind!==kind&&state.route==="home"&&!state.sheet&&!(document.activeElement&&/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)))render({preserveScroll:true});
+    }catch(_){state.storeWeather[restaurantId]={rain:false,kind:"clear",validUntil:0,readAt:Date.now()};}
   }
   function applyTrackingPlane(){
     const ms=state.trackingMap,card=document.getElementById("tracking-map-card"),plane=document.getElementById("tracking-map-plane");
     if(!ms||!card||!plane)return;
     const follow=trackingFollowActive(ms);
-    if(follow&&Number.isFinite(ms.riderHeading)){
-      // Turn the map the shorter way round, and ignore tiny wobbles in heading.
-      const delta=((ms.riderHeading-ms.bearing)%360+540)%360-180;
-      if(Math.abs(delta)>6)ms.bearing+=delta;
-    }
+    ms.bearing=0;
     plane.style.transform=trackingPlaneTransform(ms);
     card.classList.toggle("follow",follow);
     card.style.setProperty("--map-bearing",(follow?ms.bearing:0).toFixed(1)+"deg");
@@ -3844,7 +3964,7 @@
     const pose=status==="Arrived"?"wave":(!onTheRoad&&stillFor>25000?"park":"ride");
     return {avatar:String(order.riderAvatar||"blue"),heading:Number.isFinite(ms.riderHeading)?ms.riderHeading:0,
       bearing:follow?ms.bearing:0,elevation:follow?45:62,moving:fresh&&pose==="ride"&&stillFor<8000,pose,
-      night:trackingIsNight(),stale:!fresh,size:({16:120,15:108,14:96,13:88})[ms.zoom]||80};
+      night:trackingIsNight(),stale:!fresh,size:({16:84,15:76,14:68,13:62})[ms.zoom]||56};
   }
   // Live, or how long ago the rider's phone last sent a location (weak signal).
   function trackingSignalText(live,fresh){
@@ -3859,12 +3979,20 @@
     const route=trackingRoutePoints(order,live||{});
     return!!(route&&route.source==="google");
   }
+  function trackingCameraView(points,live){
+    const b=trackingFrameBounds(points,live);
+    if(b)return{center:trackingBoundsCenter(b),zoom:trackingFrameZoom(b)};
+    if(points.riderPoint)return{center:points.riderPoint,zoom:TRACKING_MAP_MAX_ZOOM};
+    const all=trackingAllPoints(points);
+    return all.length?fitTrackingMapView(all):null;
+  }
   function trackingMapState(order,points){
     const current=state.trackingMap;
     if(current&&current.orderId===order.id)return current;
-    const all=trackingAllPoints(points);
-    if(!all.length)return null;
-    const fitted=fitTrackingMapView(all);
+    // Frame this order's trip only, never the previous order's route.
+    state.trackingMap=null;
+    const fitted=trackingCameraView(points,state.tracking[order.id]||{});
+    if(!fitted)return null;
     state.trackingMap={orderId:order.id,zoom:fitted.zoom,anchorLat:fitted.center.lat,anchorLng:fitted.center.lng,
       panX:0,panY:0,userPanned:false,userZoomed:false,tileKey:"",tilePanX:0,tilePanY:0,tileTimer:null,
       mode:trackingCameraPreference(),bearing:0,lastRiderPoint:null,lastRiderMoveAt:0};
@@ -4145,11 +4273,33 @@
     const pad=8;
     return {minX:minX-pad,minY:minY-pad,width:Math.max(1,maxX-minX)+pad*2,height:Math.max(1,maxY-minY)+pad*2};
   }
-  function trackingRouteCoords(ms,route,frame,progress){
-    return trackingRemainingRoute(route,progress).map(point=>{
-      const p=trackingLocalPoint(ms,point);
-      return (p.x-frame.minX).toFixed(1)+","+(p.y-frame.minY).toFixed(1);
-    }).join(" ");
+  // India keeps left: the line runs along the left lane in the direction the
+  // partner is riding, not over the middle of the road. The shift is a few
+  // pixels and grows with zoom, as the roads on the tiles do.
+  function trackingLanePx(zoom){return ({16:2.6,15:2.1,14:1.6,13:1.2})[zoom]||0.9;}
+  function trackingLaneShift(pts,d){
+    if(pts.length<2||!d)return pts;
+    const normals=[];
+    for(let i=0;i<pts.length-1;i++){const dx=pts[i+1].x-pts[i].x,dy=pts[i+1].y-pts[i].y,len=Math.hypot(dx,dy);
+      // Screen y points down, so the left of travel (dx,dy) is (dy,-dx).
+      normals.push(len>0.05?{x:dy/len,y:-dx/len}:null);}
+    for(let i=1;i<normals.length;i++)if(!normals[i])normals[i]=normals[i-1];
+    for(let i=normals.length-2;i>=0;i--)if(!normals[i])normals[i]=normals[i+1];
+    if(!normals[0])return pts;
+    return pts.map((p,i)=>{
+      const a=normals[Math.max(0,i-1)],b=normals[Math.min(normals.length-1,i)];
+      let mx=a.x+b.x,my=a.y+b.y;const ml=Math.hypot(mx,my);
+      if(ml<0.05){mx=b.x;my=b.y;}else{mx/=ml;my/=ml;}
+      // Keep the corner the same distance from both roads, but never spike on a U-turn.
+      const k=d/Math.max(0.5,mx*b.x+my*b.y);
+      return {x:p.x+mx*k,y:p.y+my*k};
+    });
+  }
+  function trackingLanePoints(ms,route,progress){
+    return trackingLaneShift(trackingRemainingRoute(route,progress).map(point=>trackingLocalPoint(ms,point)),trackingLanePx(ms.zoom));
+  }
+  function trackingRouteCoords(ms,route,frame,progress,lane){
+    return (lane||trackingLanePoints(ms,route,progress)).map(p=>(p.x-frame.minX).toFixed(1)+","+(p.y-frame.minY).toFixed(1)).join(" ");
   }
   function trackingRouteMarkup(ms,order,live){
     const view=trackingRouteView(order,live);
@@ -4175,15 +4325,17 @@
     const view=trackingRouteView(order,live);
     if(!view)return;
     const route=view.route,progress=Number.isFinite(ms.routeProgress)?ms.routeProgress:0;
+    const lane=trackingLanePoints(ms,route,progress);
     const svg=card.querySelector(".map-route");
     if(svg){
-      const coords=trackingRouteCoords(ms,route,trackingRouteFrame(ms,route),progress);
+      const coords=trackingRouteCoords(ms,route,trackingRouteFrame(ms,route),progress,lane);
       const lines=svg.querySelectorAll("polyline");
       for(let i=0;i<lines.length;i++)lines[i].setAttribute("points",coords);
     }
     const rider=card.querySelector(".map-pin.rider");
     if(rider){
-      const local=trackingLocalPoint(ms,trackingPointAtProgress(route,progress));
+      // The scooter rides on the line, in the same lane.
+      const local=lane[0];
       rider.style.transition="none";
       rider.style.display="";
       rider.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
@@ -4396,7 +4548,7 @@
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
       +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","bike",fresh)
       +'</div></div>'
-      +'<div class="map-haze" aria-hidden="true"></div>'+(rain?'<div class="map-rain" aria-hidden="true"></div>':'')
+      +'<div class="map-haze" aria-hidden="true"></div>'+(rain?'<div class="map-rain'+(trackingRainHeavy(order)?' heavy':'')+'" aria-hidden="true"><b class="r1"></b><b class="r2"></b><b class="r3"></b></div>':'')
       // Zoom/recentre controls and the LIVE/STALE badge only make sense at
       // full size - omitting them in compact mode (rather than hiding with
       // CSS) also means a tap anywhere on the thumbnail always resolves to
@@ -4405,8 +4557,6 @@
       +(trackingGoogleRouteShown(order,live)?'<p class="map-beta">Bike route by Google (beta): some lanes may be missing.</p>':'')
       +'<div class="map-overlay"><span class="status-pill map-status-pill '+(fresh?'success':'warning')+'">'+h(trackingSignalText(live,fresh))+'</span><span class="map-attribution">© OpenStreetMap</span></div>'
       +'<div class="map-controls">'
-      +'<button type="button" class="map-control map-mode" data-action="tracking-camera-mode" aria-pressed="'+(ms.mode!=="north")+'" aria-label="'+(ms.mode==="north"?'Follow the rider':'Keep north at the top')+'">'
-        +(ms.mode==="north"?'<span class="map-mode-n">N</span>':'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 17-7-4-7 4z" fill="currentColor"/></svg>')+'</button>'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="1" aria-label="Zoom in">+</button>'
       +'<button type="button" class="map-control" data-action="tracking-zoom" data-delta="-1" aria-label="Zoom out">&#8722;</button>'
       +'<button type="button" class="map-control'+(ms.userPanned||ms.userZoomed?'':' hidden')+'" id="tracking-recenter" data-action="tracking-recenter" aria-label="Recentre the map">'+icon("target")+'</button>'
@@ -4480,43 +4630,19 @@
     const points=trackingGeoPoints(order,live);
     const all=trackingAllPoints(points);
     if(!all.length)return false;
-    // Only re-fit when the rider has actually moved outside the visible
-    // card, not on every tick. fitTrackingMapView(all) fits the restaurant,
-    // the door AND the rider into a fixed pixel budget - on a long "Out for
-    // delivery" leg the restaurant-to-door span is static, but the rider's
-    // own movement keeps nudging that same box past the threshold, so this
-    // used to re-fit (a full, unanimated re-render - the "jump") on nearly
-    // every GPS update. The camera now follows the rider (see
-    // trackingCameraFocus), so what actually matters is only whether the
-    // rider is still on screen at the current zoom - a genuinely rare event,
-    // not a per-tick one.
-    // Close to the door the map moves in, once, so the last few streets are
-    // easy to follow. A customer who has zoomed or panned keeps their view.
-    const nearDoor=["Near you","Arrived"].includes(order.status)||(points.riderPoint&&points.customerPoint
-      &&trackingDeliveryLegActive(order,live)&&trackingMetres(points.riderPoint,points.customerPoint)<350);
-    if(nearDoor&&!ms.arrivalZoomed&&!ms.userPanned&&!ms.userZoomed&&points.riderPoint&&points.customerPoint){
-      ms.arrivalZoomed=true;
-      if(ms.zoom<TRACKING_MAP_MAX_ZOOM){
-        ms.zoom=TRACKING_MAP_MAX_ZOOM;
-        ms.anchorLat=(points.riderPoint.lat+points.customerPoint.lat)/2;ms.anchorLng=(points.riderPoint.lng+points.customerPoint.lng)/2;
-        ms.panX=0;ms.panY=0;ms.tileKey="";
-        return false;
-      }
-    }
+    // The camera re-frames the remaining trip as the rider moves
+    // (trackingCameraFollow below) and steps its zoom with it: in as the trip
+    // gets shorter, out only if it would no longer fit. Zooming in waits for a
+    // little spare room so GPS wobble can't make it flip back and forth. A
+    // customer who has zoomed or panned keeps their own view.
     if(!ms.userPanned&&!ms.userZoomed&&points.riderPoint){
-      const size=trackingViewportSize(),margin=48;
-      const above=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100),below=size.height-above;
-      const local=trackingLocalPoint(ms,points.riderPoint);
-      // trackingLocalPoint() is anchor-relative; the camera pan (ms.panX/Y)
-      // is what actually places the rider on screen, so that has to be added
-      // back in before comparing against the viewport edges.
-      const screenX=local.x+ms.panX,screenY=local.y+ms.panY;
-      const riderOffScreen=Math.abs(screenX)>size.width/2-margin
-        ||screenY<-(above-margin)||screenY>below-margin;
-      if(riderOffScreen){
-        const fitted=fitTrackingMapView(all);
-        if(fitted.zoom<ms.zoom){
-          ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
+      const frame=trackingFrameBounds(points,live);
+      if(frame){
+        const fits=trackingFrameZoom(frame),roomy=trackingFrameZoom(frame,16);
+        const next=fits<ms.zoom?fits:(roomy>ms.zoom?roomy:ms.zoom);
+        if(next!==ms.zoom){
+          const c=trackingBoundsCenter(frame);
+          ms.zoom=next;ms.anchorLat=c.lat;ms.anchorLng=c.lng;
           ms.panX=0;ms.panY=0;ms.tileKey="";
           return false;
         }
@@ -4580,9 +4706,8 @@
     const order=orderById(ms.orderId);
     if(!order)return;
     const points=trackingGeoPoints(order,state.tracking[ms.orderId]||{});
-    const all=trackingAllPoints(points);
-    if(!all.length)return;
-    const fitted=fitTrackingMapView(all);
+    const fitted=trackingCameraView(points,state.tracking[ms.orderId]||{});
+    if(!fitted)return;
     ms.userPanned=false;ms.userZoomed=false;ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
     ms.panX=0;ms.panY=0;ms.tileKey="";
     render({preserveScroll:true});
@@ -4603,6 +4728,7 @@
     if(!liveOrderRoute())return;
     const card=trackingMapCard(event.target);
     if(!card)return;
+    if(!state.trackingMapCollapsed)holdTrackingMapOpen();
     if(event.target.closest(".map-controls")||event.target.closest(".map-overlay"))return;
     const ms=state.trackingMap;
     if(!ms)return;
@@ -4718,7 +4844,10 @@
   // live outside `state` on purpose: they are timer ids / counters, not data
   // that should ever be persisted, diffed, or trigger a render by themselves.
   let trackingIdleTimer=null, trackingCarouselTimer=null, trackingCarouselIndex=0, trackingExpandCount=0;
-  const TRACKING_IDLE_SCHEDULE_MS=[6000,16000], TRACKING_CAROUSEL_INTERVAL_MS=4500;
+  // Opens on the full map for a second, then the sponsored screen with the
+  // small map. Opened again by the customer it stays 4 s, then 8 s; from the
+  // third time on (or while they are moving or zooming it) it stays open.
+  const TRACKING_FIRST_LOOK_MS=1000, TRACKING_IDLE_SCHEDULE_MS=[4000,8000], TRACKING_CAROUSEL_INTERVAL_MS=4500;
   function stopTrackingCollapseCycle(){
     clearTimeout(trackingIdleTimer);trackingIdleTimer=null;
     clearInterval(trackingCarouselTimer);trackingCarouselTimer=null;
@@ -4737,11 +4866,14 @@
   // collapse/expand and must not restart the progression each time. Opens
   // straight into the ad carousel: nothing to idle out of, so no timer here.
   function startTrackingCollapseCycle(){
-    state.trackingMapCollapsed=true;
+    state.trackingMapCollapsed=false;
     trackingCarouselIndex=0;
     trackingExpandCount=0;
     stopTrackingCollapseCycle();
+    armTrackingIdleTimer(TRACKING_FIRST_LOOK_MS);
   }
+  /** Someone moving or zooming the map is watching it: don't fold it away. */
+  function holdTrackingMapOpen(){clearTimeout(trackingIdleTimer);trackingIdleTimer=null;}
   function collapseTrackingMap(){
     if(state.trackingMapCollapsed)return;
     state.trackingMapCollapsed=true;
@@ -4847,13 +4979,40 @@
   }
 
   function promoCard(promo) {
-    const eligibility=(promotionMinimum(promo)?"Minimum order "+money(promotionMinimum(promo)):"No minimum order")+" · "+promotionSponsor(promo);
-    return '<article class="card brand-card stack"><div class="cluster between"><span class="eyebrow" style="color:#bfe9ff">'+h(promo.label||"LIVE OFFER")+'</span><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(promo.code||"Offer")+'</span></div><h2 class="section-title" style="font-size:25px">'+h(promo.title||(promo.kind==="flat"?money(Number(promo.flatAmountPaise||0)/100)+" off":(promo.percent||0)+"% off"))+'</h2><p class="supporting">'+h(promo.description||eligibility)+'</p>'+(promo.description?'<p class="caption" style="color:#dbeafe">'+h(eligibility)+'</p>':'')+'<button class="button" style="background:white;color:#155eef" data-action="use-promo" data-promo-id="'+h(promo.id)+'">Use '+h(promo.code||"offer")+'</button></article>';
+    const dishes=(promo.itemNames||[]).filter(Boolean);
+    const eligibility=(dishes.length?"On "+dishes.slice(0,3).join(", ")+(dishes.length>3?" and more":"")+" · ":"")+(promotionMinimum(promo)?"Minimum order "+money(promotionMinimum(promo)):"No minimum order")+" · "+promotionSponsor(promo);
+    return '<article class="card brand-card stack"><div class="cluster between"><span class="eyebrow" style="color:#bfe9ff">'+h(promotionTargeted(promo)?"JUST FOR YOU":(promo.label||"LIVE OFFER"))+'</span><span class="status-pill" style="background:rgba(255,255,255,.17);color:white">'+h(promo.code||"Offer")+'</span></div><h2 class="section-title" style="font-size:25px">'+h(promo.title||(promo.kind==="flat"?money(Number(promo.flatAmountPaise||0)/100)+" off":(promo.percent||0)+"% off"))+'</h2><p class="supporting">'+h(promo.description||eligibility)+'</p>'+(promo.description?'<p class="caption" style="color:#dbeafe">'+h(eligibility)+'</p>':'')+'<button class="button" style="background:white;color:#155eef" data-action="use-promo" data-promo-id="'+h(promo.id)+'">Use '+h(promo.code||"offer")+'</button></article>';
   }
   function offersCashbackSection(){if(!state.walletData&&!state.walletLoading)setTimeout(()=>loadWallet(false),0);const w=state.walletData&&state.walletData.wallet;if(!w)return"";return(w.cashbackCampaigns.length?'<section class="stack"><h2 class="section-title">Cashback</h2>'+w.cashbackCampaigns.map(cashbackOfferCard).join("")+'</section>':'')+'<button class="settings-row card" data-action="go" data-route="wallet"><span class="settings-icon">'+icon("wallet")+'</span><span class="grow"><strong>Wallet '+paise(w.balancePaise)+'</strong><span class="supporting">Cashback, referral rewards and expiry dates</span></span>'+icon("chevron","small")+'</button>'}
+  const DOB_MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function aboutYouFields(d){const g=d&&d.updatedAt?String(d.gender||""):null,parts=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d&&d.birthDate||""))||[],y0=new Date().getFullYear()-18,pad=n=>String(n).padStart(2,"0");
+    const opt=(v,l,sel)=>'<option value="'+v+'"'+(sel?' selected':'')+'>'+l+'</option>';
+    return'<fieldset class="field" style="border:0;padding:0;margin:0"><legend class="field-label">Gender</legend><div class="chip-row about-chips">'+[["female","Woman"],["male","Man"],["other","Other"],["none","Prefer not to say"]].map(([v,l])=>'<label class="chip"><input class="sr-only" type="radio" name="gender" value="'+v+'"'+(g!==null&&(v==="none"?g==="":g===v)?' checked':'')+'>'+l+'</label>').join("")+'</div></fieldset>'
+      +'<fieldset class="field" style="border:0;padding:0;margin:0"><legend class="field-label">Date of birth</legend><div class="dob-row">'
+      +'<select class="select" name="dobDay" aria-label="Day">'+opt("","Day",!parts[3])+Array.from({length:31},(_,i)=>opt(pad(i+1),i+1,parts[3]===pad(i+1))).join("")+'</select>'
+      +'<select class="select" name="dobMonth" aria-label="Month">'+opt("","Month",!parts[2])+DOB_MONTHS.map((m,i)=>opt(pad(i+1),m,parts[2]===pad(i+1))).join("")+'</select>'
+      +'<select class="select" name="dobYear" aria-label="Year">'+opt("","Year",!parts[1])+Array.from({length:y0-1929},(_,i)=>opt(String(y0-i),y0-i,parts[1]===String(y0-i))).join("")+'</select></div>'
+      +'<span class="caption">You need to be 18 or older.</span></fieldset>'
+      +'<p class="caption about-notice">We use your gender and age only to show you offers made for you and to improve Scraveit. They are never shared with restaurants or riders, and you can remove them any time in Account › About you.</p>'}
+  function aboutYouSheet(){return sheetShell("About you","Helps us show you offers made for you.",'<form id="about-you-form" class="form-grid">'+aboutYouFields(state.demographics)+'<button class="button primary full" type="submit">Agree and save</button>'+(state.demographics?'<button type="button" class="button secondary full" data-action="about-you-remove">Remove my details</button>':'')+'</form>')}
+  function screenAboutYou(){return'<main class="screen about-step"><div class="screen-content page-stack"><header class="stack" style="gap:8px"><p class="eyebrow">One quick step</p><h1 class="page-title">Tell us about you</h1><p class="supporting">So we can show you offers made for you. It takes about 10 seconds.</p></header>'
+    +'<form id="about-you-form" class="card form-grid" data-step="1">'+aboutYouFields(state.demographics)+'<button class="button primary full" type="submit">Agree and continue</button><button type="button" class="button secondary full" data-action="about-you-skip">Skip for now</button></form></div></main>'}
+  async function saveAboutYou(form){const fd=new FormData(form),raw=fd.get("gender"),gender=raw==="none"?"":String(raw||""),day=String(fd.get("dobDay")||""),month=String(fd.get("dobMonth")||""),year=String(fd.get("dobYear")||""),birthDate=day&&month&&year?year+"-"+month+"-"+day:"";
+    if(raw==null){toast("Choose your gender, or Prefer not to say.","danger");return}
+    if(!birthDate){toast("Add your date of birth.","danger");return}
+    const real=new Date(Number(year),Number(month)-1,Number(day));
+    if(real.getDate()!==Number(day)){toast("That date doesn't exist. Check the day and month.","danger");return}
+    const age=ageFromBirthDate(birthDate);if(age==null||age<18){toast("You need to be 18 or older to add this.","danger");return}
+    const prev=state.demographics,doc={gender,birthDate,consent:true,edits:prev?Number(prev.edits||0)+1:0,updatedAt:Date.now()};
+    const button=form.querySelector("button[type=submit]");if(button)button.disabled=true;
+    try{await demoDoc().set(doc);state.demographics=doc;state.aboutYouPending=false;toast("Thanks! Offers made for you will show up in Offers.","success");
+      if(form.dataset.step)go("home",{},true);else{closeSheet();render({preserveScroll:true})}}
+    catch(_){if(button)button.disabled=false;toast(prev&&Number(prev.edits||0)>=4?"These details were changed too many times. Ask support to change them.":"Couldn't save. Check your connection and try again.","danger")}}
+  async function removeAboutYou(){try{await demoDoc().delete();state.demographics=null;closeSheet();toast("Removed. We no longer use your gender or age.","success");render({preserveScroll:true})}catch(_){toast("Couldn't remove. Try again.","danger")}}
   function screenOffers() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Savings</p><h1 class="page-title">Offers with clear terms.</h1><p class="supporting" style="margin-top:7px">Only active promotions published by Scraveit Control appear here.</p></header>'
-      +(state.promotions.length?'<section class="stack-lg">'+state.promotions.map(promoCard).join("")+'</section>':emptyState("offers","No live offers right now","We will show a promotion here only when its eligibility and discount are actually active.","go-home","Browse restaurants"))
+      +(state.session&&!state.demographics?'<button class="card about-you-nudge" data-action="about-you"><span class="settings-icon">'+icon("star")+'</span><span class="grow"><strong>Get offers made for you</strong><span class="supporting">Tell us your age and gender. Optional, and you can remove it any time.</span></span>'+icon("chevron","small")+'</button>':'')
+      +(state.promotions.filter(promotionForMe).length?'<section class="stack-lg">'+state.promotions.filter(promotionForMe).map(promoCard).join("")+'</section>':emptyState("offers","No live offers right now","We will show a promotion here only when its eligibility and discount are actually active.","go-home","Browse restaurants"))
       +offersCashbackSection()
       +'<section class="card stack"><h2 class="section-title">How offers work</h2><div class="notice info">'+icon("info","small")+'<span>Eligibility is checked again against the live promotion at checkout. Expired or restaurant-limited codes are never shown as applied.</span></div></section></div>'+nav()+'</main>';
   }
@@ -4864,7 +5023,7 @@
   function screenAccount() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></header>'
       +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18)">'+h(initials())+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
-      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
+      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
       +'<section class="card settings-list">'+settingsRow("settings","Preferences","Theme, dietary and notifications","preferences")+settingsRow("help","Help and support","Order issues and account help","support")+settingsRow("shield","Privacy and terms","Data use, rights and service terms","legal")+'</section>'
       +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account request","Request permanent account and data deletion",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
       +'<p class="caption" style="text-align:center">Scraveit Customer<br>Your account and orders sync securely across sessions.</p></div>'+nav()+'</main>';
@@ -4919,7 +5078,7 @@
 
   function screenReview() {
     const order=orderById();if(!order)return screenOrders();
-    const saved=state.reviews[order.id]||null,restaurantRating=Number(saved&&saved.rating||0),riderRating=Number(saved&&saved.riderRating||0);
+    const saved=state.reviews[order.id]||null,restaurantRating=Number(saved&&saved.rating||!saved&&state.routeData&&state.routeData.rating||0),riderRating=Number(saved&&saved.riderRating||0);
     if(!saved&&!reviewStateReady())return '<main class="screen"><div class="screen-content page-stack">'+topbar("Rate your delivery",order.restaurant||order.id)+loadingRow("Checking whether feedback was already submitted…")+'</div>'+nav()+'</main>';
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Rate your delivery",order.restaurant||order.id)
       +'<form id="review-form" class="card form-grid">'
@@ -5024,6 +5183,7 @@
     else if(sheet.type==="addressPicker")html=addressPickerSheet();
     else if(sheet.type==="deleteAddress")html=deleteAddressSheet(sheet);
     else if(sheet.type==="profile")html=profileSheet();
+    else if(sheet.type==="aboutYou")html=aboutYouSheet();
     else if(sheet.type==="forgot")html=forgotSheet();
     else if(sheet.type==="cancel")html=cancelSheet(sheet);
     else if(sheet.type==="deletion")html=deletionSheet();
@@ -5267,7 +5427,7 @@
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
-    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet
+    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou
   });
 
   async function refreshAll() {
@@ -5345,11 +5505,12 @@
     if(action==="home-kind"){state.homeKind=control.dataset.value||"restaurant";if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
     if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
-    if(action==="quick-rate"){go("review",{orderId:control.dataset.orderId});return;}
+    if(action==="capsule-dismiss"){slideCapsuleAway(control.closest(".home-capsule"),1);return;}
+    if(action==="quick-rate"){go("review",{orderId:control.dataset.orderId,rating:Number(control.dataset.rating)||0});return;}
     if(action==="escalate-support"){escalateSupport();return;}
     if(action==="back"){goBack();return;}
-    if(action==="tracking-zoom"){trackingZoomBy(Number(control.dataset.delta||0));return;}
-    if(action==="tracking-recenter"){trackingRecenter();return;}
+    if(action==="tracking-zoom"){holdTrackingMapOpen();trackingZoomBy(Number(control.dataset.delta||0));return;}
+    if(action==="tracking-recenter"){holdTrackingMapOpen();trackingRecenter();return;}
     if(action==="tracking-camera-mode"){const ms=state.trackingMap;if(ms){ms.mode=ms.mode==="north"?"follow":"north";ms.userPanned=false;ms.tileKey="";
       try{localStorage.setItem(TRACKING_CAMERA_KEY,ms.mode);}catch(_){}render({preserveScroll:true});}return;}
     if(action==="tracking-expand-map"){expandTrackingMap();return;}
@@ -5468,6 +5629,9 @@
     if(action==="review-order"){go("review",{orderId:control.dataset.orderId});return;}
     if(action==="support-order"){go("support",{orderId:control.dataset.orderId});return;}
     if(action==="cancel-order"){setSheet({type:"cancel",orderId:control.dataset.orderId});return;}
+    if(action==="about-you"){setSheet({type:"aboutYou"});return;}
+    if(action==="about-you-skip"){try{localStorage.setItem(ABOUT_SKIP_KEY+state.session.uid,String(Date.now()))}catch(_){}state.aboutYouPending=false;go("home",{},true);return;}
+    if(action==="about-you-remove"){removeAboutYou();return;}
     if(action==="use-promo"){const promo=state.promotions.find(p=>p.id===control.dataset.promoId);if(promo){state.coupon=promo;toast("Offer ready for an eligible cart.","success");go("home");}return;}
     if(action==="edit-profile"){setSheet({type:"profile"});return;}
     if(action==="payment-info"){setSheet({type:"payment"});return;}
@@ -5674,6 +5838,7 @@
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
     if(form.id==="referral-form")applyReferral(form);
     else if(form.id==="login-form")submitLogin(form);
+    else if(form.id==="about-you-form")saveAboutYou(form);
     else if(form.id==="signup-form")submitSignup(form);
     else if(form.id==="reset-form")submitReset(form);
     else if(form.id==="item-form")submitItem(form);
