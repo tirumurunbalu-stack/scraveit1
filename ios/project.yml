@@ -1,0 +1,58 @@
+# Scraveit iOS apps. Generate the Xcode project with:  cd ios && xcodegen
+# Each app is a native shell around the same web screens the Android app
+# ships (native_android/<app>/src/main/assets), copied in at build time so
+# both platforms always run identical screens.
+name: Scraveit
+options:
+  bundleIdPrefix: in.scraveit
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: "12.19.0"
+targets:
+  Customer:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: Customer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.scraveit.customer
+        PRODUCT_NAME: Scraveit
+        INFOPLIST_FILE: Customer/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+    postCompileScripts:
+      - name: Copy web screens
+        script: |
+          set -e
+          WWW="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/www"
+          mkdir -p "$WWW"
+          rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/app/src/main/assets/" "$WWW/"
+          rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/shared/web/" "$WWW/"
+        basedOnDependencyAnalysis: false
+schemes:
+  Customer:
+    build:
+      targets:
+        Customer: all
+    run:
+      config: Debug
+    archive:
+      config: Release

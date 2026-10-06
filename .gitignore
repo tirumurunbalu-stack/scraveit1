@@ -70,3 +70,9 @@ native_android.zip
 # Local tool caches and installed dependencies
 **/node_modules/
 **/.wrangler/
+
+# iOS: the Xcode project is generated from ios/project.yml (xcodegen)
+ios/*.xcodeproj/
+ios/build/
+ios/DerivedData/
+xcuserdata/
