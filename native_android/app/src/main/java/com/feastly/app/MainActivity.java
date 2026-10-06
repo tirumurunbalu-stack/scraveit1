@@ -154,7 +154,8 @@ public class MainActivity extends ComponentActivity {
     webView = view;
     view.setVisibility(View.INVISIBLE);
     view.setVerticalScrollBarEnabled(false);
-    view.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+    // No stretch/glow at the ends: it read as the page dragging down and springing back.
+    view.setOverScrollMode(View.OVER_SCROLL_NEVER);
     view.setNestedScrollingEnabled(true);
     WebSettings settings = view.getSettings();
     settings.setJavaScriptEnabled(true);

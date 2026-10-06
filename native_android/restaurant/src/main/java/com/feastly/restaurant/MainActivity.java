@@ -106,6 +106,10 @@ public class MainActivity extends ComponentActivity {
     root.setBackgroundColor(Color.WHITE);
 
     WebView view = new WebView(this);
+
+    // No stretch/glow at the ends: it read as the page dragging down and springing back.
+
+    view.setOverScrollMode(View.OVER_SCROLL_NEVER);
     webView = view;
     view.setVisibility(View.INVISIBLE);
     WebSettings settings = view.getSettings();

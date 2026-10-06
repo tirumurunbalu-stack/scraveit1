@@ -374,6 +374,8 @@
     }
   };
 
+  /** Google sign-in runs through the phone's own Google account picker; a build without it hides the button. */
+  function googleSignInAvailable(){return !!(window.FeastlyNative&&typeof window.FeastlyNative.signInWithGoogle==="function");}
   function nativeAvailable(operation) {
     return !!(window.FeastlyNative && typeof window.FeastlyNative[operation] === "function");
   }
@@ -2236,7 +2238,7 @@
       +'<section class="welcome2-copy"><p class="welcome2-eyebrow">'+h(theme.kind==="festival"?theme.head:"Hungry? Same.")+'</p><h1>Cravings,<br>sorted in minutes.</h1>'
         +'<p>Nellore’s favourite kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
         +(mascot?'<span class="welcome2-chip">Today’s rider · '+h(mascot.rider)+' 👋</span>':'')+'</section>'
-      +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button><div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button><p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
+      +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button>'+(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')+'<p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
       +'</main>';
   }
 
@@ -2252,7 +2254,7 @@
       +passwordField("login-password","Password","current-password")
       +'<div class="cluster between"><label class="cluster supporting"><input type="checkbox" checked disabled> Keep me signed in</label><button type="button" class="text-button" data-action="forgot-password">Forgot password?</button></div>'
       +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Signing in…':'Sign in securely')+'</button></form>'
-      +'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>'
+      +(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')
       +'<p class="supporting" style="text-align:center">New to Scraveit? <button class="text-button" data-action="go" data-route="signup">Create an account</button></p></div>'
       +'<p class="caption" style="text-align:center">Protected by Firebase Authentication. Scraveit never sees your password.</p></main>';
   }
@@ -2264,7 +2266,7 @@
       +passwordField("signup-password","Create password","new-password")+passwordField("signup-confirm","Confirm password","new-password")
       +'<label class="notice info"><input id="signup-consent" type="checkbox" required><span>I agree to the Terms of Service and acknowledge the Privacy Notice.</span></label>'
       +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Creating account…':'Create my account')+'</button></form>'
-      +'<div class="divider" style="margin:22px 0">or</div><button class="button tonal full" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Sign up with Google</button></div></main>';
+      +(googleSignInAvailable()?'<div class="divider" style="margin:22px 0">or</div><button class="button tonal full" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Sign up with Google</button>':'')+'</div></main>';
   }
   function screenVerifyEmail() {
     return '<main class="screen no-nav auth-screen"><div class="screen-content auth-card">'+authHeader("Verify your email.","Open the newest Scraveit verification message sent to your account, then return here.")

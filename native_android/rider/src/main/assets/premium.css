@@ -229,3 +229,6 @@ img.avatar-face { object-fit: cover; background: #eef2fb; }
 @keyframes toast-pop{from{opacity:0;transform:translateY(6px) scale(.97)}}
 @keyframes toast-out{to{opacity:0;transform:translateY(4px)}}
 @media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
+
+/* No bounce or stretch at the top and bottom of a page. */
+html,body,#app,#app>main{overscroll-behavior-y:none}

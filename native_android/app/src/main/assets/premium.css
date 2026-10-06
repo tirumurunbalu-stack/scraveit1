@@ -832,7 +832,10 @@ body {
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: none;
-  overscroll-behavior-y: contain;
+  /* none, not contain: contain still lets the phone bounce/stretch this
+     scroller at the top and bottom, which looked like the page dragging
+     down by itself and springing back. */
+  overscroll-behavior-y: none;
   touch-action: pan-y;
   scrollbar-width: none;
   /* Scroll anchoring stays enabled (the browser default): renders now update
@@ -860,7 +863,7 @@ body {
 /* Keyboard mode: the WebView is resized by Android adjustResize, so the same
    route scroller can reveal the focused field inside the smaller viewport. */
 html.keyboard-open #app > main {
-  overscroll-behavior-y: contain;
+  overscroll-behavior-y: none;
   scroll-padding-top: 28px;
   scroll-padding-bottom: 32px;
 }
