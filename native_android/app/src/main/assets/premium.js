@@ -1477,12 +1477,7 @@
   }
   function stopPolling() { state.timers.forEach(clearInterval); state.timers = []; stopRealtime(); stopSquadOrderWatch(); dineInStop(); }
 
-  function toast(message, type) {
-    clearTimeout(state.toastTimer);
-    toastRegion.innerHTML = '<div class="toast '+h(type||"")+'">'+h(message)+'</div>';
-    const durationMs = type === "success" ? 900 : 5000;
-    state.toastTimer = setTimeout(()=>{ toastRegion.innerHTML=""; }, durationMs);
-  }
+  function toast(msg,type){clearTimeout(state.toastTimer);const kind=type==="success"?"success":type==="danger"?"danger":type==="warning"?"warning":"info",mark=kind==="success"?'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':kind==="info"?'':'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.6v5.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg></span>';const text=kind==="success"?String(msg||"").split(/(?<=[.!])\s+/)[0].replace(/\.$/,""):msg;toastRegion.innerHTML='<div class="toast '+kind+'">'+mark+'<span class="toast-text">'+h(text)+'</span></div>';state.toastTimer=setTimeout(()=>{const t=toastRegion.firstElementChild;if(!t)return;t.classList.add("out");setTimeout(()=>{if(toastRegion.firstElementChild===t)toastRegion.innerHTML=""},200)},kind==="success"?1500:kind==="info"?2600:4000)}
   function setSheet(sheet) { state.sheet = sheet; renderSheet(); }
   function closeSheet() { state.sheet = null; renderSheet(); if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
   // Without this, an uncaught exception inside an event handler (a form
@@ -2647,7 +2642,16 @@
 
     return list;
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · ");return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async" fetchpriority="auto" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button><span class="rc2-eta">'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed')+'</span></div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating">'+h(ratingText)+' ★</span></div><p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+(cuisines?' · ':'')+(fee===0?'Free delivery':money(fee)+' delivery')+'</p></div></article>'}
+  /** A store's cover photos on its card: swipe sideways through them, with
+   *  dots to show where you are. One photo stays a plain image. */
+  function cardPhotosMarkup(r){
+    const fallback=' onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"';
+    const photos=(Array.isArray(r.coverImages)?r.coverImages:[]).filter(Boolean).slice(0,6);
+    if(photos.length<2)return'<img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async"'+fallback+'>';
+    return'<div class="photo-track">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||url):url,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
+      +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===0?' class="on"':'')+'></span>').join("")+'</div>';
+  }
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · ");return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button><span class="rc2-eta">'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed')+'</span></div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating">'+h(ratingText)+' ★</span></div><p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+(cuisines?' · ':'')+(fee===0?'Free delivery':money(fee)+' delivery')+'</p></div></article>'}
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenStoreKind(kind) {
@@ -2908,17 +2912,32 @@
 
   // ---- the Craving Wheel ---------------------------------------------------
   const WHEEL_COLORS=["#1460F0","#FF8FB8","#8FE3CF","#F4A83A","#6E9BFF","#FFB3CF","#7FD8C1","#FFD27A"];
-  function wheelPicks(){
+  // The wheel is built from dishes, not one slot per restaurant, so two or
+  // three open restaurants still make a full wheel. Each restaurant's dishes
+  // are taken in turn so one big menu can't fill every slot.
+  function wheelPool(){
     const open=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false);
-    const shuffled=open.slice().sort(()=>Math.random()-0.5).slice(0,8),picks=[];
-    shuffled.forEach(r=>{const items=discoveryItems(r).filter(i=>i.available!==false&&String(i.name||"").trim());
-      const item=(items.filter(i=>i.popular)[0])||items[(Math.random()*items.length)|0];
-      const label=item?String(item.name).split(/\s+/).slice(0,2).join(" "):String((r.cuisines||[])[0]||r.name);
-      picks.push({restaurantId:r.id,label:label.length>13?label.slice(0,12)+"…":label,dish:item?item.name:"",name:r.name});});
-    return picks;
+    return open.map(r=>{const seen=new Set();const items=discoveryItems(r).filter(i=>{const k=String(i&&i.name||"").trim().toLowerCase();if(!k||i.available===false||seen.has(k))return false;seen.add(k);return true;});return{r,items};});
+  }
+  function wheelSlots(pool){return pool.reduce((n,p)=>n+(p.items.length||1),0);}
+  function wheelPicks(){
+    const pool=wheelPool().map(p=>({r:p.r,items:p.items.slice().sort(()=>Math.random()-0.5).sort((a,b)=>(b.popular?1:0)-(a.popular?1:0))}));
+    const picks=[],cut=t=>t.length>13?t.slice(0,12)+"…":t;
+    for(let round=0;picks.length<8;round++){
+      let added=false;
+      pool.forEach(p=>{if(picks.length>=8)return;
+        if(!p.items.length){if(round===0){picks.push({restaurantId:p.r.id,label:cut(String((p.r.cuisines||[])[0]||p.r.name)),dish:"",name:p.r.name});added=true;}return;}
+        const item=p.items[round];if(!item)return;
+        picks.push({restaurantId:p.r.id,label:cut(String(item.name).split(/\s+/).slice(0,2).join(" ")),dish:item.name,name:p.r.name});added=true;});
+      if(!added)break;
+    }
+    return picks.sort(()=>Math.random()-0.5);
   }
   function wheelCard(){
-    const count=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false).length;if(count<3)return"";
+    // Home only holds a short preview of each menu. While a restaurant's full
+    // menu isn't loaded we can't count its dishes yet, so the card stays and
+    // Spin loads the menus first.
+    const pool=wheelPool();if(!pool.length||(wheelSlots(pool)<3&&!pool.some(p=>!p.r.menuLoaded)))return"";
     return'<button class="wheel-card" data-action="open-wheel"><span class="wheel-mini" aria-hidden="true"></span><span class="grow"><strong>Can’t decide?</strong><span>Spin the Craving Wheel</span></span><span class="wheel-spin-pill">Spin</span></button>';
   }
   function wheelSvg(items){
@@ -2931,6 +2950,7 @@
   }
   function wheelSheet(){
     const w=state.wheel||{items:[]},pick=w.result!=null?w.items[w.result]:null,r=pick?restaurant(pick.restaurantId):null,slot=daySlot();
+    if(w.loading)return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div><h2 class="title" style="text-align:center">Craving Wheel</h2>'+loadingRow("Getting today’s dishes…")+'</section></div>';
     const word=slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night";
     return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div>'
       +'<h2 class="title" style="text-align:center">Craving Wheel</h2><p class="supporting" style="text-align:center">Spin and let Nellore decide</p>'
@@ -2941,13 +2961,32 @@
         :'<p class="caption" style="text-align:center">'+(w.spinning?'Spinning…':'Tap SPIN in the middle')+'</p>')
       +'</section></div>';
   }
-  function openWheel(){state.wheel={items:wheelPicks(),rotation:0,spinning:false,result:null};if(state.wheel.items.length<3){toast("Not enough places are open right now to spin.","danger");return;}setSheet({type:"wheel"});}
+  async function openWheel(){
+    let items=wheelPicks();
+    const unloaded=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false&&!r.menuLoaded);
+    if(items.length<3&&unloaded.length){
+      state.wheel={items:[],rotation:0,spinning:false,result:null,loading:true};setSheet({type:"wheel"});
+      await Promise.allSettled(unloaded.slice(0,8).map(r=>ensureRestaurantMenu(r.id)));
+      if(!state.sheet||state.sheet.type!=="wheel")return;
+      items=wheelPicks();
+    }
+    if(items.length<3){if(state.sheet&&state.sheet.type==="wheel")closeSheet();toast("Not enough dishes are on the menus right now to spin.","danger");render({preserveScroll:true});return;}
+    state.wheel={items,rotation:0,spinning:false,result:null};
+    if(state.sheet&&state.sheet.type==="wheel")renderSheet();else setSheet({type:"wheel"});
+  }
   function spinWheel(){
     const w=state.wheel;if(!w||w.spinning||!w.items.length)return;
     const n=w.items.length,idx=(Math.random()*n)|0,seg=360/n,landing=-(idx+0.5)*seg,current=Number(w.rotation||0);
-    const offset=((landing-current)%360+360)%360;w.rotation=current+360*(prefersCalm()?1:5)+offset;w.spinning=true;w.result=null;
+    const offset=((landing-current)%360+360)%360,target=current+360*(prefersCalm()?1:5)+offset;w.spinning=true;w.result=null;
+    // Draw the spinning state with the wheel where it stands now, then turn
+    // it: a dial drawn already at its final angle has nothing to animate,
+    // which is why the wheel used to just jump.
     renderSheet();
-    requestAnimationFrame(()=>{const dial=document.getElementById("wheel-dial");if(dial)dial.style.transform="rotate("+w.rotation.toFixed(1)+"deg)";});
+    w.rotation=target;
+    // Remember the sheet as it is now, so a background refresh during the
+    // spin doesn't rebuild the dial and snap it to the end.
+    lastSheetHtml=wheelSheet();
+    requestAnimationFrame(()=>{const dial=document.getElementById("wheel-dial");if(!dial)return;void dial.offsetWidth;dial.style.transform="rotate("+target.toFixed(1)+"deg)";});
     haptic(10);
     setTimeout(()=>{if(state.wheel!==w)return;w.spinning=false;w.result=idx;renderSheet();confetti({count:110,y:window.innerHeight*0.45});haptic(35);},prefersCalm()?400:3800);
   }
@@ -5172,8 +5211,9 @@
   function paymentInfoSheet() {
     return sheetShell("Payment methods","Only verified payment options are shown as available.",'<div class="stack"><div class="notice success">'+icon("receipt","small")+'<div><strong>Cash on delivery</strong><div class="caption">Available for eligible orders.</div></div></div><div class="notice info">'+icon("card","small")+'<div><strong>UPI</strong><div class="caption">'+h(paymentMethodCopy("upi"))+'</div></div></div><div class="notice info">'+icon("card","small")+'<div><strong>Cards</strong><div class="caption">'+h(paymentMethodCopy("card"))+'</div></div></div><button class="button primary full" data-action="close-sheet">Done</button></div>');
   }
+  let lastSheetHtml="";
   function renderSheet() {
-    if(!state.sheet){sheetRegion.innerHTML="";return;}
+    if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";return;}
     const sheet=state.sheet;let html="";
     if(sheet.type==="filters")html=filterSheet();
     else if(sheet.type==="menuFilters")html=menuFilterSheet();
@@ -5200,6 +5240,10 @@
     else if(sheet.type==="squadStart")html=squadStartSheet();
     else if(sheet.type==="dineBook")html=dineBookSheet(sheet);
     else if(sheet.type==="tableRound")html=tableRoundSheet();
+    // The wheel is left alone when nothing on it changed: rebuilding it would
+    // restart a spin in progress.
+    if(sheet.type==="wheel"&&html===lastSheetHtml&&sheetRegion.firstElementChild)return;
+    lastSheetHtml=html;
     sheetRegion.innerHTML=html;
     if(html)requestAnimationFrame(()=>{const focus=sheetRegion.querySelector("input,select,textarea,button");if(focus)focus.focus({preventScroll:true});});
   }
@@ -5725,7 +5769,9 @@
   window.addEventListener("pointermove",adSwipeMove,{passive:true});
   window.addEventListener("pointerup",adSwipeEnd);
   window.addEventListener("pointercancel",adSwipeEnd);
-  app.addEventListener("scroll",event=>{if(event.target&&event.target.classList&&event.target.classList.contains("ad-rail-track")){adRailTouchedAt=Date.now();syncAdRailDots(event.target);}},true);
+  app.addEventListener("scroll",event=>{if(event.target&&event.target.classList&&event.target.classList.contains("ad-rail-track")){adRailTouchedAt=Date.now();syncAdRailDots(event.target);}},true)
+  // Card photo strips: light the dot for the photo in view.
+  app.addEventListener("scroll",event=>{const t=event.target;if(!t||!t.classList||!t.classList.contains("photo-track"))return;const dots=t.nextElementSibling;if(!dots||!dots.classList.contains("photo-dots"))return;const i=Math.round(t.scrollLeft/Math.max(1,t.clientWidth));Array.from(dots.children).forEach((d,n)=>d.classList.toggle("on",n===i));},true);
   app.addEventListener("touchstart",event=>{if(event.target.closest&&event.target.closest(".ad-rail-track"))adRailTouchedAt=Date.now();},{passive:true});
   document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
   document.addEventListener("pointerup",trackingMapPointerUp);

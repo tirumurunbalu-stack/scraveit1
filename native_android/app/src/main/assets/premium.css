@@ -1084,6 +1084,14 @@ em, .display em, .page-title em { font-family: var(--font-serif); font-style: it
 .restaurant-card.rc2 { display: block; padding: 0; overflow: hidden; border-radius: 24px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-soft); min-height: 0; }
 .rc2-media { position: relative; aspect-ratio: 16 / 9; background: var(--surface-soft); }
 .rc2-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Several cover photos: a strip you swipe through, one photo at a time. */
+.rc2-media .photo-track { display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; }
+.rc2-media .photo-track::-webkit-scrollbar { display: none; }
+.rc2-media .photo-track img { flex: 0 0 100%; scroll-snap-align: center; scroll-snap-stop: always; }
+.rc2-media .photo-dots { position: absolute; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; gap: 5px; pointer-events: none; }
+.rc2-media .photo-dots span { width: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.6); box-shadow: 0 0 2px rgba(0,0,0,.35); transition: width .2s ease, background-color .2s ease; }
+.rc2-media .photo-dots span.on { width: 18px; background: #fff; }
+.rc2.is-closed .rc2-media .photo-track img { filter: grayscale(.9); opacity: .7; }
 .rc2-offer { position: absolute; left: 12px; top: 12px; padding: 6px 12px; border-radius: 999px; background: var(--saffron); color: var(--saffron-ink); font-size: 13px; font-weight: 800; letter-spacing: .02em; }
 .rc2-eta { position: absolute; right: 12px; bottom: 12px; padding: 5px 11px; border-radius: 999px; background: rgba(255,255,255,.94); color: #0e1b3d; font-size: 13px; font-weight: 800; }
 .rc2 .heart-button { position: absolute; right: 12px; top: 12px; }
@@ -1793,3 +1801,21 @@ html.keyboard-open .home-capsule { display: none !important; }
 .about-step .page-title { font-size: 30px; }
 .about-you-nudge { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border: 1px solid var(--border); }
 .about-you-nudge .grow { display: grid; gap: 2px; }
+
+/* Toasts: a small pill above the navigation - a tick for done, "!" for a
+   problem. Short for "done", long enough to read for problems. */
+.toast-region{position:fixed;z-index:150;left:16px;right:16px;bottom:calc(96px + var(--safe-bottom));display:flex;justify-content:center;pointer-events:none}
+.toast{display:inline-flex;align-items:center;gap:8px;width:auto;max-width:min(100%,330px);padding:8px 14px 8px 9px;border-radius:18px;background:rgba(17,24,39,.93);color:#fff;border:1px solid rgba(255,255,255,.07);font-size:13px;font-weight:600;line-height:1.35;letter-spacing:.005em;box-shadow:0 10px 24px -10px rgba(15,23,42,.55);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);animation:toast-pop .18s cubic-bezier(.2,.8,.2,1) both}
+.toast.info{padding-left:14px}
+.toast.success,.toast.danger,.toast.warning{background:rgba(17,24,39,.93);color:#fff}
+.toast-mark{flex:none;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;color:#fff}
+.toast-mark svg{width:11px;height:11px;display:block}
+.toast.success .toast-mark{background:#22c55e}
+.toast.danger .toast-mark{background:#ef4444}
+.toast.warning .toast-mark{background:#f59e0b}
+.toast-text{min-width:0;overflow-wrap:anywhere}
+.toast.out{animation:toast-out .18s ease forwards}
+@keyframes toast-pop{from{opacity:0;transform:translateY(6px) scale(.97)}}
+@keyframes toast-out{to{opacity:0;transform:translateY(4px)}}
+@media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
+body:has(.home-capsule) .toast-region{bottom:calc(164px + var(--safe-bottom))}
