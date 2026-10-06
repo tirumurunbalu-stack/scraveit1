@@ -212,3 +212,20 @@ img.avatar-face { object-fit: cover; background: #eef2fb; }
 .privacy-notice h3 { margin: 14px 0 4px; font-size: 15px; }
 .privacy-notice p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
 .privacy-notice .caption { margin-top: 14px; }
+
+/* Toasts: a small pill above the navigation - a tick for done, "!" for a
+   problem. Short for "done", long enough to read for problems. */
+.toast-region{position:fixed;z-index:150;left:16px;right:16px;bottom:calc(96px + var(--safe-bottom));display:flex;justify-content:center;pointer-events:none}
+.toast{display:inline-flex;align-items:center;gap:8px;width:auto;max-width:min(100%,330px);padding:8px 14px 8px 9px;border-radius:18px;background:rgba(17,24,39,.93);color:#fff;border:1px solid rgba(255,255,255,.07);font-size:13px;font-weight:600;line-height:1.35;letter-spacing:.005em;box-shadow:0 10px 24px -10px rgba(15,23,42,.55);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);animation:toast-pop .18s cubic-bezier(.2,.8,.2,1) both}
+.toast.info{padding-left:14px}
+.toast.success,.toast.danger,.toast.warning{background:rgba(17,24,39,.93);color:#fff}
+.toast-mark{flex:none;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;color:#fff}
+.toast-mark svg{width:11px;height:11px;display:block}
+.toast.success .toast-mark{background:#22c55e}
+.toast.danger .toast-mark{background:#ef4444}
+.toast.warning .toast-mark{background:#f59e0b}
+.toast-text{min-width:0;overflow-wrap:anywhere}
+.toast.out{animation:toast-out .18s ease forwards}
+@keyframes toast-pop{from{opacity:0;transform:translateY(6px) scale(.97)}}
+@keyframes toast-out{to{opacity:0;transform:translateY(4px)}}
+@media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
