@@ -74,7 +74,9 @@ export type FinanceAutomationItemStatus =
   | "blocked_missing_coverage"
   | "blocked_invalid_balance"
   | "blocked_profile"
-  | "blocked_provider";
+  | "blocked_provider"
+  /** Preview run only: this payout would have been sent; nothing moved. */
+  | "previewed";
 
 export interface FinanceAutomationItemRecord {
   schemaVersion: 1;
@@ -104,7 +106,8 @@ export interface FinanceAutomationRunSummary {
     | "not_due"
     | "busy"
     | "completed"
-    | "completed_with_blocks";
+    | "completed_with_blocks"
+    | "preview";
   attemptedAt: number;
   scheduleLabel: string;
   nextRunDayKey: string | null;
@@ -118,7 +121,11 @@ export interface FinanceAutomationRunSummary {
     blockedInvalidBalance: number;
     blockedProfile: number;
     blockedProvider: number;
+    previewed?: number;
   };
+  /** Total that would be (preview) or was sent in this run. */
+  totalPaise?: number;
+  preview?: boolean;
   journalIds: readonly string[];
   message: string;
 }
@@ -141,6 +148,8 @@ interface PayoutGatewayResult {
   readonly providerOperationId: string;
   readonly referenceId: string;
   readonly completedAt?: number;
+  /** Preview only: nothing was sent and nothing may be recorded as paid. */
+  readonly simulated?: boolean;
 }
 
 export interface FinancePayoutGateway {
@@ -158,6 +167,53 @@ export class UnconfiguredFinancePayoutGateway implements FinancePayoutGateway {
       {reason: "PAYOUT_GATEWAY_UNCONFIGURED"},
     );
   }
+}
+
+/** Preview: says what would be paid without contacting any bank. */
+export class PreviewPayoutGateway implements FinancePayoutGateway {
+  readonly configured = true;
+  async executePayout(request: PayoutGatewayRequest): Promise<PayoutGatewayResult> {
+    return {provider: "preview", providerOperationId: "", referenceId: `preview-${request.operationId}`.slice(0, 120), simulated: true};
+  }
+}
+
+/**
+ * Wraps the real bank connector with the owner's safety caps: a ceiling per
+ * transfer and per weekly run. A payout over a cap is held for a manual
+ * payout (it shows in the run as blocked, with the reason) instead of sent.
+ */
+export class GuardedPayoutGateway implements FinancePayoutGateway {
+  private sentPaise = 0;
+  constructor(private readonly inner: FinancePayoutGateway, private readonly maxPerPayoutPaise: number, private readonly maxPerRunPaise: number) {}
+  get configured(): boolean { return this.inner.configured; }
+  async executePayout(request: PayoutGatewayRequest): Promise<PayoutGatewayResult> {
+    if (request.amountPaise > this.maxPerPayoutPaise) {
+      throw new DomainError("failed-precondition",
+        `Held: above the automatic limit of Rs ${Math.round(this.maxPerPayoutPaise / 100)} per payout. Pay it manually or raise the limit.`,
+        {reason: "PAYOUT_ABOVE_LIMIT"});
+    }
+    if (this.sentPaise + request.amountPaise > this.maxPerRunPaise) {
+      throw new DomainError("failed-precondition",
+        `Held: this week's automatic total would pass Rs ${Math.round(this.maxPerRunPaise / 100)}. Pay it manually or raise the limit.`,
+        {reason: "PAYOUT_RUN_LIMIT"});
+    }
+    this.sentPaise += request.amountPaise;
+    try {
+      return await this.inner.executePayout(request);
+    } catch (error) {
+      this.sentPaise -= request.amountPaise;
+      throw error;
+    }
+  }
+}
+
+/**
+ * The bank connector for live payouts. None is connected yet: HDFC API
+ * Banking (or a payouts provider) plugs in here once its credentials and
+ * specification are issued; until then live runs hold every payout.
+ */
+export function selectPayoutGateway(): {gateway: FinancePayoutGateway; name: string} {
+  return {gateway: new UnconfiguredFinancePayoutGateway(), name: ""};
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -317,6 +373,7 @@ function runSummaryRecord(value: unknown, periodKey: string): FinanceAutomationR
     "busy",
     "completed",
     "completed_with_blocks",
+    "preview",
   ].includes(String(candidate.status ?? ""));
   const counts = record(candidate.counts);
   const journalIds = Array.isArray(candidate.journalIds) ?
@@ -359,7 +416,10 @@ function runSummaryRecord(value: unknown, periodKey: string): FinanceAutomationR
       blockedInvalidBalance: counts.blockedInvalidBalance as number,
       blockedProfile: counts.blockedProfile as number,
       blockedProvider: counts.blockedProvider as number,
+      ...(Number.isSafeInteger(counts.previewed) ? {previewed: counts.previewed as number} : {}),
     },
+    ...(Number.isSafeInteger(candidate.totalPaise) ? {totalPaise: candidate.totalPaise as number} : {}),
+    ...(candidate.preview === true ? {preview: true} : {}),
     journalIds,
     message: candidate.message as string,
   };
@@ -914,6 +974,14 @@ async function processRider(
         minimumThresholdPaise: minimumPayoutPaise,
       };
     }
+    if (gatewayResult.simulated) {
+      return {
+        schemaVersion: 1, itemId: itemKey, periodKey, entityType: "rider", entityId: riderId, amountPaise: totalPaise,
+        method: selected.method, status: "previewed", reason: "Would be paid in the weekly run.",
+        beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "preview", providerOperationId: "",
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumPayoutPaise,
+      };
+    }
     const referenceId = text(gatewayResult.referenceId, 120) || payoutReference(lockKey);
     const completedAt = Number.isSafeInteger(gatewayResult.completedAt) && Number(gatewayResult.completedAt) > 0 ?
       Number(gatewayResult.completedAt) : attemptedAt;
@@ -1168,6 +1236,14 @@ async function processRestaurant(
         minimumThresholdPaise: minimumSettlementPaise,
       };
     }
+    if (gatewayResult.simulated) {
+      return {
+        schemaVersion: 1, itemId: itemKey, periodKey, entityType: "restaurant", entityId: restaurantId, amountPaise: totalPaise,
+        method: selected.method, status: "previewed", reason: "Would be paid in the weekly run.",
+        beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "preview", providerOperationId: "",
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumSettlementPaise,
+      };
+    }
     const referenceId = text(gatewayResult.referenceId, 120) || payoutReference(lockKey);
     const completedAt = Number.isSafeInteger(gatewayResult.completedAt) && Number(gatewayResult.completedAt) > 0 ?
       Number(gatewayResult.completedAt) : attemptedAt;
@@ -1221,6 +1297,7 @@ function summarizeItems(
   periodKey: string,
   riderMinimumPayoutPaise: number,
   items: readonly FinanceAutomationItemRecord[],
+  preview = false,
 ): FinanceAutomationRunSummary {
   const counts = {
     completed: 0,
@@ -1230,8 +1307,12 @@ function summarizeItems(
     blockedInvalidBalance: 0,
     blockedProfile: 0,
     blockedProvider: 0,
+    previewed: 0,
   };
+  let totalPaise = 0;
   for (const item of items) {
+    if (item.status === "completed" || item.status === "previewed") totalPaise += item.amountPaise;
+    if (item.status === "previewed") counts.previewed += 1;
     if (item.status === "completed") counts.completed += 1;
     else if (item.status === "held_minimum") counts.heldMinimum += 1;
     else if (item.status === "blocked_missing_entity") counts.blockedMissingEntity += 1;
@@ -1245,15 +1326,17 @@ function summarizeItems(
   return {
     schemaVersion: 1,
     periodKey,
-    status: blockedCount > 0 ? "completed_with_blocks" : "completed",
+    status: preview ? "preview" : blockedCount > 0 ? "completed_with_blocks" : "completed",
     attemptedAt,
     scheduleLabel: financePayoutAutomationScheduleLabel(policy),
     nextRunDayKey: financePayoutAutomationNextRunDayKey(policy, attemptedAt),
     riderMinimumPayoutPaise,
     restaurantMinimumSettlementPaise: policy.payouts.automation.minimumRestaurantSettlementPaise,
     counts,
+    totalPaise,
+    ...(preview ? {preview: true} : {}),
     journalIds: items.filter((item) => item.ledgerJournalId).map((item) => item.ledgerJournalId),
-    message: blockedCount > 0 ?
+    message: preview ? "Preview only: no money moved and nothing was recorded as paid." : blockedCount > 0 ?
       "Weekly payout automation completed with some blocked items." :
       "Weekly payout automation completed successfully.",
   };
@@ -1264,8 +1347,10 @@ export async function runWeeklyFinanceAutomation(
   database: FinanceAutomationDatabase = defaultDatabase(),
   gateway: FinancePayoutGateway = new UnconfiguredFinancePayoutGateway(),
   loadPolicy: (nowValue?: number) => Promise<FinancePolicy> = loadFinancePolicy,
+  options: {preview?: boolean} = {},
 ): Promise<FinanceAutomationRunSummary> {
   const attemptedAt = Number.isSafeInteger(referenceAt) && referenceAt > 0 ? referenceAt : Date.now();
+  const preview = options.preview === true;
   const [policy, settingsSnapshot] = await Promise.all([
     loadPolicy(attemptedAt),
     riderRewardSettingsRef(database).get(),
@@ -1273,16 +1358,21 @@ export async function runWeeklyFinanceAutomation(
   const riderMinimumPayoutPaise = normalizeRewardSettings(
     settingsSnapshot.exists ? settingsSnapshot.data() : null,
   ).payoutMinimumPaise;
-  if (!policy.payouts.automation.enabled) {
+  if (!preview && !policy.payouts.automation.enabled) {
     return emptySummary(policy, attemptedAt, "disabled", "Weekly payout automation is disabled.", riderMinimumPayoutPaise);
   }
-  const periodKey = financePayoutAutomationCurrentPeriodKey(policy, attemptedAt);
+  // A preview has its own key, so it can never stand in for (or block) the real week's run.
+  const periodKey = preview ? `preview-${attemptedAt}` : financePayoutAutomationCurrentPeriodKey(policy, attemptedAt);
   if (!periodKey) {
     return emptySummary(policy, attemptedAt, "not_due", "Weekly payout automation is not due yet.", riderMinimumPayoutPaise);
   }
-  const runSnapshot = await weeklyRunRef(database, periodKey).get();
-  const existingSummary = runSummaryRecord(runSnapshot.exists ? runSnapshot.data() : null, periodKey);
-  if (existingSummary) return existingSummary;
+  if (!preview) {
+    const runSnapshot = await weeklyRunRef(database, periodKey).get();
+    const existingSummary = runSummaryRecord(runSnapshot.exists ? runSnapshot.data() : null, periodKey);
+    if (existingSummary) return existingSummary;
+  }
+  const payoutGateway: FinancePayoutGateway = preview ? new PreviewPayoutGateway() :
+    new GuardedPayoutGateway(gateway, policy.payouts.automation.maxPerPayoutPaise, policy.payouts.automation.maxPerRunPaise);
 
   try {
     await acquireLock(database, runLockRef(database, periodKey), periodKey, periodKey, attemptedAt, RUN_LOCK_LEASE_MS);
@@ -1295,7 +1385,8 @@ export async function runWeeklyFinanceAutomation(
 
   try {
     // Rider contractor TDS on every credit first, so balances are net of it.
-    await sweepRiderContractorTds(database as unknown as FirestoreLike, attemptedAt);
+    // A preview writes no tax journals, so its rider amounts are before this sweep.
+    if (!preview) await sweepRiderContractorTds(database as unknown as FirestoreLike, attemptedAt);
     const [balances, riderCoverageSnapshot, restaurantCoverageSnapshot, ridersSnapshot, restaurantsSnapshot] =
       await Promise.all([
         readAllLedgerBalances(database),
@@ -1356,7 +1447,7 @@ export async function runWeeklyFinanceAutomation(
         riderMinimumPayoutPaise,
         riderRecords,
         coveredRiders,
-        gateway,
+        payoutGateway,
         database,
       );
       await upsertItemRecord(database, periodKey, item);
@@ -1370,14 +1461,14 @@ export async function runWeeklyFinanceAutomation(
         policy,
         restaurantRecords,
         coveredRestaurants,
-        gateway,
+        payoutGateway,
         database,
       );
       await upsertItemRecord(database, periodKey, item);
       items.push(item);
     }
 
-    const summary = summarizeItems(policy, attemptedAt, periodKey, riderMinimumPayoutPaise, items);
+    const summary = summarizeItems(policy, attemptedAt, periodKey, riderMinimumPayoutPaise, items, preview);
     await weeklyRunRef(database, periodKey).set(summary);
     await writeAudit(
       database,
@@ -1391,4 +1482,18 @@ export async function runWeeklyFinanceAutomation(
   } finally {
     await releaseLock(database, runLockRef(database, periodKey), periodKey, periodKey);
   }
+}
+
+/** One run's items (who, how much, what happened), for the Admin payouts panel. */
+export async function readWeeklyRunItems(periodKey: string, database: FinanceAutomationDatabase = defaultDatabase()): Promise<FinanceAutomationItemRecord[]> {
+  const snapshot = await weeklyRunRef(database, periodKey).collection("items").limit(500).get();
+  return snapshot.docs.map((doc) => doc.data() as FinanceAutomationItemRecord)
+    .sort((a, b) => b.amountPaise - a.amountPaise);
+}
+
+/** The latest real (not preview) weekly run, if any. */
+export async function readLatestWeeklyRun(database: FinanceAutomationDatabase = defaultDatabase()): Promise<FinanceAutomationRunSummary | null> {
+  const snapshot = await financeAutomationDoc(database).collection("weeklyRuns").orderBy("attemptedAt", "desc").limit(20).get();
+  const run = snapshot.docs.map((doc) => doc.data() as FinanceAutomationRunSummary).find((r) => !r.preview);
+  return run ?? null;
 }

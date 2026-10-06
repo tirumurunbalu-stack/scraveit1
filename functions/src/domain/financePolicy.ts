@@ -41,6 +41,10 @@ export interface FinancePayoutAutomationPolicy {
   ridersEnabled: boolean;
   restaurantsEnabled: boolean;
   minimumRestaurantSettlementPaise: number;
+  /** Safety cap: no single automatic transfer above this (held for a manual payout instead). */
+  maxPerPayoutPaise: number;
+  /** Safety cap: the whole weekly run never sends more than this in total. */
+  maxPerRunPaise: number;
 }
 
 export interface FinancePayoutPolicy {
@@ -135,6 +139,8 @@ export const DEFAULT_FINANCE_PAYOUT_AUTOMATION_POLICY: Readonly<FinancePayoutAut
   ridersEnabled: true,
   restaurantsEnabled: true,
   minimumRestaurantSettlementPaise: 0,
+  maxPerPayoutPaise: 50_000_00,
+  maxPerRunPaise: 5_00_000_00,
 });
 
 export const DEFAULT_FINANCE_PAYOUT_POLICY: Readonly<FinancePayoutPolicy> = Object.freeze({
@@ -297,6 +303,8 @@ export function normalizeFinancePayoutAutomationPolicy(value: unknown): FinanceP
       0,
       10_000_000_00,
     ),
+    maxPerPayoutPaise: boundedInteger(input.maxPerPayoutPaise, DEFAULT_FINANCE_PAYOUT_AUTOMATION_POLICY.maxPerPayoutPaise, 1_00, 10_00_000_00),
+    maxPerRunPaise: boundedInteger(input.maxPerRunPaise, DEFAULT_FINANCE_PAYOUT_AUTOMATION_POLICY.maxPerRunPaise, 1_00, 1_00_00_000_00),
   };
 }
 

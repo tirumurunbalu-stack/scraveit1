@@ -78,6 +78,14 @@ function priceWith(checkout: ReturnType<typeof plan>, tip = 0) {
 }
 
 describe("checkout economics plan", () => {
+  it("works a dish offer out on the offer's dishes only, not the whole cart", () => {
+    const dishOffer = {...promotion({percent: 50, fundingSource: "restaurant", itemIds: ["w1"], restaurantIds: ["r1"]}),
+      discountBasePaise: 12_000};
+    const checkout = plan({promotion: dishOffer});
+    // 50% of the ₹120 waffle, not of the ₹350 cart.
+    expect(checkout.discount).toMatchObject({restaurantDiscountPaise: 6_000, platformDiscountPaise: 0});
+  });
+
   it("gives a restaurant-funded offer in full and charges it to the restaurant", () => {
     const checkout = plan({promotion: promotion({percent: 20, maxDiscountPaise: 10_000, fundingSource: "restaurant"})});
     expect(checkout.discount).toMatchObject({restaurantDiscountPaise: 7_000, platformDiscountPaise: 0, withheldPlatformPaise: 0});

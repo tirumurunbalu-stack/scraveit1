@@ -37,6 +37,17 @@ service cloud.firestore {
         (request.auth.token.savrivoRole == 'owner' || request.auth.token.savrivoRole == 'ops_admin');
     }
 
+    function validDemographics(d) {
+      return d.keys().hasOnly(['gender', 'birthDate', 'consent', 'edits', 'updatedAt'])
+        && d.consent == true
+        && d.gender in ['female', 'male', 'other', '']
+        && (!('birthDate' in d) || d.birthDate == ''
+          || (d.birthDate is string && d.birthDate.matches('^(19|20)[0-9]{2}-[01][0-9]-[0-3][0-9]$')
+            && int(d.birthDate.split('-')[0]) <= request.time.year() - 18))
+        && d.edits is int
+        && d.updatedAt is int && d.updatedAt <= request.time.toMillis() + 600000;
+    }
+
     function isOwnUser(uid) {
       return signedIn() && request.auth.uid == uid;
     }
@@ -208,6 +219,19 @@ service cloud.firestore {
       match /addresses/{addressId} {
         allow read, write: if isPrivileged() || isOwnUser(uid);
       }
+    }
+
+    // "About you": optional gender and date of birth for offers made for the
+    // customer and for aggregate insights. Saved only with consent; deleting
+    // it withdraws consent (DPDP Act, 2023). No one under 18 can be saved,
+    // and a few edits at most, so it can't be flipped to farm group offers.
+    match /customerDemographics/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      allow delete: if isPrivileged() || isOwnUser(uid);
+      allow create: if isOwnUser(uid) && validDemographics(request.resource.data)
+        && request.resource.data.edits == 0;
+      allow update: if isPrivileged() || (isOwnUser(uid) && validDemographics(request.resource.data)
+        && request.resource.data.edits == resource.data.edits + 1 && resource.data.edits < 4);
     }
 
     // One document per user holding a map of restaurantId -> true, not a

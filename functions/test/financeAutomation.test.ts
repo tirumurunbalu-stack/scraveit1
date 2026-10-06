@@ -247,6 +247,38 @@ describe("weekly finance automation", () => {
     expect(Object.values(items).every((item) => (item as {status?: string}).status === "completed")).toBe(true);
   });
 
+  it("previews the week without paying, recording or blocking the real run", async () => {
+    seedRider(database, "rider-1", {beneficiaryName: "Rider One", preferredMethod: "upi", upiId: "riderone@okhdfcbank"});
+    seedRestaurant(database, "restaurant-1", {legalBusinessName: "The Waffle Spot LLP", beneficiaryName: "The Waffle Spot",
+      preferredMethod: "neft", bankAccountHolderName: "The Waffle Spot LLP", bankAccountNumber: "987654321012", bankIfsc: "HDFC0009876"});
+    await seedDeliveryLedger(database);
+    const disabled = async () => weeklyPolicy({automation: {...weeklyPolicy().payouts.automation, enabled: false}});
+    const preview = await runWeeklyFinanceAutomation(Date.parse("2026-08-25T06:00:00.000Z"), database, gateway, disabled, {preview: true});
+    expect(preview).toMatchObject({status: "preview", preview: true, counts: {previewed: 2, completed: 0}});
+    expect(preview.totalPaise).toBe(12_500);
+    expect(preview.journalIds).toHaveLength(0);
+    expect(gateway.calls).toHaveLength(0);
+    // The real weekly run still pays in full afterwards.
+    const real = await runWeeklyFinanceAutomation(Date.parse("2026-08-25T06:00:00.000Z"), database, gateway, async () => weeklyPolicy());
+    expect(real).toMatchObject({periodKey: "2026-08-24", status: "completed", counts: {completed: 2}});
+    expect(gateway.calls).toHaveLength(2);
+  });
+
+  it("holds payouts above the safety caps instead of sending them", async () => {
+    seedRider(database, "rider-1", {beneficiaryName: "Rider One", preferredMethod: "upi", upiId: "riderone@okhdfcbank"});
+    seedRestaurant(database, "restaurant-1", {legalBusinessName: "The Waffle Spot LLP", beneficiaryName: "The Waffle Spot",
+      preferredMethod: "neft", bankAccountHolderName: "The Waffle Spot LLP", bankAccountNumber: "987654321012", bankIfsc: "HDFC0009876"});
+    await seedDeliveryLedger(database);
+    const capped = async () => weeklyPolicy({automation: {...weeklyPolicy().payouts.automation, maxPerPayoutPaise: 5_000}});
+    const run = await runWeeklyFinanceAutomation(Date.parse("2026-08-25T06:00:00.000Z"), database, gateway, capped);
+    expect(run.status).toBe("completed_with_blocks");
+    const items = Object.values(weeklyRunItems(database, "2026-08-24")) as Array<{status: string; amountPaise: number; reason: string}>;
+    const held = items.filter((item) => item.amountPaise > 5_000);
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every((item) => item.status === "blocked_provider" && /automatic limit/.test(item.reason))).toBe(true);
+    expect(gateway.calls.every((call) => call.amountPaise <= 5_000)).toBe(true);
+  });
+
   it("holds payouts below the configured rider minimum", async () => {
     seedRider(database, "rider-1", {
       beneficiaryName: "Rider One",

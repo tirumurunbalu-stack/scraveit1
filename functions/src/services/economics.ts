@@ -33,6 +33,13 @@ import {
   type RiderTripPayPolicy,
 } from "../domain/riderTripPay";
 import {activeTaxVersion, computeTaxLines, type TaxComputation} from "../domain/taxRules";
+import {
+  CUSTOMER_DEMOGRAPHICS_COLLECTION,
+  areaKey,
+  audienceMismatch,
+  audienceTargetsPeople,
+  segmentFrom,
+} from "../domain/customerSegments";
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike} from "../firestoreTypes";
 import type {Address, AppliedOfferSnapshot, CatalogRestaurant, PricingBreakdown, SavrivoOrder} from "../types";
@@ -160,6 +167,24 @@ export async function updateEconomicsControlForAdmin(
 export interface CheckoutPromotion {
   terms: PromotionTerms;
   growthBudgetRemainingPaise: number;
+  /** What the discount is worked out on: the whole item total, or only the
+   *  offer's own dishes. Absent = the whole item total. */
+  discountBasePaise?: number;
+}
+
+/** One cart line as checkout priced it, for offers that apply to chosen dishes only. */
+export interface CheckoutLine {
+  itemId: string;
+  lineTotalPaise: number;
+}
+
+export function checkoutLines(
+  items: Array<{itemId: string; price: number; variantPrice: number; addOnTotal: number; quantity: number}>,
+): CheckoutLine[] {
+  return items.map((item) => ({
+    itemId: item.itemId,
+    lineTotalPaise: rupeesToPaise((item.price + item.variantPrice + item.addOnTotal) * item.quantity),
+  }));
 }
 
 function promotionError(reason: string): DomainError {
@@ -174,6 +199,9 @@ function promotionError(reason: string): DomainError {
     budget_exhausted: "This offer has been fully claimed.",
     first_order: "This offer is only for a first Scraveit order.",
     customer_limit: "You have already used this offer the maximum number of times.",
+    not_for_you: "This offer is for a different group of customers.",
+    wrong_area: "This offer isn't available at this delivery address.",
+    no_matching_items: "Add one of the dishes in this offer to use it.",
   };
   return new DomainError("failed-precondition", messages[reason] ?? "Coupon is not valid.");
 }
@@ -243,7 +271,11 @@ export function growthBudgetRemaining(budget: GrowthBudget | null, cityKey: stri
 /** Validates a coupon for this customer and cart. Throws a customer-readable error when it cannot apply. */
 export async function resolveCheckoutPromotion(
   code: string,
-  context: {subtotalPaise: number; restaurantId: string; cityKey: string; customerId: string; at: number},
+  context: {subtotalPaise: number; restaurantId: string; cityKey: string; customerId: string; at: number;
+    /** The priced cart, for dish-specific offers. */
+    lines?: CheckoutLine[];
+    /** The delivery address's area, for area offers. */
+    deliveryArea?: string;},
   database: FirestoreLike = firestoreDb,
 ): Promise<CheckoutPromotion | null> {
   const normalizedCode = String(code ?? "").trim().toUpperCase();
@@ -256,6 +288,22 @@ export async function resolveCheckoutPromotion(
   if (!terms) throw promotionError("inactive");
   const ineligible = promotionIneligibility(terms, context);
   if (ineligible) throw promotionError(ineligible);
+  // Offers for a group: the customer's own consented "About you" details
+  // decide it, read here on the server, never taken from the app.
+  if (audienceTargetsPeople(terms.audience) || terms.audience.areaKeys.length) {
+    const record = audienceTargetsPeople(terms.audience) && context.customerId ?
+      await database.collection(CUSTOMER_DEMOGRAPHICS_COLLECTION).doc(context.customerId).get() : null;
+    const segment = segmentFrom(record && record.exists ? record.data() : null, context.at);
+    const mismatch = audienceMismatch(terms.audience, segment, areaKey(context.deliveryArea));
+    if (mismatch) throw promotionError(mismatch);
+  }
+  // Offers on chosen dishes discount those dishes only.
+  let discountBasePaise: number | undefined;
+  if (terms.itemIds.length && context.lines) {
+    discountBasePaise = context.lines.filter((line) => terms.itemIds.includes(line.itemId))
+      .reduce((sum, line) => sum + Math.max(0, Math.round(line.lineTotalPaise)), 0);
+    if (discountBasePaise <= 0) throw promotionError("no_matching_items");
+  }
   if (terms.firstOrderOnly && await customerHasOrderedBefore(context.customerId, database)) {
     throw promotionError("first_order");
   }
@@ -273,7 +321,7 @@ export async function resolveCheckoutPromotion(
       context.at,
     );
   }
-  return {terms, growthBudgetRemainingPaise};
+  return {terms, growthBudgetRemainingPaise, ...(discountBasePaise !== undefined ? {discountBasePaise} : {})};
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +423,8 @@ export function planCheckoutEconomics(input: {
   const guardrailEnabled = engineEnabled && input.control.flags.profitabilityGuardrail;
 
   const terms = input.promotion?.terms ?? null;
-  const gross = terms ? promotionDiscountPaise(terms, subtotalPaise) : 0;
+  const discountBase = Math.min(subtotalPaise, input.promotion?.discountBasePaise ?? subtotalPaise);
+  const gross = terms ? promotionDiscountPaise(terms, discountBase) : 0;
   // With the engine off, every discount settles the legacy way: restaurant-funded.
   const requested = terms && engineEnabled ? splitDiscountByFunding(terms, gross) : {restaurantPaise: gross, platformPaise: 0};
 

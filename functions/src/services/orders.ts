@@ -42,6 +42,7 @@ import {
   promotionReservationRefs,
   reservePromotionSpend,
   resolveCheckoutPromotion,
+  checkoutLines,
   restaurantCommissionBps,
 } from "./economics";
 import {economicsScopeKey, rupeesToPaise, settlementTerms} from "../domain/economics";
@@ -425,6 +426,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
       cityKey: economicsScopeKey(restaurant.city),
       customerId: uid,
       at: pricedAt,
+      lines: checkoutLines(items),
+      deliveryArea: address.area,
     }),
     loadEconomicsControl(pricedAt),
     // Rider supply feeds the delivery estimate only. A read failure must never

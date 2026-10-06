@@ -1,3 +1,4 @@
+import {normalizeAudience} from "../domain/customerSegments";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
@@ -153,6 +154,11 @@ export interface PromotionUpsertRequest {
   /** Admin confirms customers will only get the profit-safe part of an unsafe offer. */
   acknowledgeLimitedFunding: boolean;
   simulation: Omit<OfferSimulationRequest, "offer" | "cityKey">;
+  /** Who the offer is for. Absent = everyone. */
+  audience?: {genders: string[]; ageBands: string[]; areaKeys: string[]};
+  /** Dishes the discount applies to. Absent = the whole item total. */
+  itemIds?: string[];
+  itemNames?: string[];
 }
 
 function promotionDocument(id: string, input: PromotionUpsertRequest, existing: Record<string, unknown>, uid: string, now: number) {
@@ -183,6 +189,9 @@ function promotionDocument(id: string, input: PromotionUpsertRequest, existing: 
     active: input.active,
     approvalStatus: input.approvalStatus ?? String(existing.approvalStatus ?? "approved"),
     createdByRestaurantId: String(existing.createdByRestaurantId ?? ""),
+    audience: normalizeAudience(input.audience),
+    itemIds: input.itemIds ?? [],
+    itemNames: input.itemNames ?? [],
     createdAt: Number(existing.createdAt ?? now) || now,
     updatedAt: now,
     updatedBy: uid,

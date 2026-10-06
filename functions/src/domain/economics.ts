@@ -23,6 +23,8 @@
  * settlement, and a shared one splits by a stored ratio.
  */
 
+import {normalizeAudience, type PromotionAudience} from "./customerSegments";
+
 export const ECONOMICS_CALCULATION_VERSION = 1 as const;
 
 export type FundingSource = "restaurant" | "platform" | "shared";
@@ -295,6 +297,11 @@ export interface PromotionTerms {
   /** No funding source on record: kept restaurant-funded, which is how every
    *  such offer was always settled. */
   legacyFunding: boolean;
+  /** Who the offer is for (gender, age group, delivery area). Empty = everyone. */
+  audience: PromotionAudience;
+  /** Menu items the discount applies to. Empty = the whole item total. */
+  itemIds: string[];
+  itemNames: string[];
 }
 
 export function normalizePromotionTerms(id: string, value: unknown): PromotionTerms {
@@ -337,6 +344,9 @@ export function normalizePromotionTerms(id: string, value: unknown): PromotionTe
     approvalStatus: approval,
     createdByRestaurantId: String(input.createdByRestaurantId ?? "").slice(0, 120),
     legacyFunding: !explicitFunding,
+    audience: normalizeAudience(input.audience),
+    itemIds: Array.isArray(input.itemIds) ? [...new Set(input.itemIds.map(String).filter(Boolean))].slice(0, 50) : [],
+    itemNames: Array.isArray(input.itemNames) ? input.itemNames.map((n) => String(n).slice(0, 120)).slice(0, 50) : [],
   };
 }
 
@@ -348,7 +358,10 @@ export type PromotionIneligibility =
   | "below_minimum"
   | "wrong_restaurant"
   | "wrong_city"
-  | "budget_exhausted";
+  | "budget_exhausted"
+  | "not_for_you"
+  | "wrong_area"
+  | "no_matching_items";
 
 /** Order-independent checks. First-order and per-customer limits need reads and stay with the caller. */
 export function promotionIneligibility(

@@ -67,6 +67,8 @@ const financePayoutsPatchSchema = z.object({
     ridersEnabled: z.boolean().optional(),
     restaurantsEnabled: z.boolean().optional(),
     minimumRestaurantSettlementPaise: z.number().int().min(0).max(10_000_000_00).optional(),
+    maxPerPayoutPaise: z.number().int().min(1_00).max(10_00_000_00).optional(),
+    maxPerRunPaise: z.number().int().min(1_00).max(1_00_00_000_00).optional(),
   }).strict().refine((value) => Object.keys(value).length > 0, "Payout automation patch cannot be empty.").optional(),
   platformBeneficiary: financePayoutBeneficiaryPatchSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "Payout patch cannot be empty.");

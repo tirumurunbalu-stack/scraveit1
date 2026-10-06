@@ -1,3 +1,4 @@
+import {AGE_BANDS, GENDERS} from "./domain/customerSegments";
 import {z} from "zod";
 import {MAX_CART_LINES, MAX_ITEMS_PER_LINE} from "./config";
 
@@ -754,7 +755,18 @@ export const upsertPromotionSchema = z.object({
   approvalStatus: z.enum(["approved", "pending", "rejected"]).optional(),
   acknowledgeLimitedFunding: z.boolean().default(false),
   simulation: simulationSampleSchema,
+  // Who the offer is for, and which dishes it discounts. Empty = everyone / the whole order.
+  audience: z.object({
+    genders: z.array(z.enum(GENDERS)).max(3).default([]),
+    ageBands: z.array(z.enum(AGE_BANDS)).max(5).default([]),
+    areaKeys: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  }).strict().default({genders: [], ageBands: [], areaKeys: []}),
+  itemIds: z.array(identifier).max(50).default([]),
+  itemNames: z.array(z.string().trim().max(120)).max(50).default([]),
 }).strict().superRefine((value, context) => {
+  if (value.itemIds.length && value.restaurantIds.length === 0) {
+    context.addIssue({code: z.ZodIssueCode.custom, path: ["restaurantIds"], message: "An offer on chosen dishes must name their restaurant."});
+  }
   if (value.kind === "percent" && value.percent <= 0) {
     context.addIssue({code: z.ZodIssueCode.custom, path: ["percent"], message: "Give a discount percentage."});
   }

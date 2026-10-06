@@ -2,6 +2,7 @@ import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_
 import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
+import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
 import {alertAdmins, applicationAlert, watchStuckOrders} from "./services/adminAlerts";
 import {createHash, randomUUID} from "node:crypto";
@@ -113,6 +114,7 @@ import {
   recordOrderEconomicsOutcome,
   releasePromotionSpend,
   resolveCheckoutPromotion,
+  checkoutLines,
   updateEconomicsControlForAdmin,
 } from "./services/economics";
 import {
@@ -151,6 +153,7 @@ import {
   reviewCustomerReferralForAdmin,
 } from "./services/customerReferrals";
 import {loadFinancePolicy} from "./services/platformConfig";
+import {financePayoutAutomationSummary} from "./domain/financePolicy";
 import {readPlatformConfiguration, updatePlatformConfiguration} from "./services/platformConfigControl";
 import {loadCheckoutConfiguration} from "./services/platformConfig";
 import {
@@ -210,7 +213,7 @@ import {
   updateRiderRewardSettings,
   upsertRiderRewardCampaign,
 } from "./services/riderRewards";
-import {runWeeklyFinanceAutomation} from "./services/financeAutomation";
+import {readLatestWeeklyRun, readWeeklyRunItems, runWeeklyFinanceAutomation, selectPayoutGateway} from "./services/financeAutomation";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
 import {lawBasedCheckoutTax, recordDeliveredOrderTax, resolveTdsReversal, reverseOrderTaxWithholding} from "./services/taxEngine";
@@ -574,6 +577,8 @@ export const getCheckoutConfiguration = onCall({
             cityKey: economicsScopeKey(restaurant.city),
             customerId: request.auth.uid,
             at: now,
+            lines: checkoutLines(pricedItems),
+            deliveryArea: address.area,
           });
         } catch (offerError) {
           offerPreview = {
@@ -1292,7 +1297,15 @@ export const settleWeeklyFinancePayouts = onSchedule({
 }, async (event) => {
   const parsed = Date.parse(String((event as {scheduleTime?: string}).scheduleTime ?? ""));
   const referenceAt = Number.isFinite(parsed) ? parsed : Date.now();
-  const summary = await runWeeklyFinanceAutomation(referenceAt);
+  const summary = await runWeeklyFinanceAutomation(referenceAt, undefined, selectPayoutGateway().gateway);
+  if ((summary.status === "completed" || summary.status === "completed_with_blocks") && summary.periodKey &&
+    Date.now() - summary.attemptedAt < 30 * 60_000) {
+    const c = summary.counts;
+    const needYou = c.blockedMissingEntity + c.blockedMissingCoverage + c.blockedInvalidBalance + c.blockedProfile + c.blockedProvider;
+    await alertAdmins(`payout-run:${summary.periodKey}`, "Weekly payouts done",
+      `${c.completed} paid, Rs ${Math.round(Number(summary.totalPaise ?? 0) / 100)} in total.` +
+      (needYou ? ` ${needYou} need you: open Money.` : ""), "money");
+  }
   logger.info("WEEKLY_FINANCE_AUTOMATION_RUN_COMPLETED", {
     referenceAt,
     periodKey: summary.periodKey,
@@ -2189,6 +2202,23 @@ export const getAdminToday = economicsCallable("getAdminToday", z.object({days: 
 export const getStorePayoutsDue = economicsCallable("getStorePayoutsDue", z.object({}).strict(),
   (uid, token) => readStorePayoutsDue(uid, token));
 
+/** Customer insights: who orders, from where, what and when - aggregates only. */
+export const getAdminAnalytics = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 120, memory: "1GiB"},
+  async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+    try {
+      const input = parse(z.object({
+        days: z.number().int().min(1).max(90).default(30),
+        kind: z.enum(["all", "restaurant", "grocery", "dairy"]).default("all"),
+        fresh: z.boolean().default(false),
+      }).strict(), request.data ?? {});
+      return await readAdminAnalytics(request.auth.token, input);
+    } catch (error) {
+      logger.warn("getAdminAnalytics rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+      throw asHttpsError(error);
+    }
+  });
+
 /** Tell the owner when a store applies, and when it signs and is ready to approve. */
 export const onRestaurantApplicationWritten = onDocumentWritten({
   document: "restaurantApplications/{appId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
@@ -2204,4 +2234,30 @@ export const adminStuckOrderWatch = onSchedule({schedule: "every 5 minutes", reg
   const count = await watchStuckOrders();
   if (count) logger.info("ADMIN_STUCK_ORDERS", {count});
 });
+
+// ---------------------------------------------------------------------------
+// Weekly payouts: status and a no-money preview for the Admin app
+// ---------------------------------------------------------------------------
+export const getPayoutAutomationStatus = economicsCallable("getPayoutAutomationStatus", z.object({}).strict(),
+  async (_uid, token) => {
+    if (token.savrivoRole !== "owner" && token.savrivoRole !== "ops_admin") throw new DomainError("permission-denied", "Admins only.");
+    const [policy, lastRun] = await Promise.all([loadFinancePolicy(), readLatestWeeklyRun()]);
+    const automation = financePayoutAutomationSummary(policy, Date.now());
+    const connector = selectPayoutGateway();
+    return {
+      enabled: automation.enabled, scheduleLabel: automation.scheduleLabel, nextRunDayKey: automation.nextRunDayKey,
+      ridersEnabled: automation.ridersEnabled, restaurantsEnabled: automation.restaurantsEnabled,
+      maxPerPayoutPaise: policy.payouts.automation.maxPerPayoutPaise, maxPerRunPaise: policy.payouts.automation.maxPerRunPaise,
+      bankConnected: connector.gateway.configured, bankName: connector.name,
+      lastRun, lastRunItems: lastRun?.periodKey ? (await readWeeklyRunItems(lastRun.periodKey)).slice(0, 100) : [],
+    };
+  });
+
+/** Runs this week's payout calculation without moving or recording any money. */
+export const previewWeeklyPayouts = economicsCallable("previewWeeklyPayouts", z.object({}).strict(),
+  async (_uid, token) => {
+    if (token.savrivoRole !== "owner") throw new DomainError("permission-denied", "Only the owner can preview payouts.");
+    const summary = await runWeeklyFinanceAutomation(Date.now(), undefined, undefined, undefined, {preview: true});
+    return {summary, items: summary.periodKey ? (await readWeeklyRunItems(summary.periodKey)).slice(0, 200) : []};
+  });
 
