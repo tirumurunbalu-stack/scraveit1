@@ -438,7 +438,7 @@ test("Savrivo current issue batch contracts are present", () => {
   check(customerCss.includes(".floating-cart{position:fixed!important"), "Customer View Cart bar must be fixed above bottom nav");
   check(customerCss.includes("overflow-x:hidden!important"), "Sheets must block horizontal drift");
   check(customer.includes("localAdMarkup"), "Customer home must support local sponsored ads");
-  check(customer.includes("postDeliveryCard"), "Customer home must retain delivered orders needing review");
+  check(customer.includes("function homeCapsule") && customer.includes("latestDeliveredNeedingReview()"), "Customer home must retain delivered orders needing review");
   check(customer.includes("riderRating") && customer.includes("buildReviewPayload"), "Post-delivery feedback must retain restaurant and rider ratings");
   check(!customer.includes('name="postDeliveryTip"') && !customer.includes('name="growthContribution"'), "Customer reviews must not expose unverified post-delivery money choices");
   check(customer.includes("postDeliveryTip:0,growthContribution:0"), "Customer review payload must force unverified monetary fields to zero");

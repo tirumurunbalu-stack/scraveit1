@@ -58,7 +58,7 @@ const marker = "bootstrap();";
 const index = original.lastIndexOf(marker);
 if (index < 0) throw new Error("Customer bootstrap marker was not found");
 const instrumented = original.slice(0, index)
-  + "globalThis.__REVIEW_INTERNALS={state,reviewCacheKey,reviewStateReady,applyReviewSnapshot,latestDeliveredNeedingReview,postDeliveryCard,homeSummary,ratingForRestaurant,screenOrder,screenReview,buildReviewPayload};"
+  + "globalThis.__REVIEW_INTERNALS={state,reviewCacheKey,reviewStateReady,applyReviewSnapshot,latestDeliveredNeedingReview,homeCapsule,homeSummary,ratingForRestaurant,screenOrder,screenReview,buildReviewPayload};"
   + original.slice(index + marker.length);
 const context = makeContext();
 vm.runInContext(instrumented, context, { filename: customerFile, timeout: 3000 });

@@ -1,9 +1,6 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-<path android:pathData="M29.5 8H78.5A21.5 21.5 0 0 1 100 29.5V78.5A21.5 21.5 0 0 1 78.5 100H29.5A21.5 21.5 0 0 1 8 78.5V29.5A21.5 21.5 0 0 1 29.5 8Z">
-<aapt:attr name="android:fillColor"><gradient android:type="linear" android:startX="8" android:startY="8" android:endX="100" android:endY="100" android:startColor="#2E2A8C" android:endColor="#6656E0" /></aapt:attr>
-</path>
-<group android:translateX="8" android:translateY="8" android:scaleX="0.25556" android:scaleY="0.25556">
+<group android:translateX="18" android:translateY="18" android:scaleX="0.2" android:scaleY="0.2">
 <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="16" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M104 168A76 76 0 0 1 256 168" />
 <path android:fillColor="#FFFFFF" android:pathData="M116 128A6 6 0 1 0 128 128A6 6 0 1 0 116 128Z" />
 <path android:fillColor="#FFFFFF" android:pathData="M174 104A6 6 0 1 0 186 104A6 6 0 1 0 174 104Z" />

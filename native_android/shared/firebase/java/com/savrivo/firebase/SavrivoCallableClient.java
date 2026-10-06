@@ -58,10 +58,19 @@ public final class SavrivoCallableClient {
             "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
             "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
             "setRestaurantAgreementTerms", "getRestaurantApplicationReview",
-            "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue"));
+            "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue", "getPayoutAutomationStatus", "previewWeeklyPayouts",
+            "getAdminAnalytics"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement"));
+    // Every economics callable an app role may reach is also a callable this
+    // client may send. Without this, functions added only to the role lists
+    // (Admin today, payouts, applications, agreements, dine-in) passed the role
+    // check and were then refused here before ever reaching the server.
+    static {
+        FUNCTIONS.addAll(ADMIN_ECONOMICS);
+        FUNCTIONS.addAll(RESTAURANT_ECONOMICS);
+    }
 
     public static boolean economicsFunctionAllowed(String appRole, String function) {
         if (function == null) return false;

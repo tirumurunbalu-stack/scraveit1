@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer insights &middot; Savrivo Admin</title>
+<link rel="stylesheet" href="../assets/savrivo-admin.css?v=4">
+<style>
+  .ins-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .ins-grid.wide { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  .ins-card h2 { font-size: 14px; margin-bottom: 4px; }
+  .ins-card .lede { font-size: 12px; color: var(--text-soft); margin-bottom: 14px; }
+  .ins-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .bar { display: grid; gap: 5px; margin-bottom: 12px; }
+  .bar-top { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+  .bar-top strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar-sub { font-size: 11.5px; color: var(--text-soft); }
+  .track { height: 9px; border-radius: 999px; background: #eef1f7; overflow: hidden; }
+  .track span, .split span { display: block; height: 100%; }
+  .track span { border-radius: 999px; background: var(--brand); }
+  .pink { background: #d6337f !important; } .blue { background: #2f6fed !important; } .grey { background: #9aa6bb !important; }
+  .green { background: #16a34a !important; } .red { background: #dc2626 !important; }
+  .split { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: #eef1f7; min-width: 120px; }
+  .matrix { display: grid; grid-template-columns: 70px repeat(5, minmax(0, 1fr)); gap: 5px; align-items: center; }
+  .matrix .mh { font-size: 11px; font-weight: 700; color: var(--text-faint); text-align: center; }
+  .matrix .mh.left { text-align: left; }
+  .matrix .cell { height: 42px; border-radius: 8px; display: grid; place-items: center; font-weight: 750; font-variant-numeric: tabular-nums;
+    background: rgba(214, 51, 127, calc(.07 + var(--a) * .8)); }
+  .group { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .group h3 { font-size: 13.5px; }
+  .group .meta { font-size: 11.5px; color: var(--text-soft); margin: 2px 0 10px; }
+  .pick { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; font-size: 13px; }
+  .rank { flex: 0 0 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-weight: 800; font-size: 11.5px; background: var(--brand-soft); color: var(--brand); }
+  .lift { color: var(--success); font-weight: 700; }
+  .map { position: relative; overflow: hidden; border-radius: 10px; background: #e8eef4; }
+  .map img { position: absolute; width: 256px; height: 256px; max-width: none; }
+  .map .dot { position: absolute; transform: translate(-50%, -50%); border-radius: 50%; background: rgba(228, 87, 46, var(--a));
+    border: 2px solid rgba(255, 255, 255, .9); box-shadow: 0 2px 6px rgba(0, 0, 0, .2); }
+  .heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 3px; align-items: center; }
+  .heat .hh { grid-column: span 3; font-size: 10.5px; color: var(--text-faint); font-weight: 650; }
+  .heat .hd { font-size: 11px; font-weight: 700; color: var(--text-soft); }
+  .heat .hc { height: 18px; border-radius: 3px; background: rgba(47, 111, 237, calc(.05 + var(--a) * .9)); }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 110px; }
+  .spark span { flex: 1; min-width: 2px; background: var(--brand); border-radius: 3px 3px 0 0; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+  table.data-table.compact { min-width: 0; }
+  .aud-chips .chip:has(input:checked) { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .aud-chips input { position: absolute; opacity: 0; pointer-events: none; }
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filters .select { width: auto; }
+  @media (max-width: 1000px) { .ins-grid, .ins-grid.wide { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="shell" id="app-shell" hidden>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="mark">S</div>
+      <div><strong>Savrivo</strong><span>Web Admin</span></div>
+    </div>
+    <div class="sidebar-section-label">Sections</div>
+    <a class="sidebar-link active" href="./">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+      Customer insights
+    </a>
+    <a class="sidebar-link" href="../rider-rewards/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Rider Rewards
+    </a>
+    <a class="sidebar-link" href="../finance/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20M7 15h3"/></svg>
+      Finance
+    </a>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-account">
+      <div class="who" id="sidebar-who"></div>
+      <button class="sidebar-signout" id="signout-btn">Sign out</button>
+    </div>
+  </nav>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1>Customer insights</h1>
+        <p>Who orders, from where, what and when &mdash; and offers aimed at the groups that will use them.</p>
+      </div>
+      <div class="topbar-actions filters">
+        <select class="select" id="days-select" aria-label="Period">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+        <select class="select" id="kind-select" aria-label="Store type">
+          <option value="all">Everything</option>
+          <option value="restaurant">Restaurants</option>
+          <option value="grocery">Groceries</option>
+          <option value="dairy">Dairy</option>
+        </select>
+        <button class="btn btn-secondary" id="offer-btn">New offer</button>
+        <button class="icon-btn" id="refresh-btn" title="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="load-error" class="notice notice-danger" hidden></div>
+      <div id="loading-block" class="loading-block"><span class="spinner dark"></span> Working out your insights…</div>
+      <div id="dashboard" hidden></div>
+    </main>
+  </div>
+</div>
+<div id="drawer-root"></div>
+<div id="toast-stack"></div>
+<script type="module" src="./dashboard.js?v=1"></script>
+</body>
+</html>
