@@ -305,3 +305,7 @@ button.open-bar{cursor:pointer}
 
 /* No bounce or stretch at the top and bottom of a page. */
 html,body,#app,#app>main{overscroll-behavior-y:none}
+
+/* Grid pages and lists: a long line inside a card wraps instead of widening the whole page
+   (grid items default to min-width:auto, so long product names pushed the page sideways). */
+.page > *, .stack > *, .stack-lg > *, .entity-list > *, .order-row > * { min-width: 0; }

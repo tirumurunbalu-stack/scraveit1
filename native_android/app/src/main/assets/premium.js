@@ -2255,11 +2255,11 @@
     const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};
     const foods=["🍕","🧋","🍗","🍩","🌮","🍜","🍦","🥘"];
     return '<main class="welcome-screen welcome2 no-nav'+(theme.dark?' dark':'')+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
-      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'<span class="welcome2-city">Nellore</span></header>'
+      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'</header>'
       +'<section class="welcome2-stage" aria-hidden="true">'+foods.map((f,i)=>'<span class="welcome2-food f'+i+'">'+f+'</span>').join("")
         +'<div id="welcome-rider-slot" class="welcome2-rider" data-action="mascot-tap"></div><div class="hero2-road welcome2-road"><span></span></div></section>'
       +'<section class="welcome2-copy"><p class="welcome2-eyebrow">'+h(theme.kind==="festival"?theme.head:"Hungry? Same.")+'</p><h1>Cravings,<br>sorted in minutes.</h1>'
-        +'<p>Nellore’s favourite kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
+        +'<p>Your favourite local kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
         +(mascot?'<span class="welcome2-chip">Today’s rider · '+h(mascot.rider)+' 👋</span>':'')+'</section>'
       +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button>'+(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')+'<p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
       +'</main>';
@@ -2998,7 +2998,7 @@
     if(w.loading)return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div><h2 class="title" style="text-align:center">Craving Wheel</h2>'+loadingRow("Getting today’s dishes…")+'</section></div>';
     const word=slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night";
     return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div>'
-      +'<h2 class="title" style="text-align:center">Craving Wheel</h2><p class="supporting" style="text-align:center">Spin and let Nellore decide</p>'
+      +'<h2 class="title" style="text-align:center">Craving Wheel</h2><p class="supporting" style="text-align:center">Spin and let the wheel decide</p>'
       +'<div class="wheel-wrap"><span class="wheel-pointer" aria-hidden="true"></span><div class="wheel-dial" id="wheel-dial" style="transform:rotate('+Number(w.rotation||0).toFixed(1)+'deg)">'+wheelSvg(w.items)+'</div>'
       +'<button class="wheel-hub" data-action="spin-wheel" aria-label="Spin the wheel"'+(w.spinning?' disabled':'')+'>'+(w.spinning?'…':pick?'🎉':'SPIN')+'</button></div>'
       +(pick&&r?'<div class="wheel-result"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><small>'+h(word)+' pick</small><strong>'+h(pick.dish?pick.dish+" at "+r.name:r.name)+'</strong><span>'+h([ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New",(r.etaMin||25)+"–"+(r.etaMax||35)+" min"].join(" · "))+'</span></div></div>'
@@ -3106,7 +3106,7 @@
     text(s.persona[0]+"  "+s.persona[1]+"  ·  "+s.badges+" badges",120,860,40,"700","#FFE7A3");
     const mascot=todaysMascot();
     if(mascot&&window.HeroRider&&HeroRider.snapshot){const img=HeroRider.snapshot(mascot.id,460,460);if(img)g.drawImage(img,560,880,440,440);}
-    text("Scraveit",80,1230,72,"800","#FFFFFF");text("Food, delivered with love · Nellore",80,1285,30,"500","rgba(255,255,255,.85)");
+    text("Scraveit",80,1230,72,"800","#FFFFFF");text("Food, delivered with love",80,1285,30,"500","rgba(255,255,255,.85)");
     return cv.toDataURL("image/png");
   }
   async function openWrapped(){
@@ -3582,7 +3582,7 @@
   function restaurantMenu(r) {
     let items=(r.menu||[]).filter(item=>state.selectedMenuCategory==="All"||item.category===state.selectedMenuCategory);
     if(state.diet==="veg"||state.profile.preferences.vegetarian)items=items.filter(x=>x.diet==="veg");
-    if(state.diet==="nonveg")items=items.filter(x=>x.diet==="nonveg");
+    if(state.diet==="nonveg")items=items.filter(x=>x.diet==="nonveg"||x.diet==="egg");
     if(state.menuPrice==="under150")items=items.filter(x=>Number(x.price)<=150);
     if(state.menuPrice==="under250")items=items.filter(x=>Number(x.price)<=250);
     if(state.menuPrice==="above250")items=items.filter(x=>Number(x.price)>250);
@@ -3590,10 +3590,37 @@
     if(state.menuSort==="priceHigh")items.sort((a,b)=>Number(b.price)-Number(a.price));
     if(state.menuSort==="rating")items.sort((a,b)=>Number(b.rating||b.popular||0)-Number(a.rating||a.popular||0));
     const grouped={};items.forEach(item=>(grouped[item.category||"Menu"]||(grouped[item.category||"Menu"]=[])).push(item));
-    return Object.keys(grouped).map(category=>'<section class="stack"><div><h2 class="section-title">'+h(category)+'</h2><p class="supporting">'+grouped[category].length+' item'+(grouped[category].length===1?'':'s')+'</p></div><div class="menu-list">'+grouped[category].map(item=>{
+    // Categories fold open and shut. A short menu, or one narrowed by a filter,
+    // shows everything; otherwise the first category starts open.
+    const narrowed=state.selectedMenuCategory!=="All"||state.diet!=="all"||(state.menuPrice&&state.menuPrice!=="all");
+    const showAll=narrowed||items.length<=8,toggled=(state.menuOpen&&state.menuOpen[r.id])||{};
+    return Object.keys(grouped).map((category,index)=>{const open=showAll||(category in toggled?toggled[category]:index===0),count=grouped[category].length;
+      return '<section class="menu-cat'+(open?' open':'')+'">'+(showAll?'<div class="menu-cat-head static"><h2 class="section-title">'+h(category)+'</h2><span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></div>':'<button type="button" class="menu-cat-head" data-action="menu-cat-toggle" data-restaurant-id="'+h(r.id)+'" data-value="'+h(category)+'" aria-expanded="'+open+'"><span class="grow"><span class="section-title">'+h(category)+'</span> <span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>')
+      +(open?'<div class="menu-list">'+grouped[category].map(item=>{
       const inCart=state.cart.filter(x=>x.restaurantId===r.id&&x.itemId===item.id).reduce((n,x)=>n+x.quantity,0);
-      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'" aria-label="'+(item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
-    }).join("")+'</div></section>').join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
+      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
+    }).join("")+'</div>':'')+'</section>'}).join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
+  }
+  /** Calories per serving, when the store gives them (FSS Labelling and Display Regulations 2020, reg. 9). */
+  function itemKcal(item){const v=item&&item.calories;return v===""||v==null||!Number.isFinite(Number(v))||Number(v)<0?null:Math.round(Number(v));}
+  function kcalMarkup(item){const k=itemKcal(item);return k==null?'':'<span class="caption kcal-line">'+k+' kcal · per '+h(item.servingSize||"serving")+'</span>';}
+  /** Foot of every store page: the store's FSSAI number and what the customer should know about the menu. */
+  function restaurantMenuFooter(r){
+    const products=storeKind(r)!=="restaurant",hasKcal=(r.menu||[]).some(x=>itemKcal(x)!=null);
+    const notes=[(products?"Products, descriptions and prices":"Menu items, descriptions and prices")+" are set by the "+(products?"store":"restaurant")+".","Taxes, delivery fee and platform fee are shown in your bill before you pay."];
+    if(hasKcal)notes.push("Calorie values are per serving and indicative; they may vary with ingredients, portion size and customisation.","An average active adult requires 2,000 kcal energy per day, however, calorie needs may vary.");
+    const fssai=/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="menu-fssai"><span class="fssai-word">fssai</span><span>'+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</span></p>':'';
+    return '<section class="menu-footer"><ul class="menu-notes">'+notes.map(n=>'<li>'+h(n)+'</li>').join("")+'</ul><button type="button" class="text-button menu-report" data-action="report-menu" data-restaurant-id="'+h(r.id)+'">Report an issue with the '+(products?"products":"menu")+' ›</button>'+fssai+'</section>';
+  }
+  const MENU_ISSUES=["Wrong price","Item not available","Wrong photo","Wrong veg / non-veg mark","Wrong description or allergens","Something else"];
+  function menuReportSheet(sheet){const r=restaurant(sheet.restaurantId)||{};return sheetShell("Report an issue",h(r.name||"This store")+" · goes to the Scraveit team",'<form id="menu-report-form" class="form-grid" data-restaurant-id="'+h(sheet.restaurantId||"")+'"><div class="chip-row about-chips" role="radiogroup" aria-label="What is wrong">'+MENU_ISSUES.map((x,i)=>'<label class="chip"><input type="radio" name="issue" value="'+h(x)+'"'+(i===0?' checked':'')+'> '+h(x)+'</label>').join("")+'</div><div class="field"><label for="menu-report-item">Which item? (optional)</label><input id="menu-report-item" class="input" name="item" maxlength="80" placeholder="e.g. Chicken biryani"></div><div class="field"><label for="menu-report-note">Details (optional)</label><textarea id="menu-report-note" class="textarea" name="note" maxlength="500" placeholder="What did you see?"></textarea></div><button class="button primary full" type="submit">Send report</button></form>');}
+  async function submitMenuReport(form){
+    if(!state.session||!state.session.uid){toast("Sign in to send a report.","warning");return;}
+    const fd=new FormData(form),r=restaurant(form.dataset.restaurantId)||{},issue=String(fd.get("issue")||"Something else"),item=String(fd.get("item")||"").trim().slice(0,80),note=String(fd.get("note")||"").trim().slice(0,500);
+    const id=uid("menu_"),ticket={id,uid:state.session.uid,customerName:state.profile.name||"",email:state.profile.email||"",orderId:"",topic:"Menu issue",restaurantId:r.id||form.dataset.restaurantId||"",restaurantName:r.name||"",message:(issue+(item?" · "+item:"")+(note?" · "+note:"")+" ("+(r.name||"store")+")").slice(0,1000),status:"open",createdAt:Date.now(),updatedAt:Date.now()};
+    const button=form.querySelector("button[type=submit]");if(button)button.disabled=true;
+    try{await supportDoc(id).set(ticket);closeSheet();toast("Thanks, the Scraveit team will check it.","success");}
+    catch(e){toast("Report could not be sent. "+friendlyError(e),"danger");if(button)button.disabled=false;}
   }
   /** All the store's cover photos, swiping left to right on their own and looping (see refreshAdRails). */
   function restaurantCoverMarkup(r){
@@ -3611,7 +3638,7 @@
       +'<div class="restaurant-body">'+networkBanner()+'<section class="service-strip"><div class="service-stat"><strong>'+h(rating.value?rating.value.toFixed(1):"New")+' ★</strong><span>'+h(rating.label)+'</span></div><div class="service-stat"><strong>'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</strong><span>Delivery</span></div><div class="service-stat"><strong>'+(deliveryFeeForRestaurant(r,0)===0?'Free':money(deliveryFeeForRestaurant(r,0)))+'</strong><span>Delivery fee</span></div></section>'
       +'<div class="notice '+(r.open?'success':'warning')+'">'+icon(r.open?'check':'clock',"small")+'<div><strong>'+(r.open?'Accepting orders':'Currently closed')+'</strong><div class="caption">'+h(r.address||"Location provided by the restaurant")+(r.opensUntil?' · Until '+h(r.opensUntil):'')+'</div></div></div>'+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)
       +'<section class="stack menu-discovery"><div class="cluster between"><div><h2 class="section-title">Menu</h2><p class="supporting">Choose items and customise before adding.</p></div>'+(pureVeg?'<span class="pure-veg-badge large">Pure vegetarian</span>':'')+'</div><div class="chip-row menu-primary-filters"><button class="chip" data-action="open-menu-filters">'+icon("filter","small")+' Filters</button>'+(!pureVeg?'<button class="chip '+(state.diet==="all"?'active':'')+'" data-action="menu-diet" data-value="all">All</button><button class="chip '+(state.diet==="veg"?'active':'')+'" data-action="menu-diet" data-value="veg">Veg</button><button class="chip '+(state.diet==="nonveg"?'active':'')+'" data-action="menu-diet" data-value="nonveg">Non-veg</button>':'')+'</div><div class="chip-row menu-categories">'+categories.map(c=>'<button class="chip '+(state.selectedMenuCategory===c?'active':'')+'" data-action="menu-category" data-value="'+h(c)+'">'+h(c)+'</button>').join("")+'</div></section>'+menuContent
-      +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div>'+(/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="caption fssai-line">FSSAI '+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</p>':'')+'</section></div></div>'
+      +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div>'+'</section>'+restaurantMenuFooter(r)+'</div></div>'
       +(cartCount()?(tableHere(r.id)?'<div class="floating-cart"><button class="button primary full" data-action="table-round"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>Send to kitchen · '+money(cartSubtotal())+'</span></button></div>':'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>'):'')+nav()+'</main>';
   }
 
@@ -5218,7 +5245,7 @@
     // bubble, no console output, nothing - "tap Save, nothing happens at
     // all" for both the person testing it and any code trying to observe
     // what went wrong.
-    return sheetShell(address.id?"Edit address":"Add address","Place the delivery pin, then add the door/flat details a rider needs.",'<form id="address-form" class="form-grid"><input type="hidden" name="id" value="'+h(address.id||"")+'"><input type="hidden" name="lat" value="'+h(point.lat==null?"":point.lat)+'"><input type="hidden" name="lng" value="'+h(point.lng==null?"":point.lng)+'">'+addressMapMarkup()+'<div class="field"><label>Save address as</label><div class="segmented three">'+["Home","Work","Other"].map(opt=>'<button type="button" class="segment '+((opt==="Other"?isOther:label===opt)?'active':'')+'" data-action="address-label-chip" data-value="'+opt+'">'+opt+'</button>').join("")+'</div></div>'+(isOther?'<div class="field"><label for="address-label-custom">Label</label><input id="address-label-custom" class="input" name="label" value="'+h(label)+'" placeholder="e.g. Friend\'s place"></div>':'<input type="hidden" name="label" value="'+h(label)+'">')+'<div class="field"><label for="address-area">Area</label><input id="address-area" class="input" name="area" value="'+h(address.area||"")+'" placeholder="Neighbourhood or locality"></div><div class="field"><label for="address-city">City</label><input id="address-city" class="input" name="city" value="'+h(address.city||"")+'" placeholder="Nellore"></div><div class="field"><label for="address-full">Full delivery address</label><textarea id="address-full" class="textarea" name="address" placeholder="Flat, building, street, landmark and city">'+h(address.address||address.details||"")+'</textarea></div><div class="field"><label for="address-phone">Mobile number</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" value="'+h(address.phone||state.profile.phone||"")+'" placeholder="10-digit mobile number"></div><div class="notice success">'+icon("check","small")+'<span>A map pin will be saved with this address.</span></div><button class="button primary full" type="button" data-action="submit-address">Save delivery address</button></form>');
+    return sheetShell(address.id?"Edit address":"Add address","Place the delivery pin, then add the door/flat details a rider needs.",'<form id="address-form" class="form-grid"><input type="hidden" name="id" value="'+h(address.id||"")+'"><input type="hidden" name="lat" value="'+h(point.lat==null?"":point.lat)+'"><input type="hidden" name="lng" value="'+h(point.lng==null?"":point.lng)+'">'+addressMapMarkup()+'<div class="field"><label>Save address as</label><div class="segmented three">'+["Home","Work","Other"].map(opt=>'<button type="button" class="segment '+((opt==="Other"?isOther:label===opt)?'active':'')+'" data-action="address-label-chip" data-value="'+opt+'">'+opt+'</button>').join("")+'</div></div>'+(isOther?'<div class="field"><label for="address-label-custom">Label</label><input id="address-label-custom" class="input" name="label" value="'+h(label)+'" placeholder="e.g. Friend\'s place"></div>':'<input type="hidden" name="label" value="'+h(label)+'">')+'<div class="field"><label for="address-area">Area</label><input id="address-area" class="input" name="area" value="'+h(address.area||"")+'" placeholder="Neighbourhood or locality"></div><div class="field"><label for="address-city">City</label><input id="address-city" class="input" name="city" value="'+h(address.city||"")+'" placeholder="City"></div><div class="field"><label for="address-full">Full delivery address</label><textarea id="address-full" class="textarea" name="address" placeholder="Flat, building, street, landmark and city">'+h(address.address||address.details||"")+'</textarea></div><div class="field"><label for="address-phone">Mobile number</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" value="'+h(address.phone||state.profile.phone||"")+'" placeholder="10-digit mobile number"></div><div class="notice success">'+icon("check","small")+'<span>A map pin will be saved with this address.</span></div><button class="button primary full" type="button" data-action="submit-address">Save delivery address</button></form>');
   }
   function addressPickerCard(address){
     const selected=address.id===state.profile.selectedAddressId;
@@ -5261,6 +5288,7 @@
     if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";lastSheetShown=null;return;}
     const sheet=state.sheet;let html="";
     if(sheet.type==="confirm")html=confirmSheet(sheet);
+    else if(sheet.type==="menuReport")html=menuReportSheet(sheet);
     else if(sheet.type==="filters")html=filterSheet();
     else if(sheet.type==="menuFilters")html=menuFilterSheet();
     else if(sheet.type==="item")html=itemSheet(sheet);
@@ -5564,6 +5592,8 @@
     const action=control.dataset.action;
     if(action==="open-ad"&&Date.now()<adSwipeSuppressUntil)return;
     if(action==="confirm-yes"){settleConfirm(true);return;}
+    if(action==="menu-cat-toggle"){const rid=control.dataset.restaurantId;state.menuOpen=state.menuOpen||{};const open=state.menuOpen[rid]||(state.menuOpen[rid]={});open[control.dataset.value]=control.getAttribute("aria-expanded")!=="true";render({preserveScroll:true});return;}
+    if(action==="report-menu"){setSheet({type:"menuReport",restaurantId:control.dataset.restaurantId});return;}
     if(action==="confirm-no"){settleConfirm(false);return;}
     if(action==="close-sheet"){
       if(control.classList.contains("sheet-backdrop")&&event.target.closest("[data-sheet-surface]"))return;
@@ -5951,6 +5981,7 @@
     else if(form.id==="address-form")submitAddress(form);
     else if(form.id==="profile-form")submitProfile(form);
     else if(form.id==="support-form")submitSupport(form);
+    else if(form.id==="menu-report-form")submitMenuReport(form);
     else if(form.id==="assistant-form")submitAssistant(form);
     else if(form.id==="chat-form")sendOrderChat(form);
     else if(form.id==="review-form")submitReview(form);

@@ -1825,3 +1825,19 @@ html.keyboard-open .home-capsule { display: none !important; }
 @keyframes toast-out{to{opacity:0;transform:translateY(4px)}}
 @media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
 body:has(.home-capsule) .toast-region{bottom:calc(164px + var(--safe-bottom))}
+
+/* Store menu: folding categories, the store's FSSAI number and notes at the foot. */
+.menu-cat { border-bottom: 1px solid var(--border); }
+.menu-cat-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 16px 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.menu-cat-head.static { cursor: default; padding-bottom: 8px; }
+.menu-cat-head .section-title { display: inline; }
+.menu-cat-chev { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid currentColor; transition: transform .2s ease; flex: 0 0 auto; }
+.menu-cat.open .menu-cat-chev { transform: rotate(180deg); }
+.menu-cat .menu-list { padding-bottom: 12px; }
+.kcal-line { display: block; margin-top: 2px; }
+.menu-footer { display: grid; gap: 12px; padding: 18px 2px 8px; }
+.menu-notes { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
+.menu-report { justify-self: start; padding-left: 0; color: var(--danger); }
+.menu-fssai { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0; color: var(--ink-soft); font-size: 13px; }
+.menu-fssai .fssai-word { font: italic 700 15px/1 Georgia, "Times New Roman", serif; letter-spacing: .02em; text-decoration: underline; text-underline-offset: 3px; }
+.about-chips input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }

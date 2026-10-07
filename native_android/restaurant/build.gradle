@@ -13,8 +13,8 @@ android {
         applicationId "com.feastly.restaurant"
         minSdk 24
         targetSdk 36
-        versionCode 67
-        versionName "3.12.3"
+        versionCode 69
+        versionName "3.12.5"
     }
 
     // One codebase, three store apps. Each flavor is its own install and
