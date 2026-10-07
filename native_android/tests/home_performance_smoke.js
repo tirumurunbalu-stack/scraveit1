@@ -6,10 +6,11 @@ const path = require("path");
 const vm = require("vm");
 const { performance } = require("perf_hooks");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const nativeRoot = path.resolve(__dirname, "..");
 const customerSourcePath = path.join(nativeRoot, "app", "src", "main", "assets", "premium.js");
-const rulesPath = path.resolve(nativeRoot, "..", "firebase", "feastly-realtime-database-rules.json");
+const firestoreIndexesPath = path.resolve(nativeRoot, "..", "firebase", "firestore.indexes.json");
 const original = fs.readFileSync(customerSourcePath, "utf8");
 
 function assert(condition, message) {
@@ -27,7 +28,7 @@ function element() {
   };
 }
 
-function contextWith(seed, online, fetchImpl) {
+function contextWith(seed, online, fetchImpl, user) {
   const storage = new Map(Object.entries(seed || {}).map(([key, value]) => [key, String(value)]));
   const elements = new Map();
   const documentElement = element();
@@ -47,7 +48,7 @@ function contextWith(seed, online, fetchImpl) {
   const context = {
     console, document, localStorage, navigator: { onLine: online }, performance,
     crypto: webcrypto, TextEncoder, AbortController, HTMLFormElement, FormData: global.FormData,
-    Image: class Image {}, FEASTLY_FIREBASE: { apiKey: "test", databaseUrl: "https://example.invalid" },
+    Image: class Image {}, FEASTLY_FIREBASE: { apiKey: "test", databaseUrl: "https://example.invalid" }, firebase: createFirebaseCompat({ user, offline: !online }).firebase,
     fetch: fetchImpl, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     requestAnimationFrame(callback) { callback(); return 1; }, scrollTo() {}, scrollY: 0, innerHeight: 800,
     matchMedia() { return { matches: false, addEventListener() {}, removeEventListener() {} }; },
@@ -76,7 +77,9 @@ async function run() {
     addresses: [{ id: "home", label: "Home", address: "1-1-277", area: "Naidupeta", city: "Naidupeta", serviceAreaId: "naidupeta-central", lat: 13.90, lng: 79.89 }],
   };
   const cachedRestaurant = {
-    id: "cache-kitchen", name: "Cached Kitchen", city: "Naidupeta", address: "Naidupeta",
+    // Pinned addresses hide restaurants that cannot be located (fail-closed
+    // serviceability), so the cached restaurant sits ~1km from the address.
+    id: "cache-kitchen", name: "Cached Kitchen", city: "Naidupeta", address: "Naidupeta", lat: 13.905, lng: 79.895,
     cuisines: ["South Indian"], image: "restaurant-placeholder.svg", open: true, archived: false,
     etaMin: 20, etaMax: 30, deliveryFee: 29, platformFee: 15,
     menuIndex: [{ id: "dosa", name: "Dosa", category: "Breakfast", diet: "veg", price: 90, available: true }],
@@ -90,7 +93,8 @@ async function run() {
     }),
   };
 
-  const cached = contextWith(seed, true, () => new Promise(() => {}));
+  const authUser = { uid: session.uid, email: session.email };
+  const cached = contextWith(seed, true, () => new Promise(() => {}), authUser);
   const started = performance.now();
   vm.runInContext(instrument(original), cached.context, { filename: customerSourcePath, timeout: 3000 });
   const cachedRenderMs = performance.now() - started;
@@ -103,7 +107,7 @@ async function run() {
     "savrivo.customer.seenWelcome": "1",
     "savrivo.customer.session": JSON.stringify(session),
     "savrivo.customer.profile": JSON.stringify(profile),
-  }, false, async () => { throw new Error("offline"); });
+  }, false, async () => { throw new Error("offline"); }, authUser);
   vm.runInContext(instrument(original), offline.context, { filename: customerSourcePath, timeout: 3000 });
   await offline.context.__bootPromise;
   const offlineMarkup = offline.elements.get("app").innerHTML;
@@ -114,14 +118,20 @@ async function run() {
   assert(!syncCatalogSource.includes('DB_ROOT+"/menus"'), "Home critical path still downloads the full menu tree");
   assert(!original.includes("offerAutomaticLocation"), "startup still contains an automatic GPS trigger");
   assert(original.includes("state.catalogRequestSequence"), "latest-address request sequencing is missing");
-  const rules = JSON.parse(fs.readFileSync(rulesPath, "utf8"));
-  const index = rules.rules.feastly.catalog.restaurants[".indexOn"];
-  assert(Array.isArray(index) && index.includes("city"), "Realtime Database city index is missing");
+  // The catalogue range queries order restaurants by these single-field
+  // indexes; Firestore builds them automatically unless an override exempts
+  // them, which would turn every Home load into a failed query.
+  const indexes = JSON.parse(fs.readFileSync(firestoreIndexesPath, "utf8"));
+  ["citySort", "geoSort", "geoSortGlobal"].forEach(field => {
+    assert(original.includes(`restaurantsCollectionRef().orderBy("${field}")`), `catalogue no longer queries by ${field}`);
+    const override = (indexes.fieldOverrides || []).find(item => item.collectionGroup === "restaurants" && item.fieldPath === field);
+    assert(!override || (override.indexes || []).some(item => item.order === "ASCENDING"), `Firestore index override disables restaurants.${field}`);
+  });
 
   process.stdout.write(`✓ cached Home rendered before network in ${cachedRenderMs.toFixed(1)} ms\n`);
   process.stdout.write("✓ offline/no-cache resolves to retry state\n");
   process.stdout.write("✓ Home omits the full menu tree and automatic GPS\n");
-  process.stdout.write("✓ city query index and latest-request guard are present\n");
+  process.stdout.write("✓ catalogue query indexes and latest-request guard are present\n");
 }
 
 run().catch(error => {

@@ -72,7 +72,12 @@ try {
     check(!webConfig.includes("savrivo-app"), `${module.role} generated config must not target production`);
     check(html.includes("https://scraveit-isolated-test-default-rtdb.firebaseio.com"), `${module.role} CSP must allow the isolated database`);
     check(!html.includes("https://savrivo-app-sg.asia-southeast1.firebasedatabase.app"), `${module.role} CSP must remove the production database`);
+    check(!html.includes("savrivo-app"), `${module.role} CSP must not allow any production-project host`);
+    check(html.includes("https://scraveit-isolated-test.web.app"), `${module.role} CSP must allow the isolated Hosting origin for map tiles`);
   }
+
+  const customerHtml = fs.readFileSync(path.join(outputRoot, "customer", "premium.html"), "utf8");
+  check(customerHtml.includes("https://asia-south1-scraveit-isolated-test.cloudfunctions.net"), "customer CSP must allow only the isolated HTTP Functions origin");
 
   const productionRoot = path.join(temporaryRoot, "production");
   writeConfigs(productionRoot, () => "savrivo-app");

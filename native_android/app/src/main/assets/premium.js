@@ -843,6 +843,14 @@
   async function fetchGeoNeighborhood(city,address,precision,limitPerCell){
     const cells=geohashNeighborhood(address.lat,address.lng,precision);
     const results=await Promise.all(cells.map(cell=>fetchGeoCell(city,cell,limitPerCell)));
+    return mergeGeoCells(results);
+  }
+  /** Merges per-cell results. null when every cell failed: an empty
+   *  neighbourhood and an unreachable one must not look the same, or an
+   *  offline launch reads as "nothing delivers here" and overwrites the
+   *  saved catalogue with nothing. */
+  function mergeGeoCells(results){
+    if(results.length&&results.every(records=>!records))return null;
     const merged={};
     results.forEach(records=>{
       if(!records)return;
@@ -856,12 +864,7 @@
   async function fetchGeoNeighborhoodGlobal(address,precision,limitPerCell){
     const cells=geohashNeighborhood(address.lat,address.lng,precision);
     const results=await Promise.all(cells.map(cell=>fetchGeoCellGlobal(cell,limitPerCell)));
-    const merged={};
-    results.forEach(records=>{
-      if(!records)return;
-      Object.keys(records).forEach(id=>{merged[id]=records[id]});
-    });
-    return merged;
+    return mergeGeoCells(results);
   }
 
   /** Loads by proximity instead of by name, for a customer who has pinned an
@@ -887,19 +890,24 @@
   async function fetchGeoCatalogRecords(address){
     const city=catalogCity();
     if(!city)return {records:{},cursor:"",hasMore:false,pages:1};
-    let merged=await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT);
+    // Only a tier that actually answered counts; if none did, the load
+    // failed and syncCatalog keeps the saved catalogue with a retry state.
+    let answered=false;
+    const take=records=>{if(records)answered=true;return records||{}};
+    let merged=take(await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT));
     if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
-      const wide=await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT);
+      const wide=take(await fetchGeoNeighborhood(city,address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT));
       merged=Object.assign({},merged,wide);
     }
     if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
-      const globalTight=await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT);
+      const globalTight=take(await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_TIGHT,GEO_CELL_FETCH_LIMIT));
       merged=Object.assign({},merged,globalTight);
     }
     if(Object.keys(merged).length<CATALOG_PAGE_SIZE){
-      const globalWide=await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT);
+      const globalWide=take(await fetchGeoNeighborhoodGlobal(address,GEO_QUERY_PRECISION_WIDE,GEO_CELL_FETCH_LIMIT));
       merged=Object.assign({},merged,globalWide);
     }
+    if(!answered)throw new Error("CATALOG_UNAVAILABLE");
     // A hard ceiling, same reasoning as the alphabetical path's page cap: a
     // request must stay bounded however dense the deliverable area gets.
     const ids=Object.keys(merged),max=CATALOG_PAGE_SIZE*CATALOG_MAX_PAGES;
@@ -1481,7 +1489,21 @@
 
   function toast(msg,type){clearTimeout(state.toastTimer);const kind=type==="success"?"success":type==="danger"?"danger":type==="warning"?"warning":"info",mark=kind==="success"?'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':kind==="info"?'':'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.6v5.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg></span>';const text=kind==="success"?String(msg||"").split(/(?<=[.!])\s+/)[0].replace(/\.$/,""):msg;toastRegion.innerHTML='<div class="toast '+kind+'">'+mark+'<span class="toast-text">'+h(text)+'</span></div>';state.toastTimer=setTimeout(()=>{const t=toastRegion.firstElementChild;if(!t)return;t.classList.add("out");setTimeout(()=>{if(toastRegion.firstElementChild===t)toastRegion.innerHTML=""},200)},kind==="success"?1500:kind==="info"?2600:4000)}
   function setSheet(sheet) { state.sheet = sheet; renderSheet(); }
-  function closeSheet() { state.sheet = null; renderSheet(); if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
+  function closeSheet() { if(pendingConfirm){settleConfirm(false);return;} state.sheet = null; renderSheet(); if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
+  // In-app replacement for the browser confirm dialog, which blocks the WebView with a
+  // system dialog. Resolves true only on the confirm button; closing the sheet
+  // any other way is a "no". The sheet that was open underneath comes back
+  // afterwards, as it would under a native dialog.
+  let pendingConfirm=null;
+  function askConfirm(title,copy,confirmLabel,cancelLabel){
+    if(pendingConfirm)settleConfirm(false);
+    return new Promise(resolve=>{pendingConfirm={resolve,previous:state.sheet};setSheet({type:"confirm",title,copy:copy||"",confirmLabel,cancelLabel:cancelLabel||"Cancel"})});
+  }
+  function settleConfirm(answer){
+    const pending=pendingConfirm;if(!pending)return;pendingConfirm=null;
+    state.sheet=pending.previous||null;renderSheet();pending.resolve(answer);
+  }
+  function confirmSheet(sheet){return sheetShell(sheet.title,sheet.copy,'<div class="stack-lg"><button class="button danger full" data-action="confirm-yes">'+h(sheet.confirmLabel)+'</button><button class="button tonal full" data-action="confirm-no">'+h(sheet.cancelLabel)+'</button></div>')}
   // Without this, an uncaught exception inside an event handler (a form
   // submit, a tap action) is swallowed by the browser with no on-screen
   // trace at all - the WebView's console isn't wired to logcat, so it looks
@@ -2166,6 +2188,7 @@
       refreshTrackingCarousel();
     }
     refreshAdRails();
+    refreshCardPhotos();
     afterHomeRender();
     renderSheet();
     // After a reconcile the scroller survived untouched, so there is no
@@ -2344,6 +2367,26 @@
       if(!live.length){clearInterval(adRailTimer);adRailTimer=null;return;}
       live.forEach(track=>{const next=(adRailIndex(track)+1)%track.children.length;track.scrollTo({left:next*track.clientWidth,behavior:"smooth"});});
     },AD_RAIL_INTERVAL_MS);
+  }
+  // Store cards with several photos (restaurants, groceries and dairies alike)
+  // slide through them on their own. Only cards on screen move, one after
+  // another rather than all at once; a card the customer just swiped, or a
+  // list they are scrolling, waits.
+  let cardPhotoTimer=null, pageScrolledAt=0;
+  const CARD_PHOTO_INTERVAL_MS=3500, cardPhotoTouched=new WeakMap();
+  function cardPhotoOnScreen(track){const r=track.getBoundingClientRect();return r.width>0&&r.bottom>r.height*0.4&&r.top<window.innerHeight-r.height*0.4;}
+  function syncCardPhotoDots(track){const dots=track.nextElementSibling;if(!dots||!dots.classList.contains("photo-dots"))return;const i=Math.round(track.scrollLeft/Math.max(1,track.clientWidth));Array.from(dots.children).forEach((d,n)=>d.classList.toggle("on",n===i));}
+  function refreshCardPhotos(){
+    document.querySelectorAll(".photo-track").forEach(syncCardPhotoDots);
+    if(cardPhotoTimer||!document.querySelector(".photo-track"))return;
+    cardPhotoTimer=setInterval(()=>{
+      const tracks=Array.from(document.querySelectorAll(".photo-track"));
+      if(!tracks.length){clearInterval(cardPhotoTimer);cardPhotoTimer=null;return;}
+      if(document.visibilityState!=="visible"||state.sheet||Date.now()-pageScrolledAt<1200)return;
+      const behavior=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth";
+      tracks.filter(t=>t.children.length>1&&Date.now()-(cardPhotoTouched.get(t)||0)>CARD_PHOTO_INTERVAL_MS*2&&cardPhotoOnScreen(t))
+        .forEach((t,i)=>setTimeout(()=>{if(!t.isConnected)return;const w=t.clientWidth||1,next=(Math.round(t.scrollLeft/w)+1)%t.children.length;t.scrollTo({left:next*w,behavior});},i*450));
+    },CARD_PHOTO_INTERVAL_MS);
   }
   /** Restaurants the customer had delivered before, newest first: one tap reorders. */
   /** Open restaurants that deliver here, nearest first. */
@@ -3343,7 +3386,7 @@
   async function cancelDineBooking(id){
     const b=(state.dineBookings||[]).find(x=>x.id===id);if(!b)return;
     const late=b.slotAt-Date.now()<60*60000;
-    if(!window.confirm(late?"It’s less than an hour away, so this counts as a missed booking. Cancel anyway?":"Cancel this booking?"))return;
+    if(!await askConfirm("Cancel this booking?",late?"It’s less than an hour away, so this counts as a missed booking.":"",late?"Cancel anyway":"Cancel booking","Keep booking"))return;
     try{await dineCall("dineInCancelBooking",{bookingId:id});toast("Booking cancelled.","success");}catch(e){toast(dineError(e),"danger");}
   }
 
@@ -5213,11 +5256,12 @@
   function paymentInfoSheet() {
     return sheetShell("Payment methods","Only verified payment options are shown as available.",'<div class="stack"><div class="notice success">'+icon("receipt","small")+'<div><strong>Cash on delivery</strong><div class="caption">Available for eligible orders.</div></div></div><div class="notice info">'+icon("card","small")+'<div><strong>UPI</strong><div class="caption">'+h(paymentMethodCopy("upi"))+'</div></div></div><div class="notice info">'+icon("card","small")+'<div><strong>Cards</strong><div class="caption">'+h(paymentMethodCopy("card"))+'</div></div></div><button class="button primary full" data-action="close-sheet">Done</button></div>');
   }
-  let lastSheetHtml="";
+  let lastSheetHtml="", lastSheetShown=null;
   function renderSheet() {
-    if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";return;}
+    if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";lastSheetShown=null;return;}
     const sheet=state.sheet;let html="";
-    if(sheet.type==="filters")html=filterSheet();
+    if(sheet.type==="confirm")html=confirmSheet(sheet);
+    else if(sheet.type==="filters")html=filterSheet();
     else if(sheet.type==="menuFilters")html=menuFilterSheet();
     else if(sheet.type==="item")html=itemSheet(sheet);
     else if(sheet.type==="replaceCart")html=replaceCartSheet(sheet);
@@ -5242,11 +5286,18 @@
     else if(sheet.type==="squadStart")html=squadStartSheet();
     else if(sheet.type==="dineBook")html=dineBookSheet(sheet);
     else if(sheet.type==="tableRound")html=tableRoundSheet();
-    // The wheel is left alone when nothing on it changed: rebuilding it would
-    // restart a spin in progress.
-    if(sheet.type==="wheel"&&html===lastSheetHtml&&sheetRegion.firstElementChild)return;
-    lastSheetHtml=html;
+    // Every render (weather, catalogue and location refreshes included) comes
+    // through here. A sheet whose content didn't change is left alone: rebuilding
+    // it replayed the slide-up animation, so an open sheet looked like it
+    // dropped and sprang back by itself, and it would restart a wheel spin.
+    const open=sheetRegion.firstElementChild;
+    if(html===lastSheetHtml&&open)return;
+    // The same sheet with new content updates in place: no slide-up, same scroll.
+    const update=Boolean(open&&html&&sheet===lastSheetShown);
+    const scrolled=update&&sheetRegion.querySelector(".sheet"),top=scrolled?scrolled.scrollTop:0;
+    lastSheetHtml=html;lastSheetShown=sheet;
     sheetRegion.innerHTML=html;
+    if(update){sheetRegion.querySelectorAll(".sheet-backdrop,.sheet").forEach(el=>{el.style.animation="none"});const s=sheetRegion.querySelector(".sheet");if(s)s.scrollTop=top;return;}
     if(html)requestAnimationFrame(()=>{const focus=sheetRegion.querySelector("input,select,textarea,button");if(focus)focus.focus({preventScroll:true});});
   }
 
@@ -5512,6 +5563,8 @@
     const control=event.target.closest("[data-action]");if(!control)return;
     const action=control.dataset.action;
     if(action==="open-ad"&&Date.now()<adSwipeSuppressUntil)return;
+    if(action==="confirm-yes"){settleConfirm(true);return;}
+    if(action==="confirm-no"){settleConfirm(false);return;}
     if(action==="close-sheet"){
       if(control.classList.contains("sheet-backdrop")&&event.target.closest("[data-sheet-surface]"))return;
       closeSheet();return;
@@ -5539,7 +5592,7 @@
     if(action==="table-round"){setSheet({type:"tableRound"});return;}
     if(action==="send-round"){sendTableRound();return;}
     if(action==="table-request"){tableRequestAction(control.dataset.value==="bill"?"bill":"waiter");return;}
-    if(action==="leave-table"){if(window.confirm("Leave this table on your phone? Your food stays on the table’s bill."))leaveTable(false);return;}
+    if(action==="leave-table"){askConfirm("Leave this table on your phone?","Your food stays on the table’s bill.","Leave table","Stay").then(yes=>{if(yes)leaveTable(false)});return;}
     if(action==="squad-join"){const input=document.getElementById("squad-code-input");joinSquad(input&&input.value);return;}
     if(action==="share-squad"){shareSquad();return;}
     if(action==="squad-put-cart"){putCartInSquad(false);return;}
@@ -5771,10 +5824,15 @@
   window.addEventListener("pointermove",adSwipeMove,{passive:true});
   window.addEventListener("pointerup",adSwipeEnd);
   window.addEventListener("pointercancel",adSwipeEnd);
-  app.addEventListener("scroll",event=>{if(event.target&&event.target.classList&&event.target.classList.contains("ad-rail-track")){adRailTouchedAt=Date.now();syncAdRailDots(event.target);}},true)
-  // Card photo strips: light the dot for the photo in view.
-  app.addEventListener("scroll",event=>{const t=event.target;if(!t||!t.classList||!t.classList.contains("photo-track"))return;const dots=t.nextElementSibling;if(!dots||!dots.classList.contains("photo-dots"))return;const i=Math.round(t.scrollLeft/Math.max(1,t.clientWidth));Array.from(dots.children).forEach((d,n)=>d.classList.toggle("on",n===i));},true);
-  app.addEventListener("touchstart",event=>{if(event.target.closest&&event.target.closest(".ad-rail-track"))adRailTouchedAt=Date.now();},{passive:true});
+  // Slideshows: light the dot for the photo in view. Any other scroll is the
+  // page itself moving, which holds the card photos still for a moment.
+  // (Scrolling isn't counted as a touch: the slideshow's own smooth scroll
+  // used to count, so the store cover skipped every other turn.)
+  app.addEventListener("scroll",event=>{const t=event.target;if(!t||!t.classList)return;if(t.classList.contains("ad-rail-track"))syncAdRailDots(t);else if(t.classList.contains("photo-track"))syncCardPhotoDots(t);else pageScrolledAt=Date.now();},true);
+  // A finger on a slideshow pauses it; the wait restarts when the finger lifts.
+  const holdSlideshow=event=>{const el=event.target.closest&&event.target.closest(".ad-rail-track,.photo-track");if(!el)return;if(el.classList.contains("photo-track"))cardPhotoTouched.set(el,Date.now());else adRailTouchedAt=Date.now();};
+  app.addEventListener("touchstart",holdSlideshow,{passive:true});
+  app.addEventListener("touchend",holdSlideshow,{passive:true});
   document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
   document.addEventListener("pointerup",trackingMapPointerUp);
   document.addEventListener("pointercancel",trackingMapPointerUp);

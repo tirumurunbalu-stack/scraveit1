@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const adminSource = fs.readFileSync(
   path.join(__dirname, "..", "admin", "src", "main", "assets", "premium.js"),
@@ -25,7 +26,11 @@ function createElement() {
 
 function loadAdmin() {
   const nativeCalls = [];
-  const patches = [];
+  // Acknowledgements are persisted as Firestore support/{ticketId} updates.
+  const stub = createFirebaseCompat({
+    user: { uid: "admin", email: "admin@example.test" },
+    collections: { support: { "ticket-a": ticket(), "ticket-b": ticket({ id: "ticket-b", uid: "customer-b" }) } },
+  });
   const storage = new Map();
   const document = {
     documentElement: { dataset: {} },
@@ -55,12 +60,8 @@ function loadAdmin() {
       setItem: (key, value) => storage.set(key, String(value)),
       removeItem: (key) => storage.delete(key),
     },
-    fetch: async (url, options = {}) => {
-      if (options.method === "PATCH") {
-        patches.push({ url: String(url), body: JSON.parse(options.body || "{}") });
-      }
-      return { ok: true, text: async () => "{}" };
-    },
+    fetch: async () => ({ ok: true, text: async () => "{}" }),
+    firebase: stub.firebase,
     window: {
       __SAVRIVO_ADMIN_TEST__: true,
       FEASTLY_FIREBASE: { databaseUrl: "https://example.test" },
@@ -75,7 +76,15 @@ function loadAdmin() {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(adminSource, context, { filename: "premium.js" });
-  return { api: context.window.__SAVRIVO_ADMIN_SUPPORT_TEST__, nativeCalls, patches };
+  return {
+    api: context.window.__SAVRIVO_ADMIN_SUPPORT_TEST__,
+    nativeCalls,
+    get patches() {
+      return stub.firestore.writes
+        .filter((write) => write.type === "update" && write.path.startsWith("support/"))
+        .map((write) => ({ path: write.path, body: write.data }));
+    },
+  };
 }
 
 function ticket(overrides = {}) {
@@ -109,6 +118,7 @@ function ticket(overrides = {}) {
   await first.api.openSupportTicket("customer-a", "ticket-a");
   assert.strictEqual(first.nativeCalls.filter((call) => call.type === "stop").length, 1, "opening the request stops the alarm immediately");
   assert.strictEqual(first.patches.length, 1, "opening the request persists one acknowledgement");
+  assert.strictEqual(first.patches[0].path, "support/ticket-a", "the acknowledgement is written to the opened ticket");
   assert.strictEqual(first.patches[0].body.seenActivityAt, 1000, "acknowledgement records the customer activity timestamp");
   assert.ok(first.patches[0].body.seenActivityKey, "acknowledgement records the customer activity fingerprint");
   assert.ok(!Object.prototype.hasOwnProperty.call(first.patches[0].body, "updatedAt"), "admin acknowledgement does not create customer activity");

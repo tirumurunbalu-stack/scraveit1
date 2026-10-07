@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const nativeRoot = path.resolve(__dirname, "..");
 const apps = [
@@ -20,6 +21,7 @@ function makeElement() {
     value: "",
     content: "",
     dataset: {},
+    style: { setProperty() {}, removeProperty() {} },
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     addEventListener() {},
     setAttribute() {},
@@ -64,7 +66,7 @@ function makeContext() {
     HTMLFormElement,
     FormData: global.FormData,
     Image: class Image {},
-    FEASTLY_FIREBASE: {},
+    FEASTLY_FIREBASE: {}, firebase: createFirebaseCompat().firebase,
     fetch: async () => { throw new Error("unexpected network request during unauthenticated boot"); },
     setTimeout: () => 1,
     clearTimeout() {},

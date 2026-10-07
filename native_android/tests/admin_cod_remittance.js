@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const sourcePath = path.join(__dirname, "..", "admin", "src", "main", "assets", "premium.js");
 const retryKey = "savrivo.control.codRemittancePending";
@@ -142,6 +143,7 @@ function createRuntime(storage, remittanceMode) {
       apiKey: "test-api-key",
     },
     Image: class {},
+    firebase: createFirebaseCompat({ user: { uid: "admin-cod-owner", email: "owner@example.test", idToken: "a".repeat(64) } }).firebase,
     EventSource: class {},
     scrollY: 0,
     scrollTo() {},
@@ -293,6 +295,8 @@ function formFor(sheet, amount, method, referenceId) {
     "durable retry must be persisted before invoking the secure callable");
   assert(!submitSource.includes('db("PATCH"') && !submitSource.includes('db("PUT"'),
     "COD remittance UI must never mutate money data directly");
+  assert(!/\bfs\.|\.(set|update|add)\(|\.batch\(|runTransaction/.test(submitSource),
+    "COD remittance UI must never write money data to Firestore directly");
 
   process.stdout.write("admin COD remittance tests passed (exact restart retry, strict money input, owner-only callable)\n");
 })().catch((error) => {

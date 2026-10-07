@@ -5,9 +5,10 @@
  * restaurants, not the nearest ones, so a restaurant two kilometres away whose
  * name starts with Z can never appear. The customer app now loads by
  * proximity instead, once an address has a real pin - these tests drive the
- * real shipped geohash and fetch functions against a simulated Firebase range
- * query, the same way customer_catalog_paging.js does for the alphabetical
- * path this sits alongside.
+ * real shipped geohash and fetch functions - including the Firestore query
+ * builders - against an in-memory Firestore, the same way
+ * customer_catalog_paging.js does for the alphabetical path this sits
+ * alongside.
  *
  * What is actually being guarded: the neighbourhood query has to find what is
  * actually nearby, has to widen when the tight tier is too thin to trust, has
@@ -19,6 +20,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { createFirebaseCompat, createFirestore } = require("./support/firebase_compat_stub");
 
 const SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "app", "src", "main", "assets", "premium.js"),
@@ -62,42 +64,27 @@ const GEO_QUERY_PRECISION_TIGHT = constant("GEO_QUERY_PRECISION_TIGHT");
 const GEO_QUERY_PRECISION_WIDE = constant("GEO_QUERY_PRECISION_WIDE");
 const GEO_CELL_FETCH_LIMIT = constant("GEO_CELL_FETCH_LIMIT");
 
-/** A stand-in Firebase answering orderBy=geoSort and orderBy=citySort range
- *  queries the same way the REST API does: ordered by value, inclusive at
- *  both ends, limitToFirst applied after the range. Also serves the
- *  alphabetical ($key) fallback used when no city is known. */
+/** An in-memory Firestore holding `rows` in /restaurants, answering the
+ *  app's geoSort / geoSortGlobal / citySort range queries the way Firestore
+ *  does: ordered by value, inclusive at both ends, documents missing the
+ *  field left out, limit applied after the range. Also serves the
+ *  document-id fallback used when no city is known. */
 function makeServer(rows) {
-  let requests = 0;
   const byId = {};
   rows.forEach((r) => { byId[r.id] = r; });
+  const db = createFirestore({ restaurants: byId });
   return {
-    get requests() { return requests; },
-    byId,
-    query(parameters) {
-      requests++;
-      const limit = Number(parameters.limitToFirst);
-      const byKey = parameters.orderBy === '"$key"';
-      const field = byKey ? "id" : JSON.parse(parameters.orderBy);
-      const startAt = byKey ? "" : JSON.parse(parameters.startAt);
-      const endAt = byKey ? "￿" : JSON.parse(parameters.endAt);
-      const out = {};
-      rows.slice()
-        .filter((r) => r[field] != null)
-        .sort((a, b) => (a[field] < b[field] ? -1 : a[field] > b[field] ? 1 : 0))
-        .filter((r) => r[field] >= startAt && r[field] <= endAt)
-        .slice(0, limit)
-        .forEach((r) => { out[r.id] = r; });
-      return out;
-    },
+    db,
+    get requests() { return db.queries; },
     get(id) { return byId[id] || null; },
   };
 }
 
 /** Builds the harness out of the real functions, with the app's state,
- *  address and network replaced by the test's. */
+ *  address and Firestore replaced by the test's. */
 function harness(rows, address) {
   const server = makeServer(rows);
-  const factory = new Function("server", "address", `
+  const factory = new Function("server", "address", "firebase", `
     const CATALOG_RANGE_END = "\\uf8ff";
     const CATALOG_PAGE_SIZE = ${CATALOG_PAGE_SIZE};
     const CATALOG_MAX_PAGES = ${CATALOG_MAX_PAGES};
@@ -106,13 +93,15 @@ function harness(rows, address) {
     const GEO_CELL_FETCH_LIMIT = ${GEO_CELL_FETCH_LIMIT};
     const GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz";
     function currentAddress() { return address || null; }
+    function restaurantsCollectionRef() { return server.db.collection("restaurants"); }
     ${extract("catalogCityKey")}
     ${extract("catalogNameKey")}
     ${extract("cityListingRange")}
     ${extract("cityListingRangeAfter")}
     ${extract("citySearchRange")}
     ${extract("catalogCity")}
-    ${extract("restaurantSummaryQuery")}
+    ${extract("restaurantSummaryRange")}
+    ${extract("restaurantSummaryFirestoreQuery")}
     ${extract("catalogCursorFrom")}
     ${extract("addressIsPinned")}
     ${extract("geoCoordinate")}
@@ -121,28 +110,12 @@ function harness(rows, address) {
     ${extract("geohashNeighborhood")}
     ${extract("geoCellRange")}
     ${extract("geoGlobalCellRange")}
-    async function fetchRestaurantSummaries(cursor) {
-      return server.query(restaurantSummaryQuery(cursor));
-    }
+    ${extract("fetchRestaurantSummaries")}
     ${extract("fetchCatalogPages")}
-    async function fetchGeoCell(city, cell, limit) {
-      const range = geoCellRange(city, cell);
-      return server.query({
-        orderBy: JSON.stringify("geoSort"),
-        startAt: JSON.stringify(range.startAt),
-        endAt: JSON.stringify(range.endAt),
-        limitToFirst: String(limit),
-      });
-    }
-    async function fetchGeoCellGlobal(cell, limit) {
-      const range = geoGlobalCellRange(cell);
-      return server.query({
-        orderBy: JSON.stringify("geoSortGlobal"),
-        startAt: JSON.stringify(range.startAt),
-        endAt: JSON.stringify(range.endAt),
-        limitToFirst: String(limit),
-      });
-    }
+    ${extract("recordsFromSnapshot")}
+    ${extract("fetchGeoCell")}
+    ${extract("fetchGeoCellGlobal")}
+    ${extract("mergeGeoCells")}
     ${extract("fetchGeoNeighborhood")}
     ${extract("fetchGeoNeighborhoodGlobal")}
     ${extract("fetchGeoCatalogRecords")}
@@ -152,7 +125,7 @@ function harness(rows, address) {
       geohashEncode, geohashNeighborhood, geoCellRange, geoGlobalCellRange, catalogCityKey, catalogNameKey, addressIsPinned, server,
     };
   `);
-  return factory(server, address);
+  return factory(server, address, createFirebaseCompat().firebase);
 }
 
 const NELLORE = { lat: 14.4426, lng: 79.9865 };
@@ -424,30 +397,36 @@ async function checkAsync(label, fn) {
   await checkAsync("one cell failing does not take the rest of the neighbourhood down with it", async () => {
     const app0 = harness([], null);
     const rows = denseCity(app0, "Nellore", 60, 3);
-    const app = harness(rows, {});
-    const originalGet = global.fetch; // not used; documents intent only
+    const address = { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng };
+    const healthy = await harness(rows, address).fetchGeoNeighborhood("Nellore", address, GEO_QUERY_PRECISION_TIGHT, 60);
     // Simulate one of the nine cell queries throwing, the way a flaky mobile
     // network call fails independently of the other eight.
-    const realQuery = app.server.query.bind(app.server);
+    const app = harness(rows, address);
     let call = 0;
-    app.server.query = (...args) => { call++; if (call === 3) throw new Error("network blip"); return realQuery(...args); };
-    // fetchGeoCell in the harness calls server.query directly without a
-    // try/catch (the real premium.js version wraps it) - rebuild that guard
-    // here so the test exercises the same resilience contract.
-    const cells = app.geohashNeighborhood(NELLORE.lat, NELLORE.lng, GEO_QUERY_PRECISION_TIGHT);
-    const results = await Promise.all(cells.map(async (cell) => {
-      const range = app.geoCellRange("Nellore", cell);
-      try {
-        return app.server.query({
-          orderBy: '"geoSort"',
-          startAt: JSON.stringify(range.startAt),
-          endAt: JSON.stringify(range.endAt),
-          limitToFirst: "60",
-        });
-      } catch (e) { return null; }
-    }));
-    assert.ok(results.some((r) => r === null), "the flaky cell must have failed");
-    assert.ok(results.some((r) => r && Object.keys(r).length >= 0), "the healthy cells must still have answered");
+    app.server.db.beforeRead = () => { call++; if (call === 3) throw new Error("network blip"); };
+    const flaky = await app.fetchGeoNeighborhood("Nellore", address, GEO_QUERY_PRECISION_TIGHT, 60);
+    assert.strictEqual(call, 9, "every cell must still have been asked");
+    assert.ok(flaky, "a single failed cell must not fail the neighbourhood");
+    assert.ok(Object.keys(flaky).length > 0, "the healthy cells must still have answered");
+    assert.ok(Object.keys(flaky).every((id) => healthy[id]), "a failed cell must not invent restaurants");
+  });
+
+  await checkAsync("every cell failing is an error, not an empty neighbourhood", async () => {
+    // Offline at launch: if this came back as {} the home screen would say
+    // nothing delivers here and overwrite the saved catalogue with nothing.
+    const app0 = harness([], null);
+    const rows = denseCity(app0, "Nellore", 60, 3);
+    const address = { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng };
+    const app = harness(rows, address);
+    app.server.db.beforeRead = () => { throw new Error("offline"); };
+    assert.strictEqual(await app.fetchGeoNeighborhood("Nellore", address, GEO_QUERY_PRECISION_TIGHT, 60), null);
+    await assert.rejects(() => app.fetchGeoCatalogRecords(address), /CATALOG_UNAVAILABLE/);
+  });
+
+  await checkAsync("a genuinely empty neighbourhood is still an empty result, not an error", async () => {
+    const address = { city: "Nellore", lat: NELLORE.lat, lng: NELLORE.lng };
+    const result = await harness([], address).fetchGeoCatalogRecords(address);
+    assert.deepStrictEqual(result.records, {});
   });
 
   console.log("\n" + (failures ? failures + " FAILED" : "ALL PASSED"));

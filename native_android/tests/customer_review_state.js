@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const customerFile = path.resolve(__dirname, "..", "app", "src", "main", "assets", "premium.js");
 
@@ -35,7 +36,7 @@ function makeContext() {
   const context = {
     console, document, localStorage, navigator: { onLine: true }, crypto: webcrypto,
     TextEncoder, AbortController, HTMLFormElement, FormData: global.FormData,
-    Image: class Image {}, FEASTLY_FIREBASE: {},
+    Image: class Image {}, FEASTLY_FIREBASE: {}, firebase: createFirebaseCompat().firebase,
     fetch: async () => { throw new Error("network is not used by this deterministic test"); },
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     requestAnimationFrame(callback) { callback(); return 1; }, scrollTo() {}, scrollY: 0,

@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const adminFile = path.resolve(__dirname, "..", "admin", "src", "main", "assets", "premium.js");
 
@@ -30,6 +31,27 @@ function createContext() {
   const elements = new Map();
   const databaseReads = [];
   const dashboardPayloads = [];
+  // Canonical order details live in Firestore orders/{orderId}; the
+  // dashboard itself must come only from the bounded callable.
+  const stub = createFirebaseCompat({
+    user: { uid: "admin-dashboard-owner", email: "owner@example.test", idToken: "a".repeat(64) },
+    collections: {
+      orders: {
+        "active-order": {
+          customerId: "customer-1",
+          restaurant: "Projection Kitchen",
+          status: "Accepted",
+          customerName: "Private Customer",
+          customerPhone: "9999999999",
+          address: { address: "Private delivery address" },
+          items: [{ name: "Dosa", quantity: 2, price: 120 }],
+          pricing: { subtotal: 240, deliveryFee: 30, platformFee: 10 },
+          total: 280,
+          updatedAt: 1700000002000,
+        },
+      },
+    },
+  });
   storage.set("savrivo.control.session", JSON.stringify({
     uid: "admin-dashboard-owner",
     email: "owner@example.test",
@@ -73,26 +95,13 @@ function createContext() {
     Image: class Image {},
     Intl,
     FEASTLY_FIREBASE: { databaseUrl: "https://example.invalid" },
+    firebase: stub.firebase,
     async fetch(url) {
       databaseReads.push(String(url));
-      let value = {};
-      if (String(url).includes("/feastly/orders/customer-1/active-order.json")) {
-        value = {
-          restaurant: "Projection Kitchen",
-          status: "Accepted",
-          customerName: "Private Customer",
-          customerPhone: "9999999999",
-          address: { address: "Private delivery address" },
-          items: [{ name: "Dosa", quantity: 2, price: 120 }],
-          pricing: { subtotal: 240, deliveryFee: 30, platformFee: 10 },
-          total: 280,
-          updatedAt: 1700000002000,
-        };
-      }
       return {
         ok: true,
         status: 200,
-        async text() { return JSON.stringify(value); },
+        async text() { return JSON.stringify({}); },
       };
     },
     setTimeout: () => 1,
@@ -178,6 +187,7 @@ function createContext() {
     },
   };
   context.__databaseReads = databaseReads;
+  context.__firestore = stub.firestore;
   context.__dashboardPayloads = dashboardPayloads;
   return vm.createContext(context);
 }
@@ -187,7 +197,7 @@ function createContext() {
   if (!original.includes('nativeInvoke("getAdminDashboard"')) {
     throw new Error("Admin does not call the bounded dashboard callable");
   }
-  if (original.includes('db("GET",ROOT+"/orders")')) {
+  if (original.includes('db("GET",ROOT+"/orders")') || /fs\.collection\("orders"\)\.get\(\)|ordersCollectionRef\(\)\.get\(\)/.test(original)) {
     throw new Error("Admin still downloads the full customer order tree");
   }
   for (const forbidden of ["adminRevenue", "restaurantNet", "accountBalancesPaise", "15% menu commission", "85%", "SCRAVEIT EARNINGS", "TODAY’S GMV"]) {
@@ -214,7 +224,8 @@ function createContext() {
   if (payload.activeLimit !== 100 || payload.recentLimit !== 100 || payload.ledgerLimit !== 100 || payload.codLimit !== 100) {
     throw new Error(`unexpected bounded dashboard limits: ${JSON.stringify(payload)}`);
   }
-  if (context.__databaseReads.some(url => /\/feastly\/orders\.json(?:\?|$)/.test(url))) {
+  if (context.__databaseReads.some(url => /\/feastly\/orders\.json(?:\?|$)/.test(url))
+      || context.__firestore.reads.some(read => read.path === "orders")) {
     throw new Error("initial Admin sync read the unbounded order root");
   }
   if (state.orders.length !== 2 || state.orders[0].id !== "active-order" || state.orders[0].itemCount !== 2) {
@@ -255,7 +266,7 @@ function createContext() {
   }
 
   await internals.openOrderDetail("active-order");
-  if (!context.__databaseReads.some(url => url.includes("/feastly/orders/customer-1/active-order.json"))) {
+  if (!context.__firestore.reads.some(read => read.type === "doc" && read.path === "orders/active-order")) {
     throw new Error("opening an order did not lazy-load its exact canonical detail");
   }
   if (!state.orderDetails["active-order"] || state.orderDetails["active-order"].items.length !== 1) {

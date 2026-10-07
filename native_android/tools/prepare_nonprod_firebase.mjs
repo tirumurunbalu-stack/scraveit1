@@ -93,7 +93,21 @@ function validateModule(configRoot, module) {
   return { module, file, projectId, databaseUrl, storageBucket, apiKey: apiKeys[0] };
 }
 
-function rewriteCsp(html, databaseOrigin) {
+// Production-project hosts the WebView CSP allows besides the database:
+// Hosting (map tiles, table links) and HTTP Functions. An isolated build gets
+// the same hosts under its own project ID; premium.js URLs that still name the
+// production project are then blocked by the isolated CSP instead of reaching
+// production.
+function isolatedHost(host, projectId) {
+  const production = PRODUCTION_PROJECT_ID;
+  if (host === `${production}.web.app`) return `${projectId}.web.app`;
+  if (host === `${production}.firebaseapp.com`) return `${projectId}.firebaseapp.com`;
+  const functionsSuffix = `-${production}.cloudfunctions.net`;
+  if (host.endsWith(functionsSuffix)) return `${host.slice(0, -functionsSuffix.length)}-${projectId}.cloudfunctions.net`;
+  return host;
+}
+
+function rewriteCsp(html, databaseOrigin, projectId) {
   const metaPattern = /(<meta\s+http-equiv="Content-Security-Policy"\s+content=")([^"]+)(">)/i;
   const match = html.match(metaPattern);
   if (!match) fail("premium.html is missing its Content-Security-Policy meta tag.");
@@ -112,6 +126,18 @@ function rewriteCsp(html, databaseOrigin) {
   });
   filtered.push(databaseOrigin);
   directives[connectIndex] = [...new Set(filtered)].join(" ");
+  for (let index = 0; index < directives.length; index++) {
+    directives[index] = directives[index].split(/\s+/).map((token, position) => {
+      if (position === 0) return token;
+      try {
+        const url = new URL(token.replace(/;$/, ""));
+        const host = isolatedHost(url.hostname, projectId);
+        return host === url.hostname ? token : token.replace(url.hostname, host);
+      } catch {
+        return token;
+      }
+    }).join(" ");
+  }
   const csp = `${directives.join("; ")};`;
   return html.replace(metaPattern, `$1${csp}$3`);
 }
@@ -122,6 +148,7 @@ function generateAssets(nativeRoot, outputRoot, configuration) {
   const html = rewriteCsp(
     fs.readFileSync(path.join(sourceRoot, "premium.html"), "utf8"),
     configuration.databaseUrl,
+    configuration.projectId,
   );
   const webConfig = {
     apiKey: configuration.apiKey,

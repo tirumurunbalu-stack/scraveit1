@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const adminFile = path.resolve(__dirname, "..", "admin", "src", "main", "assets", "premium.js");
 
@@ -70,6 +71,8 @@ function contextWithPersistedOwner() {
     FormData: global.FormData,
     Image: class Image {},
     FEASTLY_FIREBASE: { databaseUrl: "https://example.invalid" },
+    // A signed-in owner whose initial operational reads fail transiently.
+    firebase: createFirebaseCompat({ user: { uid: "admin-recovery-owner", email: "owner@example.test" }, offline: true }).firebase,
     fetch: async () => ({
       ok: false,
       status: 503,

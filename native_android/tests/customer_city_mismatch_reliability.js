@@ -23,6 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const customerFile = path.resolve(__dirname, "..", "app", "src", "main", "assets", "premium.js");
 
@@ -53,7 +54,7 @@ function makeContext() {
   const context = {
     console, document, localStorage, navigator: { onLine: true }, crypto: webcrypto,
     TextEncoder, AbortController, HTMLFormElement, FormData: global.FormData,
-    Image: class Image {}, FEASTLY_FIREBASE: {},
+    Image: class Image {}, FEASTLY_FIREBASE: {}, firebase: createFirebaseCompat().firebase,
     fetch: async () => { throw new Error("this test must never perform a network request"); },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
     requestAnimationFrame(callback) { callback(); return 0; }, scrollTo() {}, scrollY: 0,

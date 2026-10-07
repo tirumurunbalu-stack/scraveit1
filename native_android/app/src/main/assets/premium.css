@@ -1692,7 +1692,10 @@ em, .display em, .page-title em { font-family: var(--font-serif); font-style: it
 .squad-pick img { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; }
 .squad-pick strong { display: block; font-size: 15px; }
 .squad-pick small { display: block; font-size: 12.5px; color: var(--ink-soft); }
-.sheet { will-change: transform; touch-action: pan-y; }
+/* Sheets scroll on their own too: no bounce or stretch at either end (same as
+   the page scroller), and nothing passes through to the page behind. */
+.sheet { will-change: transform; touch-action: pan-y; overscroll-behavior-y: none; }
+.sheet-backdrop { overscroll-behavior: none; }
 
 /* Android WebView stops drawing a WebGL canvas that shares a layer with a
    backdrop blur, so nothing in the sky header may use one. */

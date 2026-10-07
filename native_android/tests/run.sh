@@ -14,10 +14,11 @@ else
   exit 2
 fi
 
-"$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-functions-rules.mjs"
-"$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-query-indexes-stage3.mjs"
+"$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-deploy-config.mjs"
 "$NODE_EXECUTABLE" "$TEST_DIR/offer_math.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/boot_smoke.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/home_performance_smoke.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/confirm_sheet.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_session_recovery.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_dashboard_projection.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_cod_remittance.js"

@@ -206,7 +206,9 @@ test("Customer production cloud bridge is authenticated, attested, and server-au
   check(submitOrder.includes("idempotencyKey:idempotencyKey") && js.includes("pendingIdempotencyKey"), "Checkout must persist a retry-stable idempotency key");
   check(!submitOrder.includes("pricing:") && !submitOrder.includes('db("PATCH",DB_ROOT,changes)'), "Production checkout must not claim success from client pricing or a direct RTDB write");
   check(!js.includes("weather.googleapis.com") && !js.includes("googleWeather") && !js.includes("CONFIG.apiKey,lat"), "Customer APK must not contain a Weather API endpoint or Firebase-key weather fallback");
-  check(js.includes("serverAuthoritative:true") && js.includes("server-confirmed COD total"), "Dynamic fees and final COD total must be labelled server-authoritative");
+  // Fees read "Estimated …" and the total "Estimated total" until the server
+  // quote (serverAuthoritative) is in hand; only then does it read "To pay".
+  check(js.includes("c.serverAuthoritative!==true)return null") && js.includes("serverCheckout()?'To pay':'Estimated total'") && js.includes("Estimated delivery fee"), "Dynamic fees and final COD total must be labelled server-authoritative");
   check(js.includes('localStorage.removeItem("savrivo.customer.deliveryOtps")') && !js.includes('saveJSON("savrivo.customer.deliveryOtps"'), "Delivery OTPs must not remain in WebView local storage");
   check(secureStore.includes('KeyStore.getInstance(KEYSTORE)') && secureStore.includes("AES/GCM/NoPadding"), "Delivery OTPs must use Android Keystore encryption");
 });
@@ -277,10 +279,10 @@ test("Operations apps use authenticated native Firebase messaging and callable b
   const riderJs = read(path.join(nativeRoot, "rider", "src", "main", "assets", "premium.js"));
   check(adminJs.includes("Rider rewards & incentives"), "Admin rewards control center must remain present");
   check(adminJs.includes('id="rider-reward-campaign-form"'), "Admin rider reward campaign editor form is missing");
-  check(riderJs.includes("Authoritative rider earnings, incentives and COD visibility"), "Rider rewards overview screen must remain present");
-  check(riderJs.includes("Extra earning offers"), "Rider extra earning offers screen must remain present");
+  check(riderJs.includes("Authoritative rider earnings and COD visibility"), "Rider rewards overview screen must remain present");
+  check(riderJs.includes("function screenEarningOffers") && riderJs.includes('top("Incentives","Login slots, targets and bonuses")'), "Rider extra earning offers screen must remain present");
   check(riderJs.includes("OFFER CONDITIONS"), "Rider extra offers must keep the conditions section visible");
-  check(riderJs.includes("Your trips count:"), "Rider extra offers must show rider progress against offer targets");
+  check(riderJs.includes('rewardOfferSummaryTile("Your trips count",tripsValue'), "Rider extra offers must show rider progress against offer targets");
   check(riderJs.includes("Earn upto "), "Rider extra offers must render milestone reward headlines");
 });
 
@@ -302,9 +304,9 @@ test("production-oriented sync and media guardrails are present", () => {
   check(customer.includes("reviewsHydrated") && customer.includes("persistReviews()") && customer.includes("reviewCacheKey"), "Customer review state must hydrate before prompting and persist per signed-in account");
   check(customer.includes('if(!reviewStateReady())return null'), "Customer home must not flash a stale delivered-order review prompt during startup sync");
   check(customer.includes("ratingCount") && customer.includes("customer rating"), "Customer restaurant cards must expose verified aggregate rating counts");
-  check(restaurant.includes("new EventSource"), "Restaurant must use scoped Firebase realtime streams");
+  check(restaurant.includes("query.onSnapshot(") && restaurant.includes("watchQuery(restaurantOrdersQuery(rid))"), "Restaurant must use scoped Firebase realtime streams");
   check(restaurant.includes("RESTAURANT_RECONCILE_INTERVAL_MS") && restaurant.includes('document.addEventListener("visibilitychange"') && restaurant.includes("triggerForegroundResync"), "Restaurant must force a foreground resync and visible-screen reconcile loop so rider arrival and handover state cannot remain stale");
-  check(restaurant.includes('metric("CUSTOMER RATING"') && restaurant.includes("verified review"), "Restaurant dashboard must show its verified customer rating aggregate");
+  check(restaurant.includes("rating.toFixed(1)+' ★ · '+ratingCount+' review'") && restaurant.includes("No ratings yet"), "Restaurant dashboard must show its verified customer rating aggregate");
   check(rider.includes("new EventSource"), "Partner must use Firebase realtime streams");
   check(rider.includes('nativeInvoke("claimRiderOrder"'), "Partner offer claims must use the transactional callable");
   check(rider.includes('nativeInvoke("markRiderArrivedRestaurant"'), "Partner restaurant arrival must use the server-verified callable");
@@ -334,7 +336,7 @@ test("Partner active-delivery tracking survives process and network failures saf
   check(rider.includes("savrivo.partner.activeTracking"), "Partner must persist the active tracking pointer locally");
   check(rider.includes("savrivo.partner.pendingOffline"), "Partner must persist an offline write that could not reach Firebase");
   check(rider.includes("currentOffer.riderId===riderId") && rider.includes("currentOffer.expiresAt"), "Partner must render only its exact unexpired dispatch offer");
-  check(rider.includes('ROOT+"/riderOffers/"+state.session.uid') && !rider.includes('db("GET",ROOT+"/dispatchQueue")'), "Partner must read only its private rider-offer inbox");
+  check(rider.includes('function riderOffersQuery(uidValue){return fs.collection("riderOffers").where("riderId","==",uidValue)}') && rider.includes("riderOffersQuery(state.session.uid)") && !rider.includes("dispatchQueue"), "Partner must read only its private rider-offer inbox");
   check(rider.includes("ensureNativePushRegistered") && rider.includes("RIDER_PUSH_TOKEN_REGISTRATION_FAILED"), "Partner must retry failed push-token registration visibly");
   check(rider.includes("offers.forEach(startNativeOffer)") && operationsBridge.includes("startRiderOffer") && messagingService.includes('event.optString("offeredAt")'), "Partner must reconcile generation-aware pending server offers with the native alarm");
   check(rider.includes("pauseNativeOffer") && rider.includes("resumeNativeOffer") && rider.includes("recoverOfferAfterFailure"), "Partner claim/decline must provisionally pause and re-arm a valid offer after transient failure");
@@ -384,8 +386,8 @@ test("Savrivo operational upgrade contracts are present", () => {
   check(rider.includes("applicationDraft"), "Partner application must persist a local draft");
   check(rider.includes("captureApplicationDraft"), "Partner application must preserve fields around document selection");
 
-  check(restaurant.includes("userRestaurants/"), "Restaurant app must resolve multi-restaurant links");
-  check(restaurant.includes("restaurantMembers/"), "Restaurant app must use restaurant-scoped memberships");
+  check(restaurant.includes('fs.collection("userRestaurants").doc(uidValue)'), "Restaurant app must resolve multi-restaurant links");
+  check(restaurant.includes('fs.collection("restaurantMembers").doc(rid+"_"+uidValue)'), "Restaurant app must use restaurant-scoped memberships");
   check(restaurant.includes("switchRestaurant"), "Restaurant app must support switching restaurant scope");
   check(restaurant.includes('nativeInvoke("updateOrderStatus"'), "Restaurant lifecycle changes must use the authenticated callable contract");
   check(restaurant.includes("SavrivoCloudNative"), "Restaurant lifecycle changes must cross the native Firebase bridge");
@@ -402,13 +404,13 @@ test("Savrivo operational upgrade contracts are present", () => {
   check(customer.includes("platformFeeDetails"), "Customer must resolve platform-fee overrides");
   check(!customer.includes("weather.googleapis.com"), "Customer must not call Google Weather directly");
   check(!customerHtml.includes("https://weather.googleapis.com"), "Customer CSP must not expose an unused Weather API origin");
-  check(customer.includes("serverAuthoritative:true") && customer.includes("server-confirmed COD total"), "Weather/demand fees and the final COD total must be explicitly backend-authoritative");
+  check(customer.includes("c.serverAuthoritative!==true)return null") && customer.includes("serverCheckout()?'To pay':'Estimated total'"), "Weather/demand fees and the final COD total must be explicitly backend-authoritative");
   check(customer.includes('state.sort==="nearby"'), "Customer must offer nearby sorting");
   check(customer.includes("customerCity"), "Customer discovery must use saved city scope");
   check(fs.existsSync(path.join(nativeRoot, "app", "src", "main", "assets", "restaurant-placeholder.svg")), "Customer must have a clean restaurant image fallback");
 
   for (const source of [customer, restaurant, rider]) {
-    check(source.includes("orderChats/"), "All operational apps must use order-scoped chat");
+    check(source.includes('fs.collection("orderChats").where("orderId","==",orderId).where("channel","==",channel)'), "All operational apps must use order-scoped chat");
     check(source.includes("maskPhoneNumbers"), "All operational apps must mask phone numbers in chat");
   }
   check(rules.orderChats && rules.restaurantLoad, "Database rules must include chat and restaurant-load trees");
@@ -451,7 +453,8 @@ test("Savrivo current issue batch contracts are present", () => {
   check(customer.includes('action==="clear-unavailable-cart"'), "Customer must safely reconcile a cart after its restaurant is archived");
   check(customer.includes("data.imageUrl || data.image || packaged.image"), "Live Waffle Spot data must retain its licensed packaged cover until owner media is uploaded");
   check(customer.includes("function searchKey") && customer.includes("function searchMatches"), "Customer search must ignore case, spacing and punctuation while supporting ordered-letter matching");
-  check(customer.includes('type === "success" ? 900 : 5000'), "Customer success confirmations must clear quickly");
+  const toastTimings = customer.match(/kind==="success"\?(\d+):kind==="info"\?(\d+):(\d+)\)/);
+  check(toastTimings && Number(toastTimings[1]) <= 2000 && Number(toastTimings[1]) < Number(toastTimings[3]), "Customer success confirmations must clear quickly");
   check(fs.existsSync(path.join(nativeRoot, "app", "src", "main", "assets", "waffle-spot-cover.jpg")), "Waffle Spot must have a packaged, locally licensed cover image");
 
   check(admin.includes("screenNotifications"), "Admin must have customer notification scheduling");
@@ -461,8 +464,8 @@ test("Savrivo current issue batch contracts are present", () => {
   check(admin.includes('id="restaurant-phone"') && admin.includes('phone.replace(/\\D/g,"").length<10'), "Admin restaurant CRUD must capture and validate a contact number");
   check(admin.includes("openSupportTicket") && admin.includes("seenAt"), "Admin must mark support requests seen only when opened");
   check(admin.includes("supportTicketSheet") && admin.includes('s.type==="supportTicket"'), "Admin Open request must render the support ticket sheet");
-  check(admin.includes("overlayNormalizedMenus") && admin.includes('changes["menus/"+r.id+"/"+id]'), "Admin menu CRUD must synchronize the normalized menu used by Customer and Restaurant apps");
-  check(admin.includes('ROOT+"/restaurantOrders/"+encodeURIComponent(id)') && admin.includes('changes["menus/"+id]=null'), "Restaurant deletion must preserve order history or remove its orphaned normalized menu atomically");
+  check(admin.includes("overlayNormalizedMenus") && admin.includes("batch.set(restaurantDocRef(r.id),publicListing(record));batch.set(menuItemDocRef(r.id,id),normalizedMenuItem(item));await batch.commit()"), "Admin menu CRUD must synchronize the normalized menu used by Customer and Restaurant apps");
+  check(admin.includes('fs.collection("restaurantOrders").where("restaurantId","==",id).limit(1).get()') && admin.includes('batch.delete(restaurantDocRef(id));batch.delete(fs.collection("menus").doc(id));itemsSnap.forEach(doc=>batch.delete(doc.ref));await batch.commit()'), "Restaurant deletion must preserve order history or remove its orphaned normalized menu atomically");
   check(admin.includes("async function storageUpload") && admin.includes('"admin-uploads/"+state.session.uid'), "Admin media must upload compressed images to Firebase Storage");
   check(admin.includes("record.imageUrl=uploadedImageUrl") && admin.includes("item.imageUrl=uploadedImageUrl"), "Restaurant and food records must persist Storage URLs instead of embedded upload data");
   check(admin.includes("storageDelete(before.imageUrl)") && restaurant.includes("storageDelete(oldImageUrl)"), "Replacing restaurant or menu media must clean up the previous Storage object after commit");
@@ -470,7 +473,7 @@ test("Savrivo current issue batch contracts are present", () => {
   check(admin.includes("nativeStorageUpload") && admin.includes("FeastlyAdminNative.uploadPreparedImage"), "Admin media must use the native upload path instead of WebView CORS in the installed app");
   check(admin.includes('preparedImage=await compressImageBlob') && admin.indexOf('preparedImage=await compressImageBlob') < admin.indexOf('accounts:signUp'), "Admin must validate the restaurant image before creating its owner login");
   check(admin.includes('await auth("accounts:delete",{idToken:createdOwnerAuth.idToken})'), "Admin must roll back a newly created owner login when restaurant onboarding fails");
-  check(admin.includes('changes["restaurantMembers/"+id+"/"+ownerUid]') && admin.includes('await db("PATCH",ROOT,changes)'), "Restaurant and owner links must be committed atomically");
+  check(admin.includes("batch.set(restaurantMemberDocRef(id,ownerUid),ownerMemberData)") && admin.includes("batch.set(restaurantMemberDocRef(rid,ownerUid),memberData);batch.set(userRestaurantsDocRef(ownerUid),{[rid]:true},{merge:true})"), "Restaurant and owner links must be committed atomically");
   check(!/role:"restaurant_owner",uid:/.test(admin), "Restaurant membership records must use the Firebase UID as the key without an unapproved duplicate uid field");
   check(adminHtml.includes("img-src 'self' data: blob: content:"), "Admin CSP must permit protected picker and temporary image previews");
   check(admin.includes("enhanceRestaurantEditor") && admin.includes("data-status-value=\"active\"") && admin.includes("data-status-value=\"paused\""), "Admin restaurant details must expose explicit Active and Paused availability controls");
@@ -478,8 +481,8 @@ test("Savrivo current issue batch contracts are present", () => {
   check(admin.includes('needsOwner=isNew||!!(ownerEmail||ownerPassword||ownerPasswordConfirm)') && admin.includes("Assign restaurant owner (optional)"), "Ownerless restaurants must offer assignment without blocking unrelated catalogue or photo changes");
   check(admin.includes("delete record.ownerEmail") && admin.includes("delete record.ownerUid"), "Owner identity must remain in private membership data, not the public restaurant catalogue");
   check(admin.includes('id="restaurant-search"') && admin.includes("restaurantResultsMarkup"), "Admin must provide live restaurant search");
-  check(admin.includes("transferRestaurantOwner") && admin.includes('s.type==="transferOwner"') && admin.includes('changes["restaurantMembers/"+rid+"/"+oldUid]=null') && admin.includes('ROOT+"/userRestaurants/"+encodeURIComponent(oldUid)'), "Admin must transfer restaurant membership atomically and clean up the old owner lookup");
-  check(admin.includes('db("PATCH",ROOT+"/riders/"+encodeURIComponent(id),changes)') && !admin.includes('db("PUT",ROOT+"/riders/"+id,record)'), "Admin rider approval and rejection must patch only review fields allowed by Firebase rules");
+  check(admin.includes("transferRestaurantOwner") && admin.includes('s.type==="transferOwner"') && admin.includes("batch.set(restaurantMemberDocRef(rid,newUid),memberData)") && admin.includes("previousOwnerIds.forEach(oldUid=>{batch.delete(restaurantMemberDocRef(rid,oldUid))})") && admin.includes("userRestaurantsDocRef(oldUid).update({[rid]:firebase.firestore.FieldValue.delete()})"), "Admin must transfer restaurant membership atomically and clean up the old owner lookup");
+  check((admin.match(/riderDocRef\(id\)\.update\(changes\)/g) || []).length >= 2 && !/riderDocRef\([^)]*\)\.set\(/.test(admin), "Admin rider approval and rejection must patch only review fields allowed by Firebase rules");
   check(!admin.includes('state.riders[id].online=riderAvailable(id)') && !admin.includes('state.riders[data.riderId].id=data.riderId'), "Admin must not add display-only id or online fields to persisted rider records");
   check(adminJava.includes("prepareSelectedImage") && adminJava.includes("ImageDecoder") && adminJava.includes("Bitmap.CompressFormat.JPEG"), "Admin must decode, resize and compress selected restaurant/menu images natively");
   check(adminJava.includes("FileProvider.getUriForFile"), "Admin must return prepared images to the WebView through a protected FileProvider URI");
@@ -500,7 +503,7 @@ test("Savrivo current issue batch contracts are present", () => {
   check(restaurant.includes("syncNewOrderAlarm"), "Restaurant must keep a new-order alert active until handled");
   check(restaurant.includes("syncSequence") && restaurant.includes("STALE_SYNC_IGNORED"), "Restaurant refreshes must ignore out-of-order responses");
   check(restaurant.includes("applyCommittedStatus") && restaurant.includes("statusAtOrBeyond"), "Restaurant actions must apply server state and tolerate cross-device idempotent results");
-  check(restaurant.includes('state.route="launch"'), "Restaurant must use launch state while restoring session");
+  check(restaurant.includes('state.route=state.member?"dashboard":"launch"'), "Restaurant must use launch state while restoring session");
   const orderAlarmService = read(path.join(nativeRoot, "shared", "firebase", "java", "com", "savrivo", "firebase", "OrderAlarmService.java"));
   check(orderAlarmService.includes("START_ORDER_ALARM") && orderAlarmService.includes("MediaPlayer") && orderAlarmService.includes("savrivo_action_alert") && orderAlarmService.includes("setLooping(true)"), "Restaurant and Partner must loop the supplied Savrivo action alert sound");
   check(!orderAlarmService.includes("ToneGenerator") && !orderAlarmService.includes("RingtoneManager"), "Operational alerts must not reuse a generated tone, phone ringtone, or device default alarm");
@@ -517,13 +520,13 @@ test("Savrivo current issue batch contracts are present", () => {
   check(rider.includes('bridge.claimRiderOrder(id,values[0],values[1])') && rider.includes('bridge.declineRiderOrder(id,values[0],values[1])') && !rider.includes('bridge[method].apply'), "Partner decisions must call typed Android bridge methods instead of unsupported reflective apply");
   check(operationsBridge.includes('invokeOnMain(requestId, "NATIVE_RIDER_CLAIM_UNAVAILABLE"') && operationsBridge.includes('activity.runOnUiThread'), "Partner claim must enter Firebase from Android's main lifecycle thread");
   check(callable.includes('Looper.myLooper() != Looper.getMainLooper()') && callable.includes('MAIN.post(() -> requestAppCheckAndPerform'), "App Check token acquisition must be marshalled to Android's main thread");
-  check(rider.includes("pauseNativeOffer(offer)") && rider.includes("silencedOfferEvents") && rider.includes("Decline offer"), "Partner decisions must provisionally stop the matching alarm while keeping Accept and Decline available");
+  check(rider.includes("pauseNativeOffer(offer)") && rider.includes("silencedOfferEvents") && rider.includes("swipeConfirm('Swipe to accept','data-action=\"claim-offer\"") && rider.includes('data-action="decline-offer" data-offer-id="'), "Partner decisions must provisionally stop the matching alarm while keeping Accept and Decline available");
   check(riderCss.includes(".sheet-backdrop{overflow:hidden;z-index:140!important}") && riderCss.includes(".offer-actions{position:sticky"), "Partner offer actions must remain visible above fixed navigation");
-  check(rider.includes("Approx. pickup") && rider.includes("GPS straight-line estimate"), "Partner must label validated pickup distance honestly");
+  check(rider.includes("<span>Approx. pickup</span>") && rider.includes("<span>Approx. pickup km</span>") && rider.includes("' · ≈'+h(o.distanceKm)+' km'"), "Partner must label validated pickup distance honestly");
   check(!rider.includes("current&&state.online&&[\"Assigned\"") && rider.includes("current&&[\"Assigned\",\"Handed to rider\",\"Out for delivery\""), "Active delivery tracking must continue when new-job availability is paused");
   check(rider.includes("const started=await startTracking(o,\"delivery\");if(!started"), "Partner must not claim location was shared when native tracking did not start");
   check(rider.includes("Order status updated ") && !rider.includes(">Last updated "), "Partner job card must distinguish order status age from GPS freshness");
-  check(riderTracking.includes("HEARTBEAT_INTERVAL_MS = 5_000L") && riderTracking.includes("LocationManager.GPS_PROVIDER, 3000, 0, this"), "Active delivery GPS must refresh every few seconds even while stationary");
+  check(riderTracking.includes("HEARTBEAT_INTERVAL_MS = 5_000L") && riderTracking.includes("NORMAL_LOCATION_INTERVAL_MS = 3_000L") && riderTracking.includes("NEAR_LOCATION_INTERVAL_MS = 1_500L") && riderTracking.includes("LocationManager.GPS_PROVIDER, activeLocationIntervalMs, 0, this"), "Active delivery GPS must refresh every few seconds even while stationary");
 
   check(rules.customerBroadcasts && rules.localAds, "Database rules must include notifications and local ads");
   check(rules.settings.customer.deliveryFeeOverrides, "Database rules must include scoped delivery overrides");
@@ -591,7 +594,8 @@ for (const app of apps) {
     check(missingActions.length === 0, `rendered actions without a click handler: ${missingActions.join(", ")}`);
 
     const forms = [...source.matchAll(/<form id=\\?"([a-z0-9-]+)\\?"/g)].map((match) => match[1]);
-    const handledForms = [...source.matchAll(/form\.id===\\?"([a-z0-9-]+)\\?"/g)].map((match) => match[1]);
+    // Submit listeners name the event target form, f, el, ...: any `<x>.id==="<form id>"` counts.
+    const handledForms = [...source.matchAll(/\b[A-Za-z_$][\w$]*\.id===\\?"([a-z0-9-]+)\\?"/g)].map((match) => match[1]);
     const missingForms = [...new Set(forms)].filter((form) => !handledForms.includes(form));
     check(missingForms.length === 0, `rendered forms without a submit handler: ${missingForms.join(", ")}`);
   });
@@ -640,8 +644,15 @@ for (const app of apps) {
     check(/\bcompileSdk\s+36\b/.test(gradle), "compileSdk must be 36");
     check(/\bminSdk\s+24\b/.test(gradle), "minSdk must be 24");
     check(/\btargetSdk\s+36\b/.test(gradle), "targetSdk must be 36");
-    const expectedVersionCode = app.name === "control" ? 60 : app.name === "restaurant" ? 53 : app.name === "partner" ? 73 : 84;
-    check(new RegExp(`\\bversionCode\\s+${expectedVersionCode}\\b`).test(gradle), `versionCode must be ${expectedVersionCode}`);
+    // The versionCode itself is owned by build.gradle and bumped every release;
+    // what must hold is that it is a real integer and never drops below one
+    // already shipped (Play rejects a lower versionCode for the same package).
+    const releasedVersionCodeFloor = { customer: 84, control: 60, restaurant: 53, partner: 73 }[app.name];
+    const defaultConfig = gradle.match(/defaultConfig\s*\{([\s\S]*?)\n\s*\}/);
+    const versionCode = defaultConfig && defaultConfig[1].match(/\bversionCode\s+(\d+)\b/);
+    check(!!versionCode, "defaultConfig must declare an integer versionCode");
+    check(Number(versionCode[1]) >= releasedVersionCodeFloor, `versionCode ${versionCode[1]} is below the released ${releasedVersionCodeFloor}`);
+    check(/\bversionName\s+"\d+\.\d+\.\d+"/.test(defaultConfig[1]), "defaultConfig must declare a semantic versionName");
     check(/\bbuildToolsVersion\s+"36\.0\.0"/.test(gradle), "Build Tools must be pinned to 36.0.0");
     check(manifestAttribute(xml, "allowBackup") === "false", "android:allowBackup must be false");
     check(manifestAttribute(xml, "fullBackupContent") === "false", "legacy Android backup must remain disabled");

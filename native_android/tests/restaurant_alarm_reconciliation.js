@@ -17,9 +17,14 @@ assert(
   restaurant.includes('pendingOrders=state.orders.filter(o=>o.status==="Order placed")')
     && restaurant.includes("reconcileRestaurantOrderAlarms(JSON.stringify({known:knownOrderIds,pending:pendingOrderIds}))"),
   "Restaurant must reconcile native alarms against the complete authoritative pending set");
+// sync() reads the restaurant's orders from Firestore inside one Promise.all;
+// a swallowed failure there would hand reconciliation an empty pending set
+// and silence every live alarm.
 assert(
-  restaurant.includes('db("GET",ROOT+"/restaurantOrders/"+encodeURIComponent(rid))])')
-    && !restaurant.includes('db("GET",ROOT+"/restaurantOrders/"+encodeURIComponent(rid)).catch(()=>null)'),
+  restaurant.includes("function restaurantOrdersQuery(rid){return fs.collection(\"restaurantOrders\").where(\"restaurantId\",\"==\",rid)}")
+    && restaurant.includes("restaurantOrdersQuery(rid).get(),")
+    && !/restaurantOrdersQuery\(rid\)\.get\(\)\.catch\(/.test(restaurant)
+    && restaurant.includes("state.orders=ordersSnap.docs.map("),
   "An order-fetch failure must not be treated as an authoritative empty set");
 assert(
   bridge.includes("reconcileRestaurantOrderAlarms(String orderStateJson)")

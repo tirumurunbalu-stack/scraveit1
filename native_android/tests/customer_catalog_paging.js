@@ -2,8 +2,8 @@
 /**
  * The customer app used to download up to 100 restaurants and do everything on
  * the device. It now walks one city a page at a time through the citySort
- * index, so these tests drive the real shipped functions against a simulated
- * Firebase range query.
+ * index, so these tests drive the real shipped functions - including the
+ * Firestore query builders - against an in-memory Firestore.
  *
  * What is actually being guarded: paging a live catalogue must show every
  * restaurant exactly once. A gap hides an open restaurant from a customer who
@@ -14,6 +14,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { createFirebaseCompat, createFirestore, DOCUMENT_ID } = require("./support/firebase_compat_stub");
 
 const SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "app", "src", "main", "assets", "premium.js"),
@@ -52,58 +53,51 @@ function constant(name) {
 const CATALOG_PAGE_SIZE = constant("CATALOG_PAGE_SIZE");
 const CATALOG_MAX_PAGES = constant("CATALOG_MAX_PAGES");
 
-/** A stand-in Firebase that answers an orderBy=citySort range query the same
- *  way the REST API does: ordered by value, inclusive at both ends, and
- *  limitToFirst applied after the range. */
+/** An in-memory Firestore holding `rows` in /restaurants. It answers the
+ *  app's orderBy("citySort").startAt().endAt().limit() range the way
+ *  Firestore does: ordered by value, inclusive at both ends, documents
+ *  missing the field left out, and the limit applied after the range. */
 function makeServer(rows) {
-  let requests = 0;
+  const db = createFirestore({ restaurants: Object.fromEntries(rows.map(r => [r.id, r])) });
   return {
-    get requests() { return requests; },
-    query(parameters) {
-      requests++;
-      const limit = Number(parameters.limitToFirst);
-      const out = {};
-      // Without a city the app falls back to ordering by key, which is what
-      // this branch models; otherwise it is a citySort range.
-      const byKey = parameters.orderBy === '"$key"';
-      const field = byKey ? "id" : "citySort";
-      const startAt = byKey ? "" : JSON.parse(parameters.startAt);
-      const endAt = byKey ? "￿" : JSON.parse(parameters.endAt);
-      rows.slice()
-        .sort((a, b) => (a[field] < b[field] ? -1 : a[field] > b[field] ? 1 : 0))
-        .filter(r => r[field] >= startAt && r[field] <= endAt)
-        .slice(0, limit)
-        .forEach(r => { out[r.id] = r; });
-      return out;
-    },
+    db,
+    get requests() { return db.queries; },
   };
 }
 
 /** Builds the paging harness out of the real functions, with the app's state,
- *  address and network replaced by the test's. */
+ *  address and Firestore replaced by the test's. */
 function harness(rows, city) {
   const server = makeServer(rows);
-  const factory = new Function("server", "city", `
+  const factory = new Function("server", "city", "firebase", `
     const CATALOG_RANGE_END = "\\uf8ff";
     const CATALOG_PAGE_SIZE = ${CATALOG_PAGE_SIZE};
     const CATALOG_MAX_PAGES = ${CATALOG_MAX_PAGES};
     function currentAddress() { return city ? {city} : null; }
+    function restaurantsCollectionRef() { return server.db.collection("restaurants"); }
     ${extract("catalogCityKey")}
     ${extract("catalogNameKey")}
     ${extract("cityListingRange")}
     ${extract("cityListingRangeAfter")}
     ${extract("citySearchRange")}
     ${extract("catalogCity")}
-    ${extract("restaurantSummaryQuery")}
+    ${extract("restaurantSummaryRange")}
+    ${extract("restaurantSummaryFirestoreQuery")}
     ${extract("catalogCursorFrom")}
-    async function fetchRestaurantSummaries(cursor) {
-      return server.query(restaurantSummaryQuery(cursor));
-    }
+    ${extract("fetchRestaurantSummaries")}
     ${extract("fetchCatalogPages")}
-    return {fetchCatalogPages, restaurantSummaryQuery, citySearchRange, catalogCursorFrom,
-            catalogCityKey, catalogNameKey, server};
+    return {fetchCatalogPages, restaurantSummaryFirestoreQuery, citySearchRange, catalogCursorFrom,
+            catalogCityKey, catalogNameKey, restaurantsCollectionRef, server};
   `);
-  return factory(server, city);
+  return factory(server, city, createFirebaseCompat().firebase);
+}
+
+/** The name-prefix search searchCityCatalog() runs, verbatim (asserted
+ *  against the shipped source below), returning the matching ids. */
+const NAME_SEARCH_QUERY = 'restaurantsCollectionRef().orderBy("citySort").startAt(range.startAt).endAt(range.endAt).limit(CATALOG_PAGE_SIZE).get()';
+async function searchByName(app, range, limit) {
+  const snap = await app.restaurantsCollectionRef().orderBy("citySort").startAt(range.startAt).endAt(range.endAt).limit(limit).get();
+  return snap.docs.map(doc => doc.id);
 }
 
 /** `count` restaurants in one city, named so they sort predictably. */
@@ -233,12 +227,10 @@ async function checkAsync(label, fn) {
     const firstPage = await app.fetchCatalogPages(1);
     assert.ok(!firstPage.records.zz, "the test is pointless if it is on the first page");
 
+    assert.ok(SOURCE.includes(NAME_SEARCH_QUERY), "searchCityCatalog no longer runs the name range query this test mirrors");
     const range = app.citySearchRange("Nellore", "Zaika");
-    const found = app.server.query({
-      orderBy: '"citySort"', startAt: JSON.stringify(range.startAt),
-      endAt: JSON.stringify(range.endAt), limitToFirst: String(CATALOG_PAGE_SIZE),
-    });
-    assert.deepStrictEqual(Object.keys(found), ["zz"]);
+    const found = await searchByName(app, range, CATALOG_PAGE_SIZE);
+    assert.deepStrictEqual(found, ["zz"]);
   });
 
   await checkAsync("search stays inside the customer's city", async () => {
@@ -248,21 +240,19 @@ async function checkAsync(label, fn) {
     ];
     const app = harness(rows, "Nellore");
     const range = app.citySearchRange("Nellore", "zaika");
-    const found = app.server.query({
-      orderBy: '"citySort"', startAt: JSON.stringify(range.startAt),
-      endAt: JSON.stringify(range.endAt), limitToFirst: "40",
-    });
-    assert.deepStrictEqual(Object.keys(found), ["a"]);
+    const found = await searchByName(app, range, 40);
+    assert.deepStrictEqual(found, ["a"]);
   });
 
   console.log("\nthe query itself");
 
   check("a customer with no address does not page", () => {
     const app = harness(city("Nellore", 100), "");
-    const parameters = app.restaurantSummaryQuery("nellore|place-0001|x");
-    assert.strictEqual(parameters.orderBy, '"$key"',
+    const spec = app.restaurantSummaryFirestoreQuery("nellore|place-0001|x").spec;
+    assert.strictEqual(spec.orders[0].field, DOCUMENT_ID,
       "without a city there is no range, so a cursor must not be pretended to work");
-    assert.strictEqual(parameters.limitToFirst, String(CATALOG_PAGE_SIZE));
+    assert.ok(!spec.start && !spec.end, "an id-ordered page must not carry a citySort range");
+    assert.strictEqual(spec.limit, CATALOG_PAGE_SIZE);
   });
 
   await checkAsync("and is never offered more restaurants it cannot fetch", async () => {
@@ -274,17 +264,18 @@ async function checkAsync(label, fn) {
 
   check("a resumed page asks for one extra row to cover the replayed cursor", () => {
     const app = harness(city("Nellore", 100), "Nellore");
-    assert.strictEqual(app.restaurantSummaryQuery("").limitToFirst, String(CATALOG_PAGE_SIZE));
-    assert.strictEqual(app.restaurantSummaryQuery("nellore|a|b").limitToFirst, String(CATALOG_PAGE_SIZE + 1));
+    assert.strictEqual(app.restaurantSummaryFirestoreQuery("").spec.limit, CATALOG_PAGE_SIZE);
+    assert.strictEqual(app.restaurantSummaryFirestoreQuery("nellore|a|b").spec.limit, CATALOG_PAGE_SIZE + 1);
   });
 
   check("a corrupt cursor falls back to the city instead of returning nothing", () => {
     const app = harness(city("Nellore", 10), "Nellore");
-    const good = app.restaurantSummaryQuery("");
+    const good = app.restaurantSummaryFirestoreQuery("").spec;
     ["", "!!!", "tirupati|a|b", "zzzzz"].forEach(cursor => {
-      const parameters = app.restaurantSummaryQuery(cursor);
-      assert.strictEqual(parameters.startAt, good.startAt, "cursor " + JSON.stringify(cursor));
-      assert.strictEqual(parameters.endAt, good.endAt, "cursor " + JSON.stringify(cursor));
+      const spec = app.restaurantSummaryFirestoreQuery(cursor).spec;
+      assert.deepStrictEqual(spec.orders, good.orders, "cursor " + JSON.stringify(cursor));
+      assert.deepStrictEqual(spec.start, good.start, "cursor " + JSON.stringify(cursor));
+      assert.deepStrictEqual(spec.end, good.end, "cursor " + JSON.stringify(cursor));
     });
   });
 

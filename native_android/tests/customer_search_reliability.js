@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { webcrypto } = require("crypto");
+const { createFirebaseCompat } = require("./support/firebase_compat_stub");
 
 const customerFile = path.resolve(__dirname, "..", "app", "src", "main", "assets", "premium.js");
 
@@ -38,7 +39,7 @@ function makeContext() {
   const context = {
     console, document, localStorage, navigator: { onLine: true }, crypto: webcrypto,
     TextEncoder, AbortController, HTMLFormElement, FormData: global.FormData,
-    Image: class Image {}, FEASTLY_FIREBASE: {},
+    Image: class Image {}, FEASTLY_FIREBASE: {}, firebase: createFirebaseCompat().firebase,
     fetch: async () => { throw new Error("search must not perform an unbounded network request"); },
     setTimeout(callback, delay) { const id = nextTimer++; scheduled.set(id, { callback, delay }); return id; },
     clearTimeout(id) { if (id != null) { cancelled.add(id); scheduled.delete(id); } },
