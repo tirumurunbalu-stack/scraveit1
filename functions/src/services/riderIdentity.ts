@@ -23,9 +23,12 @@ import {faceSimilarity} from "./faceVerification";
  *  - Retention: the Aadhaar photo and any old Aadhaar images are deleted 7 days
  *    after the rider is approved or rejected; the result stays.
  *
- * Note for launch: offline Aadhaar verification needs Scraveit registered with
- * UIDAI as an Offline Verification Seeking Entity (free) under the Aadhaar
- * (Authentication and Offline Verification) Regulations, as amended in 2025.
+ * Registration: Secure QR verification (Reg. 3A(1)(i)) needs no UIDAI
+ * registration. Reg. 13A (w.e.f. 9.12.2025) requires OVSE registration only
+ * for Paperless Offline e-KYC (XML) or Aadhaar Verifiable Credential checks
+ * through the Aadhaar app. The OVSE duties in Regs. 5, 6, 14A and 16C still
+ * apply: notice, consent, an alternative, no Aadhaar number stored, and the
+ * signature checked before the Aadhaar is accepted.
  */
 
 const FACE_MATCH_OK = 85;

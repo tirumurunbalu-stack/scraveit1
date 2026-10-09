@@ -150,7 +150,12 @@ final class FirebaseCallableClient {
         || "createPhonePeIntent".equals(name)
         || "recoverDeliveryOtp".equals(name)
         || "registerPushToken".equals(name)
-        || "unregisterPushToken".equals(name);
+        || "unregisterPushToken".equals(name)
+        // Dine-in and daily meal plans reach the server through MainActivity's
+        // own allow-lists (DINE_IN_FUNCTIONS, MEAL_PLAN_FUNCTIONS).
+        || MainActivity.DINE_IN_FUNCTIONS.contains(name)
+        || MainActivity.MEAL_PLAN_FUNCTIONS.contains(name)
+        || MainActivity.SOCIAL_FUNCTIONS.contains(name);
   }
 
   private String normalizeCode(String value) {

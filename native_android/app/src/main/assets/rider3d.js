@@ -101,7 +101,25 @@ window.Rider3D=(function(){
 // place with its wheels turning. Tapping it makes it hop.
 window.HeroRider=(function(){
   if(!window.THREE||!window.AV)return null;
-  let renderer=null,scene=null,camera=null,canvas=null,current=null,currentId="",raf=0,last=0,hopAt=0,failed=false,night=false,slotEl=null,placed="";
+  let renderer=null,scene=null,camera=null,canvas=null,current=null,currentId="",raf=0,last=0,hopAt=0,failed=false,night=false,slotEl=null,placed="",lastScrollAt=0,stillKey="",stillUrl="";
+  // The live canvas floats over the page and can only follow a scroll a frame
+  // late, so it slid behind the header. While anything scrolls it hides, and
+  // a still picture of the same rider, drawn inside the header, moves with
+  // the page; the live one comes back once the page is still.
+  const SCROLL_REST_MS=220;
+  document.addEventListener("scroll",()=>{lastScrollAt=performance.now();showLive(false);},{capture:true,passive:true});
+  // Exactly one rider on screen: the live one, or (while scrolling or out of
+  // place) the still one. Both at once left a trail behind every bounce.
+  function showLive(on){
+    if(canvas&&canvas.style.visibility!==(on?"visible":"hidden"))canvas.style.visibility=on?"visible":"hidden";
+    const img=slotEl&&slotEl.querySelector(".hero-rider-still");if(img&&img.style.visibility!==(on?"hidden":"visible"))img.style.visibility=on?"hidden":"visible";
+  }
+  function placeStill(w,h){
+    const key=currentId+":"+w+"x"+h;if(!slotEl||(stillKey===key&&slotEl.querySelector(".hero-rider-still")))return;
+    if(stillKey!==key){const shot=snapshot(currentId,Math.round(w*Math.min(2,window.devicePixelRatio||1)),Math.round(h*Math.min(2,window.devicePixelRatio||1)),false,"ride",true);if(!shot)return;stillUrl=shot.toDataURL("image/png");stillKey=key;}
+    let img=slotEl.querySelector(".hero-rider-still");if(!img){img=document.createElement("img");img.className="hero-rider-still";img.alt="";img.setAttribute("aria-hidden","true");img.style.cssText="position:absolute;inset:0;width:100%;height:100%;pointer-events:none";slotEl.appendChild(img);}
+    img.src=stillUrl;
+  }
   const cache={};
   function init(){
     if(renderer)return true;if(failed)return false;
@@ -136,6 +154,8 @@ window.HeroRider=(function(){
     // Scrolled out of view: keep the loop alive but draw nothing, so the
     // phone isn't rendering 3D frames nobody can see.
     if(box.bottom<-40||box.top>window.innerHeight+40)return;
+    placeStill(w,h);
+    if(performance.now()-lastScrollAt<SCROLL_REST_MS){showLive(false);return;}
     const spot=Math.round(box.left+window.scrollX)+","+Math.round(box.top+window.scrollY)+","+w+","+h;
     if(spot!==placed){placed=spot;const [x,y]=spot.split(",");canvas.style.left=x+"px";canvas.style.top=y+"px";canvas.style.width=w+"px";canvas.style.height=h+"px";}
     if(canvas.style.display==="none")canvas.style.display="block";
@@ -149,6 +169,7 @@ window.HeroRider=(function(){
     const yaw=0.95,pitch=0.16,dist=4.6;
     camera.position.set(Math.cos(yaw)*Math.cos(pitch)*dist,0.85+Math.sin(pitch)*dist,-Math.sin(yaw)*Math.cos(pitch)*dist);camera.lookAt(0,0.85,0);
     renderer.render(scene,camera);
+    showLive(true);
   }
   /** Put the mascot into `slot` (an element in the freshly rendered hero). */
   function mount(slot,id){
@@ -163,7 +184,7 @@ window.HeroRider=(function(){
   // Still pictures of a rider (sticker book, share card, order-placed moment),
   // drawn by a second small renderer so the live mascot keeps running.
   let shotRenderer=null,shotScene=null,shotCamera=null;const shotCache={};
-  function snapshot(id,w,h,sticker,pose){
+  function snapshot(id,w,h,sticker,pose,liveView){
     try{
       if(!shotRenderer){shotRenderer=new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true,powerPreference:"low-power"});
         shotRenderer.outputEncoding=THREE.sRGBEncoding;shotRenderer.toneMapping=THREE.NoToneMapping;shotRenderer.setPixelRatio(1);
@@ -173,8 +194,9 @@ window.HeroRider=(function(){
       const built=shotCache[key]||(shotCache[key]=AV.build(preset,pose||"park"));
       built.tick(0.4);shotScene.add(built.rider);
       shotRenderer.setSize(w,h,false);shotCamera.aspect=w/h;shotCamera.updateProjectionMatrix();
-      const yaw=sticker?0.55:0.75,pitch=sticker?0.12:0.18,dist=sticker?4.2:4.8;
-      shotCamera.position.set(Math.cos(yaw)*Math.cos(pitch)*dist,0.85+Math.sin(pitch)*dist,-Math.sin(yaw)*Math.cos(pitch)*dist);shotCamera.lookAt(0,0.8,0);
+      // liveView: the same angle as the live hero rider, so swapping between them doesn't jump.
+      const yaw=liveView?0.95:sticker?0.55:0.75,pitch=liveView?0.16:sticker?0.12:0.18,dist=liveView?4.6:sticker?4.2:4.8;
+      shotCamera.position.set(Math.cos(yaw)*Math.cos(pitch)*dist,0.85+Math.sin(pitch)*dist,-Math.sin(yaw)*Math.cos(pitch)*dist);shotCamera.lookAt(0,liveView?0.85:0.8,0);
       shotRenderer.render(shotScene,shotCamera);shotScene.remove(built.rider);
       const out=document.createElement("canvas");out.width=w;out.height=h;out.getContext("2d").drawImage(shotRenderer.domElement,0,0);
       return out;

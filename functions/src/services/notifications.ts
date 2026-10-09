@@ -576,6 +576,26 @@ export async function notifyAdminTodo(input: {uid: string; key: string; title: s
   });
 }
 
+/**
+ * A request that rings the admin app until it's opened: rider application,
+ * store application, support ticket. Data-only and high priority, so the
+ * app's own alarm service starts even when the app is closed.
+ */
+export async function notifyAdminAlarm(input: {uid: string; key: string; alarmId: string; title: string; body: string; route: string; issuedAt: number}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "ADMIN_ALARM",
+    aggregateType: "admin_alarm",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `admin-alarm:${input.key}:${input.uid}`,
+    recipient: {kind: "admin", id: input.uid, app: "admin"},
+    message: storedMessage({
+      data: {type: "ADMIN_ALARM", alarmId: input.alarmId, title: input.title, body: input.body, route: input.route, issuedAt: String(input.issuedAt)},
+      android: {priority: "high", ttl: 3_600_000},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {alert: {title: input.title, body: input.body}, sound: "default"}}},
+    }),
+  });
+}
+
 /** Dine-in alerts to everyone running a restaurant (bookings, rounds, waiter calls, bills). */
 export async function notifyRestaurantDineIn(input: {restaurantId: string; key: string; title: string; body: string}): Promise<void> {
   await enqueueAndAttempt({
@@ -588,6 +608,23 @@ export async function notifyRestaurantDineIn(input: {restaurantId: string; key: 
       notification: {title: input.title, body: input.body},
       data: {type: "DINE_IN", restaurantId: input.restaurantId},
       android: {priority: "high", notification: {sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** Friends & chat: a new message, friend request or parent decision to one customer. */
+export async function notifyUserChat(input: {uid: string; key: string; title: string; body: string; data?: Record<string, string>}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_CHAT",
+    aggregateType: "chat",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-chat:${input.key}:${input.uid}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "CHAT", ...(input.data ?? {})},
+      android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
     }),
   });

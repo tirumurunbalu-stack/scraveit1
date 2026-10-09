@@ -69,6 +69,8 @@ import org.json.JSONObject;
 
 public class MainActivity extends ComponentActivity {
   private static final int FILE_CHOOSER_REQUEST = 7301;
+  private static final int CAMERA_CAPTURE_REQUEST = 7302;
+  private File cameraCaptureFile;
   private static final int LOCATION_REQUEST = 7302;
   private WebView billPrintView;
   private static final String TRUSTED_HOST = "appassets.androidplatform.net";
@@ -144,6 +146,9 @@ public class MainActivity extends ComponentActivity {
         }
         if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
         fileChooserCallback = callback;
+        // capture="environment" (the sealed-packet photo) opens the camera, never the
+        // gallery, so the photo is taken now and not picked from old ones.
+        if (params != null && params.isCaptureEnabled() && openCameraForCapture()) return true;
         Intent chooser = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         chooser.addCategory(Intent.CATEGORY_OPENABLE);
         chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -435,7 +440,9 @@ public class MainActivity extends ComponentActivity {
     boolean validPath = objectPath.matches(
         "restaurants/[A-Za-z0-9_-]{1,128}/users/[A-Za-z0-9_-]{1,128}/(?:cover|menu/[A-Za-z0-9_-]{1,180})/[A-Za-z0-9_.-]{1,180}\\.jpg")
         // Sign-up documents (FSSAI, PAN, bank proof, menu card): private, the applicant's own folder.
-        || objectPath.matches("private/restaurant-onboarding/[A-Za-z0-9_-]{1,128}/[a-z]{2,20}-[0-9]{6,16}\\.jpg");
+        || objectPath.matches("private/restaurant-onboarding/[A-Za-z0-9_-]{1,128}/[a-z]{2,20}-[0-9]{6,16}\\.jpg")
+        // Sealed-packet photo for one order (shown to the customer through a signed link).
+        || objectPath.matches("private/packed-orders/[A-Za-z0-9_-]{1,128}/[A-Za-z0-9_-]{1,128}/[A-Za-z0-9_-]{1,128}-[0-9]{10,16}\\.jpg");
     if (!requestId.matches("[A-Za-z0-9_-]{1,80}") || idToken.length() < 20
         || idToken.length() > 8192 || !validPath || source == null || !source.isFile()) {
       publishImageUpload(requestId, false,
@@ -645,8 +652,37 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  private boolean openCameraForCapture() {
+    try {
+      File directory = new File(getCacheDir(), "savrivo-images");
+      if (!directory.exists() && !directory.mkdirs()) return false;
+      File target = new File(directory, "camera-" + System.currentTimeMillis() + ".jpg");
+      Uri output = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", target);
+      Intent camera = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+      camera.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, output);
+      camera.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      cameraCaptureFile = target;
+      startActivityForResult(camera, CAMERA_CAPTURE_REQUEST);
+      return true;
+    } catch (Exception error) {
+      cameraCaptureFile = null;
+      return false;
+    }
+  }
+
   @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode == CAMERA_CAPTURE_REQUEST && fileChooserCallback != null) {
+      File captured = cameraCaptureFile;
+      cameraCaptureFile = null;
+      if (resultCode != RESULT_OK || captured == null || !captured.isFile() || captured.length() == 0 || !isTrustedPageLoaded()) {
+        if (captured != null) captured.delete();
+        completeFileChooser(null);
+        return;
+      }
+      prepareSelectedImage(FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", captured));
+      return;
+    }
     if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) return;
     Uri selected = resultCode == RESULT_OK && data != null ? data.getData() : null;
     if (!isTrustedPageLoaded() || selected == null) {

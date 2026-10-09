@@ -81,6 +81,17 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
                 manager.cancel("rider_offer_" + orderId, 0);
             }
             SavrivoPushStore.removeRiderOffer(this, orderId);
+        } else if ("ADMIN_ALARM".equals(type) && "admin".equals(role)) {
+            // Rings until the admin opens the request (see OrderAlarmService).
+            String alarmId = event.optString("alarmId");
+            boolean alarmStarted = OrderAlarmService.start(this, alarmId,
+                    event.optString("title", "New request"),
+                    event.optString("body", "Open the Admin app to review it."),
+                    event.optString("route"), longValue(event.optString("issuedAt")));
+            if (!alarmStarted) {
+                showNotification(event, SavrivoNotifications.ADMIN_SUPPORT,
+                        "New request", "Open the Admin app to review it.", true, 0);
+            }
         } else if ("ORDER_STATUS".equals(type)) {
             showNotification(event, SavrivoNotifications.ORDER_STATUS,
                     "Order updated", event.optString("status", "Open Scraveit for details."), false, 0);

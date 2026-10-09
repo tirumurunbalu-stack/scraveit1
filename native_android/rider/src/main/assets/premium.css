@@ -231,4 +231,6 @@ img.avatar-face { object-fit: cover; background: #eef2fb; }
 @media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
 
 /* No bounce or stretch at the top and bottom of a page. */
-html,body,#app,#app>main{overscroll-behavior-y:none}
+html{overscroll-behavior-y:none}
+/* Only the page itself. "none" on body (a scroll container that never scrolls)
+   stopped every finger swipe from reaching the page, so screens could not scroll. */

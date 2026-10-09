@@ -50,6 +50,8 @@ export interface CatalogItem {
   archived?: boolean;
   variants?: CatalogChoice[] | Record<string, CatalogChoice>;
   addOns?: CatalogChoice[] | Record<string, CatalogChoice>;
+  /** Label details of a pre-packed product (grocery and dairy stores). */
+  compliance?: {mrp?: number | string; netQuantity?: string};
 }
 
 export interface CatalogRestaurant extends GeoPoint {
@@ -101,6 +103,8 @@ export interface PricingBreakdown {
   riderIncentiveFee: number;
   /** Charged when most of the city's online riders are already on orders. */
   riderSurgeFee?: number;
+  /** Customer-facing name of each part of riderIncentiveFee (e.g. "Late-night fee"). */
+  riderIncentiveItems?: {label: string; amount: number}[];
   platformFee: number;
   tax: number;
   tip: number;

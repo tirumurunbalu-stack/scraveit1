@@ -167,6 +167,13 @@ export function priceCart(
     const addOns = selectedAddOns.filter((value): value is CatalogChoice => value !== undefined)
       .map((entry) => ({name: entry.name, price: choicePrice(entry)}));
     const variantPrice = variant ? choicePrice(variant) : 0;
+    // A pre-packed product is never sold above the MRP printed on it (Legal
+    // Metrology (Packaged Commodities) Rules, 2011, rule 18). Delivery,
+    // platform and maintenance fees are Scraveit's own charges, billed apart.
+    const mrp = Number(item.compliance?.mrp);
+    if (Number.isFinite(mrp) && mrp > 0 && roundMoney(item.price + variantPrice) > roundMoney(mrp)) {
+      throw new Error("PRICE_ABOVE_MRP");
+    }
     const addOnTotal = roundMoney(addOns.reduce((sum, entry) => sum + entry.price, 0));
 
     return {

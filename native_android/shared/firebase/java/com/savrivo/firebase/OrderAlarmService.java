@@ -37,7 +37,11 @@ public final class OrderAlarmService extends Service {
     private static final String EXTRA_ORDER_ID = "orderId";
     private static final String EXTRA_ISSUED_AT = "issuedAt";
     private static final String EXTRA_EXPIRES_AT = "expiresAt";
+    private static final String ACTION_REFRESH = "com.savrivo.firebase.REFRESH_ORDER_ALARM";
     private static final String PREFS = "savrivo.active.action.alarms";
+    private static final String ADMIN_PREFS = "savrivo.admin.alerts";
+    private static final String KEY_VIBRATE_ONLY = "vibrateOnly";
+    private static final int REVIBRATE_EVERY_TICKS = 15;
     private static final String KEY_ALARMS = "alarms";
     private static final String KEY_STOPPED = "stopped";
     private static final long STOP_TOMBSTONE_MS = 7L * 24L * 60L * 60L * 1000L;
@@ -47,6 +51,7 @@ public final class OrderAlarmService extends Service {
 
     private MediaPlayer alarmPlayer;
     private Vibrator vibrator;
+    private int watchdogTicks;
     private final Handler playbackHandler = new Handler(Looper.getMainLooper());
     private final Runnable playbackWatchdog = new Runnable() {
         @Override public void run() {
@@ -55,7 +60,10 @@ public final class OrderAlarmService extends Service {
                 stopAll();
                 return;
             }
-            if (alarmPlayer == null || !safeIsPlaying(alarmPlayer)) {
+            if (vibrateOnly()) {
+                // Some phones stop a repeating vibration after a while; restart it.
+                if (++watchdogTicks % REVIBRATE_EVERY_TICKS == 0) startVibration();
+            } else if (alarmPlayer == null || !safeIsPlaying(alarmPlayer)) {
                 Log.w(TAG, "ALARM_PLAYBACK_RECOVERY_STARTED");
                 releasePlayer();
                 beginSoundAndVibration();
@@ -104,6 +112,22 @@ public final class OrderAlarmService extends Service {
             // OS revokes it, the messaging service posts an alarm-channel notification fallback.
             return false;
         }
+    }
+
+    /** Admin choice: vibrate only (no alarm sound), for class or meetings. */
+    public static void setVibrateOnly(Context context, boolean vibrateOnly) {
+        context.getSharedPreferences(ADMIN_PREFS, MODE_PRIVATE).edit().putBoolean(KEY_VIBRATE_ONLY, vibrateOnly).apply();
+        try {
+            if (new JSONObject(context.getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_ALARMS, "{}")).length() > 0) {
+                context.startService(new Intent(context, OrderAlarmService.class).setAction(ACTION_REFRESH));
+            }
+        } catch (Exception ignored) {
+            // The choice is saved; it applies to the next alarm.
+        }
+    }
+
+    public static boolean isVibrateOnly(Context context) {
+        return context.getSharedPreferences(ADMIN_PREFS, MODE_PRIVATE).getBoolean(KEY_VIBRATE_ONLY, false);
     }
 
     public static void stop(Context context, String alarmId) {
@@ -250,6 +274,7 @@ public final class OrderAlarmService extends Service {
                         : defaultMultiAlarmTitle(alarms.length()),
                 alarms.length() == 1 ? text(first, "body", defaultAlarmBody()) : defaultMultiAlarmBody(),
                 firstId,
+                text(first, "orderId", ""),
                 true);
         startForeground(FOREGROUND_ID, foreground);
 
@@ -259,7 +284,7 @@ public final class OrderAlarmService extends Service {
             JSONObject record = alarms.optJSONObject(alarmId);
             manager.notify(SavrivoNotifications.stableId(notificationNamespace(this), alarmId),
                     notification(text(record, "title", defaultAlarmTitle()),
-                            text(record, "body", defaultAlarmBody()), alarmId, true));
+                            text(record, "body", defaultAlarmBody()), alarmId, text(record, "orderId", ""), true));
         }
     }
 
@@ -287,11 +312,21 @@ public final class OrderAlarmService extends Service {
         return "Open the restaurant app to accept or reject each order.";
     }
 
-    private Notification notification(String title, String body, String alarmId, boolean ongoing) {
+    private Notification notification(String title, String body, String alarmId, String route, boolean ongoing) {
         Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
         if (launch == null) launch = new Intent();
         launch.setPackage(getPackageName());
         launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (isAdmin() && alarmId.startsWith("req:")) {
+            // Tapping opens that request; the Admin app stops the alarm once it's on screen.
+            JSONObject open = new JSONObject();
+            try {
+                open.put("type", "ADMIN_ALARM_OPEN");
+                open.put("alarmId", alarmId);
+                open.put("route", route == null ? "" : route);
+            } catch (Exception ignored) { }
+            launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
+        }
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pending = PendingIntent.getActivity(
@@ -316,6 +351,11 @@ public final class OrderAlarmService extends Service {
 
     @SuppressWarnings("MissingPermission")
     private void beginSoundAndVibration() {
+        if (vibrateOnly()) {
+            releasePlayer();
+            startVibration();
+            return;
+        }
         if (alarmPlayer == null) {
             try {
                 int soundId = getResources().getIdentifier(
@@ -361,15 +401,41 @@ public final class OrderAlarmService extends Service {
                 }
             }
         }
+        startVibration();
+    }
+
+    /**
+     * Repeating vibration until stopped. Marked as an alarm so it still buzzes
+     * with the phone on silent; vibrate-only uses longer, full-strength pulses.
+     */
+    @SuppressWarnings({"MissingPermission", "deprecation"})
+    private void startVibration() {
         if (vibrator == null) vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        if (vibrator != null && vibrator.hasVibrator()) {
-            long[] pattern = new long[]{0, 500, 350, 500, 1_500};
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0));
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        boolean strong = vibrateOnly();
+        long[] pattern = strong ? new long[]{0, 900, 300, 900, 300, 900, 1_200} : new long[]{0, 500, 350, 500, 1_500};
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            VibrationEffect effect;
+            if (strong && vibrator.hasAmplitudeControl()) {
+                int[] amplitudes = new int[pattern.length];
+                for (int i = 0; i < pattern.length; i++) amplitudes[i] = i % 2 == 1 ? 255 : 0;
+                effect = VibrationEffect.createWaveform(pattern, amplitudes, 0);
             } else {
-                vibrator.vibrate(pattern, 0);
+                effect = VibrationEffect.createWaveform(pattern, 0);
             }
+            if (Build.VERSION.SDK_INT >= 33) {
+                vibrator.vibrate(effect, android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_ALARM));
+            } else {
+                vibrator.vibrate(effect, new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+            }
+        } else {
+            vibrator.vibrate(pattern, 0);
         }
+    }
+
+    private boolean vibrateOnly() {
+        return isAdmin() && isVibrateOnly(this);
     }
 
     private void stopOne(String alarmId) {

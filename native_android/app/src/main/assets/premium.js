@@ -136,6 +136,8 @@
     const url = String(value || "").trim();
     if (/^(?:[a-z0-9._-]+\.(?:jpg|jpeg|png|webp|svg)|data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=]+)$/i.test(url)) return url;
     if (/^https:\/\/firebasestorage\.googleapis\.com\//i.test(url)) return cdnUrl(url);
+    // The cart and saved orders keep the CDN link; checking it again must keep the photo.
+    if (IMAGE_CDN_HOST && url.toLowerCase().startsWith("https://" + IMAGE_CDN_HOST.toLowerCase() + "/")) return url;
     return fallback || "restaurant-placeholder.svg";
   }
   function icon(name, extra) { return '<svg class="icon '+h(extra || "")+'" viewBox="0 0 24 24" aria-hidden="true">'+(ICONS[name] || ICONS.info)+"</svg>"; }
@@ -380,7 +382,20 @@
     return !!(window.FeastlyNative && typeof window.FeastlyNative[operation] === "function");
   }
 
+  // Sign-in tokens expire after an hour. A call made with a stale one is
+  // rejected by the server, so every signed-in call asks Firebase for a
+  // current token first (Firebase refreshes it only when it is near expiry).
+  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr"];
   function nativeInvoke(operation, payload, options) {
+    const user = fbAuth.currentUser;
+    if (!user || TOKENLESS_OPERATIONS.includes(operation)) return nativeInvokeWithToken(operation, payload, options);
+    return user.getIdToken().then(idToken => {
+      if (state.session) state.session.idToken = idToken;
+      return nativeInvokeWithToken(operation, payload, Object.assign({}, options, {idToken}));
+    }, () => nativeInvokeWithToken(operation, payload, options));
+  }
+
+  function nativeInvokeWithToken(operation, payload, options) {
     const settings = options || {};
     if (!nativeAvailable(operation)) return Promise.reject(new Error("NATIVE_BRIDGE_UNAVAILABLE"));
     const requestId = uid("native_").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
@@ -417,6 +432,12 @@
           FeastlyNative.getDeliveryOtp(requestId, String(payload && payload.orderId || ""));
         } else if (operation === "invokeDineIn") {
           FeastlyNative.invokeDineIn(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
+        } else if (operation === "pickProfilePhoto") {
+          FeastlyNative.pickProfilePhoto(requestId);
+        } else if (operation === "invokeSocial") {
+          FeastlyNative.invokeSocial(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
+        } else if (operation === "invokeMealPlan") {
+          FeastlyNative.invokeMealPlan(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "scanTableQr") {
           FeastlyNative.scanTableQr(requestId);
         } else if (operation === "recoverDeliveryOtp") {
@@ -526,13 +547,33 @@
   async function syncProfile(remoteOnly) {
     if (!state.session) return;
     const previousScope=homeScope(currentAddress());
-    const remoteSnap = await userDoc(state.session.uid).get();
+    const uidAtRead = state.session.uid;
+    let remoteSnap;
+    // Read the account itself from the server. A plain get() right after login
+    // could return this phone's own unfinished write (just emailVerified and
+    // updatedAt) as if it were the whole account - which looked like "no saved
+    // addresses". If a write of ours is still in flight, wait for it and read again.
+    try {
+      try { remoteSnap = await userDoc(uidAtRead).get({source: "server"}); }
+      catch (serverError) { if (String(serverError && serverError.code) === "permission-denied") throw serverError; remoteSnap = await userDoc(uidAtRead).get(); }
+      if (remoteSnap.metadata && remoteSnap.metadata.hasPendingWrites && typeof fs.waitForPendingWrites === "function") {
+        await fs.waitForPendingWrites();
+        remoteSnap = await userDoc(uidAtRead).get({source: "server"});
+      }
+    }
+    catch (error) { console.warn("PROFILE_SYNC_FAILED", {code: String(error && (error.code || error.message) || error), remoteOnly: !!remoteOnly}); throw error; }
+    if (!state.session || state.session.uid !== uidAtRead) return;
     const remote = remoteSnap.exists ? remoteSnap.data() : null;
+    console.info("PROFILE_SYNC_READ", JSON.stringify({uid: uidAtRead.slice(0,6), exists: !!remote, keys: remote ? Object.keys(remote).sort().join(",") : "", remoteAddresses: remote && Array.isArray(remote.addresses) ? remote.addresses.length : -1, localAddresses: (state.profile.addresses || []).length, fromCache: !!(remoteSnap.metadata && remoteSnap.metadata.fromCache), pending: !!(remoteSnap.metadata && remoteSnap.metadata.hasPendingWrites), remoteOnly: !!remoteOnly}));
+    state.remoteProfileUid = uidAtRead;
     if (remote && typeof remote === "object") {
       const prefs = Object.assign({}, state.profile.preferences || {}, remote.preferences || {});
+      const localAddresses = state.profile.addresses || [], localFavourites = state.profile.favourites || [], localDeleted = state.profile.deletedAddressIds || [];
       state.profile = Object.assign({}, state.profile, remote, {preferences:prefs});
-      state.profile.addresses = Array.isArray(remote.addresses) ? remote.addresses : state.profile.addresses || [];
-      state.profile.favourites = Array.isArray(remote.favourites) ? remote.favourites : state.profile.favourites || [];
+      const gone = new Set([].concat(remote.deletedAddressIds || [], localDeleted).map(String).filter(id => id !== "current-location"));
+      state.profile.deletedAddressIds = Array.from(gone).slice(-50);
+      state.profile.addresses = mergeAddresses(remote.addresses, localAddresses, Number(remote.updatedAt || 0)).filter(x => !gone.has(String(x.id)));
+      state.profile.favourites = Array.isArray(remote.favourites) ? remote.favourites : localFavourites;
       migrateSavedAddresses();persistProfile();applyTheme();
       loadDemographics().then(()=>{maybeAskAboutYou();if(["offers","account","cart"].includes(state.route))render({preserveScroll:true})});
       if(previousScope!==homeScope(currentAddress())){
@@ -549,15 +590,58 @@
     } else if (!remoteOnly) await saveProfile();
   }
 
+  /** Saved addresses from the account, plus any this phone added since the
+   *  account was last saved (so a save racing a sync never loses either). */
+  function mergeAddresses(remoteList, localList, remoteSavedAt) {
+    const remote = Array.isArray(remoteList) ? remoteList.filter(x => x && x.id) : [];
+    const ids = new Set(remote.map(x => String(x.id)));
+    const added = (localList || []).filter(x => x && x.id && !ids.has(String(x.id)) && Number(x.updatedAt || 0) > remoteSavedAt);
+    return remote.concat(added);
+  }
+
   async function saveProfile() {
     if (!state.session) { persistProfile(); return; }
+    // A fresh install or cleared app data starts with an empty profile on the
+    // phone. Load the account first and let it win (saved addresses, phone);
+    // if it cannot be read, keep the change on the phone only rather than
+    // overwrite the account with a blank one.
+    if (state.remoteProfileUid !== state.session.uid) {
+      const chosen = state.profile.selectedAddressId || "";
+      try { await syncProfile(true); } catch (error) { persistProfile(); throw error; }
+      // Keep the address the customer just picked, if the account has it.
+      if (chosen && (state.profile.addresses || []).some(x => x && x.id === chosen)) state.profile.selectedAddressId = chosen;
+      if (!state.session || state.remoteProfileUid !== state.session.uid) { persistProfile(); return; }
+    }
     persistProfile();
+    console.info("PROFILE_SAVE", {addresses: (state.profile.addresses || []).length, selected: state.profile.selectedAddressId || ""});
     const payload = {
       name:state.profile.name || "", email:state.profile.email || state.session.email || "", phone:state.profile.phone || "", emailVerified:state.profile.emailVerified===true,
       addresses:state.profile.addresses || [], selectedAddressId:state.profile.selectedAddressId || "",
       favourites:state.profile.favourites || [], preferences:state.profile.preferences || {}, updatedAt:Date.now()
     };
-    await userDoc(state.session.uid).set(payload);
+    // Merge with the account inside one transaction instead of replacing it: an
+    // address saved from another phone (or another copy of the app) is kept,
+    // and only addresses deleted on purpose (remembered in deletedAddressIds)
+    // stay deleted. A save can no longer wipe addresses this phone hasn't seen.
+    const ref = userDoc(state.session.uid), uidAtSave = state.session.uid;
+    const merged = await fs.runTransaction(async tx => {
+      const snap = await tx.get(ref), remote = snap.exists ? (snap.data() || {}) : {};
+      const gone = new Set([].concat(remote.deletedAddressIds || [], state.profile.deletedAddressIds || []).map(String).filter(id => id !== "current-location"));
+      const mine = (payload.addresses || []).filter(x => x && x.id && !gone.has(String(x.id)));
+      const mineIds = new Set(mine.map(x => String(x.id)));
+      // "current-location" is this phone's live GPS spot, not a saved address, so
+      // another copy's old one is never carried over.
+      const theirs = (Array.isArray(remote.addresses) ? remote.addresses : []).filter(x => x && x.id && x.id !== "current-location" && !mineIds.has(String(x.id)) && !gone.has(String(x.id)));
+      const addresses = mine.concat(theirs);
+      const selectedAddressId = addresses.some(x => x.id === payload.selectedAddressId) ? payload.selectedAddressId : (addresses[0] && addresses[0].id || "");
+      const next = Object.assign({}, payload, {addresses, selectedAddressId, deletedAddressIds: Array.from(gone).slice(-50)});
+      tx.set(ref, next);
+      return next;
+    });
+    if (state.session && state.session.uid === uidAtSave && merged) {
+      state.profile.addresses = merged.addresses; state.profile.selectedAddressId = merged.selectedAddressId;
+      state.profile.deletedAddressIds = merged.deletedAddressIds; persistProfile();
+    }
   }
 
   function normalizeRestaurant(id, record) {
@@ -1454,7 +1538,7 @@
       applyAuthUser(authUser);
       await ensureSession();
       perfLog("AUTH_SESSION_READY",authStarted,{});
-      const profilePromise=syncProfile(false).then(()=>{migrateSavedAddresses();return true});
+      const profilePromise=state.profileLoad=syncProfile(false).then(()=>{migrateSavedAddresses();return true});
       const results=await Promise.allSettled([profilePromise,syncCatalog(),syncOrders(true),syncEmailVerification(),syncSecondaryHomeData()]);
       const failed=results.filter(result=>result.status==="rejected").length;
       if(failed)perfLog("NON_BLOCKING_STARTUP_FAILURES",started,{failed});
@@ -1552,6 +1636,7 @@
   // it actually renders on.
   function liveOrderRoute() { return state.route === "order" || state.route === "tracking"; }
   function go(route, data, replace) {
+    if (state.route === "dm" && route !== "dm" && typeof closeThread === "function") closeThread();
     const wasLive = liveOrderRoute();
     if (!replace && state.route !== route) state.history.push({route:state.route,data:state.routeData});
     state.route = route; state.routeData = data || {};
@@ -1680,9 +1765,11 @@
   function cartCount(){return state.cart.reduce((sum,item)=>sum+Number(item.quantity||0),0);}
   function cartRestaurant(){return state.cart.length?restaurant(state.cart[0].restaurantId):null;}
   function cartSubtotal(){return state.cart.reduce((sum,item)=>sum+(Number(item.price)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||0),0);}
-  function deliveryFee(){return deliveryFeeForRestaurant(cartRestaurant(),cartSubtotal());}
+  /** A bill line from the server's own bill for this exact cart, or null while it has none. */
+  function serverLine(field){const c=serverCheckout();return c&&c[field]!=null&&Number.isFinite(Number(c[field]))?Math.max(0,Number(c[field])):null}
+  function deliveryFee(){const s=serverLine("deliveryFee");return s!=null?s:deliveryFeeForRestaurant(cartRestaurant(),cartSubtotal());}
   function platformFeeDetails(){const r=cartRestaurant(),base=Number(state.settings.platformFee==null?9:state.settings.platformFee),over=state.settings.platformFeeOverrides||{},subtotal=cartSubtotal(),addr=currentAddress()||{},rid=keyName(r&&r.id),area=keyName(addr.area),city=keyName(r&&r.city||addr.city||addr.area),category=keyName(r&&r.category||r&&r.type||(r&&r.cuisines||[])[0]);if(over.restaurants&&over.restaurants[rid]!=null)return{fee:Number(over.restaurants[rid]),rule:"Restaurant override"};const rules=over.orderValueRules||{};for(const k of Object.keys(rules)){const rule=rules[k]||{},min=Number(rule.min||0),max=rule.max==null?Infinity:Number(rule.max);if(subtotal>=min&&subtotal<=max&&Number.isFinite(Number(rule.fee)))return{fee:Number(rule.fee),rule:"Order value override"}}if(over.categories&&over.categories[category]!=null)return{fee:Number(over.categories[category]),rule:"Category override"};if(over.areas&&over.areas[area]!=null)return{fee:Number(over.areas[area]),rule:"Area override"};if(over.cities&&over.cities[city]!=null)return{fee:Number(over.cities[city]),rule:"City override"};return{fee:base,rule:"Global default"}}
-  function platformFee(){return Math.max(0,platformFeeDetails().fee);}
+  function platformFee(){const s=serverLine("platformFee");return s!=null?s:Math.max(0,platformFeeDetails().fee);}
   // ---- offers -----------------------------------------------------------
   // The discount maths below mirrors calculateDiscount() in
   // functions/src/services/catalog.ts exactly. The server decides what is
@@ -1791,9 +1878,9 @@
    *  it applies the profitability cap and who-pays split the order will get. */
   function serverOffer(){const coupon=eligibleCoupon(),p=state.dynamicPricing&&state.dynamicPricing.offer;if(!coupon||!p||p.valid!==true||String(p.code)!==String(coupon.code)||Math.abs(Number(p.subtotal)-cartSubtotal())>0.001)return null;return p}
   function discount(){const server=serverOffer(),coupon=eligibleCoupon();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(coupon,promotionBase(coupon,cartSubtotal()));}
-  function tax(){return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
-  function smallOrderFee(){return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
-  function lateNightFee(){if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
+  function tax(){const s=serverLine("tax");if(s!=null)return s;return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
+  function smallOrderFee(){const s=serverLine("smallOrderFee");if(s!=null)return s;return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
+  function lateNightFee(){const s=serverLine("lateNightFee");if(s!=null)return s;if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
   function rainFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.rainFee||0));}
   function surgeFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.surgeFee||0));}
   function riderIncentiveFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.riderIncentiveFee||0));}
@@ -1885,6 +1972,7 @@
     const existing=(state.profile.addresses||[]).find(address=>address.id===addressId);if(!existing){closeSheet();return;}
     const previousAddresses=clone(state.profile.addresses||[]),previousSelected=state.profile.selectedAddressId||"",previousCheckout=clone(state.checkout),previousDynamicPricing=clone(state.dynamicPricing),plan=addressDeletionPlan(previousAddresses,previousSelected,addressId),selectionChanged=plan.selectedAddressId!==previousSelected;
     state.profile.addresses=plan.addresses;state.profile.selectedAddressId=plan.selectedAddressId;
+    const previousDeleted=(state.profile.deletedAddressIds||[]).slice();if(addressId!=="current-location")state.profile.deletedAddressIds=previousDeleted.concat(String(addressId)).slice(-50);
     if(selectionChanged)revalidateCheckoutForAddressChange();
     persistProfile();closeSheet();render({preserveScroll:true});
     try{
@@ -1896,7 +1984,7 @@
       }
       toast(plan.selectedAddressId?"Address deleted. Your next saved address is selected.":"Address deleted. Add an address before checkout.","success");
     }catch(error){
-      state.profile.addresses=previousAddresses;state.profile.selectedAddressId=previousSelected;state.checkout=previousCheckout;state.dynamicPricing=previousDynamicPricing;persistProfile();persistCheckout();render({preserveScroll:true});
+      state.profile.addresses=previousAddresses;state.profile.selectedAddressId=previousSelected;state.profile.deletedAddressIds=previousDeleted;state.checkout=previousCheckout;state.dynamicPricing=previousDynamicPricing;persistProfile();persistCheckout();render({preserveScroll:true});
       toast("Address was not deleted. "+friendlyError(error),"danger");
     }
   }
@@ -1922,6 +2010,15 @@
       const draft=state.sheet.address||(state.sheet.address={});draft.lat=Number(lat);draft.lng=Number(lng);
       if(!draft.area&&area)draft.area=area;if(!draft.city&&city)draft.city=city;if(!draft.address&&details)draft.address=details;
       renderSheet();toast("Map pin moved to your phone location.","success");return;
+    }
+    // Standing at a saved address (within ~75 m)? Use that one instead of adding
+    // a second "current location" entry for the same place.
+    const savedHere=(state.profile.addresses||[]).filter(x=>x&&x.id!=="current-location").map(x=>({x,d:geoDistanceKm(lat,lng,x.lat,x.lng)})).filter(v=>v.d!=null&&v.d<=0.075).sort((a,b)=>a.d-b.d)[0];
+    if(savedHere){
+      state.profile.addresses=(state.profile.addresses||[]).filter(x=>x.id!=="current-location");
+      state.locationBusy=false;state.locationMode="general";closeSheet();
+      await selectAddress(savedHere.x.id);
+      return;
     }
     const addresses=state.profile.addresses||[];
     let current=addresses.find(x=>x.id==="current-location");
@@ -1954,6 +2051,7 @@
     const payload=event||{},type=String(payload.type||"");
     if(type==="TOKEN_REFRESH"){registerPushTokenIfAllowed().catch(()=>{});return;}
     if(!state.session)return;
+    if(type==="CHAT"&&payload.openedFromNotification===true){const route=String(payload.route||"");if(route.startsWith("dm:"))go("dm",{pairId:route.slice(3)});else go(route==="friends"?"friends":"chats");return;}
     if(type==="ORDER_STATUS"||type==="RIDER_ASSIGNED"||type==="FCM_MESSAGES_DELETED"){
       await syncOrders(true);
       if(state.route==="review")return;
@@ -1972,11 +2070,15 @@
     if(verified)await ensureSession();
     state.profile.emailVerified = verified;
     persistProfile();
-    try { await userDoc(state.session.uid).set({emailVerified:verified,updatedAt:Date.now()},{merge:true}); } catch (_) {}
+    // Written only after the account has been read, so it can never be mistaken
+    // for the account itself (it once hid every saved address after a login).
+    if (state.remoteProfileUid !== state.session.uid && state.profileLoad) { try { await state.profileLoad; } catch (_) {} }
+    try { await userDoc(state.session.uid).set({emailVerified:verified},{merge:true}); } catch (_) {}
     return verified;
   }
 
   async function afterAuth() {
+    console.info("PROFILE_AFTER_AUTH", JSON.stringify({localAddresses: (state.profile.addresses || []).length}));
     localStorage.setItem("savrivo.customer.seenWelcome","1");
     state.reviewSyncSequence++;
     state.reviews=loadJSON(reviewCacheKey(state.session&&state.session.uid),{});
@@ -1990,16 +2092,21 @@
     if(!restoreHomeCache(true)){state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial"}
     state.loading=false;state.route="home";state.history=[];render();
     startPolling();
-    Promise.allSettled([syncProfile(false),syncCatalog(),syncOrders(true),syncEmailVerification(),syncSecondaryHomeData()]).then(()=>{
+    // Until the account's saved addresses arrive, the header says it is loading them
+    // instead of "Choose a location" (a fresh install has none on the phone yet).
+    state.profileSyncPending=!(state.profile.addresses||[]).length;
+    const profileSync=state.profileLoad=syncProfile(false).finally(()=>{if(state.profileSyncPending){state.profileSyncPending=false;render({preserveScroll:true})}});
+    Promise.allSettled([profileSync,syncCatalog(),syncOrders(true),syncEmailVerification(),syncSecondaryHomeData()]).then(()=>{
       migrateSavedAddresses();render({preserveScroll:true});
     });
     registerPushTokenIfAllowed().catch(()=>{});
   }
   function signOut(showMessage) {
     unregisterPushTokenBestEffort();
+    try{stopChatSync()}catch(_){}
     if(nativeAvailable("clearDeliveryOtps")){try{FeastlyNative.clearDeliveryOtps()}catch(_){}}
     fbAuth.signOut().catch(()=>{});
-    stopPolling();state.session=null;persistSession();
+    stopPolling();state.session=null;state.remoteProfileUid="";persistSession();
     state.profile={name:"",email:"",phone:"",addresses:[],selectedAddressId:"",favourites:[],preferences:{theme:"system",vegetarian:false,notifications:true}};
     state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial";
     clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";state.recentSearches=[];
@@ -2255,12 +2362,12 @@
     const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};
     const foods=["🍕","🧋","🍗","🍩","🌮","🍜","🍦","🥘"];
     return '<main class="welcome-screen welcome2 no-nav'+(theme.dark?' dark':'')+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
-      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'</header>'
+      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'<button class="welcome2-lang" translate="no" data-action="set-language" data-value="'+(window.ScraveitLanguage&&ScraveitLanguage.get()==="te"?"en":"te")+'">'+(window.ScraveitLanguage&&ScraveitLanguage.get()==="te"?"English":"తెలుగు")+'</button></header>'
       +'<section class="welcome2-stage" aria-hidden="true">'+foods.map((f,i)=>'<span class="welcome2-food f'+i+'">'+f+'</span>').join("")
         +'<div id="welcome-rider-slot" class="welcome2-rider" data-action="mascot-tap"></div><div class="hero2-road welcome2-road"><span></span></div></section>'
       +'<section class="welcome2-copy"><p class="welcome2-eyebrow">'+h(theme.kind==="festival"?theme.head:"Hungry? Same.")+'</p><h1>Cravings,<br>sorted in minutes.</h1>'
         +'<p>Your favourite local kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
-        +(mascot?'<span class="welcome2-chip">Today’s rider · '+h(mascot.rider)+' 👋</span>':'')+'</section>'
+        +'</section>'
       +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button>'+(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')+'<p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
       +'</main>';
   }
@@ -2286,6 +2393,7 @@
       +networkBanner()+'<form id="signup-form" class="form-grid" novalidate><div class="field"><label for="signup-name">Full name</label><input class="input" id="signup-name" name="name" autocomplete="name" placeholder="Your full name" required><div class="field-error" data-error-for="signup-name"></div></div>'
       +'<div class="field"><label for="signup-email">Email address</label><input class="input" id="signup-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required><div class="field-error" data-error-for="signup-email"></div></div>'
       +'<div class="field"><label for="signup-phone">Mobile number</label><input class="input" id="signup-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="10-digit mobile number" required><div class="field-error" data-error-for="signup-phone"></div></div>'
+      +'<div class="field"><label for="signup-dob">Date of birth</label><input class="input" id="signup-dob" name="birthDate" type="date" required min="1900-01-01" max="'+h(new Date().toISOString().slice(0,10))+'"><p class="caption">Scraveit is for 13 and over. Under 18, a parent approves your account. You can edit it later.</p><div class="field-error" data-error-for="signup-dob"></div></div>'
       +passwordField("signup-password","Create password","new-password")+passwordField("signup-confirm","Confirm password","new-password")
       +'<label class="notice info"><input id="signup-consent" type="checkbox" required><span>I agree to the Terms of Service and acknowledge the Privacy Notice.</span></label>'
       +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Creating account…':'Create my account')+'</button></form>'
@@ -2298,14 +2406,15 @@
 
   function homeHeader() {
     const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
-    const title=address?(address.label||address.area||"Delivery address"):"Choose a location";
-    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":"Select a saved address";
+    const loadingAddress=!address&&state.profileSyncPending===true;
+    const title=address?(address.label||address.area||"Delivery address"):loadingAddress?"Finding your address":"Choose a location";
+    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":loadingAddress?"Loading your saved addresses":"Select a saved address";
     const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
     return '<header class="home-header hh2"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
-      +'<div class="hh2-actions"><button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
+      +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
       +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
       +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
-      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></header>';
+      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+(state.social&&state.social.avatars&&state.social.avatars[myUid()]?'<img class="hh2-photo" src="'+h(state.social.avatars[myUid()])+'" alt="">':h(initials()))+'</button></div></header>';
   }
   function orderProgress(order) { const progress=Math.min(100,Math.max(6,(statusIndex(order.status)+1)/ORDER_FLOW.length*100)); return progress; }
   function audienceMatch(record){
@@ -2765,7 +2874,9 @@
     const el=document.createElement("div");el.className="win-toast";el.setAttribute("role","status");
     el.innerHTML='<span class="win-toast-emoji" aria-hidden="true">'+h(emoji)+'</span><span class="win-toast-copy"><small>'+h(eyebrow)+'</small><strong>'+h(title)+'</strong>'+(copy?'<span>'+h(copy)+'</span>':'')+'</span>';
     document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("show"));
-    setTimeout(()=>{el.classList.remove("show");setTimeout(()=>el.remove(),450);},3800);
+    // Short, and a tap clears it at once, so it never sits over the header buttons.
+    let gone=false;const hide=()=>{if(gone)return;gone=true;el.classList.remove("show");setTimeout(()=>el.remove(),300);};
+    el.addEventListener("click",hide);setTimeout(hide,1800);
   }
   function dayNumber(date){const d=date||new Date();return Math.floor((Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()))/86400000);}
   function dayStamp(date){const d=date||new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
@@ -2773,10 +2884,14 @@
   // ---- the sky: time of day, then festivals and rain on top ----------------
   function daySlot(date){const hr=(date||new Date()).getHours();return hr>=5&&hr<11?"morning":hr>=11&&hr<17?"day":hr>=17&&hr<22?"evening":"night";}
   const SKY_SLOTS={
-    morning:{top:"#FFC9A3",bottom:"#FFF4E6",dark:false,greet:"Good morning",heads:["Idli or dosa first?","Filter coffee time?","Breakfast, sorted?"]},
-    day:{top:"#86C2FF",bottom:"#EEF7FF",dark:false,greet:"Good afternoon",heads:["Biryani o'clock.","Lunch break, upgraded.","Meals or biryani?"]},
-    evening:{top:"#FF8E72",bottom:"#FFD9BF",dark:false,greet:"Good evening",heads:["What's for dinner?","Chai and snacks time?","Dinner plans? Sorted."]},
-    night:{top:"#141B45",bottom:"#3A3C88",dark:true,greet:"Still up",heads:["Midnight cravings?","Late-night bites?","One more snack?"]}};
+    morning:{top:"#FFC9A3",bottom:"#FFF4E6",dark:false,greet:"Good morning",heads:["Idli or dosa first?","Filter coffee time?","Breakfast, sorted?"],sub:"Hot breakfast from kitchens near you"},
+    day:{top:"#86C2FF",bottom:"#EEF7FF",dark:false,greet:"Good afternoon",heads:["Biryani o'clock.","Lunch break, upgraded.","Meals or biryani?"],sub:"Lunch from kitchens near you"},
+    evening:{top:"#FF8E72",bottom:"#FFD9BF",dark:false,greet:"Good evening",heads:["What's for dinner?","Chai and snacks time?","Dinner plans? Sorted."],sub:"Snacks and dinner, cooked near you"},
+    night:{top:"#141B45",bottom:"#3A3C88",dark:true,greet:"Still up",heads:["Midnight cravings?","Late-night bites?","One more snack?"],sub:"Kitchens still cooking near you"}};
+  // Weather only changes the words when it changes the meal: rain and storms.
+  const WEATHER_LINES={
+    rain:{morning:["Rainy morning? Stay in.","Hot breakfast, brought to your door"],day:["Rainy afternoon? Stay in.","Hot lunch, brought to your door"],evening:["Rainy evening? Chai and pakoda?","Hot snacks for the weather"],night:["Rainy night? Stay in.","Late-night food, brought to your door"]},
+    thunder:{any:["Storm outside? Stay in.","Deliveries may take a little longer in this weather"]}};
   // Festival skies turn on by themselves on their dates. Fixed-date ones repeat
   // every year; the rest carry their dates for 2026 and 2027 (Scraveit admins
   // can add or override events in settings/customer.homeThemes).
@@ -2823,20 +2938,24 @@
     return"clear";
   }
   function skyTheme(){
-    const now=new Date(),slot=daySlot(now),base=SKY_SLOTS[slot],fest=festivalToday(now),sky=fest?"clear":homeWeather(),night=!!base.dark||now.getHours()>=19||now.getHours()<6;
+    // Clouds are left out on purpose: a "cloudy" reading often comes while the
+    // sun is out, and saying "cloudy" then is plainly wrong. Only rain and storms,
+    // which change delivery, change the header.
+    const now=new Date(),slot=daySlot(now),base=SKY_SLOTS[slot],fest=festivalToday(now),reading=fest?"clear":homeWeather(),sky=reading==="cloudy"?"clear":reading,night=!!base.dark||now.getHours()>=19||now.getHours()<6;
     const heads=base.heads,head=heads[dayNumber(now)%heads.length];
     if(fest)return{slot,kind:"festival",id:fest.id,top:fest.top,bottom:fest.bottom,dark:!!fest.dark,deco:fest.deco,greet:base.greet,head:fest.head,sub:fest.sub};
-    if(sky==="thunder")return{slot,kind:"rain",weather:"thunder",id:"thunder",top:"#1E2640",bottom:"#5E6B88",dark:true,deco:"",greet:base.greet,head:"Thunderstorm outside? Stay in.",sub:"We’ll bring something hot to your door"};
-    if(sky==="rain"||sky==="heavy_rain")return{slot,kind:"rain",weather:sky,id:"rain",top:night?"#24304D":"#6F86AA",bottom:night?"#55658A":"#D5DFEC",dark:night,deco:"",greet:base.greet,head:"Rainy day? Chai and pakoda?",sub:"Hot picks for the weather"};
-    if(sky==="cloudy")return night?{slot,kind:"cloudy",weather:"cloudy",id:"cloudy-night",top:"#1B2236",bottom:"#424B68",dark:true,deco:"",greet:base.greet,head,sub:""}
-      :{slot,kind:"cloudy",weather:"cloudy",id:"cloudy",top:"#9DAEC6",bottom:"#E6EBF2",dark:false,deco:"",greet:base.greet,head:"Cloudy outside. Something hot?",sub:"Comfort food for a grey day"};
+    const wet=sky==="rain"||sky==="heavy_rain",line=sky==="thunder"?WEATHER_LINES.thunder.any:wet?WEATHER_LINES.rain[slot]:null;
+    if(sky==="thunder")return{slot,kind:"rain",weather:"thunder",id:"thunder",top:"#1E2640",bottom:"#5E6B88",dark:true,deco:"",greet:base.greet,head:line[0],sub:line[1]};
+    if(wet)return{slot,kind:"rain",weather:sky,id:"rain",top:night?"#24304D":"#6F86AA",bottom:night?"#55658A":"#D5DFEC",dark:night,deco:"",greet:base.greet,head:line[0],sub:line[1]};
+    if(sky==="cloudy")return night?{slot,kind:"cloudy",weather:"cloudy",id:"cloudy-night",top:"#1B2236",bottom:"#424B68",dark:true,deco:"",greet:base.greet,head,sub:base.sub}
+      :{slot,kind:"cloudy",weather:"cloudy",id:"cloudy",top:"#9DAEC6",bottom:"#E6EBF2",dark:false,deco:"",greet:base.greet,head:line?line[0]:head,sub:line?line[1]:base.sub};
     const late=slot==="night"&&(now.getHours()>=23||now.getHours()<4);
-    return{slot,kind:"slot",id:late?"late":slot,top:late?"#1A0B3B":base.top,bottom:late?"#4B1D7A":base.bottom,dark:base.dark,deco:"",greet:base.greet,head,sub:""};
+    return{slot,kind:"slot",id:late?"late":slot,top:late?"#1A0B3B":base.top,bottom:late?"#4B1D7A":base.bottom,dark:base.dark,deco:"",greet:base.greet,head,sub:base.sub};
   }
   // "Default" looks exactly like Classic, so it is not a separate sticker.
   function mascotPresets(){return((window.AV&&AV.PRESETS)||[]).filter(p=>p.id!=="blue");}
   function todaysMascot(){const list=mascotPresets();return list.length?list[dayNumber()%list.length]:null;}
-  function firstName(){return String(state.profile.name||"").trim().split(/\s+/)[0]||"";}
+  function firstName(){const w=String(state.profile.name||"").trim().split(/\s+/)[0]||"";return w&&w===w.toUpperCase()?w.charAt(0)+w.slice(1).toLowerCase():w;}
   function skyDecor(theme){
     const w=theme.weather||"clear",wet=w==="rain"||w==="heavy_rain"||w==="thunder",grey=w==="cloudy"||wet,dim=w==="thunder"||theme.dark?' dark':'';
     let html="";
@@ -2868,21 +2987,22 @@
   function homeHero(){
     const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};state.heroThemeKind=theme.kind;
     const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
-    const title=address?(address.label||address.area||"Delivery address"):"Choose a location";
-    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":"Select a saved address";
+    const loadingAddress=!address&&state.profileSyncPending===true;
+    const title=address?(address.label||address.area||"Delivery address"):loadingAddress?"Finding your address":"Choose a location";
+    const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":loadingAddress?"Loading your saved addresses":"Select a saved address";
     const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
     const hints=searchHints(),name=firstName();
     // "theme-", not "sky-": a "sky-rain" class on the header collided with the
     // rain-streak layer's own .sky-rain style and pulled the whole header over the page.
     return '<header class="hero2'+(theme.dark?' dark':'')+' theme-'+h(theme.id)+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
       +'<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
-      +'<div class="hh2-actions"><button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
+      +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
       +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
       +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
       +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></div>'
       +'<div class="hero2-body"><div class="hero2-copy"><p class="hero2-greet">'+h(theme.greet+(name?", "+name:""))+'</p><h1 class="hero2-head">'+h(theme.head)+'</h1>'
       +(theme.sub?'<p class="hero2-sub">'+h(theme.sub)+'</p>':'')
-      +(mascot?'<button class="hero2-chip" data-action="mascot-tap">Today’s rider · '+h(mascot.rider)+'</button>':'')+'</div>'
+      +'</div>'
       +'<div class="hero2-stage"><div id="hero-rider-slot" class="hero2-rider" data-action="mascot-tap" role="button" tabindex="0" aria-label="'+h(mascot?"Today’s rider, "+mascot.rider+". Tap to say hi":"Scraveit rider")+'"></div><div class="hero2-road"><span></span></div></div></div>'
       +'<button class="hero2-search" data-action="go" data-route="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'
       +'</header>';
@@ -3272,6 +3392,228 @@
     if(navigator.share){navigator.share({text}).catch(()=>{});return;}
     try{navigator.clipboard.writeText(text);toast("Invite copied.","success");}catch(_){toast("Code: "+s.code,"success");}
   }
+  // ===== Daily meal plans (tiffin): subscribe, skip a day, pause =====
+  const MEAL_NAMES={breakfast:"Breakfast",lunch:"Lunch",dinner:"Dinner"},WEEKDAY_SHORT=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"],MEAL_LEAD_MIN=45;
+  function istToday(){return new Date(Date.now()+19800000).toISOString().slice(0,10)}
+  function addDaysIso(date,n){return new Date(Date.parse(date+"T00:00:00Z")+n*86400000).toISOString().slice(0,10)}
+  function weekdayIso(date){return new Date(Date.parse(date+"T00:00:00Z")).getUTCDay()}
+  function dayLabel(date){const d=new Date(Date.parse(date+"T00:00:00Z"));return WEEKDAY_SHORT[d.getUTCDay()]+" "+d.getUTCDate()+" "+d.toLocaleString("en-IN",{month:"short",timeZone:"UTC"})}
+  function clock12(hhmm){const [hh,mm]=String(hhmm||"0:0").split(":").map(Number);return((hh%12)||12)+(mm?":"+String(mm).padStart(2,"0"):"")+(hh<12?" am":" pm")}
+  function mealWindow(p){return clock12(p.windowStart)+"–"+clock12(p.windowEnd)}
+  function mealDays(days){const d=(days||[]).slice().sort();if(d.join()==="1,2,3,4,5,6")return"Mon–Sat";if(d.join()==="0,1,2,3,4,5,6")return"Every day";if(d.join()==="1,2,3,4,5")return"Mon–Fri";return d.map(x=>WEEKDAY_SHORT[x]).join(", ")}
+  function mealOrderAt(date,windowStart){const [hh,mm]=String(windowStart).split(":").map(Number);return Date.parse(date+"T00:00:00+05:30")+((hh*60+mm)-MEAL_LEAD_MIN)*60000}
+  function mealUpcoming(sub,count){const out=[];let date=istToday();for(let i=0;i<45&&out.length<count;i++,date=addDaysIso(date,1)){if(sub.endDate&&date>sub.endDate)break;if(date<sub.startDate||!(sub.days||[]).includes(weekdayIso(date)))continue;if(Date.now()>=mealOrderAt(date,sub.windowStart)&&date===istToday()&&sub.lastOrderDate!==date)continue;out.push(date)}return out}
+  async function loadMealPlans(force){if(state.mealPlansLoading||(!force&&state.mealPlansLoadedAt&&Date.now()-state.mealPlansLoadedAt<60000))return;state.mealPlansLoading=true;try{const plans=await fs.collection("mealPlans").where("active","==",true).limit(60).get();state.mealPlans=plans.docs.map(d=>Object.assign({id:d.id},d.data()));if(state.session&&state.session.uid){const subs=await fs.collection("mealSubscriptions").where("customerId","==",state.session.uid).get();state.mealSubs=subs.docs.map(d=>Object.assign({id:d.id},d.data())).filter(s=>["active","paused"].includes(s.status))}state.mealPlansError="";state.mealPlansLoadedAt=Date.now()}catch(e){state.mealPlansError=friendlyError(e)}finally{state.mealPlansLoading=false;if(["mealPlans","home"].includes(state.route))render({preserveScroll:true})}}
+  async function mealCall(fn,data){if(!nativeAvailable("invokeMealPlan"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to use meal plans."});await ensureSession();return nativeInvoke("invokeMealPlan",{fn,data},{idToken:state.session.idToken,timeoutMs:25000})}
+  const mealError=e=>(e&&e.userMessage)||friendlyError(e)||"That didn’t work. Check your connection and try again.";
+  function mealPlanHomeCard(){const mine=(state.mealSubs||[])[0];if(!state.mealPlansLoadedAt&&!state.mealPlansLoading)setTimeout(()=>loadMealPlans(false),0);
+    if(mine){const next=mealUpcoming(mine,1)[0];return'<button class="squad-card live" data-action="go" data-route="mealPlans"><span class="squad-card-icon" aria-hidden="true">🍱</span><span class="grow"><strong>'+h(mine.planName)+'</strong><span>'+(mine.status==="paused"?"Paused · tap to resume":next?"Next: "+h(dayLabel(next))+", "+h(clock12(mine.windowStart)):"No more meals on this plan")+'</span></span><span class="wheel-spin-pill">Open</span></button>'}
+    if(!(state.mealPlans||[]).length)return'';
+    return'<button class="squad-card" data-action="go" data-route="mealPlans"><span class="squad-card-icon" aria-hidden="true">🍱</span><span class="grow"><strong>Daily meal plans</strong><span>Lunch or dinner from a local kitchen, delivered every day. Skip any day.</span></span><span class="wheel-spin-pill">See plans</span></button>'}
+  function mealPlanCard(p){const mine=(state.mealSubs||[]).find(s=>s.planId===p.id),menu=p.weeklyMenu||{},menuDays=Object.keys(menu).sort();
+    return'<article class="card stack meal-plan-card">'+(p.imageUrl?'<img class="meal-plan-img" src="'+h(p.imageUrl)+'" alt="" loading="lazy">':'')+'<div class="cluster between"><div><p class="eyebrow">'+h(MEAL_NAMES[p.meal]||"Meal")+' · '+h(mealWindow(p))+'</p><h2 class="section-title">'+(p.veg?'<span class="meal-veg" aria-label="Vegetarian"></span>':'')+h(p.name)+'</h2><p class="supporting">'+h(p.restaurantName)+(p.area?' · '+h(p.area):'')+'</p></div><div class="meal-price"><strong>'+money(p.price)+'</strong><span>a meal</span></div></div>'
+      +(p.description?'<p class="supporting">'+h(p.description)+'</p>':'')
+      +'<p class="caption">'+h(mealDays(p.days))+' · '+h(p.menuItemName||"")+' · pay per meal when it arrives, plus delivery and platform fees as at checkout</p>'
+      +(menuDays.length?'<details class="meal-menu"><summary>This week’s menu</summary><ul>'+menuDays.map(d=>'<li><strong>'+WEEKDAY_SHORT[d]+'</strong> '+h(menu[d])+'</li>').join("")+'</ul></details>':'')
+      +(mine?'<span class="status success">You’re on this plan</span>':'<button class="button primary full" data-action="meal-start" data-plan-id="'+h(p.id)+'">Start this plan</button>')+'</article>'}
+  function mealSubCard(s){const next=mealUpcoming(s,7),skips=s.skips||[],paused=s.status==="paused";
+    return'<article class="card stack meal-sub-card"><div class="cluster between"><div><p class="eyebrow">'+h(MEAL_NAMES[s.meal]||"Meal")+' · '+h(clock12(s.windowStart))+'–'+h(clock12(s.windowEnd))+'</p><h2 class="section-title">'+h(s.planName)+'</h2><p class="supporting">'+h(s.restaurantName)+' · '+(s.quantity>1?s.quantity+' meals a day · ':'')+h(s.addressLabel||"")+'</p></div><span class="status '+(paused?'warning':'success')+'">'+(paused?'Paused':'Active')+'</span></div>'
+      +(s.lastError&&s.lastOrderDate===istToday()?'<div class="notice warning">'+icon("warning","small")+'<span>Today’s meal couldn’t be ordered: '+h(s.lastError)+'</span></div>':'')
+      +(paused?'':'<div><p class="caption">Tap a day to skip it. You can change a day until '+MEAL_LEAD_MIN+' minutes before delivery starts.</p><div class="meal-days">'+(next.length?next.map(d=>{const skipped=skips.includes(d),locked=Date.now()>=mealOrderAt(d,s.windowStart);return'<button type="button" class="meal-day'+(skipped?' skipped':'')+'" data-action="meal-skip" data-sub-id="'+h(s.id)+'" data-date="'+h(d)+'" aria-pressed="'+skipped+'"'+(locked?' disabled':'')+'><span>'+h(dayLabel(d))+'</span><small>'+(locked?'On its way':skipped?'Skipped':'Coming')+'</small></button>'}).join(""):'<p class="supporting">No more meals on this plan.</p>')+'</div></div>')
+      +(s.endDate?'<p class="caption">Ends '+h(dayLabel(s.endDate))+'. '+Number(s.delivered||0)+' delivered so far.</p>':'<p class="caption">Runs until you stop it. '+Number(s.delivered||0)+' delivered so far.</p>')
+      +'<div class="cluster wrap"><button class="button tonal grow" data-action="meal-'+(paused?'resume':'pause')+'" data-sub-id="'+h(s.id)+'">'+(paused?'Resume':'Pause')+'</button><button class="button secondary grow" data-action="meal-cancel" data-sub-id="'+h(s.id)+'">Stop plan</button></div></article>'}
+  function screenMealPlans(){if(!state.mealPlansLoadedAt&&!state.mealPlansLoading)setTimeout(()=>loadMealPlans(true),0);const mine=state.mealSubs||[],plans=state.mealPlans||[];
+    return'<main class="screen"><div class="screen-content page-stack">'+topbar("Daily meal plans","Lunch or dinner from a local kitchen, every day. Skip any day.")+networkBanner()
+      +(state.mealPlansError?'<div class="notice warning">'+icon("warning","small")+'<span>'+h(state.mealPlansError)+'</span></div>':'')
+      +(mine.length?'<section class="stack"><h2 class="section-title">Your plans</h2>'+mine.map(mealSubCard).join("")+'</section>':'')
+      +'<section class="stack"><h2 class="section-title">'+(mine.length?'More plans':'Plans near you')+'</h2>'+(state.mealPlansLoading&&!plans.length?'<p class="supporting">Loading plans…</p>':plans.length?plans.map(mealPlanCard).join(""):emptyState("orders","No meal plans yet","Local kitchens are setting up their plans. Check back soon."))+'</section>'
+      +'<p class="caption">Each meal is placed as a normal order '+MEAL_LEAD_MIN+' minutes before your delivery window, so you can track it and pay when it arrives.</p></div>'+nav()+'</main>'}
+  function mealSubscribeSheet(sheet){const p=(state.mealPlans||[]).find(x=>x.id===sheet.planId);if(!p)return sheetShell("Meal plan","This plan is no longer available.","");const address=currentAddress(),today=istToday(),starts=[];for(let i=0,d=today;i<21&&starts.length<7;i++,d=addDaysIso(d,1)){if(!(p.days||[]).includes(weekdayIso(d)))continue;if(Date.now()>=mealOrderAt(d,p.windowStart))continue;starts.push(d)}
+    return sheetShell(p.name,p.restaurantName+" · "+(MEAL_NAMES[p.meal]||"Meal")+" "+mealWindow(p),'<form id="meal-subscribe-form" class="form-grid" data-plan-id="'+h(p.id)+'">'
+      +'<div class="field"><label for="meal-start">Start on</label><select class="select" id="meal-start" name="startDate">'+starts.map(d=>'<option value="'+h(d)+'">'+h(dayLabel(d))+'</option>').join("")+'</select></div>'
+      +'<fieldset class="field"><legend>Days</legend><div class="meal-day-picks">'+(p.days||[]).slice().sort().map(d=>'<label class="meal-day-pick"><input type="checkbox" name="day" value="'+d+'" checked><span>'+WEEKDAY_SHORT[d]+'</span></label>').join("")+'</div></fieldset>'
+      +'<div class="field"><label for="meal-qty">Meals a day</label><select class="select" id="meal-qty" name="quantity"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>'
+      +'<div class="field"><label for="meal-weeks">For</label><select class="select" id="meal-weeks" name="weeks"><option value="1">1 week</option><option value="2">2 weeks</option><option value="4" selected>4 weeks</option><option value="0">Until I stop</option></select></div>'
+      +'<div class="notice info">'+icon("pin","small")+'<span>Delivered to <strong>'+h(address?(address.label||"Saved address")+" · "+(address.area||""):"your saved address")+'</strong>. Change your address on the home screen first if needed.</span></div>'
+      +'<p class="caption">'+money(p.price)+' a meal, plus delivery and platform fees as at checkout. Pay with cash or UPI when each meal arrives. Skip, pause or stop any time.</p>'
+      +(sheet.error?'<div class="notice danger">'+icon("warning","small")+'<span>'+h(sheet.error)+'</span></div>':'')
+      +'<button class="button primary full" type="submit"'+(sheet.busy||!starts.length||!address?' disabled':'')+'>'+(sheet.busy?'Starting…':'Start plan')+'</button></form>')}
+  async function submitMealSubscribe(form){const planId=form.dataset.planId,address=currentAddress();if(!address)return;const days=Array.from(form.querySelectorAll('input[name="day"]:checked')).map(x=>Number(x.value));if(!days.length){toast("Choose at least one day.","danger");return}
+    setSheet({type:"mealSubscribe",planId,busy:true});try{await mealCall("subscribeMealPlan",{planId,addressId:String(address.id),startDate:form.elements.startDate.value,days,quantity:Number(form.elements.quantity.value),weeks:Number(form.elements.weeks.value)});closeSheet();toast("Your meal plan is on. Skip any day from here.","success");await loadMealPlans(true);go("mealPlans",{},true)}catch(e){setSheet({type:"mealSubscribe",planId,error:mealError(e)})}}
+  async function mealAction(action,subId,date){const s=(state.mealSubs||[]).find(x=>x.id===subId);if(!s)return;if(action==="cancel"&&!await askConfirm("Stop this meal plan?","No more meals will be ordered. You can start it again later.","Stop plan","Keep plan"))return;
+    const before=JSON.stringify(s);if(action==="skip"||action==="unskip"){s.skips=action==="skip"?(s.skips||[]).concat(date):(s.skips||[]).filter(d=>d!==date)}else if(action==="pause")s.status="paused";else if(action==="resume")s.status="active";render({preserveScroll:true});
+    try{await mealCall("updateMealSubscription",Object.assign({subscriptionId:subId,action},date?{date}:{}));toast(action==="skip"?"Skipped "+dayLabel(date)+".":action==="unskip"?dayLabel(date)+" is back on.":action==="pause"?"Plan paused.":action==="resume"?"Plan resumed.":"Plan stopped.","success");await loadMealPlans(true)}catch(e){Object.assign(s,JSON.parse(before));render({preserveScroll:true});toast(mealError(e),"danger")}}
+  // ===== Friends & chat: friend codes, one-to-one chat, dish cards, report and block =====
+  const CHAT_REASONS=[["harassment","Harassment or bullying"],["sexual","Sexual or abusive content"],["spam","Spam or scam"],["self-harm","Talk of self-harm"],["other","Something else"]];
+  function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
+  function myUid(){return String(state.session&&state.session.uid||"")}
+  function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;
+    try{
+      c.unsubs.push(fs.collection("accountAges").doc(uid).onSnapshot(s=>{c.account=s.exists?s.data():null;c.accountLoaded=true;chatRerender()},()=>{c.accountLoaded=true}));
+      c.unsubs.push(fs.collection("chatProfiles").doc(uid).onSnapshot(s=>{c.profile=s.exists?s.data():null;c.profileLoaded=true;chatRerender()},()=>{c.profileLoaded=true;chatRerender()}));
+      c.unsubs.push(fs.collection("friendships").where("members","array-contains",uid).onSnapshot(s=>{c.pairs=s.docs.map(d=>Object.assign({id:d.id},d.data()));loadAvatars();chatRerender()},()=>{}));
+      c.unsubs.push(fs.collection("parentRequests").where("parentUid","==",uid).onSnapshot(s=>{c.parentInbox=s.docs.map(d=>d.data());chatRerender()},()=>{}));
+    }catch(_){}
+  }
+  function stopChatSync(){const c=chatState();c.unsubs.forEach(u=>{try{u()}catch(_){}});c.unsubs=[];Object.values(c.avatarUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.avatarUnsubs={};c.avatars={};closeThread();c.uid="";c.profile=null;c.profileLoaded=false;c.pairs=[]}
+  function chatRerender(){if(["chats","dm","friends","home"].includes(state.route))render({preserveScroll:true})}
+  async function socialCall(fn,data){if(!nativeAvailable("invokeSocial"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to use chat."});await ensureSession();return nativeInvoke("invokeSocial",{fn,data:data||{}},{idToken:state.session.idToken,timeoutMs:25000})}
+  const chatError=e=>(e&&e.userMessage)||friendlyError(e)||"That didn’t work. Check your connection and try again.";
+  function otherOf(p){return(p.members||[]).find(m=>m!==myUid())||""}
+  function nameOf(p,uid){return(p.names&&p.names[uid])||"Friend"}
+  function chatUnread(){const uid=myUid();return chatState().pairs.filter(p=>p.status==="accepted").reduce((n,p)=>n+Number(p.unread&&p.unread[uid]||0),0)+chatState().pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid).length}
+  function chatTime(ms){if(!ms)return"";const d=new Date(ms),now=new Date();return d.toDateString()===now.toDateString()?d.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"}):d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
+  function msgTime(m){const at=m&&m.at;return at&&typeof at.toMillis==="function"?at.toMillis():Number(at||Date.now())}
+  function avatar(name,tone,uid){const t=tone||0,img=uid&&chatState().avatars[uid];if(img)return'<img class="chat-avatar photo" src="'+h(img)+'" alt="">';return'<span class="chat-avatar tone'+(t%3)+'" aria-hidden="true">'+h(String(name||"?").trim().charAt(0).toUpperCase()||"?")+'</span>'}
+  // Profile photos: fetched once per person (refreshed after 10 minutes); only friends and pending requests can read them.
+  function loadAvatars(){const c=chatState(),uid=myUid();if(!c.avatarUnsubs)c.avatarUnsubs={};const want=new Set([uid].concat(c.pairs.filter(p=>p.status!=="blocked").map(otherOf)).filter(Boolean));
+    // Live: a friend's new photo shows up as soon as they save it.
+    want.forEach(id=>{if(c.avatarUnsubs[id])return;try{c.avatarUnsubs[id]=fs.collection("chatAvatars").doc(id).onSnapshot(d=>{const img=d.exists?String(d.data().image||""):"";if((c.avatars[id]||"")!==img){c.avatars[id]=img;chatRerender()}},()=>{delete c.avatarUnsubs[id]})}catch(_){}});
+    Object.keys(c.avatarUnsubs).forEach(id=>{if(!want.has(id)){try{c.avatarUnsubs[id]()}catch(_){}delete c.avatarUnsubs[id];delete c.avatars[id]}})}
+  function usernameOf(p,uid){return(p.usernames&&p.usernames[uid])||""}
+  async function pickAndSavePhoto(){try{if(!nativeAvailable("pickProfilePhoto")){toast("Update Scraveit to add a photo.","danger");return}const res=await nativeInvoke("pickProfilePhoto",{},{timeoutMs:180000}),img=String(res&&(res.image||res.data&&res.data.image||res.result&&res.result.image)||"");if(!img.startsWith("data:image/jpeg;base64,"))return;await fs.collection("chatAvatars").doc(myUid()).set({image:img,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});chatState().avatars[myUid()]=img;toast("Photo updated.","success");render({preserveScroll:true})}catch(e){const m=String(e&&e.message||"");if(!/CANCELLED|No photo/i.test(m))toast("Photo not saved. "+chatError(e),"danger")}}
+  async function removePhoto(){try{await fs.collection("chatAvatars").doc(myUid()).delete();chatState().avatars[myUid()]="";toast("Photo removed.","success");chatRerender()}catch(e){toast(chatError(e),"danger")}}
+  function chatGate(){const c=chatState(),p=c.profile;if(!c.profileLoaded)return'<p class="supporting">Loading…</p>';
+    if(!p)return chatSetupCard();
+    if(p.status==="banned")return'<div class="notice danger">'+icon("warning","small")+'<span>Chat is turned off on your account because messages broke Scraveit’s chat rules. Ordering still works.</span></div>';
+    if(p.status==="suspended"&&Number(p.suspendedUntil||0)>Date.now())return'<div class="notice warning">'+icon("warning","small")+'<span>Chat is paused on your account until '+h(new Date(p.suspendedUntil).toLocaleDateString("en-IN"))+'.</span></div>';
+    const acct=c.account;if(acct&&acct.minor===true&&acct.parentStatus!=="approved")return parentCard();
+    if(!p.username)return'<section class="card stack"><div><p class="eyebrow">New</p><h2 class="section-title">Pick your username</h2><p class="supporting">Friends can now add you with your username, like on Instagram.</p></div><form id="chat-username-form" class="form-grid"><div class="field"><label for="chat-new-username">Username</label><input class="input" id="chat-new-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" value="'+h(String(p.name||"").toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14))+'"></div><button class="button primary full" type="submit">Save username</button></form></section>';
+    return"";
+  }
+  function chatSetupCard(){const name=String(state.profile&&state.profile.name||"").split(" ")[0];
+    return'<section class="card stack"><div><p class="eyebrow">Friends & chat</p><h2 class="section-title">Chat with friends, share food</h2><p class="supporting">Add friends with a code, chat, and send each other dishes. Nobody can find you unless you share your code.</p></div>'
+      +'<form id="chat-setup-form" class="form-grid"><div class="field"><label for="chat-name">Name your friends see</label><input class="input" id="chat-name" name="name" required maxlength="40" value="'+h(name)+'"></div>'
+      +'<div class="field"><label for="chat-username">Username</label><input class="input" id="chat-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="like '+h((name||"foodie").toLowerCase().replace(/[^a-z0-9]/g,"")||"foodie")+'0803" value="'+h(((state.profile&&state.profile.name)||"").toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14))+'"><p class="caption">Friends can add you with it. Small letters, numbers, . and _</p></div>'
+      +(chatState().account?'':'<div class="field"><label for="chat-dob">Date of birth</label><input class="input" id="chat-dob" name="birthDate" type="date" required max="'+h(new Date().toISOString().slice(0,10))+'"><p class="caption">Chat is for 13 and over. Under 18, a parent approves first.</p></div>')
+      +'<p class="caption">Be kind. Anyone can report a chat; our team reads reported messages and can turn chat off for people who break the rules.</p>'
+      +'<button class="button primary full" type="submit">Turn on chat</button></form></section>'}
+  function parentCard(){return accountParentCard()||'<p class="supporting">Loading…</p>'}
+  // ===== Age and parent approval for the account (DPDP Act 2023, s.9) =====
+  function dobLabel(d){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d||""));return m?new Date(Date.UTC(+m[1],+m[2]-1,+m[3])).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric",timeZone:"UTC"}):""}
+  function dobInput(value){return'<div class="field"><label for="account-dob">Date of birth</label><input class="input" id="account-dob" name="birthDate" type="date" required min="1900-01-01" max="'+h(new Date().toISOString().slice(0,10))+'" value="'+h(value||"")+'"><p class="caption">Scraveit is for 13 and over. Under 18, a parent approves your account. You can edit this any time if it’s wrong.</p></div>'}
+  function dobSheet(){const a=chatState().account;return sheetShell("Date of birth",a?"Saved: "+dobLabel(a.birthDate):"",'<form id="account-dob-form" class="form-grid">'+dobInput(a&&a.birthDate)+'<button class="button primary full" type="submit">Save</button></form>')}
+  function accountParentCard(){const a=chatState().account;if(!a||a.minor!==true||a.parentStatus==="approved")return"";const pending=a.parentStatus==="pending",declined=a.parentStatus==="declined"||a.parentStatus==="revoked";
+    return'<section class="card stack account-parent"><div><p class="eyebrow">Parent approval</p><h2 class="section-title">'+(pending?'Waiting for '+h(a.parentName||"your parent"):'Ask a parent to approve your account')+'</h2><p class="supporting">'+(pending?'They’ll see it on their Scraveit home screen. You can browse meanwhile; ordering and chat open once they approve.':declined?'Your parent didn’t approve. You can ask again, or ask another parent.':'You’re under 18, so a parent needs to approve before you can order or chat. They need their own Scraveit account.')+'</p></div>'
+      +'<form id="account-parent-form" class="form-grid"><div class="field"><label for="account-parent-email">'+(pending?'Ask someone else':'Your parent’s Scraveit email')+'</label><input class="input" id="account-parent-email" name="email" type="email" inputmode="email" autocomplete="off" required placeholder="parent@example.com"></div><button class="button '+(pending?'tonal':'primary')+' full" type="submit">'+(pending?'Send again':'Send to my parent')+'</button></form>'
+      +'<button class="text-button" data-action="edit-dob">Wrong date of birth? Edit it</button></section>'}
+  function accountHomeCards(){if(!state.session)return"";ensureChatSync();const c=chatState();if(!c.accountLoaded)return"";
+    const inbox=(c.parentInbox||[]).filter(r=>r.status==="pending"),parentCards=inbox.map(r=>'<section class="card stack account-parent"><div><p class="eyebrow">Parent approval</p><h2 class="section-title">Approve '+h(r.childName||"your child")+'’s account</h2><p class="supporting">'+h(r.childName||"Your child")+(r.childAge?' ('+h(r.childAge)+')':'')+' asked you to approve Scraveit, so they can order food and chat with friends. You can turn it off any time.</p></div><div class="cluster"><button class="button primary grow" data-action="parent-approve" data-child-uid="'+h(r.childUid)+'">Approve</button><button class="button tonal grow" data-action="parent-decline" data-child-uid="'+h(r.childUid)+'">Don’t approve</button></div></section>').join("");
+    if(!c.account)return parentCards+'<section class="card stack account-parent"><div><p class="eyebrow">One quick step</p><h2 class="section-title">Add your date of birth</h2><p class="supporting">We ask everyone once. Scraveit is for 13 and over.</p></div><form id="account-dob-form" class="form-grid">'+dobInput("")+'<button class="button primary full" type="submit">Save</button></form></section>';
+    return parentCards+accountParentCard()}
+  function chatHeaderButton(){if(!state.session)return"";ensureChatSync();const n=chatUnread();return'<button class="hh2-icon" data-action="go" data-route="chats" aria-label="Chats'+(n?', '+n+' new':'')+'">'+icon("chat")+(n?'<span class="hh2-badge">'+h(n)+'</span>':'')+'</button>'}
+  // Instagram-style inbox: search, a row of friends, then conversations with the last message and time.
+  function agoShort(ms){if(!ms)return"";const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"now";if(s<3600)return Math.floor(s/60)+"m";if(s<86400)return Math.floor(s/3600)+"h";if(s<604800)return Math.floor(s/86400)+"d";return new Date(ms).toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
+  function convoLine(p,uid){const other=otherOf(p),n=Number(p.unread&&p.unread[uid]||0),t=agoShort(p.lastAt);
+    if(n>=4)return{bold:true,text:"4+ new messages · "+t};
+    if(n>1)return{bold:true,text:n+" new messages · "+t};
+    if(n===1)return{bold:true,text:(/^Reacted /.test(p.lastText||"")&&p.lastFrom!==uid?p.lastText:"1 new message")+" · "+t};
+    if(!p.lastAt)return{bold:false,text:"Say hi 👋"};
+    if(p.lastFrom===uid&&/^Reacted /.test(p.lastText||""))return{bold:false,text:"You r"+String(p.lastText).slice(1).replace(" to your message","")+" · "+t};
+    if(p.lastFrom===uid)return{bold:false,text:(Number(p.readAt&&p.readAt[other]||0)>=Number(p.lastAt)?"Seen ":"Sent ")+t+" ago"};
+    return{bold:false,text:(p.lastText||"")+" · "+t}}
+  function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0));
+    return'<main class="screen no-nav"><div class="screen-content page-stack">'+topbar(me&&me.name?me.name:"Chats","",'<button class="icon-button flat" data-action="go" data-route="friends" aria-label="Add friends">'+icon("plus")+'</button>')+networkBanner()
+      +(gate||((convos.length?'<label class="ig-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
+        +'<div class="ig-friends" aria-label="Friends">'+convos.map((p,i)=>'<button class="ig-friend" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+avatar(nameOf(p,otherOf(p)),i,otherOf(p)).replace('class="chat-avatar','class="chat-avatar big')+'<span>'+h(nameOf(p,otherOf(p)).split(" ")[0])+'</span></button>').join("")+'<button class="ig-friend" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add</span></button></div>':'')
+        +'<div class="ig-head"><h2 class="section-title">Messages</h2><button class="text-button" data-action="go" data-route="friends">Requests'+(requests.length?' ('+requests.length+')':'')+'</button></div>'
+        +(convos.length?'<div class="chat-list">'+convos.map((p,i)=>{const other=otherOf(p),line=convoLine(p,uid),n=Number(p.unread&&p.unread[uid]||0);return'<button class="chat-row ig-row" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,other).toLowerCase())+'">'+avatar(nameOf(p,other),i,other).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong'+(n?'':' class="soft"')+'>'+h(nameOf(p,other))+'</strong><span class="chat-preview'+(line.bold?' bold':'')+'">'+h(line.text)+'</span></span>'+(n?'<span class="ig-dot" aria-label="Unread"></span>':'')+'</button>'}).join("")+'</div>'
+          :emptyState("chat","No chats yet","Tap + to share your friend code, or add a friend with theirs."))))
+      +'</div></main>'}
+  document.addEventListener("input",e=>{if(!e.target||e.target.id!=="chat-search")return;const q=e.target.value.trim().toLowerCase();document.querySelectorAll(".ig-row,.ig-friend[data-name]").forEach(el=>{el.hidden=!!q&&!String(el.dataset.name||"").includes(q)})});
+  function screenFriends(){ensureChatSync();const c=chatState(),uid=myUid(),p=c.profile,gate=chatGate();
+    const incoming=c.pairs.filter(x=>x.status==="pending"&&x.requestedBy!==uid),sent=c.pairs.filter(x=>x.status==="pending"&&x.requestedBy===uid),friends=c.pairs.filter(x=>x.status==="accepted"),blocked=c.pairs.filter(x=>x.status==="blocked"&&x.blockedBy===uid),inbox=(c.parentInbox||[]).filter(r=>r.status==="pending"),kids=(c.parentInbox||[]).filter(r=>r.status==="approved");
+    const row=(x,actions,i)=>'<div class="chat-row static">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x))+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong>'+(usernameOf(x,otherOf(x))?'<span class="chat-preview">@'+h(usernameOf(x,otherOf(x)))+'</span>':'')+'</span><span class="cluster">'+actions+'</span></div>';
+    const btn=(label,action,id,tone)=>'<button class="button '+(tone||"tonal")+' small" data-action="'+action+'" data-pair-id="'+h(id)+'">'+label+'</button>';
+    return'<main class="screen no-nav"><div class="screen-content page-stack">'+topbar("Friends","Add friends with a code. Nobody can find you otherwise.")+networkBanner()
+      +(inbox.length?'<section class="card stack"><h2 class="section-title">Approve chat for your child</h2>'+inbox.map(r=>'<div class="stack"><p><strong>'+h(r.childName||"Your child")+'</strong>'+(r.childAge?' · '+h(r.childAge)+' years':'')+' asked you to approve chat.</p><div class="cluster"><button class="button primary small" data-action="parent-approve" data-child-uid="'+h(r.childUid)+'">Approve</button><button class="button tonal small" data-action="parent-decline" data-child-uid="'+h(r.childUid)+'">Don’t approve</button></div></div>').join("")+'<p class="caption">You become their friend on Scraveit and can turn chat off any time.</p></section>':'')
+      +(gate||'<section class="card chat-me"><button class="chat-me-photo" data-action="chat-photo" aria-label="Change profile photo">'+avatar(p.name,0,uid).replace('class="chat-avatar','class="chat-avatar huge')+'<span class="chat-me-cam" aria-hidden="true">'+icon("plus","small")+'</span></button><div class="stack" style="gap:2px;min-width:0"><strong class="section-title">'+h(p.name||"")+'</strong><span class="chat-preview">@'+h(p.username||"")+'</span><div class="cluster wrap" style="margin-top:6px"><button class="button tonal small" data-action="chat-photo">'+(chatState().avatars[uid]?"Change photo":"Add photo")+'</button>'+(chatState().avatars[uid]?'<button class="button tonal small" data-action="chat-photo-remove">Remove</button>':'')+'<button class="button tonal small" data-action="chat-username-edit">Change username</button></div></div></section>'+(state.social.editUsername?'<form id="chat-username-form" class="card form-grid"><div class="field"><label for="chat-new-username">New username</label><input class="input" id="chat-new-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" value="'+h(p.username||"")+'"><p class="caption">You can change it once every 14 days. Friends you have stay.</p></div><button class="button primary full" type="submit">Save username</button></form>':'')+'<section class="card stack chat-code-card"><p class="eyebrow">Your friend code</p><p class="chat-code">'+h(p.code)+'</p><div class="cluster wrap"><button class="button primary small" data-action="share-friend-code">Share</button><button class="button tonal small" data-action="new-friend-code">Get a new code</button></div><p class="caption">A new code stops anyone else using the old one. Friends you already have stay.</p></section>'
+        +'<form id="add-friend-form" class="card form-grid"><div class="field"><label for="friend-code">Add a friend</label><input class="input" id="friend-code" name="code" required maxlength="25" placeholder="@username or code like ANA-4K7P" autocapitalize="none" autocomplete="off" spellcheck="false"></div><button class="button primary full" type="submit">Send friend request</button></form>'
+        +(incoming.length?'<section class="stack"><h2 class="section-title">Requests</h2>'+incoming.map((x,i)=>row(x,btn("Accept","friend-accept",x.id,"primary")+btn("Ignore","friend-ignore",x.id)+btn("Block","friend-block",x.id,"danger"),i)).join("")+'</section>':'')
+        +'<section class="stack"><h2 class="section-title">Friends · '+friends.length+'</h2>'+(friends.length?friends.map((x,i)=>'<div class="chat-row ig-row"><button class="ig-open" data-action="open-dm" data-pair-id="'+h(x.id)+'">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x)).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong><span class="chat-preview">'+(usernameOf(x,otherOf(x))?'@'+h(usernameOf(x,otherOf(x))):'Tap to chat')+'</span></span></button><button class="icon-button flat" data-action="friend-menu" data-pair-id="'+h(x.id)+'" aria-label="More for '+h(nameOf(x,otherOf(x)))+'">⋮</button></div>').join(""):'<p class="supporting">No friends yet. Share your code to start.</p>')+'</section>'
+        +(sent.length?'<section class="stack"><h2 class="section-title">Sent</h2>'+sent.map((x,i)=>row(x,'<small class="caption">Waiting</small>',i)).join("")+'</section>':'')
+        +(blocked.length?'<section class="stack"><h2 class="section-title">Blocked</h2>'+blocked.map((x,i)=>row(x,btn("Unblock","friend-unblock",x.id),i)).join("")+'</section>':'')
+        +'<section class="card stack"><h2 class="section-title">Who can send you requests</h2><div class="stack" role="radiogroup" aria-label="Who can send you requests">'+(p.minor?[["code","People with my code"],["nobody","Nobody"]]:[["everyone","Anyone with my username or code"],["code","Only people with my code"],["nobody","Nobody"]]).map(o=>{const cur=p.requests||(p.minor?"code":"everyone");return'<button class="settings-row chat-radio '+(cur===o[0]?'on':'')+'" role="radio" aria-checked="'+(cur===o[0])+'" data-action="chat-privacy" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>'}).join("")+'</div>'+(p.minor?'<p class="caption">Under 18, people can add you only with the code you share.</p>':'')+'</section>'
+        +(kids.length?'<section class="card stack"><h2 class="section-title">Your children</h2>'+kids.map(r=>'<div class="cluster between"><span>'+h(r.childName||"Child")+'</span><button class="button tonal small" data-action="parent-revoke" data-child-uid="'+h(r.childUid)+'">Turn chat off</button></div>').join("")+'</section>':''))
+      +'</div></main>'}
+  function openThread(pairId){const c=chatState();if(c.threadId===pairId&&c.threadUnsub)return;closeThread();c.threadId=pairId;
+    try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{c.threads[pairId]=s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse();if(state.route==="dm"){render({preserveScroll:true});scrollThreadToEnd()}markThreadRead(pairId)},()=>{})}catch(_){}
+  }
+  function closeThread(){const c=chatState();if(c.threadUnsub){try{c.threadUnsub()}catch(_){}}c.threadUnsub=null;c.threadId=""}
+  let readTimer=null;function markThreadRead(pairId){clearTimeout(readTimer);readTimer=setTimeout(()=>{const p=chatState().pairs.find(x=>x.id===pairId);if(p&&Number(p.unread&&p.unread[myUid()]||0)>0)socialCall("chatMarkRead",{pairId}).catch(()=>{})},600)}
+  function scrollThreadToEnd(){requestAnimationFrame(()=>{const el=document.getElementById("dm-messages");if(el)el.scrollTop=el.scrollHeight})}
+  function dishCard(card){const r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null,live=item&&item.available!==false,price=item?item.price:card.price;
+    return'<div class="dm-card"><img src="'+h(safeUrl(card.image||(item&&item.image),r&&r.image))+'" alt=""><div class="stack"><strong>'+h(card.name||(item&&item.name)||(r&&r.name)||"A dish")+'</strong><small>'+h(card.restaurantName||(r&&r.name)||"")+(price?' · '+money(price):'')+'</small>'+(card.type==="dish"?'<button class="button primary small" data-action="dm-card-add" data-restaurant-id="'+h(card.restaurantId)+'" data-item-id="'+h(card.itemId||"")+'"'+(r&&item&&!live?' disabled':'')+'>'+(r&&item&&!live?'Not available now':'Add to my cart')+'</button>':'<button class="button primary small" data-action="go-restaurant" data-restaurant-id="'+h(card.restaurantId)+'">See menu</button>')+'</div></div>'}
+  function screenDm(){ensureChatSync();const c=chatState(),uid=myUid(),pairId=String(state.routeData.pairId||""),p=c.pairs.find(x=>x.id===pairId);openThread(pairId);
+    if(!p)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Chat","")+emptyState("chat","Chat not available","This person may have removed you or been blocked.")+'</div>'+nav()+'</main>';
+    const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
+    return'<main class="screen dm-screen"><div class="screen-content dm-wrap">'+topbar(nameOf(p,other),blocked?"Blocked":(usernameOf(p,other)?"@"+usernameOf(p,other):""),'<button class="icon-button flat" data-action="dm-menu" data-pair-id="'+h(pairId)+'" aria-label="Report or block">⋮</button>')
+      +'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);return'<div class="dm-msg '+(mine?'mine':'theirs')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?dishCard(m.card):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+      +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
+        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food" type="button" data-action="dm-share-place" data-pair-id="'+h(pairId)+'" aria-label="Send a restaurant">🍽</button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small" type="submit">Send</button></form>')
+      +'</div></main>'}
+  async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const body={from:uid,text:String(text||"").slice(0,1000),at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
+    try{await fs.collection("chats").doc(pairId).collection("messages").add(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
+  function shareFriendSheet(sheet){const friends=chatState().pairs.filter(p=>p.status==="accepted");
+    return sheetShell("Send to a friend",sheet.title||"",friends.length?'<div class="stack">'+friends.map((p,i)=>'<button class="chat-row" data-action="share-to-friend" data-pair-id="'+h(p.id)+'">'+avatar(nameOf(p,otherOf(p)),i,otherOf(p))+'<span class="grow"><strong>'+h(nameOf(p,otherOf(p)))+'</strong></span>'+icon("chevron","small")+'</button>').join("")+'</div>':'<p class="supporting">Add friends first from Chats › Friends.</p>')}
+  function sharePlaceSheet(sheet){const list=restaurantsFiltered().slice(0,12);
+    return sheetShell("Send a place","They can open its menu from the chat.",'<div class="stack">'+list.map(r=>'<button class="chat-row" data-action="send-place" data-pair-id="'+h(sheet.pairId)+'" data-restaurant-id="'+h(r.id)+'"><img class="chat-place-img" src="'+h(safeUrl(r.image))+'" alt=""><span class="grow"><strong>'+h(r.name)+'</strong><span class="chat-preview">'+h((r.cuisines||[]).slice(0,2).join(", "))+'</span></span></button>').join("")+'</div>')}
+  function friendMenuSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"Friend";
+    return sheetShell(name,"",'<div class="stack"><button class="button primary full" data-action="open-dm" data-pair-id="'+h(sheet.pairId)+'">'+icon("chat","small")+' Message</button><button class="button tonal full" data-action="friend-unfriend" data-pair-id="'+h(sheet.pairId)+'">Remove friend</button><button class="button tonal full" data-action="friend-block" data-pair-id="'+h(sheet.pairId)+'">Block</button><button class="button danger full" data-action="dm-menu" data-pair-id="'+h(sheet.pairId)+'">Report</button></div>')}
+  // Reactions: double-tap a message for ❤️, press and hold to choose an emoji.
+  const REACTIONS=["❤️","😂","😮","😢","🔥","👍"];
+  async function setReaction(pairId,msgId,emoji){const uid=myUid();if(!uid||!pairId||!msgId)return;const ref=fs.collection("chats").doc(pairId).collection("messages").doc(msgId);
+    try{await ref.update(emoji?{["reactions."+uid]:emoji}:{["reactions."+uid]:firebase.firestore.FieldValue.delete()})}catch(e){toast("Couldn’t react. "+chatError(e),"danger")}}
+  function myReaction(pairId,msgId){const m=(chatState().threads[pairId]||[]).find(x=>x.id===msgId);return m&&m.reactions&&m.reactions[myUid()]||""}
+  function reactSheet(sheet){const mine=myReaction(sheet.pairId,sheet.msgId);return sheetShell("React","",'<div class="react-row">'+REACTIONS.map(e=>'<button class="react-pick'+(mine===e?' on':'')+'" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="'+h(e)+'" aria-label="React '+h(e)+'">'+e+'</button>').join("")+'</div>'+(mine?'<button class="button tonal full" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="">Remove my reaction</button>':''))}
+  (function bindReactionGestures(){let pressTimer=null,lastTap={id:"",at:0},longPressed=false;
+    document.addEventListener("pointerdown",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;longPressed=false;clearTimeout(pressTimer);pressTimer=setTimeout(()=>{longPressed=true;try{navigator.vibrate&&navigator.vibrate(15)}catch(_){}setSheet({type:"react",pairId:el.dataset.pairId,msgId:el.dataset.msgId})},450)});
+    ["pointerup","pointercancel","pointerleave","scroll"].forEach(t=>document.addEventListener(t,()=>clearTimeout(pressTimer),true));
+    document.addEventListener("click",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;if(longPressed){longPressed=false;return}const now=Date.now(),id=el.dataset.msgId;
+      if(lastTap.id===id&&now-lastTap.at<320){lastTap={id:"",at:0};setReaction(el.dataset.pairId,id,myReaction(el.dataset.pairId,id)==="❤️"?"":"❤️")}else lastTap={id,at:now}});
+  })();
+  function reportSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"this person";
+    return sheetShell("Report or block",name,'<form id="chat-report-form" class="form-grid" data-pair-id="'+h(sheet.pairId)+'"><fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">What’s wrong?</legend>'+CHAT_REASONS.map((r,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="reason" value="'+r[0]+'" '+(i===0?'checked':'')+'><span class="grow">'+r[1]+'</span></label>').join("")+'</fieldset><div class="field"><label for="report-note">Anything else (optional)</label><textarea class="textarea" id="report-note" name="note" maxlength="500"></textarea></div><label class="settings-row"><input type="checkbox" name="block" checked><span class="grow">Also block '+h(name)+'</span></label><p class="caption">Your last 20 messages in this chat go with the report so our team can check it.</p><button class="button danger full" type="submit"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Sending…':'Send report')+'</button><button class="button tonal full" type="button" data-action="dm-block-only" data-pair-id="'+h(sheet.pairId)+'">Just block, no report</button></form>')}
+  async function chatAction(fn,data,ok){try{await socialCall(fn,data);if(ok)toast(ok,"success")}catch(e){toast(chatError(e),"danger")}}
+  function handleChatClick(action,control){
+    const pid=control.dataset.pairId,cid=control.dataset.childUid;
+    if(action==="open-dm"){go("dm",{pairId:pid});scrollThreadToEnd();return true}
+    if(action==="friend-accept"){chatAction("chatRespond",{pairId:pid,action:"accept"},"You’re now friends.");return true}
+    if(action==="friend-ignore"){chatAction("chatRespond",{pairId:pid,action:"ignore"});return true}
+    if(action==="friend-block"||action==="dm-block-only"){askConfirm("Block this person?","They can’t message you or send requests again. They aren’t told.","Block","Cancel").then(y=>{if(y){closeSheet();chatAction("chatRespond",{pairId:pid,action:"block"},"Blocked.");if(state.route==="dm")go("chats",{},true)}});return true}
+    if(action==="friend-unblock"){chatAction("chatRespond",{pairId:pid,action:"unblock"},"Unblocked.");return true}
+    if(action==="friend-unfriend"){askConfirm("Remove this friend?","Your chat with them is closed. You can add each other again with a code.","Remove","Keep").then(y=>{if(y)chatAction("chatRespond",{pairId:pid,action:"unfriend"},"Removed.")});return true}
+    if(action==="new-friend-code"){chatAction("chatNewCode",{},"New code ready. Friends you have stay.");return true}
+    if(action==="share-friend-code"){const code=chatState().profile&&chatState().profile.code;const text="Add me on Scraveit: open Chats › Friends and enter "+code;try{if(window.FeastlyNative&&FeastlyNative.shareText)FeastlyNative.shareText(text);else if(navigator.clipboard){navigator.clipboard.writeText(text);toast("Copied. Paste it in any chat.","success")}}catch(_){}return true}
+    if(action==="chat-privacy"){chatAction("chatSetPrivacy",{requests:control.dataset.value},"Saved.");return true}
+    if(action==="parent-approve"||action==="parent-decline"){chatAction("accountParentRespond",{childUid:cid,approve:action==="parent-approve"},action==="parent-approve"?"Approved. They can order and chat now.":"Not approved.");return true}
+    if(action==="parent-revoke"){askConfirm("Turn chat off for your child?","They won’t be able to send messages until you approve again.","Turn off","Cancel").then(y=>{if(y)chatAction("accountParentRevoke",{childUid:cid},"Approval turned off.")});return true}
+    if(action==="friend-menu"){setSheet({type:"friendMenu",pairId:pid});return true}
+    if(action==="edit-dob"){setSheet({type:"dob"});return true}
+    if(action==="chat-photo"){pickAndSavePhoto();return true}
+    if(action==="chat-photo-remove"){askConfirm("Remove your photo?","Friends will see your first letter instead.","Remove","Keep").then(y=>{if(y)removePhoto()});return true}
+    if(action==="chat-username-edit"){state.social.editUsername=!state.social.editUsername;render({preserveScroll:true});return true}
+    if(action==="react-pick"){closeSheet();setReaction(pid,control.dataset.msgId,control.dataset.emoji||"");return true}
+    if(action==="dm-menu"){setSheet({type:"chatReport",pairId:pid});return true}
+    if(action==="dm-share-place"){setSheet({type:"sharePlace",pairId:pid});return true}
+    if(action==="send-place"){const r=restaurant(control.dataset.restaurantId);closeSheet();if(r)sendDm(pid,"",{type:"restaurant",restaurantId:r.id,restaurantName:String(r.name||"").slice(0,80),image:String(r.image||"").slice(0,400),name:String(r.name||"").slice(0,80)});return true}
+    if(action==="share-dish"){setSheet({type:"shareFriend",title:control.dataset.title||"",card:{type:"dish",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId}});return true}
+    if(action==="share-to-friend"){const s=state.sheet||{},card=s.card||{},r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null;closeSheet();
+      sendDm(pid,"",Object.assign({},card,{name:String(item&&item.name||r&&r.name||"").slice(0,80),restaurantName:String(r&&r.name||"").slice(0,80),price:Number(item&&item.price||0),image:String(item&&item.image||r&&r.image||"").slice(0,400)})).then(()=>toast("Sent.","success"));return true}
+    if(action==="dm-card-add"){const rid=control.dataset.restaurantId,iid=control.dataset.itemId;if(menuItem(rid,iid))setSheet({type:"item",restaurantId:rid,itemId:iid});else go("restaurant",{restaurantId:rid});return true}
+    if(action==="go-restaurant"){go("restaurant",{restaurantId:control.dataset.restaurantId});return true}
+    return false;
+  }
+  async function handleChatSubmit(form){
+    if(form.id==="chat-setup-form"){const b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;try{const payload={name:form.elements.name.value.trim(),username:form.elements.username.value.trim()};if(form.elements.birthDate&&form.elements.birthDate.value)payload.birthDate=form.elements.birthDate.value;const r=await socialCall("chatSetup",payload);toast(r&&r.minor?"Almost there: ask a parent to approve.":"Chat is on. Share your code with friends.","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
+    if(form.id==="chat-username-form"){try{const r=await socialCall("chatSetUsername",{username:form.elements.username.value.trim()});state.social.editUsername=false;toast("You’re @"+(r&&r.username||"")+" now.","success");render({preserveScroll:true})}catch(e){toast(chatError(e),"danger")}return true}
+    if(form.id==="account-parent-form"){const b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;try{const r=await socialCall("accountParentRequest",{email:form.elements.email.value.trim()});toast("Sent to "+(r&&r.parentName||"your parent")+".","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
+    if(form.id==="account-dob-form"){const v=form.elements.birthDate.value,b=form.querySelector('button[type="submit"]');if(!v){toast("Enter your date of birth.","danger");return true}if(b)b.disabled=true;try{const r=await socialCall("accountSetBirthDate",{birthDate:v});closeSheet();toast(r&&r.minor&&r.parentStatus!=="approved"?"Saved. You’re under 18, so a parent needs to approve your account.":"Date of birth saved.","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
+    if(form.id==="add-friend-form"){try{const r=await socialCall("chatAddFriend",{handle:form.elements.code.value});form.reset();const who=r&&(r.name||(r.username?"@"+r.username:""));toast(r&&r.status==="accepted"?"You’re now friends"+(who?" with "+who:"")+".":"Request sent"+(who?" to "+who:"")+".","success")}catch(e){toast(chatError(e),"danger")}return true}
+    if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";await sendDm(form.dataset.pairId,text);input.focus();return true}
+    if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
+    return false;
+  }
   function squadHomeCard(){
     const s=state.squad;
     if(s&&s.data)return'<button class="squad-card live" data-action="open-squad"><span class="squad-card-icon" aria-hidden="true">👥</span><span class="grow"><strong>Squad order · '+h(s.data.restaurantName)+'</strong><span>'+(s.data.status==="ordered"?"Order placed · see who pays what":squadPickList().length+(squadPickList().length===1?" person has":" people have")+" added picks · code "+h(s.code))+'</span></span><span class="wheel-spin-pill">Open</span></button>';
@@ -3515,13 +3857,13 @@
     const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),recommended=restaurants.slice(0,3),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
     if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
-    return '<main class="screen home2 '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
+    return '<main class="screen home2 '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
       +homeModeSwitch()
       +(homeMode()==="dinein"?dineInHome():''      +(active?activeOrderCard(active):'')
       +foodStoryStrip()+activeTableCard()+eatOutShelf()
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
-      +'<div class="play-row">'+wheelCard()+squadHomeCard()+'</div>'
+      +'<div class="play-row">'+wheelCard()+squadHomeCard()+mealPlanHomeCard()+'</div>'
       +moodSection()
       +topOffersShelf()
       +nearbyRestaurantsMarkup()
@@ -3609,7 +3951,7 @@
     const products=storeKind(r)!=="restaurant",hasKcal=(r.menu||[]).some(x=>itemKcal(x)!=null);
     const notes=[(products?"Products, descriptions and prices":"Menu items, descriptions and prices")+" are set by the "+(products?"store":"restaurant")+".","Taxes, delivery fee and platform fee are shown in your bill before you pay."];
     if(hasKcal)notes.push("Calorie values are per serving and indicative; they may vary with ingredients, portion size and customisation.","An average active adult requires 2,000 kcal energy per day, however, calorie needs may vary.");
-    const fssai=/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="menu-fssai"><span class="fssai-word">fssai</span><span>'+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</span></p>':'';
+    const fssai=/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="menu-fssai"><img class="fssai-logo" src="fssai-logo.png" alt="FSSAI" width="41" height="20" style="width:41px;height:20px"><span>'+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</span></p>':'';
     return '<section class="menu-footer"><ul class="menu-notes">'+notes.map(n=>'<li>'+h(n)+'</li>').join("")+'</ul><button type="button" class="text-button menu-report" data-action="report-menu" data-restaurant-id="'+h(r.id)+'">Report an issue with the '+(products?"products":"menu")+' ›</button>'+fssai+'</section>';
   }
   const MENU_ISSUES=["Wrong price","Item not available","Wrong photo","Wrong veg / non-veg mark","Wrong description or allergens","Something else"];
@@ -3652,7 +3994,9 @@
   function cashbackRow(){const server=serverCheckout(),c=server&&server.cashbackEstimate;return c&&Number(c.amount)>0?'<p class="caption success-text">You will get '+money(c.amount)+' cashback ('+h(c.title)+') in your wallet after delivery.</p>':''}
   function walletToggle(){const server=serverCheckout(),balance=server?Number(server.walletBalance||0):walletBalance()/100,max=server?Number(server.walletMaxForOrder||0):0;if(balance<=0)return"";return'<section class="card"><button class="settings-row" data-action="toggle-wallet"><span class="settings-icon">'+icon("wallet")+'</span><span class="grow"><strong>Use wallet balance</strong><span class="supporting">'+money(balance)+' available'+(server&&max<=0?' · this order is below the minimum for wallet use':'')+'</span></span><span class="switch '+(state.useWallet?'on':'')+'" aria-hidden="true"></span></button></section>'}
   function limitedOfferNote(){return'<p class="caption">This offer is capped on this order. The discount shown is exactly what you will get.</p>'}
-  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?discountRows():'')+'<div class="price-row"><span>Estimated delivery fee</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>Estimated small-order fee</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>Estimated late-night fee</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>Estimated taxes</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption" style="display:block">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')+walletRows()+(includeTotal?'<div class="price-row total"><span>'+(serverCheckout()?'To pay':'Estimated total')+'</span><span>'+money(orderTotal())+'</span></div>'+cashbackRow():'')+'</div>'}
+  /** "Estimated …" until the server has priced this exact cart. */
+  function feeLabel(name){return serverCheckout()?name.charAt(0).toUpperCase()+name.slice(1):"Estimated "+name}
+  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?discountRows():'')+'<div class="price-row"><span>'+feeLabel("delivery fee")+'</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>'+feeLabel("small-order fee")+'</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>'+feeLabel("late-night fee")+'</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>'+feeLabel("taxes")+'</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption" style="display:block">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')+walletRows()+(includeTotal?'<div class="price-row total"><span>'+(serverCheckout()?'To pay':'Estimated total')+'</span><span>'+money(orderTotal())+'</span></div>'+cashbackRow():'')+'</div>'}
   function screenCart() {
     const r=cartRestaurant();
     if(state.cart.length&&!r){
@@ -3747,16 +4091,29 @@
   function paySheet(){
     return sheetShell("Pay using","Only verified payment methods can be selected.",'<section class="card settings-list">'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>');
   }
+  /** Same names the server gives its time-of-day fees (domain/riderIncentiveEligibility.ts). */
+  function timeOfDayFeeName(at){const hr=Number.isFinite(Number(at))&&Number(at)>0?new Date(Number(at)).getHours():12;return hr>=21||hr<4?"Late-night fee":hr<7?"Early-morning fee":"Surge fee"}
   /** A delivered or live order's own bill, from what the server saved with it. */
+  /** FSSAI order of 18.03.2026 (Annexure 1, item 10): the seller's FSSAI number on every bill. */
+  function billSellerFooter(order){
+    const store=order.restaurantId&&state.catalog?state.catalog[order.restaurantId]:null;
+    const no=String(order.restaurantFssai||(store&&store.fssaiNumber)||"");
+    const fssai=/^[12]\d{13}$/.test(no)?'<img class="fssai-logo" src="fssai-logo.png" alt="FSSAI" width="41" height="20" style="width:41px;height:20px"><span>'+(no[0]==="2"?"Reg.":"Lic.")+' No. '+h(no)+'</span>':'';
+    return '<div class="menu-fssai bill-seller"><span>Sold and prepared by '+h(order.restaurant||(store&&store.name)||"the store")+'</span>'+fssai+'<span>Platform: SCRAVEIT PRIVATE LIMITED · GSTIN 37ABVCS0396N1ZA</span></div>';
+  }
   function orderBillSheet(sheet){
     const order=(state.orders||[]).find(o=>o.id===sheet.orderId);if(!order)return sheetShell("Bill summary","","<p class=\"supporting\">This bill is not available on this device.</p>");
     const p=order.pricing||{},line=(label,value,cls)=>Number(value)>0?'<div class="price-row'+(cls?' '+cls:'')+'"><span>'+h(label)+'</span><span>'+(cls==="success-text"?'−':'')+money(value)+'</span></div>':'';
+    // Orders placed from 3.21.19 carry each campaign's own name (Late-night fee, Surge fee…);
+    // older orders only have the combined amount.
+    const named=Array.isArray(p.riderIncentiveItems)?p.riderIncentiveItems.filter(x=>x&&Number(x.amount)>0):[];
+    const incentiveLines=named.length?named.map(x=>line(String(x.label||"Surge fee"),x.amount)).join(""):line(timeOfDayFeeName(order.createdAt),Number(p.riderIncentiveFee||0))+line("Rider surge fee",p.riderSurgeFee);
     return sheetShell("Bill summary",h(order.restaurant||""),'<section class="bill-card stack">'+orderItemsSummary(order)
       +'<div class="price-row"><span>Item total</span><span>'+money(p.subtotal||0)+'</span></div>'+line("Discount",p.discount,"success-text")
       +'<div class="price-row"><span>Delivery fee</span><span>'+(Number(p.deliveryFee)>0?money(p.deliveryFee):'<span class="success-text">Free</span>')+'</span></div>'
-      +line("Rain fee",p.rainFee)+line("Demand fee",p.surgeFee)+line("Late-night fee",Number(p.lateNightFee||0)+Number(p.riderIncentiveFee||0))+line("Small-order fee",p.smallOrderFee)
+      +line("Rain fee",p.rainFee)+line("Demand fee",p.surgeFee)+line("Late-night fee",p.lateNightFee)+incentiveLines+line("Small-order fee",p.smallOrderFee)
       +line("Platform fee",p.platformFee)+line("Taxes",p.tax)+line("Delivery partner tip",p.tip)
-      +'<div class="price-row total"><span>'+(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'To pay on delivery':'Paid')+'</span><span>'+money(order.total)+'</span></div></section>');
+      +'<div class="price-row total"><span>'+(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'To pay on delivery':'Paid')+'</span><span>'+money(order.total)+'</span></div>'+billSellerFooter(order)+'</section>');
   }
   function screenCheckout() {
     const address=currentAddress(),r=cartRestaurant();
@@ -3892,6 +4249,10 @@
       +(phone?'<a class="icon-button" href="tel:'+h(phone)+'" aria-label="Call '+h(name)+'">'+icon("phone")+'</a>':'')
       +'<button class="icon-button" data-action="open-order-chat" data-channel="'+(rider?'customerRider':'customerRestaurant')+'" data-order-id="'+h(order.id)+'" aria-label="Chat with '+h(name)+'">'+icon("chat")+'</button></div>';
   }
+  // The restaurant's photo of the sealed packet, taken before handover.
+  function showPhotoViewer(src,alt){const viewer=document.createElement("div");viewer.className="photo-viewer";viewer.setAttribute("role","dialog");viewer.setAttribute("aria-label",alt||"Photo");const img=document.createElement("img");img.src=src;img.alt=alt||"";const close=document.createElement("button");close.type="button";close.className="photo-viewer-close";close.setAttribute("aria-label","Close");close.innerHTML=icon("close");viewer.append(img,close);const shut=()=>viewer.remove();viewer.addEventListener("click",shut);document.body.appendChild(viewer);close.focus()}
+  function packedPhotoCard(order){const p=order&&order.packedPhoto;if(!p||!p.url||Number(p.expiresAt||0)<Date.now()||!/^https:\/\/storage\.googleapis\.com\//.test(String(p.url)))return'';const at=new Date(Number(p.at||0));const time=at.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"});
+    return'<section class="card stack packed-photo-card"><div class="cluster between"><div><p class="eyebrow">Sealed at the restaurant</p><h2 class="section-title">Packed and sealed at '+h(time)+'</h2></div><span class="status success">'+icon("shield","small")+' Sealed</span></div><button type="button" class="packed-photo" data-action="open-packed-photo" data-order-id="'+h(order.id)+'" aria-label="Open the photo of your sealed packet"><img src="'+h(p.url)+'" alt="Your order, sealed by the restaurant" loading="lazy" decoding="async"></button><p class="caption">If the seal is broken or something is missing, tap Help on this order and we’ll sort it out.</p></section>'}
   function screenOrder() {
     const order=orderById();if(!order)return'<main class="screen"><div class="screen-content">'+topbar("Order unavailable","This order is not in your account cache.")+emptyState("orders","Order not found","Refresh your orders and try again.","refresh","Refresh orders")+'</div>'+nav()+'</main>';
     const canTrack=orderShowsLiveMap(order);
@@ -3910,6 +4271,7 @@
       +(!guest&&orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
       +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
       +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
+      +packedPhotoCard(order)
       +onlinePaymentNotice(order)
       +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
       +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?'Paid by UPI':order.paymentMethod==="card"?'Paid by card':order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
@@ -5134,7 +5496,7 @@
   function screenAccount() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></header>'
       +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18)">'+h(initials())+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
-      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
+      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("chat","Friends & chats",chatUnread()?chatUnread()+" new":"Chat with friends, share dishes","chats")+settingsRow("orders","My meal plans",(state.mealSubs||[]).length?(state.mealSubs.length+" active · skip or pause any day"):"Daily lunch or dinner, skip any day","mealPlans")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("account","Date of birth",chatState().account?dobLabel(chatState().account.birthDate)+(chatState().account.minor?" · parent approval "+(chatState().account.parentStatus==="approved"?"done":"needed"):""):"Add it once · you can edit it any time",null,"edit-dob")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
       +'<section class="card settings-list">'+settingsRow("settings","Preferences","Theme, dietary and notifications","preferences")+settingsRow("help","Help and support","Order issues and account help","support")+settingsRow("shield","Privacy and terms","Data use, rights and service terms","legal")+'</section>'
       +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account request","Request permanent account and data deletion",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
       +'<p class="caption" style="text-align:center">Scraveit Customer<br>Your account and orders sync securely across sessions.</p></div>'+nav()+'</main>';
@@ -5161,10 +5523,13 @@
   function preferenceSwitch(key,title,copy,enabled) {
     return '<button class="settings-row" data-action="toggle-preference" data-key="'+h(key)+'"><span class="grow"><strong>'+h(title)+'</strong><span class="supporting">'+h(copy)+'</span></span><span class="switch '+(enabled?'on':'')+'" aria-hidden="true"></span></button>';
   }
+  // English or Telugu (te.js does the translating). Labels stay in their own language.
+  function languagePicker(){const now=window.ScraveitLanguage?ScraveitLanguage.get():"en";return'<section class="card stack" translate="no"><h2 class="section-title">Language · భాష</h2><div class="segmented" role="group" aria-label="Language">'+[["en","English"],["te","తెలుగు"]].map(x=>'<button class="segment '+(now===x[0]?'active':'')+'" data-action="set-language" data-value="'+x[0]+'" aria-pressed="'+(now===x[0])+'">'+x[1]+'</button>').join("")+'</div></section>'}
   function screenPreferences() {
     const prefs=state.profile.preferences||{};
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Preferences","Make Scraveit comfortable and relevant for you.")+networkBanner()
       +'<section class="card stack"><h2 class="section-title">Appearance</h2><div class="segmented">'+["light","dark"].map(value=>'<button class="segment '+(themeValue()===value?'active':'')+'" data-action="theme" data-value="'+value+'">'+(value==="light"?'Light':'Dark')+'</button>').join("")+'</div><button class="button tonal full" data-action="theme" data-value="system">Use phone setting</button></section>'
+      +languagePicker()
       +'<section class="card settings-list">'+preferenceSwitch("vegetarian","Vegetarian mode","Prioritise vegetarian restaurants and menu items.",prefs.vegetarian===true)+preferenceSwitch("notifications","Order notifications","Show local alerts when a live order status changes.",prefs.notifications!==false)+'</section>'
       +'<section class="notice info">'+icon("info","small")+'<span>Allow notifications in phone settings to receive restaurant, rider and delivery updates even when Scraveit is closed.</span></section></div>'+nav()+'</main>';
   }
@@ -5221,7 +5586,7 @@
     return sheetShell(item.name,item.description||"Customise this item before adding it.",'<form id="item-form" class="form-grid" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'"><img src="'+h(safeUrl(item.image,r.image))+'" alt="'+h(item.name)+'" style="width:100%;height:190px;object-fit:cover;border-radius:18px"><div class="cluster between"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'"></span><span><strong class="section-title">'+money(item.price)+'</strong> '+packPriceMarkup(item)+'</span></div>'+packLabelMarkup(item)
       +(variants.length?'<fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">Choose a size</legend>'+variants.map((v,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="variant" value="'+i+'" '+(i===0?'checked':'')+' required><span class="grow"><strong>'+h(v.name)+'</strong></span><span>'+(!v.price?'Included':'+'+money(v.price))+'</span></label>').join("")+'</fieldset>':'')
       +(addons.length?'<fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">Add extras</legend>'+addons.map((a,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="checkbox" name="addon" value="'+i+'"><span class="grow"><strong>'+h(a.name)+'</strong></span><span>'+(!a.price?'No charge':'+'+money(a.price))+'</span></label>').join("")+'</fieldset>':'')
-      +'<div class="field"><label for="item-note">'+(storeKind(r)==="restaurant"?"Kitchen note":"Note for the store")+' (optional)</label><textarea class="textarea" id="item-note" name="note" maxlength="140" placeholder="Allergy note or preparation request"></textarea><p class="caption">Allergy requests cannot guarantee an allergen-free kitchen.</p></div><button class="button primary full sheet-submit" type="submit">Add to cart · '+money(item.price)+'</button></form>');
+      +'<div class="field"><label for="item-note">'+(storeKind(r)==="restaurant"?"Kitchen note":"Note for the store")+' (optional)</label><textarea class="textarea" id="item-note" name="note" maxlength="140" placeholder="Allergy note or preparation request"></textarea><p class="caption">Allergy requests cannot guarantee an allergen-free kitchen.</p></div><button class="button primary full sheet-submit" type="submit">Add to cart · '+money(item.price)+'</button>'+(chatState().profile&&chatState().pairs.some(x=>x.status==="accepted")?'<button class="button tonal full" type="button" data-action="share-dish" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" data-title="'+h(item.name)+'">'+icon("chat","small")+' Send to a friend</button>':'')+'</form>');
   }
   function replaceCartSheet(sheet) {
     const current=cartRestaurant(),next=restaurant(sheet.restaurantId);
@@ -5253,7 +5618,9 @@
   }
   function addressPickerSheet(){
     const addresses=state.profile.addresses||[],shown=addresses.slice(0,4);
-    const permissionNotice=locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Device location is off</strong><div class="caption">Enable it for accurate address detection.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>';
+    // Always offered first, like every delivery app: one tap to deliver where you are.
+    // With location off, the same tap asks the phone to turn it on.
+    const permissionNotice='<button class="use-location" data-action="detect-location">'+icon("target")+'<span class="grow"><strong>Use current location</strong><small>'+(locationReady()?'Deliver to where you are now':'Location is off · tap to turn it on')+'</small></span>'+icon("chevron","small")+'</button>';
     const list=shown.length?'<div class="stack">'+shown.map(addressPickerCard).join("")+'</div>':emptyState("address","No saved addresses yet","Add a delivery address to get started.");
     return sheetShell("Select delivery address","",permissionNotice
       +'<div class="cluster between" style="margin-top:16px"><h2 class="section-title" style="font-size:16px">Select a saved address</h2>'+(addresses.length?'<button class="text-button" data-action="go" data-route="addresses">'+(addresses.length>4?'See all':'Manage')+'</button>':'')+'</div>'
@@ -5310,8 +5677,15 @@
     else if(sheet.type==="story")html=foodStorySheet();
     else if(sheet.type==="wrapped")html=wrappedSheet();
     else if(sheet.type==="squad")html=squadSheet();
+    else if(sheet.type==="shareFriend")html=shareFriendSheet(sheet);
+    else if(sheet.type==="sharePlace")html=sharePlaceSheet(sheet);
+    else if(sheet.type==="chatReport")html=reportSheet(sheet);
+    else if(sheet.type==="friendMenu")html=friendMenuSheet(sheet);
+    else if(sheet.type==="dob")html=dobSheet();
+    else if(sheet.type==="react")html=reactSheet(sheet);
     else if(sheet.type==="squadJoin")html=squadJoinSheet();
     else if(sheet.type==="squadStart")html=squadStartSheet();
+    else if(sheet.type==="mealSubscribe")html=mealSubscribeSheet(sheet);
     else if(sheet.type==="dineBook")html=dineBookSheet(sheet);
     else if(sheet.type==="tableRound")html=tableRoundSheet();
     // Every render (weather, catalogue and location refreshes included) comes
@@ -5552,7 +5926,7 @@
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
-    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou
+    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, friends:screenFriends, dm:screenDm
   });
 
   async function refreshAll() {
@@ -5591,6 +5965,7 @@
     const control=event.target.closest("[data-action]");if(!control)return;
     const action=control.dataset.action;
     if(action==="open-ad"&&Date.now()<adSwipeSuppressUntil)return;
+    if(handleChatClick(action,control))return;
     if(action==="confirm-yes"){settleConfirm(true);return;}
     if(action==="menu-cat-toggle"){const rid=control.dataset.restaurantId;state.menuOpen=state.menuOpen||{};const open=state.menuOpen[rid]||(state.menuOpen[rid]={});open[control.dataset.value]=control.getAttribute("aria-expanded")!=="true";render({preserveScroll:true});return;}
     if(action==="report-menu"){setSheet({type:"menuReport",restaurantId:control.dataset.restaurantId});return;}
@@ -5610,7 +5985,7 @@
     if(action==="start-squad"){startSquad(control.dataset.restaurantId);return;}
     if(action==="open-squad"){setSheet({type:"squad"});return;}
     if(action==="open-squad-join"){setSheet({type:"squadJoin"});return;}
-    if(action==="open-squad-start"){setSheet({type:"squadStart"});return;}
+    if(action==="set-language"){if(window.ScraveitLanguage)ScraveitLanguage.set(control.dataset.value);return;}if(action==="open-squad-start"){setSheet({type:"squadStart"});return;}if(action==="meal-start"){setSheet({type:"mealSubscribe",planId:control.dataset.planId});return;}if(action==="meal-skip"){const sub=(state.mealSubs||[]).find(x=>x.id===control.dataset.subId);mealAction(sub&&(sub.skips||[]).includes(control.dataset.date)?"unskip":"skip",control.dataset.subId,control.dataset.date);return;}if(action==="meal-pause"||action==="meal-resume"||action==="meal-cancel"){mealAction(action.slice(5),control.dataset.subId);return;}
     if(action==="home-mode"||action==="home-mode-delivery"){state.homeMode=action==="home-mode-delivery"?"delivery":(control.dataset.value==="dinein"?"dinein":"delivery");try{localStorage.setItem(HOME_MODE_KEY,state.homeMode)}catch(_){}haptic(10);if(state.route!=="home")go("home");else render({preserveScroll:true});return;}
     if(action==="dine-book"){state.dineBook=null;setSheet({type:"dineBook",restaurantId:control.dataset.restaurantId});return;}
     if(action==="dine-day"){state.dineBook.day=control.dataset.value;state.dineBook.slotAt=0;renderSheet();return;}
@@ -5630,7 +6005,7 @@
     if(action==="squad-checkout"){squadCheckout();return;}
     if(action==="leave-squad"){leaveSquad(false);return;}
     if(action==="open-pay-sheet"){setSheet({type:"pay"});return;}
-    if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}
+    if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}if(action==="open-packed-photo"){const img=control.querySelector("img");if(img)showPhotoViewer(img.src,img.alt);return;}
     if(action==="home-kind"){state.homeKind=control.dataset.value||"restaurant";if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
     if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
@@ -5898,13 +6273,15 @@
   }
   async function submitSignup(form) {
     const name=form.elements["name"].value.trim(),email=form.elements["email"].value.trim().toLowerCase(),phone=form.elements["phone"].value.trim(),password=form.elements["signup-password"].value,confirm=form.elements["signup-confirm"].value,consent=document.getElementById("signup-consent").checked;
+    const birthDate=form.elements["birthDate"]?form.elements["birthDate"].value:"",signupAge=(()=>{const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(birthDate);if(!m)return -1;const t=new Date();let a=t.getFullYear()-+m[1];if(t.getMonth()+1<+m[2]||(t.getMonth()+1===+m[2]&&t.getDate()<+m[3]))a--;return a})();setFieldError("signup-dob",signupAge<0?"Enter your date of birth.":signupAge<13?"Scraveit is for 13 and over. A parent can order for you from their account.":"");if(signupAge<13)return;
     setFieldError("signup-name",name.length>=2?"":"Enter your full name.");setFieldError("signup-email",validEmail(email)?"":"Enter a valid email.");setFieldError("signup-phone",validPhone(phone)?"":"Enter a valid mobile number.");
     const strong=password.length>=8&&/[A-Za-z]/.test(password)&&/\d/.test(password);setFieldError("signup-password",strong?"":"Use 8+ characters with letters and numbers.");setFieldError("signup-confirm",password===confirm?"":"Passwords do not match.");
     if(name.length<2||!validEmail(email)||!validPhone(phone)||!strong||password!==confirm||!consent){if(!consent)toast("Accept the Terms and Privacy Notice to continue.","danger");return;}
     state.loading=true;render({preserveScroll:true});
     try{
       const cred=await fbAuth.createUserWithEmailAndPassword(email,password);applyAuthUser(cred.user);state.profile.name=name;state.profile.email=email;state.profile.phone=phone;state.profile.addresses=[];state.profile.favourites=[];state.profile.emailVerified=false;persistProfile();await saveProfile();
-      toast("Account created successfully.","success");await afterAuth();
+      try{await socialCall("accountSetBirthDate",{birthDate})}catch(_){/* asked again on the home screen */}
+      toast(signupAge<18?"Account created. Ask a parent to approve it from your home screen.":"Account created successfully.","success");await afterAuth();
     }catch(error){toast(friendlyError(error),"danger");state.loading=false;render({preserveScroll:true});}
   }
 
@@ -5922,11 +6299,13 @@
   }
   async function submitAddress(form) {
     const values=new FormData(form),phone=String(values.get("phone")||"").trim();if(!validPhone(phone)){toast("Enter a reachable mobile number.","danger");return;}
-    const existingId=String(values.get("id")||""),fullAddress=String(values.get("address")||"").trim(),city=String(values.get("city")||"").trim(),area=String(values.get("area")||"").trim(),record={id:existingId||uid("addr_"),label:String(values.get("label")||"").trim(),area,city,address:fullAddress,formattedAddress:fullAddress,serviceAreaId:"area-"+searchKey(city||area),phone:phone,source:existingId==="current-location"?"gps":"manual",updatedAt:Date.now()};
+    const existingId=String(values.get("id")||""),fullAddress=String(values.get("address")||"").trim(),city=String(values.get("city")||"").trim(),area=String(values.get("area")||"").trim(),record={id:existingId&&existingId!=="current-location"?existingId:uid("addr_"),label:String(values.get("label")||"").trim(),area,city,address:fullAddress,formattedAddress:fullAddress,serviceAreaId:"area-"+searchKey(city||area),phone:phone,source:existingId==="current-location"?"gps":"manual",updatedAt:Date.now()};
     const lat=Number(values.get("lat")),lng=Number(values.get("lng"));if(Number.isFinite(lat)&&Number.isFinite(lng)&&String(values.get("lat"))!==""){record.lat=lat;record.lng=lng;}
     if(!record.label||!record.area||!record.city||!record.address){toast("Complete the label, area, city and full address.","danger");return;}
     record.needsLocationPin=!(Number.isFinite(Number(record.lat))&&Number.isFinite(Number(record.lng)));
-    const list=state.profile.addresses||[],index=list.findIndex(x=>x.id===record.id);if(index>=0)list[index]=record;else list.push(record);state.profile.addresses=list;state.profile.selectedAddressId=record.id;if(!state.profile.phone)state.profile.phone=phone;migrateSavedAddresses();persistProfile();state.addressMapDraft=null;closeSheet();
+    // Saving the "current location" entry makes it a saved address of its own,
+    // so the next GPS reading (which reuses "current-location") can't overwrite it.
+    const list=(state.profile.addresses||[]).filter(x=>!(existingId==="current-location"&&x.id==="current-location")),index=list.findIndex(x=>x.id===record.id);if(index>=0)list[index]=record;else list.push(record);state.profile.addresses=list;state.profile.selectedAddressId=record.id;if(!state.profile.phone)state.profile.phone=phone;migrateSavedAddresses();persistProfile();state.addressMapDraft=null;closeSheet();
     if(!restoreHomeCache(true)){state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial"}render({preserveScroll:true});
     try{await Promise.all([saveProfile(),state.online?syncCatalog():Promise.resolve()]);toast("Delivery address saved.","success");}catch(_){toast("Address saved on this device; cloud sync will retry.");}
     if(state.online)startRealtime().catch(()=>{});
@@ -5972,7 +6351,9 @@
 
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
+    if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form"].includes(form.id)){handleChatSubmit(form);return;}
     if(form.id==="referral-form")applyReferral(form);
+    else if(form.id==="meal-subscribe-form")submitMealSubscribe(form);
     else if(form.id==="login-form")submitLogin(form);
     else if(form.id==="about-you-form")saveAboutYou(form);
     else if(form.id==="signup-form")submitSignup(form);

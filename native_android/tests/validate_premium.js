@@ -208,7 +208,12 @@ test("Customer production cloud bridge is authenticated, attested, and server-au
   check(!js.includes("weather.googleapis.com") && !js.includes("googleWeather") && !js.includes("CONFIG.apiKey,lat"), "Customer APK must not contain a Weather API endpoint or Firebase-key weather fallback");
   // Fees read "Estimated …" and the total "Estimated total" until the server
   // quote (serverAuthoritative) is in hand; only then does it read "To pay".
-  check(js.includes("c.serverAuthoritative!==true)return null") && js.includes("serverCheckout()?'To pay':'Estimated total'") && js.includes("Estimated delivery fee"), "Dynamic fees and final COD total must be labelled server-authoritative");
+  check(js.includes("c.serverAuthoritative!==true)return null") && js.includes("serverCheckout()?'To pay':'Estimated total'") && js.includes('feeLabel("delivery fee")') && js.includes('return serverCheckout()?name.charAt(0).toUpperCase()+name.slice(1):"Estimated "+name'), "Dynamic fees and final COD total must be labelled server-authoritative");
+  // Sign-in tokens last an hour; a stale one made checkout fall back to the
+  // app's own estimate and dropped server-only fees (late-night, surge).
+  check(js.includes("return user.getIdToken().then(idToken =>") && js.includes("function nativeInvokeWithToken("), "Signed-in server calls must send a current sign-in token");
+  // Cart photos are stored as CDN links and checked again on every draw.
+  check(js.includes('url.toLowerCase().startsWith("https://" + IMAGE_CDN_HOST.toLowerCase() + "/")'), "Photos already on the image CDN must not fall back to the placeholder");
   check(js.includes('localStorage.removeItem("savrivo.customer.deliveryOtps")') && !js.includes('saveJSON("savrivo.customer.deliveryOtps"'), "Delivery OTPs must not remain in WebView local storage");
   check(secureStore.includes('KeyStore.getInstance(KEYSTORE)') && secureStore.includes("AES/GCM/NoPadding"), "Delivery OTPs must use Android Keystore encryption");
 });

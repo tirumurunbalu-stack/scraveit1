@@ -17,7 +17,7 @@ export function asHttpsError(error: unknown): HttpsError {
   const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
   const knownInvalid = new Set([
     "ITEM_UNAVAILABLE", "INVALID_CATALOG_PRICE", "VARIANT_REQUIRED", "CUSTOMIZATION_UNAVAILABLE",
-    "DUPLICATE_ADD_ON", "EMPTY_OR_FREE_ORDER",
+    "DUPLICATE_ADD_ON", "EMPTY_OR_FREE_ORDER", "PRICE_ABOVE_MRP",
   ]);
   if (knownInvalid.has(message)) return new HttpsError("failed-precondition", message);
   return new HttpsError("internal", "The operation could not be completed safely.");

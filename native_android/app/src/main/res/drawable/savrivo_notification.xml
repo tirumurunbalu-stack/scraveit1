@@ -1,3 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon: the "S" of the Scraveit wordmark (Manrope ExtraBold, SIL OFL),
+     solid white so Android can tint it. Matches the app icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.6" android:strokeLineCap="round" android:pathData="M19,6C15.5,3 8.5,3.5 6.5,7C4.5,10.8 10.6,11.1 13.4,11.8C17.2,12.6 19.4,14.5 17.4,17.5C15,21 8,20.7 4.8,17.4M6,9H2M6,13H1M7,17H3"/>
+    <group android:translateX="-36.4646" android:translateY="-80.1919" android:scaleX="1.7071" android:scaleY="1.7071">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M28.49 59.57Q27.3 59.57 26.34 59.15Q25.39 58.73 24.78 57.95Q24.16 57.16 24 56.08L26.11 55.77Q26.33 56.69 27.03 57.19Q27.73 57.68 28.62 57.68Q29.12 57.68 29.58 57.53Q30.05 57.37 30.35 57.07Q30.65 56.76 30.65 56.32Q30.65 56.15 30.61 56Q30.56 55.85 30.45 55.72Q30.33 55.58 30.13 55.46Q29.93 55.34 29.61 55.25L26.84 54.43Q26.52 54.34 26.11 54.18Q25.7 54.01 25.31 53.71Q24.93 53.41 24.67 52.9Q24.42 52.4 24.42 51.64Q24.42 50.56 24.96 49.85Q25.5 49.14 26.41 48.79Q27.31 48.44 28.41 48.45Q29.52 48.46 30.39 48.82Q31.25 49.19 31.84 49.88Q32.43 50.58 32.69 51.58L30.5 51.95Q30.39 51.43 30.07 51.07Q29.75 50.72 29.31 50.53Q28.86 50.35 28.38 50.33Q27.91 50.32 27.49 50.46Q27.07 50.61 26.8 50.88Q26.54 51.16 26.54 51.53Q26.54 51.88 26.75 52.1Q26.97 52.32 27.3 52.46Q27.62 52.59 27.97 52.68L29.82 53.18Q30.24 53.29 30.74 53.48Q31.25 53.66 31.71 53.98Q32.18 54.3 32.48 54.83Q32.78 55.36 32.78 56.17Q32.78 57.03 32.42 57.67Q32.06 58.31 31.45 58.73Q30.84 59.15 30.07 59.36Q29.3 59.57 28.49 59.57Z"/>
+    </group>
 </vector>

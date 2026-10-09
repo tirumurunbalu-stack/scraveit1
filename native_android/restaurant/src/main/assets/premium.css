@@ -304,8 +304,47 @@ button.open-bar{cursor:pointer}
 @media (prefers-reduced-motion:reduce){.toast,.toast.out{animation:none}}
 
 /* No bounce or stretch at the top and bottom of a page. */
-html,body,#app,#app>main{overscroll-behavior-y:none}
+html{overscroll-behavior-y:none}
+/* Only the page itself. "none" on body (a scroll container that never scrolls)
+   stopped every finger swipe from reaching the page, so screens could not scroll. */
 
 /* Grid pages and lists: a long line inside a card wraps instead of widening the whole page
    (grid items default to min-width:auto, so long product names pushed the page sideways). */
 .page > *, .stack > *, .stack-lg > *, .entity-list > *, .order-row > * { min-width: 0; }
+
+/* Dine-in setup: three tap-only steps (tables, hours, QR stickers). */
+.dine-setup{gap:14px}
+.dine-steps{display:flex;gap:6px;flex-wrap:wrap}
+.dine-steps span{font-size:12px;font-weight:800;padding:6px 10px;border-radius:999px;background:var(--raised);color:var(--muted)}
+.dine-steps span.on{background:var(--brand);color:#fff}
+.dine-steps span.done{background:var(--brand-soft);color:var(--brand)}
+.dine-q{font-weight:800;font-size:17px;color:var(--ink);margin:4px 0 0}
+.dine-q.small{font-size:14px;margin-top:2px}
+.dine-count{display:flex;align-items:center;justify-content:center;gap:22px;padding:6px 0}
+.dine-count strong{font-size:44px;line-height:1;min-width:70px;text-align:center;font-variant-numeric:tabular-nums;color:var(--ink)}
+.dine-count.small{justify-content:flex-start;gap:16px}.dine-count.small strong{font-size:26px;min-width:40px}
+.dine-round{width:52px;height:52px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--brand);font:inherit;font-size:28px;font-weight:700;line-height:1;cursor:pointer}
+.dine-count.small .dine-round{width:42px;height:42px;font-size:22px}
+.dine-round:active{transform:scale(.94)}
+.dine-chips{display:flex;flex-wrap:wrap;gap:8px}
+.dine-table-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;max-height:236px;overflow-y:auto}
+.dine-mini{display:grid;gap:2px;text-align:left;padding:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface);font:inherit;color:var(--ink);cursor:pointer}
+.dine-mini strong{font-size:13px}.dine-mini span{font-size:12px;color:var(--muted)}
+.dine-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.dine-option{display:grid;gap:2px;text-align:left;padding:12px;border-radius:14px;border:1.5px solid var(--border);background:var(--surface);font:inherit;color:var(--ink);cursor:pointer}
+.dine-option strong{font-size:14px}.dine-option span{font-size:12px;color:var(--muted)}
+.dine-option.on{border-color:var(--brand);background:var(--brand-soft)}
+.dine-option.on span{color:var(--brand)}
+.dine-toggle{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;border-radius:14px;border:1px solid var(--border);background:var(--surface);font:inherit;color:var(--ink);cursor:pointer}
+.dine-toggle strong{display:block;font-size:14px}
+.dine-toggle i{flex:none;width:46px;height:28px;border-radius:999px;background:var(--border2);position:relative;transition:background .2s}
+.dine-toggle i::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.dine-toggle.on i{background:var(--success)}
+.dine-toggle.on i::after{transform:translateX(18px)}
+.dine-qr-preview{display:flex;gap:14px;align-items:center;padding:14px;border:2px dashed var(--border2);border-radius:18px;background:var(--surface)}
+.dine-qr-preview img{width:104px;height:104px;image-rendering:pixelated;flex:none}
+.dine-qr-preview div{display:grid;gap:3px;min-width:0}
+.dine-qr-preview strong{font-size:15px}.dine-qr-preview span{font-weight:800;font-size:18px;color:var(--brand)}
+.dine-qr-preview small{font-size:12px;color:var(--muted);line-height:1.35}
+.danger-text{color:var(--danger)}
+@media (prefers-reduced-motion:reduce){.dine-toggle i,.dine-toggle i::after{transition:none}}

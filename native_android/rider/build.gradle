@@ -13,8 +13,8 @@ android {
         applicationId "com.feastly.rider"
         minSdk 24
         targetSdk 36
-        versionCode 87
-        versionName "3.11.2"
+        versionCode 92
+        versionName "3.11.7"
     }
 
     buildTypes {
@@ -69,6 +69,9 @@ dependencies {
     implementation "com.google.mlkit:face-detection:16.1.7"
     implementation "com.google.android.gms:play-services-code-scanner:16.1.0"
     implementation "com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1"
+    // Reads the Aadhaar QR from a whole e-Aadhaar page after AadhaarQrLocator crops
+    // and enlarges it. Its camera-core is left to the version above.
+    implementation("io.github.zxing-cpp:android:3.1.1") { exclude group: "androidx.camera" }
     implementation platform("com.google.firebase:firebase-bom:34.18.0")
     implementation "com.google.firebase:firebase-messaging"
     releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"

@@ -430,7 +430,13 @@ public class MainActivity extends ComponentActivity {
                                     String raw = code.getRawValue();
                                     if (raw != null && raw.length() > best.length()) best = raw;
                                 }
-                                publishAadhaarQr(best, best.isEmpty() ? "No QR code found in that picture. Crop closer to the QR and try again." : "");
+                                if (!best.isEmpty()) { publishAadhaarQr(best, ""); return; }
+                                // A whole e-Aadhaar page: find the QR, crop and enlarge it.
+                                new Thread(() -> {
+                                    String found = findQrOnPage(bitmap);
+                                    runOnUiThread(() -> publishAadhaarQr(found, found.isEmpty()
+                                            ? "We couldn’t read the QR in that picture. Zoom in until the QR fills your screen, take a new screenshot, and upload that." : ""));
+                                }, "aadhaar-qr").start();
                             })
                             .addOnFailureListener(error -> publishAadhaarQr("", "The QR couldn’t be read. Try a clearer picture."));
                 } catch (Throwable error) {
@@ -544,6 +550,48 @@ public class MainActivity extends ComponentActivity {
                 startService(service);
             });
         }
+    }
+
+    /** Finds, crops and enlarges the Secure QR on a full e-Aadhaar page or letter photo. Off the UI thread. */
+    private static String findQrOnPage(Bitmap bitmap) {
+        try {
+            int width = bitmap.getWidth(), height = bitmap.getHeight();
+            int[] argb = new int[width * height];
+            bitmap.getPixels(argb, 0, width, 0, 0, width, height);
+            int[] gray = new int[argb.length];
+            for (int i = 0; i < argb.length; i++) {
+                int p = argb[i];
+                gray[i] = (((p >> 16) & 255) * 299 + ((p >> 8) & 255) * 587 + (p & 255) * 114) / 1000;
+            }
+            argb = null;
+            zxingcpp.BarcodeReader reader = new zxingcpp.BarcodeReader();
+            reader.getOptions().setFormats(java.util.Collections.singleton(zxingcpp.BarcodeReader.Format.QR_CODE));
+            reader.getOptions().setTryHarder(true);
+            reader.getOptions().setTryRotate(true);
+            reader.getOptions().setTryDownscale(true);
+            java.util.List<int[]> boxes = AadhaarQrLocator.findQrBoxes(gray, width, height);
+            for (int b = 0; b < Math.min(3, boxes.size()); b++) {
+                int[] box = boxes.get(b);
+                int[] region = AadhaarQrLocator.padded(box, width, height);
+                for (int scale : AadhaarQrLocator.scalesFor(Math.max(box[2] - box[0], box[3] - box[1]))) {
+                    int[] size = new int[2];
+                    int[] big = AadhaarQrLocator.enlarge(gray, width, region, scale, size);
+                    for (int i = 0; i < big.length; i++) { int v = big[i]; big[i] = 0xFF000000 | (v << 16) | (v << 8) | v; }
+                    Bitmap image = Bitmap.createBitmap(big, size[0], size[1], Bitmap.Config.ARGB_8888);
+                    try {
+                        for (zxingcpp.BarcodeReader.Result result : reader.read(image, new android.graphics.Rect(), 0)) {
+                            String text = result.getText();
+                            if (text != null && text.length() >= 200) return text;
+                        }
+                    } finally {
+                        image.recycle();
+                    }
+                }
+            }
+        } catch (Throwable error) {
+            Log.w("ScraveitRider", "Aadhaar QR page search failed", error);
+        }
+        return "";
     }
 
     private void publishAadhaarQr(String raw, String error) {

@@ -31,6 +31,7 @@ import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef,
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
 import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
 import {authorizeTransition} from "./authz";
+import {assertMayOrder} from "./accountAge";
 import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
 import {
   checkoutTax,
@@ -412,6 +413,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     return {order: stripPrivateOrderFields(existing), deliveryOtp, recovered: true};
   }
 
+  // Under-18 accounts order only after a parent approves (DPDP Act 2023, s.9).
+  await assertMayOrder(uid);
   const [{restaurant, menuById}, {address, profile}] = await Promise.all([
     loadRestaurantAndMenu(input.restaurantId),
     loadCustomerAddress(uid, input.addressId),
@@ -505,11 +508,18 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     ...feeInput,
     ...(walletRedeemPaise > 0 ? {walletRedeem: walletRedeemPaise / 100} : {}),
   });
+  // Saved with the order so its bill names each charge the way checkout did.
+  const incentiveItems = [
+    ...fees.riderIncentiveItems,
+    ...(fees.riderSurgeFee > 0 ? [{label: "Rider surge fee", amount: fees.riderSurgeFee}] : []),
+  ];
+  const labelledPricing: PricingBreakdown = incentiveItems.length ?
+    {...basePricing, riderIncentiveItems: incentiveItems} : basePricing;
   const pricing: PricingBreakdown = economicsPlan.engineEnabled ? {
-    ...basePricing,
+    ...labelledPricing,
     restaurantDiscount: economicsPlan.discount.restaurantDiscountPaise / 100,
     platformDiscount: economicsPlan.discount.platformDiscountPaise / 100,
-  } : basePricing;
+  } : labelledPricing;
   const economics = economicsPlan.engineEnabled ? finalizeOrderEconomics(
     economicsPlan,
     pricing,

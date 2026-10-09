@@ -380,6 +380,31 @@ public class MainActivity extends ComponentActivity {
     @JavascriptInterface public void stopSupportAlarm(int id) {
       runOnUiThread(() -> stopPersistentAlert(id));
     }
+    /** Stops a request alarm (rider/store application, support ticket) once it's opened. */
+    @JavascriptInterface public void stopRequestAlarm(String alarmId) {
+      String id = alarmId == null ? "" : alarmId.trim();
+      if (!id.startsWith("req:")) return;
+      runOnUiThread(() -> OrderAlarmService.stop(MainActivity.this, id));
+    }
+    @JavascriptInterface public void setAlarmVibrateOnly(boolean vibrateOnly) {
+      runOnUiThread(() -> { if (isTrustedPageLoaded()) OrderAlarmService.setVibrateOnly(MainActivity.this, vibrateOnly); });
+    }
+    @JavascriptInterface public boolean isAlarmVibrateOnly() {
+      return OrderAlarmService.isVibrateOnly(MainActivity.this);
+    }
+    /** Rings a sample request so the admin can hear (or feel) the current setting. */
+    @JavascriptInterface public void testRequestAlarm() {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded()) return;
+        if (Build.VERSION.SDK_INT >= 33
+            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+          requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
+          return;
+        }
+        OrderAlarmService.start(MainActivity.this, "req:test:alert", "Test request alert",
+            "Tap to open it. The alert stops when the request is on screen.", "test", System.currentTimeMillis());
+      });
+    }
     @JavascriptInterface public void uploadPreparedImage(String requestId, String idToken,
                                                           String objectPath) {
       String safeRequestId = requestId == null ? "" : requestId.trim();

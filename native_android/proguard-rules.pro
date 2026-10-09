@@ -12,3 +12,6 @@
 # the provider name and factory method so R8 cannot remove that production-only
 # implementation from minified Play bundles.
 -keep class com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory { *; }
+
+# zxing-cpp builds its results from native code through JNI.
+-keep class zxingcpp.** { *; }

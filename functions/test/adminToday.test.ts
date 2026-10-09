@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from "vitest";
 vi.mock("../src/admin", () => ({firestoreDb: {}, auth: {}, storage: {}}));
 
 const {istDayStart, summarize} = await import("../src/services/adminToday");
-const {applicationAlert, stuckReason} = await import("../src/services/adminAlerts");
+const {applicationAlert, requestAlarmId, riderApplicationAlert, stuckReason, supportTicketAlert} = await import("../src/services/adminAlerts");
 
 describe("today at a glance", () => {
   it("starts the day at midnight in India", () => {
@@ -32,6 +32,25 @@ describe("urgent alerts", () => {
     expect(applicationAlert("u1", {status: "draft"}, {status: "submitted", restaurantName: "Waffle", submittedAt: 1})?.title).toBe("New store application");
     expect(applicationAlert("u1", {status: "submitted"}, {status: "submitted", restaurantName: "Waffle"})).toBeNull();
     expect(applicationAlert("u1", {status: "submitted"}, {status: "submitted", restaurantName: "Waffle", agreement: {status: "signed", signedAt: 2}})?.title).toBe("Agreement signed");
+  });
+  it("rings for a new rider application, once, and again when resent", () => {
+    const alert = riderApplicationAlert("rider1", {status: "draft"}, {status: "submitted", fullName: "Ravi", city: "Nellore", submittedAt: 5});
+    expect(alert).toMatchObject({title: "New rider application", alarmId: "req:rider:rider1", route: "rider:rider1"});
+    expect(riderApplicationAlert("rider1", {status: "submitted"}, {status: "submitted", fullName: "Ravi"})).toBeNull();
+    expect(riderApplicationAlert("rider1", {status: "submitted"}, {status: "approved"})).toBeNull();
+    expect(riderApplicationAlert("rider1", {status: "changes_requested"}, {status: "submitted", fullName: "Ravi", submittedAt: 9})?.title).toBe("Rider application updated");
+  });
+  it("rings for a support ticket and opens that ticket", () => {
+    const alert = supportTicketAlert("SUP-1", {uid: "c1", customerName: "Asha", topic: "Late order", orderId: "abcde12345", priority: "high", status: "open"});
+    expect(alert).toMatchObject({title: "Urgent support request", alarmId: "req:support:SUP-1", route: "support:c1:SUP-1"});
+    expect(alert?.body).toContain("#12345");
+    expect(supportTicketAlert("SUP-2", {uid: "c1", status: "closed"})).toBeNull();
+    expect(supportTicketAlert("SUP-3", {status: "open"})).toBeNull();
+  });
+  it("gives each request one alarm id the phone accepts", () => {
+    expect(requestAlarmId("app", "a/b c")).toBe("req:app:a_b_c");
+    expect(requestAlarmId("rider", "x".repeat(400)).length).toBeLessThanOrEqual(180);
+    expect(applicationAlert("u1", {status: "draft"}, {status: "submitted", restaurantName: "Waffle", submittedAt: 1})?.alarmId).toBe("req:app:u1");
   });
   it("flags orders not accepted, cooking too long or with no rider", () => {
     const now = 1_000_000_000;

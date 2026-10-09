@@ -13,8 +13,8 @@ android {
         applicationId "com.feastly.restaurant"
         minSdk 24
         targetSdk 36
-        versionCode 69
-        versionName "3.12.5"
+        versionCode 73
+        versionName "3.12.9"
     }
 
     // One codebase, three store apps. Each flavor is its own install and
@@ -28,14 +28,14 @@ android {
         grocery {
             dimension "store"
             applicationId "com.feastly.grocery"
-            versionCode 18
-            versionName "1.5.4"
+            versionCode 22
+            versionName "1.5.8"
         }
         dairy {
             dimension "store"
             applicationId "com.feastly.dairy"
-            versionCode 18
-            versionName "1.5.4"
+            versionCode 22
+            versionName "1.5.8"
         }
     }
 

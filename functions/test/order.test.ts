@@ -92,6 +92,15 @@ describe("server catalog pricing", () => {
     expect(result.items[0]).toMatchObject({price: 100, variantPrice: 25, addOnTotal: 30, quantity: 2});
   });
 
+  it("never sells a packaged product above its MRP", () => {
+    const goods = {
+      atta: {id: "atta", name: "Atta 5 kg", price: 285, available: true, compliance: {mrp: 299, netQuantity: "5 kg"}},
+      dearAtta: {id: "dearAtta", name: "Atta 5 kg", price: 310, available: true, compliance: {mrp: 299, netQuantity: "5 kg"}},
+    };
+    expect(priceCart([{itemId: "atta", quantity: 1, addOnIds: []}], goods).subtotal).toBe(285);
+    expect(() => priceCart([{itemId: "dearAtta", quantity: 1, addOnIds: []}], goods)).toThrow("PRICE_ABOVE_MRP");
+  });
+
   it("rejects duplicate or unavailable customizations", () => {
     expect(() => priceCart([{
       itemId: "waffle", quantity: 1, variantId: "large", addOnIds: ["icecream", "icecream"],

@@ -4,7 +4,11 @@ import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
-import {alertAdmins, applicationAlert, watchStuckOrders} from "./services/adminAlerts";
+import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPhoto";
+import * as mealPlans from "./services/mealPlans";
+import * as social from "./services/social";
+import * as accountAge from "./services/accountAge";
+import {alarmAdmins, alertAdmins, applicationAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
 import {setGlobalOptions} from "firebase-functions/v2";
@@ -85,6 +89,25 @@ import {
   restaurantAgreementTermsSchema,
   restaurantApplicationChangesSchema,
   restaurantApplicationIdSchema,
+  attachPackedPhotoSchema,
+  chatSetupSchema,
+  accountBirthDateSchema,
+  accountParentRequestSchema,
+  chatEmptySchema,
+  chatCodeSchema,
+  chatUsernameSchema,
+  chatHandleSchema,
+  chatPrivacySchema,
+  chatRespondSchema,
+  chatPairSchema,
+  chatParentRespondSchema,
+  chatChildSchema,
+  chatReportSchema,
+  resolveChatReportSchema,
+  restaurantMealPlansSchema,
+  saveMealPlanSchema,
+  subscribeMealPlanSchema,
+  updateMealSubscriptionSchema,
   signRestaurantAgreementSchema,
 } from "./schemas";
 import {
@@ -615,6 +638,8 @@ export const getCheckoutConfiguration = onCall({
         smallOrderThreshold: fees.smallOrderThreshold, smallOrderFee: fees.smallOrderFee,
         lateNightFee: fees.lateNightFee, rainFee: fees.rainFee, surgeFee: fees.surgeFee,
         riderIncentiveFee: fees.riderIncentiveFee,
+        // Same inputs as order creation, so the preview total is the real total.
+        riderSurgeFee: fees.riderSurgeFee,
         ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
       };
       const beforeWallet = buildPricing(feeInput);
@@ -2181,6 +2206,66 @@ export const signRestaurantAgreement = onCall({region: REGION, enforceAppCheck: 
   }
 });
 
+/** The restaurant's photo of the sealed packet, shown to the customer on their order. */
+export const attachPackedPhoto = economicsCallable("attachPackedPhoto", attachPackedPhotoSchema,
+  (uid, token, input) => attachPackedPhotoToOrder(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
+
+// ---- Account age and parent approval ----
+export const accountSetBirthDate = economicsCallable("accountSetBirthDate", accountBirthDateSchema, (uid, _t, input) => accountAge.accountSetBirthDate(uid, input));
+export const accountParentRequest = economicsCallable("accountParentRequest", accountParentRequestSchema, (uid, _t, input) => accountAge.accountParentRequest(uid, input));
+export const accountParentRespond = economicsCallable("accountParentRespond", chatParentRespondSchema, (uid, _t, input) => accountAge.accountParentRespond(uid, input));
+export const accountParentRevoke = economicsCallable("accountParentRevoke", chatChildSchema, (uid, _t, input) => accountAge.accountParentRevoke(uid, input));
+
+// ---- Friends & chat ----
+export const chatSetup = economicsCallable("chatSetup", chatSetupSchema, (uid, _t, input) => social.chatSetup(uid, input));
+export const chatNewCode = economicsCallable("chatNewCode", chatEmptySchema, (uid) => social.chatNewCode(uid));
+export const chatSetPrivacy = economicsCallable("chatSetPrivacy", chatPrivacySchema, (uid, _t, input) => social.chatSetPrivacy(uid, input));
+export const chatAddFriend = economicsCallable("chatAddFriend", chatHandleSchema, (uid, _t, input) => social.chatAddFriend(uid, input));
+export const chatSetUsername = economicsCallable("chatSetUsername", chatUsernameSchema, (uid, _t, input) => social.chatSetUsername(uid, input));
+export const chatRespond = economicsCallable("chatRespond", chatRespondSchema, (uid, _t, input) => social.chatRespond(uid, input));
+export const chatMarkRead = economicsCallable("chatMarkRead", chatPairSchema, (uid, _t, input) => social.chatMarkRead(uid, input));
+export const chatParentRequest = economicsCallable("chatParentRequest", chatCodeSchema, (uid, _t, input) => social.chatParentRequest(uid, input));
+export const chatParentRespond = economicsCallable("chatParentRespond", chatParentRespondSchema, (uid, _t, input) => social.chatParentRespond(uid, input));
+export const chatParentRevoke = economicsCallable("chatParentRevoke", chatChildSchema, (uid, _t, input) => social.chatParentRevoke(uid, input));
+export const chatReport = economicsCallable("chatReport", chatReportSchema, (uid, _t, input) => social.chatReport(uid, input));
+export const resolveChatReport = economicsCallable("resolveChatReport", resolveChatReportSchema,
+  (uid, token, input) => social.resolveChatReport(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
+
+/** A new chat message: hide phone numbers, update the chat list, push to the friend. */
+export const onChatMessageCreated = onDocumentCreated({
+  document: "chats/{pairId}/messages/{messageId}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB",
+}, async (event) => {
+  const data = event.data?.data() as Record<string, unknown> | undefined;
+  if (data) await social.onChatMessage(event.params.pairId, event.params.messageId, data);
+});
+
+/** A reaction added to a chat message. */
+export const onChatMessageReacted = onDocumentUpdated({
+  document: "chats/{pairId}/messages/{messageId}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB",
+}, async (event) => {
+  const before = event.data?.before?.data() as Record<string, unknown> | undefined;
+  const after = event.data?.after?.data() as Record<string, unknown> | undefined;
+  if (before && after && JSON.stringify(before.reactions ?? {}) !== JSON.stringify(after.reactions ?? {})) {
+    await social.onChatReaction(event.params.pairId, before, after);
+  }
+});
+
+// ---- Daily meal plans (tiffin) ----
+type IdToken = import("firebase-admin/auth").DecodedIdToken;
+export const saveMealPlan = economicsCallable("saveMealPlan", saveMealPlanSchema,
+  (uid, token, input) => mealPlans.saveMealPlan(uid, token as IdToken, input));
+export const getRestaurantMealPlans = economicsCallable("getRestaurantMealPlans", restaurantMealPlansSchema,
+  (uid, token, input) => mealPlans.getRestaurantMealPlans(uid, token as IdToken, input.restaurantId));
+export const subscribeMealPlan = economicsCallable("subscribeMealPlan", subscribeMealPlanSchema,
+  (uid, _token, input) => mealPlans.subscribeMealPlan(uid, input));
+export const updateMealSubscription = economicsCallable("updateMealSubscription", updateMealSubscriptionSchema,
+  (uid, _token, input) => mealPlans.updateMealSubscription(uid, input));
+
+/** Every 5 minutes: place today's meal-plan orders ahead of each delivery window. */
+export const placeMealPlanOrders = onSchedule({schedule: "every 5 minutes", region: REGION, timeoutSeconds: 300, memory: "512MiB"}, async () => {
+  await mealPlans.placeDueMealOrders();
+});
+
 export const setRestaurantAgreementTerms = economicsCallable("setRestaurantAgreementTerms", restaurantAgreementTermsSchema,
   (uid, token, input) => onboarding.setRestaurantAgreementTerms(uid, token, input));
 
@@ -2226,7 +2311,25 @@ export const onRestaurantApplicationWritten = onDocumentWritten({
   const before = (event.data?.before?.data() ?? null) as Record<string, unknown> | null;
   const after = (event.data?.after?.data() ?? null) as Record<string, unknown> | null;
   const alert = applicationAlert(event.params.appId, before, after);
-  if (alert) await alertAdmins(alert.key, alert.title, alert.body, "restaurantApplications");
+  if (alert) await alarmAdmins(alert);
+});
+
+/** Ring the admin app when a rider sends their application. */
+export const onRiderApplicationAlarm = onDocumentWritten({
+  document: "riders/{riderId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  const before = (event.data?.before?.data() ?? null) as Record<string, unknown> | null;
+  const after = (event.data?.after?.data() ?? null) as Record<string, unknown> | null;
+  const alert = riderApplicationAlert(event.params.riderId, before, after);
+  if (alert) await alarmAdmins(alert);
+});
+
+/** Ring the admin app when anyone opens a support ticket. */
+export const onSupportTicketCreated = onDocumentCreated({
+  document: "support/{ticketId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  const alert = supportTicketAlert(event.params.ticketId, (event.data?.data() ?? null) as Record<string, unknown> | null);
+  if (alert) await alarmAdmins(alert);
 });
 
 /** Every 5 minutes: orders not accepted, cooking too long, or waiting for a rider. */

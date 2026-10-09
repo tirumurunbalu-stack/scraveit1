@@ -9,7 +9,7 @@
        is still RTDB-authoritative until the rider app's presence-write path
        itself moves (a later phase) - only everything else here moved to
        Firestore. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com https://router.project-osrm.org https://asia-south1-savrivo-app.cloudfunctions.net; img-src 'self' data: https://savrivo-app.web.app https://tile.openstreetmap.org https://firebasestorage.googleapis.com https://savrivo-image-cdn.tirumurunbalu.workers.dev; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; connect-src https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://savrivo-app-sg.asia-southeast1.firebasedatabase.app https://firestore.googleapis.com https://firebasestorage.googleapis.com https://router.project-osrm.org https://asia-south1-savrivo-app.cloudfunctions.net; img-src 'self' data: https://savrivo-app.web.app https://tile.openstreetmap.org https://firebasestorage.googleapis.com https://savrivo-image-cdn.tirumurunbalu.workers.dev https://storage.googleapis.com; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Scraveit</title>
   <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="premium.css">
@@ -34,6 +34,7 @@
   <script src="avatars.js"></script>
   <script src="rider3d.js"></script>
   <script src="scraveit-offer-math.js"></script>
+  <script src="te.js"></script>
   <script src="premium.js"></script>
 </body>
 </html>

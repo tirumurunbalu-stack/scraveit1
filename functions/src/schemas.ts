@@ -902,6 +902,59 @@ export const resolveTdsReversalSchema = z.object({
 // ---------------------------------------------------------------------------
 export const restaurantApplicationIdSchema = z.object({appId: identifier}).strict();
 
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const weekdays = z.array(z.number().int().min(0).max(6)).min(1).max(7);
+
+export const saveMealPlanSchema = z.object({
+  planId: identifier.optional(),
+  restaurantId: identifier,
+  name: z.string().trim().min(3).max(60),
+  description: z.string().trim().max(240).default(""),
+  meal: z.enum(["breakfast", "lunch", "dinner"]),
+  menuItemId: identifier,
+  days: weekdays,
+  windowStart: hhmm,
+  windowEnd: hhmm,
+  weeklyMenu: z.record(z.string().regex(/^[0-6]$/), z.string().trim().max(160)).default({}),
+  maxPerDay: z.number().int().min(1).max(500),
+  active: z.boolean().default(true),
+}).strict();
+
+export const restaurantMealPlansSchema = z.object({restaurantId: identifier}).strict();
+
+export const subscribeMealPlanSchema = z.object({
+  planId: identifier,
+  addressId: identifier,
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  days: weekdays,
+  quantity: z.number().int().min(1).max(5).default(1),
+  weeks: z.number().int().refine((v) => [0, 1, 2, 4].includes(v)).default(0),
+}).strict();
+
+export const updateMealSubscriptionSchema = z.object({
+  subscriptionId: identifier,
+  action: z.enum(["skip", "unskip", "pause", "resume", "cancel"]),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+}).strict();
+
+const pairIdSchema = z.string().regex(/^[A-Za-z0-9]{6,128}_[A-Za-z0-9]{6,128}$/);
+export const chatSetupSchema = z.object({name: z.string().trim().min(1).max(40), birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), username: z.string().trim().min(3).max(21)}).strict();
+export const accountBirthDateSchema = z.object({birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)}).strict();
+export const accountParentRequestSchema = z.object({email: z.string().trim().email().max(200)}).strict();
+export const chatUsernameSchema = z.object({username: z.string().trim().min(3).max(21)}).strict();
+export const chatHandleSchema = z.object({handle: z.string().trim().min(3).max(25)}).strict();
+export const chatEmptySchema = z.object({}).strict();
+export const chatCodeSchema = z.object({code: z.string().trim().min(6).max(12)}).strict();
+export const chatPrivacySchema = z.object({requests: z.enum(["everyone", "code", "nobody"])}).strict();
+export const chatRespondSchema = z.object({pairId: pairIdSchema, action: z.enum(["accept", "ignore", "block", "unblock", "unfriend"])}).strict();
+export const chatPairSchema = z.object({pairId: pairIdSchema}).strict();
+export const chatParentRespondSchema = z.object({childUid: identifier, approve: z.boolean()}).strict();
+export const chatChildSchema = z.object({childUid: identifier}).strict();
+export const chatReportSchema = z.object({pairId: pairIdSchema, reason: z.enum(["harassment", "sexual", "spam", "self-harm", "other"]), note: z.string().trim().max(500).default(""), block: z.boolean().default(true)}).strict();
+export const resolveChatReportSchema = z.object({reportId: identifier, action: z.enum(["dismiss", "warn", "remove", "suspend", "ban"]), note: z.string().trim().max(500).default("")}).strict();
+
+export const attachPackedPhotoSchema = z.object({orderId: identifier, path: z.string().min(10).max(400)}).strict();
+
 export const signRestaurantAgreementSchema = z.object({
   appId: identifier,
   hash: z.string().regex(/^[a-f0-9]{64}$/),

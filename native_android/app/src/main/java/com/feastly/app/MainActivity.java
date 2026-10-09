@@ -175,7 +175,8 @@ public class MainActivity extends ComponentActivity {
       settings.setSafeBrowsingEnabled(true);
     }
     settings.setDefaultTextEncodingName("UTF-8");
-    WebView.setWebContentsDebuggingEnabled(false);
+    // Inspectable from a computer only in test (debug) builds; Play builds stay closed.
+    WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
     view.removeJavascriptInterface("searchBoxJavaBridge_");
     view.removeJavascriptInterface("accessibility");
     view.removeJavascriptInterface("accessibilityTraversal");
@@ -378,9 +379,10 @@ public class MainActivity extends ComponentActivity {
     final WebView target = webView;
     if (target == null || !isTrustedPageLoaded()) return;
     float density = getResources().getDisplayMetrics().density;
-    final String script = "(function(s){s.setProperty('--native-top','" + Math.round(safeTopPx / density)
+    // The page may still be loading (no <html> yet); it is published again once it has loaded.
+    final String script = "(function(d){if(!d)return;var s=d.style;s.setProperty('--native-top','" + Math.round(safeTopPx / density)
         + "px');s.setProperty('--android-bottom-inset','" + Math.round(safeBottomPx / density)
-        + "px');})(document.documentElement.style)";
+        + "px');})(document.documentElement)";
     target.post(() -> target.evaluateJavascript(script, null));
   }
 
@@ -398,8 +400,62 @@ public class MainActivity extends ComponentActivity {
   }
 
   private String pendingTableLink = "";
-  private static final java.util.Set<String> DINE_IN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+  private static final int PROFILE_PHOTO_REQUEST = 7411;
+  private String pendingPhotoRequestId;
+
+  @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode != PROFILE_PHOTO_REQUEST) return;
+    String id = pendingPhotoRequestId;
+    pendingPhotoRequestId = null;
+    if (id == null) return;
+    android.net.Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
+    if (uri == null) { publishNativeFailure(id, "pickProfilePhoto", "CANCELLED", "No photo chosen."); return; }
+    new Thread(() -> {
+      try {
+        JSONObject out = new JSONObject();
+        out.put("image", squareJpegDataUrl(uri, 320, 80));
+        runOnUiThread(() -> publishNativeSuccess(id, "pickProfilePhoto", out));
+      } catch (Throwable error) {
+        runOnUiThread(() -> publishNativeFailure(id, "pickProfilePhoto", "INVALID", "That photo couldn’t be used. Try another."));
+      }
+    }, "profile-photo").start();
+  }
+
+  /** Centre-crops a photo to a square, scales it to `size` px and returns it as a JPEG data URL. */
+  private String squareJpegDataUrl(android.net.Uri uri, int size, int quality) throws Exception {
+    android.graphics.Bitmap source;
+    if (Build.VERSION.SDK_INT >= 28) {
+      source = android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(getContentResolver(), uri), (decoder, info, src) -> {
+        decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+        int w = info.getSize().getWidth(), h = info.getSize().getHeight(), min = Math.min(w, h);
+        if (min > size * 2) {
+          float scale = (float) (size * 2) / min;
+          decoder.setTargetSize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+        }
+      });
+    } else {
+      android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+      options.inSampleSize = 4;
+      try (java.io.InputStream in = getContentResolver().openInputStream(uri)) { source = android.graphics.BitmapFactory.decodeStream(in, null, options); }
+    }
+    if (source == null) throw new IllegalStateException("PHOTO_DECODE_FAILED");
+    int side = Math.min(source.getWidth(), source.getHeight());
+    android.graphics.Bitmap square = android.graphics.Bitmap.createBitmap(source, (source.getWidth() - side) / 2, (source.getHeight() - side) / 2, side, side);
+    android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(square, size, size, true);
+    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+    scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, bytes);
+    return "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP);
+  }
+
+  static final java.util.Set<String> DINE_IN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
       "dineInBookTable", "dineInCancelBooking", "dineInOpenTable", "dineInPlaceRound", "dineInTableRequest"));
+  static final java.util.Set<String> MEAL_PLAN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+      "subscribeMealPlan", "updateMealSubscription"));
+  static final java.util.Set<String> SOCIAL_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+      "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
+      "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
+      "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke"));
 
   private class NativeBridge {
     /** The table link the app was opened with (once), as "restaurantId/tableId". */
@@ -416,6 +472,45 @@ public class MainActivity extends ComponentActivity {
         return;
       }
       invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Dine-in isn’t available right now.");
+    }
+
+    /** Chat profile photo: pick from the phone's photos; returned as a small square JPEG. */
+    @JavascriptInterface public void pickProfilePhoto(String requestId) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        pendingPhotoRequestId = requestId;
+        Intent intent;
+        if (Build.VERSION.SDK_INT >= 33) {
+          intent = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
+        } else {
+          intent = new Intent(Intent.ACTION_GET_CONTENT);
+          intent.setType("image/*");
+          intent.addCategory(Intent.CATEGORY_OPENABLE);
+        }
+        try { startActivityForResult(intent, PROFILE_PHOTO_REQUEST); }
+        catch (Exception error) {
+          pendingPhotoRequestId = null;
+          publishNativeFailure(requestId, "pickProfilePhoto", "UNAVAILABLE", "Couldn’t open your photos.");
+        }
+      });
+    }
+
+    /** Daily meal plans: subscribe, skip a day, pause, resume, cancel. */
+    @JavascriptInterface public void invokeMealPlan(String requestId, String firebaseIdToken, String function, String payloadJson) {
+      if (function == null || !MEAL_PLAN_FUNCTIONS.contains(function)) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "invokeMealPlan", "INVALID_ARGUMENT", "That action isn’t available."));
+        return;
+      }
+      invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Meal plans aren’t available right now.");
+    }
+
+    /** Friends & chat: setup, friend requests, parent approval, reports. */
+    @JavascriptInterface public void invokeSocial(String requestId, String firebaseIdToken, String function, String payloadJson) {
+      if (function == null || !SOCIAL_FUNCTIONS.contains(function)) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "invokeSocial", "INVALID_ARGUMENT", "That action isn’t available."));
+        return;
+      }
+      invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Chat isn’t available right now.");
     }
 
     /** Scan a table's QR code with Google's scanner (no camera permission needed). */

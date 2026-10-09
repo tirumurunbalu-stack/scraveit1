@@ -79,11 +79,15 @@
       id, real: true, storeType: kindOf(r), name: String(r.name || "Store"), city: String(r.city || ""),
       address: String(r.address || ""), tagline: String(r.description || (Array.isArray(r.cuisines) ? r.cuisines.join(" · ") : r.category || "")),
       image: r.imageThumbUrl || r.imageUrl || "", open: r.open !== false, etaMin: num(r.etaMin, 25), etaMax: num(r.etaMax, 40),
-      pureVeg: r.pureVeg === true, sellerFssai: r.fssaiLicence || r.fssaiLicenseNumber || "", sample: !ORDERS_OPEN,
+      pureVeg: r.pureVeg === true, sellerFssai: r.fssaiNumber || r.fssaiLicence || r.fssaiLicenseNumber || "", sample: !ORDERS_OPEN,
       deliveryFee: num(r.deliveryFee, 29), platformFee: num(r.platformFee, 15),
       embeddedMenu: Array.isArray(r.menu) ? r.menu : [],
     };
   }
+  // Internal test stores (app review accounts, the founder's own test sign-ups) stay off the public website.
+  const HIDDEN_STORES = new Set((CFG.hiddenStoreIds || []).map(String));
+  // When set, only these onboarded stores appear on the website (the rest are still being set up).
+  const VISIBLE_STORES = Array.isArray(CFG.visibleStoreIds) ? new Set(CFG.visibleStoreIds.map(String)) : null;
   async function loadStores() {
     if (state.stores) return state.stores;
     const stores = [];
@@ -91,7 +95,8 @@
       const snapshot = await db.collection("restaurants").get();
       snapshot.forEach((doc) => {
         const r = doc.data() || {};
-        if (r.archived === true || r.active === false) return;
+        if (r.archived === true || r.active === false || HIDDEN_STORES.has(doc.id)) return;
+        if (VISIBLE_STORES && !VISIBLE_STORES.has(doc.id)) return;
         stores.push(realStore(doc.id, r));
       });
     } catch (error) {
@@ -107,10 +112,12 @@
     if (state.menus[store.id]) return state.menus[store.id];
     let items = [];
     if (store.real) {
-      try {
+      if (!(CFG.curatedMenus !== false && SAMPLE_MENUS[store.id])) try {
         const snapshot = await db.collection("menus").doc(store.id).collection("items").get();
         snapshot.forEach((doc) => items.push(Object.assign({id: doc.id}, doc.data())));
       } catch (error) { console.warn("MENU_LOAD_FAILED", error); }
+      // Before launch the website shows a short, fully detailed sample menu for each restaurant.
+      if (CFG.curatedMenus !== false && SAMPLE_MENUS[store.id]) items = SAMPLE_MENUS[store.id].map((i) => Object.assign({}, i));
       if (!items.length) items = store.embeddedMenu.map((item, i) => Object.assign({id: String(item.id || i)}, item));
       if (!items.length && SAMPLE_MENUS[store.id]) items = SAMPLE_MENUS[store.id].map((i) => Object.assign({}, i));
       items = items.filter((i) => i.archived !== true && String(i.name || "").trim().length >= 3)
@@ -118,7 +125,9 @@
     } else {
       items = (store.items || []).map((i) => Object.assign({}, i));
     }
-    items.sort((a, b) => String(a.category || "").localeCompare(String(b.category || "")) || String(a.name).localeCompare(String(b.name)));
+    // Packaged goods are never sold above the MRP printed on the pack.
+    items.forEach((i) => { const mrp = num(i.compliance && i.compliance.mrp); if (mrp > 0 && num(i.price) > mrp) i.price = mrp; });
+    if (!(store.real && CFG.curatedMenus !== false && SAMPLE_MENUS[store.id]) && store.real) items.sort((a, b) => String(a.category || "").localeCompare(String(b.category || "")) || String(a.name).localeCompare(String(b.name)));
     state.menus[store.id] = items;
     return items;
   }
@@ -149,6 +158,7 @@
     const path = location.pathname.replace(/\/+$/, "") || "/shop";
     const parts = path.split("/").filter(Boolean); // ["shop", ...]
     setKindBar("");
+    if (parts[1] !== "item") { state.openDish = null; document.body.classList.remove("modal-open"); }
     markNav("/" + parts.slice(0, 2).join("/"));
     try {
       if (parts[1] === "store" && parts[2]) return await viewStore(decodeURIComponent(parts[2]));
@@ -175,7 +185,7 @@
       '<div class="store-cover">' + (store.image ? '<img src="' + h(store.image) + '" alt="" loading="lazy">' : '<span class="glyph" aria-hidden="true">' + h(store.name.charAt(0)) + "</span>") +
       '<div class="cover-tags"><span class="pill kind">' + h(KIND_LABEL[store.storeType]) + "</span>" + tags + "</div></div>" +
       '<div class="store-body"><h3>' + h(store.name) + "</h3>" +
-      '<div class="store-meta"><span>' + h(store.tagline || "") + "</span></div>" +
+      '<div class="store-meta"><span>' + h(((window.SCRAVEIT_RESTAURANT_INFO || {})[store.id] || {}).cuisines || store.tagline || "") + "</span></div>" +
       '<div class="store-meta"><span>' + h(store.etaMin + "–" + store.etaMax + " min") + "</span>" + (store.city ? "<span>" + h(store.city) + "</span>" : "") + "</div></div></a>";
   }
   async function viewHome() {
@@ -195,26 +205,26 @@
   }
 
   // ---------------------------------------------------------------- views: store
-  function priceBlock(item) {
-    const mrp = item.compliance && num(item.compliance.mrp);
-    return '<div class="item-price">' + rs(item.price) + (mrp && mrp > item.price ? "<s>MRP " + rs(mrp) + "</s>" : "") + "</div>";
+  const RESTAURANT_INFO = window.SCRAVEIT_RESTAURANT_INFO || {};
+  const PHOTO_CREDITS = window.SCRAVEIT_PHOTO_CREDITS || {};
+  const itemHref = (store, item) => "/shop/item/" + encodeURIComponent(store.id) + "/" + encodeURIComponent(item.id);
+  const fssaiNo = (value) => /^[12]\d{13}$/.test(String(value || "")) ? String(value) : "";
+  function photoCredit(item) {
+    const c = PHOTO_CREDITS[item.photo];
+    return c ? '<p class="photo-credit">Photo for representation: ' + h(c.a) + ', <a href="' + h(c.s) + '" target="_blank" rel="noopener">' + h(c.l) + "</a>, via Wikimedia Commons</p>" : "";
   }
-  function stepperFor(store, item) {
+  function stepperFor(store, item, big) {
     const q = cart.storeId === store.id ? num(cart.lines[item.id]) : 0;
+    const cls = big ? " big" : "";
     if (item.available === false) return '<span class="pill closed">Unavailable</span>';
-    if (Array.isArray(item.variants) && item.variants.length) return '<a class="btn small ghost" href="/shop/item/' + encodeURIComponent(store.id) + "/" + encodeURIComponent(item.id) + '">Choose</a>';
-    return q ? '<div class="stepper"><button type="button" data-cart="-1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '" aria-label="Remove one">−</button><span>' + q +
-      '</span><button type="button" data-cart="1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '" aria-label="Add one">+</button></div>'
-      : '<button type="button" class="btn small" data-cart="1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '">Add</button>';
+    return q ? '<div class="stepper' + cls + '"><button type="button" data-cart="-1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '" aria-label="Remove one ' + h(item.name) + '">−</button><span>' + q +
+      '</span><button type="button" data-cart="1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '" aria-label="Add one more ' + h(item.name) + '">+</button></div>'
+      : '<button type="button" class="add-btn' + cls + '" data-cart="1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '" aria-label="Add ' + h(item.name) + '">ADD</button>';
   }
-  function itemCard(store, item) {
-    const href = "/shop/item/" + encodeURIComponent(store.id) + "/" + encodeURIComponent(item.id);
-    const thumb = item.imageThumbUrl || item.imageUrl;
-    const meta = item.compliance && item.compliance.netQuantity ? '<p>' + h(item.compliance.netQuantity) + (item.compliance.brand ? " · " + h(item.compliance.brand) : "") + "</p>" : (item.description ? "<p>" + h(item.description) + "</p>" : "");
-    return '<article class="item-card"><div><h3>' + dietMark(item.diet) + '<a href="' + href + '">' + h(item.name) + "</a></h3>" + meta + priceBlock(item) +
-      '<div class="item-links"><a href="' + href + '">Product details &amp; label</a></div></div>' +
-      '<div class="item-side">' + (thumb ? '<img class="item-thumb" src="' + h(thumb) + '" alt="" loading="lazy">' : '<span class="item-thumb placeholder" aria-hidden="true">' + h(item.name.charAt(0)) + "</span>") +
-      stepperFor(store, item) + "</div></article>";
+  function sampleNotice(store) {
+    return store.sample ? '<div class="notice warn"><div><strong>Sample listing.</strong>' + (store.storeType === "restaurant" ?
+      "The dishes, prices and food details on this page are examples shown before launch. Ordering opens once SCRAVEIT's FSSAI licence is issued." :
+      "This store and its products show how " + h(KIND_LABEL[store.storeType].toLowerCase()) + " partners will appear on SCRAVEIT. Products and label values are examples, not real products. Ordering opens once SCRAVEIT's FSSAI licence is issued.") + "</div></div>" : "";
   }
   async function viewStore(id) {
     await loadStores();
@@ -222,25 +232,161 @@
     if (!store) { app.innerHTML = '<p class="s-empty">This store is not available. <a href="/shop">Back to the shop</a></p>'; return; }
     setTitle(store.name);
     setKindBar(store.storeType);
-    app.innerHTML = '<p class="s-loading">Loading ' + h(store.name) + "…</p>";
+    if (!state.menus[store.id]) app.innerHTML = '<p class="s-loading">Loading ' + h(store.name) + "…</p>";
     const items = await loadMenu(store);
-    const groups = {};
-    items.forEach((i) => { const k = i.category || "Menu"; (groups[k] = groups[k] || []).push(i); });
-    app.innerHTML =
-      '<nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Shop</a><span>/</span><a href="/shop?type=' + store.storeType + '">' + h(KIND_LABEL[store.storeType]) + "</a><span>/</span><span>" + h(store.name) + "</span></nav>" +
-      '<section class="store-head"><div><p class="eyebrow">' + h(KIND_LABEL[store.storeType]) + (store.sample ? " · Sample listing" : "") + "</p><h1>" + h(store.name) + "</h1><p>" + h(store.tagline || "") + "</p>" +
-      '<p class="store-meta">' + h(store.etaMin + "–" + store.etaMax + " min delivery") + (store.real && ORDERS_OPEN ? " · " + (store.open ? "Open now" : "Closed now") : "") + "</p></div>" +
-      '<div class="seller-box"><b>Sold by:</b> ' + h(store.name) + (store.address ? "<br>" + h(store.address) : "") +
-      "<br><b>Seller FSSAI licence:</b> " + (store.sellerFssai ? h(store.sellerFssai) : '<i>Shown here once provided by the seller</i>') + "</div></section>" +
-      (store.sample ? '<div class="notice warn"><div><strong>Sample listing.</strong>This store shows how ' + h(KIND_LABEL[store.storeType].toLowerCase()) + ' partners will appear on SCRAVEIT. Items, prices and label details are examples; ordering opens once SCRAVEIT\'s FSSAI licence is issued.</div></div>' : "") +
-      (!items.length ? '<p class="s-empty">No items listed yet.</p>' : Object.keys(groups).map((g) =>
-        '<section class="menu-section"><h2>' + h(g) + '</h2><div class="item-list">' + groups[g].map((i) => itemCard(store, i)).join("") + "</div></section>").join(""));
+    if (store.storeType === "restaurant") return restaurantPage(store, items);
+    return goodsStorePage(store, items);
   }
 
-  // ---------------------------------------------------------------- views: product page (FSSAI label)
-  function row(label, value, pendingText) {
-    const has = value !== undefined && value !== null && String(value).trim() !== "";
-    return "<dt>" + h(label) + "</dt><dd" + (has ? "" : ' class="pending"') + ">" + (has ? value : h(pendingText || "To be provided by the seller")) + "</dd>";
+  // Restaurant menu, laid out the way customers know from food apps: dishes by
+  // section, each with its veg / non-veg mark, price, serving size, energy and
+  // allergens; tapping a dish opens its full details. The restaurant's FSSAI
+  // licence and address close the page.
+  function dishRow(store, item) {
+    const kcal = num(item.calories) ? num(item.calories) + " kcal" : "";
+    return '<article class="dish" data-diet="' + h(item.diet || "veg") + '" data-name="' + h(String(item.name).toLowerCase()) + '">' +
+      '<div class="dish-text">' + dietMark(item.diet) +
+      '<h3><a href="' + itemHref(store, item) + '" data-open-dish="' + h(item.id) + '">' + h(item.name) + "</a></h3>" +
+      '<div class="dish-price">' + rs(item.price) + "</div>" +
+      '<p class="dish-desc">' + h([item.servingSize, item.description].filter(Boolean).join(" | ")) + "</p>" +
+      '<p class="dish-facts">' + [kcal, item.allergens && !/^none/i.test(item.allergens) ? item.allergens : ""].filter(Boolean).map(h).join(" · ") + "</p></div>" +
+      '<div class="dish-media">' + (item.imageUrl ? '<button type="button" class="dish-photo" data-open-dish="' + h(item.id) + '" aria-label="View details of ' + h(item.name) + '"><img src="' + h(item.imageUrl) + '" alt=""></button>' : "") +
+      '<div class="dish-add">' + stepperFor(store, item) + "</div></div></article>";
+  }
+  function dishModal(store, item) {
+    const row = (label, value) => value ? "<dt>" + h(label) + "</dt><dd>" + h(value) + "</dd>" : "";
+    return '<div class="modal-backdrop" data-close-dish="1"><div class="dish-modal" role="dialog" aria-modal="true" aria-labelledby="dish-modal-title">' +
+      '<button type="button" class="modal-close" data-close-dish="1" aria-label="Close">×</button>' +
+      (item.imageUrl ? '<img class="dish-modal-photo" src="' + h(item.imageUrl) + '" alt="' + h(item.name) + '">' : "") +
+      '<div class="dish-modal-body"><div class="dish-modal-head"><div>' + dietMark(item.diet) + '<h2 id="dish-modal-title">' + h(item.name) + "</h2>" +
+      '<div class="dish-price">' + rs(item.price) + "</div></div>" + stepperFor(store, item, true) + "</div>" +
+      (item.description ? '<p class="dish-desc">' + h(item.description) + "</p>" : "") +
+      '<dl class="facts">' + row("Serving size", item.servingSize) + row("Energy", num(item.calories) ? num(item.calories) + " kcal per serving" : "") +
+      row("Veg / non-veg", String(item.diet || "veg") === "veg" ? "Vegetarian" : "Non-vegetarian") +
+      row("Ingredients", item.ingredients) + row("Allergens", item.allergens) + row("Preparation time", item.preparationTime ? item.preparationTime + " min" : "") +
+      row("Prepared by", store.name + (fssaiNo(store.sellerFssai) ? " · FSSAI Lic. No. " + store.sellerFssai : "")) + "</dl>" +
+      '<p class="fine">Nutritional information is indicative, per serve, as shared by the restaurant. An average active adult requires 2,000 kcal energy per day; however, calorie needs may vary.</p>' +
+      photoCredit(item) + "</div></div></div>";
+  }
+  function restaurantPage(store, items) {
+    const info = RESTAURANT_INFO[store.id] || {};
+    const groups = [];
+    const recommended = items.filter((i) => i.recommended);
+    if (recommended.length) groups.push(["Recommended", recommended]);
+    items.forEach((i) => { const k = i.category || "Menu"; let g = groups.find(([name]) => name === k); if (!g) groups.push(g = [k, []]); g[1].push(i); });
+    const anyVeg = items.some((i) => String(i.diet || "veg") === "veg"), anyNonVeg = items.some((i) => String(i.diet) === "nonveg");
+    const lic = fssaiNo(store.sellerFssai);
+    const open = state.openDish && state.openDish.storeId === store.id ? items.find((i) => i.id === state.openDish.itemId) : null;
+    app.innerHTML =
+      '<div class="r-page"><nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Home</a><span>/</span><a href="/shop?type=restaurant">Restaurants</a><span>/</span><span>' + h(store.name) + "</span></nav>" +
+      '<h1 class="r-title">' + h(store.name) + "</h1>" +
+      '<section class="r-card">' + (store.image ? '<img class="r-cover" src="' + h(store.image) + '" alt="">' : "") +
+      '<div class="r-card-body"><p class="r-line"><span class="r-new">New on SCRAVEIT</span>' + (info.priceForTwo ? " · " + rs(info.priceForTwo) + " for two" : "") + "</p>" +
+      '<p class="r-cuisines">' + h(info.cuisines || store.tagline || "") + "</p>" +
+      (info.opens ? '<p class="r-hours">Opens ' + h(info.opens) + " · Closes " + h(info.closes) + "</p>" : "") +
+      '<div class="r-timeline"><p><b>Outlet</b> ' + h(info.area || store.city || "") + "</p><p><b>" + h(store.etaMin + "–" + store.etaMax + " mins") + "</b></p></div></div></section>" +
+      sampleNotice(store) +
+      '<div class="r-tools"><label class="r-search"><span class="sr-only">Search for dishes</span><input type="search" id="dish-search" placeholder="Search for dishes" autocomplete="off"></label>' +
+      '<div class="r-chips">' + (anyVeg && anyNonVeg ? '<button type="button" class="chip" data-diet-filter="veg" aria-pressed="false">' + dietMark("veg") + "Veg</button>" +
+        '<button type="button" class="chip" data-diet-filter="nonveg" aria-pressed="false">' + dietMark("nonveg") + "Non-veg</button>" : (anyVeg ? '<span class="chip static">' + dietMark("veg") + "Pure veg</span>" : "")) + "</div></div>" +
+      (!items.length ? '<p class="s-empty">No dishes listed yet.</p>' : groups.map(([name, list]) =>
+        '<details class="r-section" open><summary><h2>' + h(name) + " (" + list.length + ")</h2></summary>" + list.map((i) => dishRow(store, i)).join("") + "</details>").join("")) +
+      '<section class="r-legal"><h2>Disclaimer</h2><ul><li>All prices are set directly by the restaurant.</li>' +
+      "<li>All nutritional information is indicative; values are per serve as shared by the restaurant and may vary depending on the ingredients and portion size.</li>" +
+      "<li>An average active adult requires 2,000 kcal energy per day; however, calorie needs may vary.</li>" +
+      "<li>Dish photos are for representation only.</li></ul>" +
+      '<div class="r-fssai"><img class="fssai-logo" src="/img/fssai-logo-grey.png" alt="FSSAI" width="53" height="26" style="width:53px;height:26px"><span>' + (lic ? "Licence No. " + h(lic) : "Licence No. will be shown here when the restaurant goes live") + "</span></div>" +
+      '<p class="r-legal-name">' + h(store.name) + "</p><p>" + h(info.area || store.city || "") + "</p>" +
+      (store.address ? '<p class="r-address">' + h(store.address) + "</p>" : "") + "</section></div>" +
+      (open ? dishModal(store, open) : "");
+    if (open) document.body.classList.add("modal-open"); else document.body.classList.remove("modal-open");
+  }
+  document.addEventListener("click", (event) => {
+    const opener = event.target.closest("[data-open-dish]");
+    if (opener) {
+      event.preventDefault(); event.stopPropagation();
+      const storeId = decodeURIComponent((location.pathname.split("/")[3] || ""));
+      state.openDish = {storeId, itemId: opener.dataset.openDish};
+      history.pushState({}, "", "/shop/item/" + encodeURIComponent(storeId) + "/" + encodeURIComponent(opener.dataset.openDish));
+      render();
+      return;
+    }
+    const closer = event.target.closest("[data-close-dish]");
+    if (closer && (closer.classList.contains("modal-close") || event.target === closer)) closeDish();
+    const chip = event.target.closest("[data-diet-filter]");
+    if (chip) {
+      const on = chip.getAttribute("aria-pressed") !== "true";
+      document.querySelectorAll("[data-diet-filter]").forEach((c) => c.setAttribute("aria-pressed", "false"));
+      chip.setAttribute("aria-pressed", String(on));
+      filterDishes();
+    }
+  }, true);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && state.openDish) closeDish(); });
+  document.addEventListener("input", (event) => { if (event.target.id === "dish-search") filterDishes(); });
+  function closeDish() {
+    const storeId = state.openDish && state.openDish.storeId;
+    state.openDish = null;
+    document.body.classList.remove("modal-open");
+    if (storeId) { history.pushState({}, "", "/shop/store/" + encodeURIComponent(storeId)); render(); }
+  }
+  function filterDishes() {
+    const q = String((document.getElementById("dish-search") || {}).value || "").trim().toLowerCase();
+    const pressed = document.querySelector('[data-diet-filter][aria-pressed="true"]');
+    const diet = pressed ? pressed.dataset.dietFilter : "";
+    document.querySelectorAll(".r-section").forEach((section) => {
+      let shown = 0;
+      section.querySelectorAll(".dish").forEach((d) => {
+        const ok = (!q || d.dataset.name.includes(q)) && (!diet || d.dataset.diet === diet);
+        d.hidden = !ok; if (ok) shown++;
+      });
+      section.hidden = !shown;
+    });
+  }
+
+  // Grocery and dairy: product cards like a quick-commerce shelf, and a product
+  // page with the principal display panel and every label particular.
+  const offPercent = (item) => { const mrp = num(item.compliance && item.compliance.mrp); return mrp > item.price ? Math.round((1 - item.price / mrp) * 100) : 0; };
+  function productCard(store, item) {
+    const c = item.compliance || {}, off = offPercent(item);
+    return '<article class="p-card"><a class="p-media" href="' + itemHref(store, item) + '">' + packSvg(item) +
+      (off ? '<span class="p-off">' + off + "% OFF</span>" : "") + "</a>" +
+      '<div class="p-body"><span class="p-eta">' + h(store.etaMin) + " MINS</span>" +
+      '<h3><a href="' + itemHref(store, item) + '">' + h(item.name) + "</a></h3>" + (item.category ? '<p class="p-cat">' + h(item.category) + "</p>" : "") +
+      '<p class="p-qty">' + h(c.netQuantity || "") + "</p>" +
+      '<div class="p-foot"><div class="p-price"><b>' + rs(item.price) + "</b>" + (num(c.mrp) > item.price ? "<s>" + rs(c.mrp) + "</s>" : "") + "</div>" + stepperFor(store, item) + "</div></div></article>";
+  }
+  function goodsStorePage(store, items) {
+    // Category tiles like a quick-commerce shelf; tapping one shows only its products.
+    const cats = [];
+    items.forEach((i) => { const k = i.category || "Products"; let c = cats.find((x) => x.name === k); if (!c) cats.push(c = {name: k, items: []}); c.items.push(i); });
+    app.innerHTML =
+      '<nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Home</a><span>/</span><a href="/shop?type=' + store.storeType + '">' + h(KIND_TABS.find(([k]) => k === store.storeType)[1]) + "</a><span>/</span><span>" + h(store.name) + "</span></nav>" +
+      '<section class="g-head"><div><h1>' + h(store.name) + "</h1><p>" + h(store.tagline || "") + '</p><p class="g-eta">Delivery in ' + h(store.etaMin + "–" + store.etaMax) + " mins</p></div>" +
+      '<div class="seller-box"><b>Seller</b><br>' + h(store.name) + (store.address ? "<br>" + h(store.address) : "") +
+      "<br><b>Seller FSSAI licence:</b> " + (fssaiNo(store.sellerFssai) ? h(store.sellerFssai) : "<i>" + h(store.sellerFssai || "Shown here once provided by the seller") + "</i>") + "</div></section>" +
+      sampleNotice(store) +
+      '<h2 class="g-cats-title">Shop by category</h2><div class="g-cats" role="tablist" aria-label="Categories">' +
+      cats.map((c) => '<button type="button" class="g-cat" role="tab" aria-selected="false" data-goods-cat="' + h(c.name) + '"><span class="g-cat-img">' + packSvg(c.items[0]) + "</span><span>" + h(c.name) + "</span></button>").join("") + "</div>" +
+      '<section class="menu-section"><h2 id="g-shelf-title">All products (' + items.length + ')</h2><div class="p-grid">' +
+      items.map((i) => productCard(store, i).replace('<article class="p-card"', '<article class="p-card" data-cat="' + h(i.category || "Products") + '"')).join("") + "</div></section>" +
+      goodsDisclaimer(store);
+  }
+  document.addEventListener("click", (event) => {
+    const tile = event.target.closest("[data-goods-cat]");
+    if (!tile) return;
+    const on = tile.getAttribute("aria-selected") !== "true", cat = tile.dataset.goodsCat;
+    document.querySelectorAll("[data-goods-cat]").forEach((t) => t.setAttribute("aria-selected", String(on && t === tile)));
+    let shown = 0;
+    document.querySelectorAll(".p-card[data-cat]").forEach((card) => { const ok = !on || card.dataset.cat === cat; card.hidden = !ok; if (ok) shown++; });
+    const title = document.getElementById("g-shelf-title");
+    if (title) title.textContent = (on ? cat : "All products") + " (" + shown + ")";
+  });
+  function goodsDisclaimer(store) {
+    const lic = store && fssaiNo(store.sellerFssai);
+    return '<section class="g-disclaimer"><h2>Disclaimer</h2><p>All images are for representation. Product details are as declared on the label by the manufacturer. Please read the batch number, dates of manufacture and expiry, directions for use and allergen and nutrition information on the delivered pack before use. Packaged food is delivered with at least 30% of its shelf life, or 45 days, remaining. Report a concern on the <a href="/grievance">grievance page</a>.</p>' +
+      (store ? '<div class="r-fssai"><img class="fssai-logo" src="/img/fssai-logo-grey.png" alt="FSSAI" width="53" height="26" style="width:53px;height:26px"><span>' +
+        (lic ? "Licence No. " + h(lic) : "Licence No. will be shown here when the store goes live") + "</span></div>" +
+        '<p class="r-legal-name">' + h(store.name) + "</p>" + (store.address ? '<p class="r-address">' + h(store.address) + "</p>" : "") : "") + "</section>";
   }
   function nutritionTable(n) {
     if (!n) return "";
@@ -249,72 +395,261 @@
     return '<table class="nutrition"><thead><tr><th>Nutrition information</th><th>Per ' + h(n.per || "100 g") + "</th></tr></thead><tbody>" +
       rows.map(([l, v, u]) => "<tr><td>" + h(l.trim()).replace(/^of which/, "&nbsp;&nbsp;of which") + "</td><td>" + (v == null ? "—" : h(v) + " " + u) + "</td></tr>").join("") + "</tbody></table>";
   }
-  function labelPanel(store, item) {
-    const c = item.compliance || {};
-    const veg = String(item.diet || "veg") === "veg";
-    if (store.storeType === "restaurant" && !item.compliance) {
-      return '<section class="label-panel"><h2>Food information <span>' + (item.sample ? '<span class="pill sample">Sample values</span> ' : "") + '<span class="pill kind">Prepared food</span></span></h2><dl>' +
-        row("Dish", h(item.name)) +
-        row("Veg / non-veg", dietMark(item.diet) + " " + (veg ? "Vegetarian" : "Non-vegetarian")) +
-        row("Description", item.description ? h(item.description) : "", "Not described by the restaurant yet") +
-        row("Ingredients", item.ingredients ? h(item.ingredients) : "", "Provided by the restaurant on request") +
-        row("Allergens", item.allergens ? h(item.allergens) : "", "Ask the restaurant before ordering if you have a food allergy") +
-        row("Energy", item.calories ? h(item.calories) + " kcal per serving" : "", "Not declared by the restaurant") +
-        row("Serving size", item.servingSize ? h(item.servingSize) : "", "One portion as prepared") +
-        row("Preparation time", item.preparationTime ? h(item.preparationTime) + " min" : "", "Shown at checkout") +
-        row("Price", rs(item.price) + " (menu price; taxes, if any, shown at checkout)") +
-        row("Sold and prepared by", h(store.name) + (store.address ? ", " + h(store.address) : "")) +
-        row("Restaurant FSSAI licence", store.sellerFssai ? h(store.sellerFssai) : "", "Shown here once provided by the restaurant") +
-        "</dl><p class=\"panel-note\">Prepared fresh by the restaurant for each order. Report a food safety concern on the <a href=\"/grievance\">grievance page</a>.</p></section>";
-    }
-    return '<section class="label-panel"><h2>Label information <span>' + (c.sampleValues ? '<span class="pill sample">Sample values</span>' : "") + "</span></h2><dl>" +
-      row("Product name", h(item.name)) +
-      row("Brand", c.brand ? h(c.brand) : "") +
-      row("Veg / non-veg", dietMark(item.diet) + " " + (veg ? "Vegetarian" : "Non-vegetarian")) +
-      row("Net quantity", c.netQuantity ? h(c.netQuantity) : "") +
-      row("MRP (incl. of all taxes)", c.mrp ? rs(c.mrp) : "") +
-      row("Selling price", rs(item.price)) +
-      row("Ingredients", c.ingredients ? h(c.ingredients) : "") +
-      row("Allergen information", c.allergens ? h(c.allergens) : "") +
-      row("Food category", c.foodCategory ? h(c.foodCategory) : "") +
-      row("Storage instructions", c.storage ? h(c.storage) : "") +
-      row("Shelf life", c.shelfLife ? h(c.shelfLife) : "") +
-      row("Best before / use by", c.bestBefore ? h(c.bestBefore) : "") +
-      row("Manufacturer / packer name and address", c.manufacturer ? h(c.manufacturer) : "") +
-      row("Manufacturer FSSAI licence", c.manufacturerFssai ? h(c.manufacturerFssai) : "") +
-      row("Country of origin", c.countryOfOrigin ? h(c.countryOfOrigin) : "") +
-      row("Sold by", h(store.name)) +
-      row("Seller FSSAI licence", c.sellerFssai ? h(c.sellerFssai) : (store.sellerFssai ? h(store.sellerFssai) : "")) +
-      row("Customer care", c.customerCare ? h(c.customerCare) : "") +
-      "</dl>" + nutritionTable(c.nutrition) +
-      '<p class="panel-note">Information shown is as declared on the product label' + (c.sampleValues ? " — for this sample listing the values are typical examples, not a real product." : ".") +
-      " Actual label on the delivered pack prevails. Report a concern on the <a href=\"/grievance\">grievance page</a>.</p></section>";
+  function factRow(label, value, pendingText) {
+    const has = value !== undefined && value !== null && String(value).trim() !== "";
+    return "<dt>" + h(label) + "</dt><dd" + (has ? "" : ' class="pending"') + ">" + (has ? value : h(pendingText || "To be provided by the seller")) + "</dd>";
   }
+  // FSSAI order of 18.03.2026, Annexure 1 item 3: a legible, clear picture of
+  // the principal display panel of every pre-packed product. Real listings use
+  // the seller's photo of the pack front (compliance.pdpImageUrl); sample
+  // listings get a drawn pack whose front carries the declared values.
+  function svgText(value) { return String(value == null ? "" : value).replace(/[&<>"]/g, (m) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[m])); }
+  function packSvg(item) {
+    const c = item.compliance || {};
+    if (c.pdpImageUrl) return '<img src="' + h(c.pdpImageUrl) + '" alt="Front of pack: ' + h(item.name) + '">';
+    const p = packShape(item, "f"), veg = String(item.diet || "veg") === "veg", mark = veg ? "#1b8a3a" : "#8a3a1b";
+    const name = String(item.name), words = name.split(" "), mid = Math.ceil(words.length / 2);
+    const lines = name.length > 14 ? [words.slice(0, mid).join(" "), words.slice(mid).join(" ")] : [name];
+    const size = Math.max(16, Math.min(30, Math.floor(300 / Math.max(...lines.map((l) => l.length)))));
+    const lic = /^\d{14}$/.test(String(c.manufacturerFssai || "")) ? c.manufacturerFssai : "1XXXXXXXXXXXXX";
+    const cx = 200, top = p.inner[1];
+    return '<svg viewBox="0 0 400 310" role="img" aria-label="Front of pack: ' + svgText(name) + ", " + svgText(c.netQuantity || "") + '" class="pack" font-family="Helvetica,Arial,sans-serif">' +
+      p.defs + '<rect width="400" height="310" fill="#f4f2ee"/><ellipse cx="200" cy="296" rx="150" ry="9" fill="#000" opacity=".12"/>' + p.body +
+      '<text x="' + cx + '" y="' + (top + 22) + '" text-anchor="middle" font-family="Georgia,serif" font-size="15" font-weight="700" fill="#fff" letter-spacing="1">' + svgText(String(c.brand || "Brand").toUpperCase()) + "</text>" +
+      '<rect x="' + (p.inner[0] + p.inner[2] - 26) + '" y="' + (top + 8) + '" width="18" height="18" fill="#fff" stroke="' + mark + '" stroke-width="2"/>' +
+      (veg ? '<circle cx="' + (p.inner[0] + p.inner[2] - 17) + '" cy="' + (top + 17) + '" r="5" fill="' + mark + '"/>' : '<path d="M' + (p.inner[0] + p.inner[2] - 17) + " " + (top + 11) + " l6 11 h-12 Z\" fill=\"" + mark + '"/>') +
+      '<circle cx="' + cx + '" cy="' + (top + 74) + '" r="36" fill="#fff" opacity=".95"/>' + packIcon(item.icon, cx, top + 74, item.packColor || "#8a5a2b") +
+      lines.map((l, i) => '<text x="' + cx + '" y="' + (top + 140 + i * (size + 2)) + '" text-anchor="middle" font-family="Georgia,serif" font-size="' + size + '" font-weight="700" fill="#fff">' + svgText(l) + "</text>").join("") +
+      '<rect x="' + (cx - 46) + '" y="' + (p.inner[1] + p.inner[3] - 46) + '" width="92" height="26" rx="13" fill="#fff"/>' +
+      '<text x="' + cx + '" y="' + (p.inner[1] + p.inner[3] - 28) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#22190f">' + svgText(String(c.netQuantity || "").replace(/\s*\(.*\)/, "")) + "</text>" +
+      '<image href="/img/fssai-logo-white.png" x="' + (p.inner[0] + 6) + '" y="' + (p.inner[1] + p.inner[3] - 19) + '" width="28" height="13.7"/>' +
+      '<text x="' + (p.inner[0] + 37) + '" y="' + (p.inner[1] + p.inner[3] - 8) + '" font-size="8" fill="#fff">Lic. No. ' + svgText(lic) + "</text>" +
+      (c.sampleValues ? '<text x="' + (p.inner[0] + p.inner[2] - 6) + '" y="' + (p.inner[1] + p.inner[3] - 8) + '" text-anchor="end" font-size="7.5" fill="#fff" opacity=".9">SAMPLE PACK</text>' : "") +
+      "</svg>";
+  }
+  // Pack silhouettes with a little shading so they read as real packets.
+  function packShape(item, side) {
+    const col = item.packColor || "#8a5a2b", gid = "pk-" + side + "-" + String(item.id).replace(/[^a-z0-9]/gi, "");
+    const defs = '<defs><linearGradient id="' + gid + '" x1="0" x2="1"><stop offset="0" stop-color="' + col + '" stop-opacity=".82"/><stop offset=".45" stop-color="' + col + '"/>' +
+      '<stop offset="1" stop-color="#000" stop-opacity=".35"/></linearGradient><linearGradient id="' + gid + 's" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/>' +
+      '<stop offset=".5" stop-color="#fff" stop-opacity=".22"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>';
+    const f = "url(#" + gid + ")", shine = "url(#" + gid + "s)";
+    const shapes = {
+      pouch: {d: '<path d="M96 30 Q200 16 304 30 L318 284 Q200 298 82 284 Z" fill="' + f + '"/><path d="M96 30 Q200 16 304 30 L305 44 Q200 31 95 44 Z" fill="#000" opacity=".18"/><path d="M130 40 L170 40 L150 280 L110 280 Z" fill="' + shine + '"/>', inner: [104, 48, 192, 228]},
+      sachet: {d: '<path d="M92 34 L308 34 L318 282 L82 282 Z" fill="' + f + '"/><path d="M92 34 L308 34 L309 50 L91 50 Z" fill="#000" opacity=".18"/><path d="M82 266 L318 266 L318 282 L82 282 Z" fill="#000" opacity=".18"/><path d="M124 52 L160 52 L146 264 L110 264 Z" fill="' + shine + '"/>', inner: [100, 52, 200, 214]},
+      box: {d: '<rect x="92" y="40" width="216" height="244" rx="6" fill="' + f + '"/><path d="M92 40 L118 22 L334 22 L308 40 Z" fill="' + item.packColor + '" opacity=".7"/><path d="M308 40 L334 22 L334 266 L308 284 Z" fill="#000" opacity=".28"/><rect x="112" y="40" width="34" height="244" fill="' + shine + '"/>', inner: [100, 46, 200, 232]},
+      jar: {d: '<rect x="118" y="16" width="164" height="30" rx="8" fill="#3b2f22"/><rect x="118" y="24" width="164" height="4" fill="#fff" opacity=".15"/><rect x="92" y="44" width="216" height="244" rx="34" fill="' + f + '"/><rect x="116" y="60" width="30" height="214" rx="14" fill="' + shine + '"/>', inner: [104, 52, 192, 228]},
+      tub: {d: '<path d="M84 46 L316 46 L298 286 L102 286 Z" fill="' + f + '"/><rect x="76" y="30" width="248" height="22" rx="6" fill="#e9e5df"/><rect x="76" y="46" width="248" height="6" fill="#000" opacity=".12"/><path d="M110 56 L140 56 L150 280 L124 280 Z" fill="' + shine + '"/>', inner: [104, 54, 192, 224]},
+    };
+    const s = shapes[item.pack] || shapes.box;
+    return {defs, body: s.d, inner: s.inner};
+  }
+  function packIcon(kind, x, y, col) {
+    const icons = {
+      wheat: '<path d="M' + x + " " + (y + 26) + " L" + x + " " + (y - 24) + '" stroke="' + col + '" stroke-width="3"/>' + [-16, -6, 4, 14].map((dy) =>
+        '<ellipse cx="' + (x - 8) + '" cy="' + (y + dy) + '" rx="8" ry="4" transform="rotate(-35 ' + (x - 8) + " " + (y + dy) + ')" fill="' + col + '"/><ellipse cx="' + (x + 8) + '" cy="' + (y + dy) + '" rx="8" ry="4" transform="rotate(35 ' + (x + 8) + " " + (y + dy) + ')" fill="' + col + '"/>').join(""),
+      grains: [[-12, -8], [2, -12], [14, -4], [-8, 6], [6, 4], [-2, 16], [14, 12], [-16, 14]].map(([dx, dy]) => '<ellipse cx="' + (x + dx) + '" cy="' + (y + dy) + '" rx="7" ry="5.5" fill="' + col + '"/>').join(""),
+      cake: '<rect x="' + (x - 22) + '" y="' + (y - 2) + '" width="44" height="22" rx="3" fill="' + col + '"/><path d="M' + (x - 22) + " " + (y - 2) + " Q" + x + " " + (y - 20) + " " + (x + 22) + " " + (y - 2) + ' Z" fill="' + col + '" opacity=".7"/><circle cx="' + x + '" cy="' + (y - 20) + '" r="4" fill="#c0392b"/>',
+      scoop: '<path d="M' + (x - 22) + " " + (y - 4) + " A22 18 0 0 0 " + (x + 22) + " " + (y - 4) + ' Z" fill="' + col + '"/><rect x="' + (x + 14) + '" y="' + (y - 8) + '" width="18" height="6" rx="3" fill="' + col + '"/><path d="M' + (x - 16) + " " + (y - 6) + " Q" + x + " " + (y - 22) + " " + (x + 16) + " " + (y - 6) + ' Z" fill="#c9a27a"/>',
+      drop: '<path d="M' + x + " " + (y - 26) + " C" + (x + 6) + " " + (y - 12) + " " + (x + 20) + " " + (y - 2) + " " + (x + 20) + " " + (y + 10) + " A20 20 0 0 1 " + (x - 20) + " " + (y + 10) + " C" + (x - 20) + " " + (y - 2) + " " + (x - 6) + " " + (y - 12) + " " + x + " " + (y - 26) + ' Z" fill="' + col + '"/>',
+      cup: '<path d="M' + (x - 22) + " " + (y - 10) + " L" + (x + 22) + " " + (y - 10) + " L" + (x + 16) + " " + (y + 22) + " L" + (x - 16) + " " + (y + 22) + ' Z" fill="' + col + '"/><ellipse cx="' + x + '" cy="' + (y - 10) + '" rx="22" ry="6" fill="#fff" stroke="' + col + '" stroke-width="2"/>',
+      cube: '<path d="M' + x + " " + (y - 22) + " L" + (x + 20) + " " + (y - 11) + " L" + x + " " + y + " L" + (x - 20) + " " + (y - 11) + ' Z" fill="' + col + '" opacity=".6"/><path d="M' + (x - 20) + " " + (y - 11) + " L" + x + " " + y + " L" + x + " " + (y + 22) + " L" + (x - 20) + " " + (y + 11) + ' Z" fill="' + col + '"/><path d="M' + (x + 20) + " " + (y - 11) + " L" + x + " " + y + " L" + x + " " + (y + 22) + " L" + (x + 20) + " " + (y + 11) + ' Z" fill="' + col + '" opacity=".8"/>',
+    };
+    return icons[kind] || icons.cube;
+  }
+  // Back of pack: the full back label printed on the same packet.
+  function packBackSvg(item) {
+    const c = item.compliance || {};
+    if (c.backImageUrl) return '<img src="' + h(c.backImageUrl) + '" alt="Back of pack: ' + h(item.name) + '">';
+    const p = packShape(item, "b"), label = backPackSvg(item), m = label.match(/viewBox="0 0 600 ([\d.]+)"/), H = m ? Number(m[1]) : 465;
+    const [ix, iy, iw, ih] = p.inner, scale = Math.min(iw / 600, ih / H), w = 600 * scale, hh = H * scale;
+    const nested = label.replace("<svg ", '<svg x="' + (ix + (iw - w) / 2) + '" y="' + (iy + (ih - hh) / 2) + '" width="' + w + '" height="' + hh + '" ');
+    return '<svg viewBox="0 0 400 310" role="img" aria-label="Back of pack: ' + svgText(item.name) + '" class="pack">' + p.defs +
+      '<rect width="400" height="310" fill="#f4f2ee"/><ellipse cx="200" cy="296" rx="150" ry="9" fill="#000" opacity=".12"/>' + p.body + nested + "</svg>";
+  }
+  // Last image: the nutrition panel and licence, zoomed so every value reads clearly.
+  function nutritionCloseupSvg(item) {
+    const c = item.compliance || {}, n = c.nutrition || {}, g = num(c.servingG);
+    if (c.nutritionImageUrl) return '<img src="' + h(c.nutritionImageUrl) + '" alt="Nutrition information: ' + h(item.name) + '">';
+    const ing = wrapSvg("Ingredients: " + (c.ingredients || ""), 70, 52, 460, 20, 25, 3, 400);
+    let y = 52 + ing.height + 20;
+    const t0 = y;
+    const rows = [["Energy (kcal)", "energyKcal"], ["Protein (g)", "proteinG"], ["Carbohydrate (g)", "carbohydrateG"], ["  Total sugars (g)", "totalSugarsG"],
+      ["  Added sugars (g)", "addedSugarsG"], ["Total fat (g)", "fatG"], ["  Saturated fat (g)", "saturatedFatG"], ["  Trans fat (g)", "transFatG"], ["Sodium (mg)", "sodiumMg"]];
+    const fmt = (v) => v == null ? "—" : String(Math.round(v * 10) / 10);
+    let body = '<text x="300" y="' + (y + 26) + '" text-anchor="middle" font-size="19" font-weight="700">Nutrition Information</text>' +
+      '<text x="84" y="' + (y + 52) + '" font-size="13" fill="#444">Approx. values</text><text x="372" y="' + (y + 52) + '" font-size="13" font-weight="700" text-anchor="end">Per ' + svgText(n.per || "100 g") + "</text>" +
+      '<text x="454" y="' + (y + 52) + '" font-size="13" font-weight="700" text-anchor="end">Per serve</text><text x="520" y="' + (y + 52) + '" font-size="13" font-weight="700" text-anchor="end">%RDA*</text>' +
+      '<line x1="72" y1="' + (y + 60) + '" x2="528" y2="' + (y + 60) + '" stroke="#1d3a6e" stroke-width="2"/>';
+    y += 84;
+    rows.forEach(([label, key]) => {
+      const v = n[key], serve = v == null || !g ? null : v * g / 100, rda = RDA[key] && serve != null ? Math.round(serve / RDA[key] * 100) + "%" : "";
+      body += '<text x="' + (label.startsWith("  ") ? 100 : 84) + '" y="' + y + '" font-size="16">' + svgText(label.trim()) + "</text>" +
+        '<text x="372" y="' + y + '" font-size="16" text-anchor="end">' + fmt(v) + '</text><text x="454" y="' + y + '" font-size="16" text-anchor="end">' + (serve == null ? "—" : fmt(serve)) + "</text>" +
+        '<text x="520" y="' + y + '" font-size="16" text-anchor="end">' + rda + '</text><line x1="72" y1="' + (y + 8) + '" x2="528" y2="' + (y + 8) + '" stroke="#1d3a6e" stroke-width=".8"/>';
+      y += 27;
+    });
+    body = '<rect x="72" y="' + t0 + '" width="456" height="' + (y - t0 - 19) + '" fill="none" stroke="#1d3a6e" stroke-width="2"/>' + body +
+      '<text x="84" y="' + (y + 12) + '" font-size="12.5" fill="#444">*Approximate values. Serve size: ' + svgText(c.serving || "—") + ". %RDA per serve, based on 2,000 kcal.</text>";
+    y += 34;
+    const lic = /^\d{14}$/.test(String(c.manufacturerFssai || "")) ? c.manufacturerFssai : "1XXXXXXXXXXXXX";
+    let bars = "", bx = 196;
+    const seed = String(item.id).split("").reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 9973, 7);
+    for (let i = 0; i < 64; i++) { const wdt = 1 + ((seed * (i + 3)) % 3); if ((seed + i * 7) % 2 === 0) bars += '<rect x="' + bx + '" y="' + (y + 116) + '" width="' + wdt + '" height="48" fill="#111"/>'; bx += wdt + 0.9; }
+    const H = y + 196;
+    return '<svg viewBox="0 0 600 ' + H + '" role="img" aria-label="Nutrition information and FSSAI licence: ' + svgText(item.name) + '" class="pack closeup" font-family="Helvetica,Arial,sans-serif" fill="#1d3a6e">' +
+      '<rect width="600" height="' + H + '" fill="#fff"/>' + ing.svg.replace(">Ingredients: ", '><tspan font-weight="700">Ingredients:</tspan> ') + body +
+      '<image href="/img/fssai-logo.png" x="240" y="' + (y + 0) + '" width="120" height="59"/>' +
+      '<text x="300" y="' + (y + 98) + '" text-anchor="middle" font-size="28" font-weight="700" fill="#1d3a6e">Lic. No. ' + svgText(lic) + "</text>" + bars +
+      '<text x="300" y="' + (y + 182) + '" text-anchor="middle" font-size="12" fill="#a0522d">' + (c.sampleValues ? "SAMPLE LABEL · NOT A REAL PRODUCT" : "") + "</text></svg>";
+  }
+  // Back of pack, laid out like an Indian retail label: ingredients, nutrition
+  // per 100 g and per serve with %RDA (FSS (Labelling and Display) Regulations,
+  // 2020), allergens, storage, manufacturer, FSSAI licence, and the Legal
+  // Metrology declarations (net quantity, MRP incl. of all taxes, unit sale
+  // price, batch, date of manufacture, best before, customer care).
+  const RDA = {energyKcal: 2000, fatG: 67, saturatedFatG: 22, transFatG: 2, addedSugarsG: 50, sodiumMg: 2000};
+  function parseQty(text) {
+    const m = String(text || "").match(/([\d.]+)\s*(kg|g|l|ml)\b/i);
+    if (!m) return null;
+    const v = Number(m[1]), u = m[2].toLowerCase();
+    return u === "kg" ? {base: v * 1000, unit: "g"} : u === "l" ? {base: v * 1000, unit: "ml"} : {base: v, unit: u};
+  }
+  function unitSalePrice(item) {
+    const c = item.compliance || {}, q = parseQty(c.netQuantity), mrp = num(c.mrp);
+    if (!q || !mrp) return "";
+    const big = q.unit === "g" ? "kg" : "L";
+    return q.base >= 1000 ? rs(Math.round(mrp / q.base * 1000 * 100) / 100) + " per " + big : rs(Math.round(mrp / q.base * 100) / 100) + " per " + q.unit;
+  }
+  function wrapSvg(text, x, y, width, size, lineGap, maxLines, weight) {
+    // Estimated advance per character in Helvetica: capitals and digits are wider.
+    const est = (t) => [...t].reduce((sum, ch) => sum + size * (/[A-Z0-9]/.test(ch) ? 0.68 : /[ .,;:()'il]/.test(ch) ? 0.3 : 0.55), 0);
+    const words = String(text || "").split(/\s+/), lines = []; let line = "";
+    words.forEach((w) => { const next = (line + " " + w).trim(); if (line && est(next) > width) { lines.push(line); line = w; } else line = next; });
+    if (line) lines.push(line);
+    const shown = lines.slice(0, maxLines);
+    if (lines.length > maxLines) shown[maxLines - 1] = shown[maxLines - 1].replace(/\s*\S*$/, "") + "…";
+    return {svg: shown.map((l, i) => '<text x="' + x + '" y="' + (y + i * lineGap) + '" font-size="' + size + '"' + (weight ? ' font-weight="' + weight + '"' : "") + ">" + svgText(l) + "</text>").join(""), height: shown.length * lineGap};
+  }
+  function backPackSvg(item) {
+    const c = item.compliance || {}, n = c.nutrition || {}, g = num(c.servingG), veg = String(item.diet || "veg") === "veg", mark = veg ? "#1b8a3a" : "#8a3a1b";
+    if (c.backImageUrl) return '<img src="' + h(c.backImageUrl) + '" alt="Back of pack: ' + h(item.name) + '">';
+    const per = String(n.per || "100 g"), rows = [["Energy (kcal)", "energyKcal"], ["Protein (g)", "proteinG"], ["Carbohydrate (g)", "carbohydrateG"],
+      ["  Total sugars (g)", "totalSugarsG"], ["  Added sugars (g)", "addedSugarsG"], ["Total fat (g)", "fatG"], ["  Saturated fat (g)", "saturatedFatG"], ["  Trans fat (g)", "transFatG"], ["Sodium (mg)", "sodiumMg"]];
+    const fmt = (v) => v == null ? "—" : String(Math.round(v * 10) / 10);
+    let y = 74;
+    const table = rows.map(([label, key]) => {
+      const v = n[key], serve = v == null || !g ? null : v * g / 100, rda = RDA[key] && serve != null ? Math.round(serve / RDA[key] * 100) + "%" : "";
+      const row = '<text x="322" y="' + y + '" font-size="11.5"' + (label.startsWith("  ") ? ' fill="#5b4c3a"' : "") + ">" + svgText(label.trim()) + "</text>" +
+        '<text x="478" y="' + y + '" font-size="11.5" text-anchor="end">' + fmt(v) + "</text>" +
+        '<text x="534" y="' + y + '" font-size="11.5" text-anchor="end">' + (serve == null ? "—" : fmt(serve)) + "</text>" +
+        '<text x="584" y="' + y + '" font-size="11.5" text-anchor="end">' + rda + "</text>" +
+        '<line x1="316" y1="' + (y + 5) + '" x2="588" y2="' + (y + 5) + '" stroke="#d9cfbf" stroke-width="0.8"/>';
+      y += 19; return row;
+    }).join("");
+    let ly = 40;
+    const block = (title, body, lines) => { const w = wrapSvg(body, 16, ly + 15, 286, 11.5, 14.5, lines); const out = '<text x="16" y="' + ly + '" font-size="11" font-weight="700" letter-spacing=".6">' + svgText(title) + "</text>" + w.svg; ly += 18 + w.height + 6; return out; };
+    const left = block("INGREDIENTS", c.ingredients, 3) + block("ALLERGEN INFORMATION", c.allergens, 2) +
+      (c.directions ? block("DIRECTIONS & CAUTION", c.directions, 6) : "") + block("STORAGE", c.storage, 2) +
+      block("MFD. & PACKED BY", c.manufacturer, 2) + block("CUSTOMER CARE", "Write to the manufacturer at the address above, or SCRAVEIT: balaji@scraveit.in, +91 9652509409", 3);
+    const usp = unitSalePrice(item);
+    const top = Math.max(ly, y + 14) + 8, H = top + 112;
+    const foot = (dy) => top + dy;
+    return '<svg viewBox="0 0 600 ' + H + '" role="img" aria-label="Back of pack: ' + svgText(item.name) + ' — ingredients, nutrition information and statutory declarations" class="pack back" font-family="Helvetica,Arial,sans-serif" fill="#22190f">' +
+      '<rect width="600" height="' + H + '" fill="#fffdf8"/><rect x="6" y="6" width="588" height="' + (H - 12) + '" rx="10" fill="none" stroke="#c9bfb3" stroke-width="1.5"/>' +
+      wrapSvg(item.name + " · " + (c.brand || ""), 16, 24, 280, 13, 15, 1, 700).svg +
+      left +
+      '<rect x="312" y="16" width="278" height="' + (y - 4) + '" fill="none" stroke="#22190f" stroke-width="1.2"/>' +
+      '<text x="322" y="34" font-size="12.5" font-weight="700">NUTRITION INFORMATION</text>' +
+      '<text x="322" y="52" font-size="9.5" fill="#5b4c3a">Approx. values</text>' +
+      '<text x="478" y="52" font-size="9.5" text-anchor="end" font-weight="700">Per ' + svgText(per) + "</text>" +
+      '<text x="534" y="52" font-size="9.5" text-anchor="end" font-weight="700">Per serve</text>' +
+      '<text x="584" y="52" font-size="9.5" text-anchor="end" font-weight="700">%RDA*</text>' +
+      '<line x1="316" y1="58" x2="588" y2="58" stroke="#22190f" stroke-width="1.2"/>' + table +
+      '<text x="322" y="' + (y + 4) + '" font-size="9" fill="#5b4c3a">Serve size: ' + svgText(c.serving || "—") + ". *%RDA per serve, based on 2,000 kcal.</text>" +
+      '<line x1="12" y1="' + foot(0) + '" x2="588" y2="' + foot(0) + '" stroke="#c9bfb3"/>' +
+      '<text x="16" y="' + foot(20) + '" font-size="11"><tspan font-weight="700">Net Qty: </tspan>' + svgText(c.netQuantity || "") + '</text>' +
+      '<text x="16" y="' + foot(38) + '" font-size="11"><tspan font-weight="700">MRP ₹' + svgText(num(c.mrp).toFixed(2)) + "</tspan> (Incl. of all taxes)</text>" +
+      (usp ? '<text x="16" y="' + foot(56) + '" font-size="11"><tspan font-weight="700">Unit sale price: </tspan>' + svgText(usp) + "</text>" : "") +
+      '<text x="16" y="' + foot(74) + '" font-size="11"><tspan font-weight="700">Batch No.: </tspan>' + (c.sampleValues ? "SAMPLE" : "As printed") + '   <tspan font-weight="700">Mfd./Pkd.: </tspan>As printed</text>' +
+      '<text x="16" y="' + foot(92) + '" font-size="11"><tspan font-weight="700">Best before: </tspan>' + svgText(c.shelfLife || "") + "</text>" +
+      '<text x="306" y="' + foot(20) + '" font-size="11"><tspan font-weight="700">Country of origin: </tspan>' + svgText(c.countryOfOrigin || "India") + "</text>" +
+      '<rect x="306" y="' + foot(32) + '" width="20" height="20" fill="none" stroke="' + mark + '" stroke-width="2"/>' +
+      (veg ? '<circle cx="316" cy="' + foot(42) + '" r="5.5" fill="' + mark + '"/>' : '<path d="M316 ' + foot(35) + ' L323 ' + foot(48) + ' L309 ' + foot(48) + ' Z" fill="' + mark + '"/>') +
+      '<text x="334" y="' + foot(47) + '" font-size="11">' + (veg ? "Vegetarian" : "Non-vegetarian") + "</text>" +
+      '<image href="/img/fssai-logo.png" x="523" y="' + foot(16) + '" width="61" height="30"/>' +
+      '<text x="584" y="' + foot(64) + '" text-anchor="end" font-size="10.5">' + (/^\d{14}$/.test(String(c.manufacturerFssai || "")) ? "Lic. No. " + svgText(c.manufacturerFssai) : "Lic. No. 1XXXXXXXXXXXXX") + "</text>" +
+      (c.sampleValues ? '<text x="584" y="' + foot(92) + '" text-anchor="end" font-size="9.5" fill="#a0522d">SAMPLE LABEL · NOT A REAL PRODUCT</text>' : "") +
+      "</svg>";
+  }
+  function goodsProductPage(store, item) {
+    const c = item.compliance || {}, off = offPercent(item), veg = String(item.diet || "veg") === "veg", usp = unitSalePrice(item);
+    const views = [["Front of pack", packSvg(item)], ["Back of pack", packBackSvg(item)], ["Nutrition information and licence", nutritionCloseupSvg(item)]];
+    app.innerHTML =
+      '<nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Home</a><span>/</span><a href="/shop/store/' + encodeURIComponent(store.id) + '">' + h(store.name) + "</a><span>/</span><span>" + h(item.name) + "</span></nav>" +
+      '<div class="gp"><div class="gp-gallery"><div class="gp-view" id="gp-view">' + views[0][1] + "</div>" +
+      (views.length > 1 ? '<div class="gp-thumbs" role="tablist" aria-label="Product images">' + views.map(([label, markup], i) =>
+        '<button type="button" class="gp-thumb" role="tab" aria-selected="' + (i === 0) + '" data-view="' + i + '" aria-label="' + h(label) + '">' + markup + "</button>").join("") + "</div>" : "") +
+      '<p class="gp-caption">Front of pack, back of pack, and nutrition information with FSSAI licence' + (c.sampleValues ? " — sample pack drawn from the declared values below, not a real product" : "") +
+      ". Tap an image to enlarge it.</p></div>" +
+      '<div class="gp-info"><p class="gp-brand">' + h(c.brand || "") + "</p><h1>" + h(item.name) + '</h1><p class="gp-qty">' + h(c.netQuantity || "") + "</p>" +
+      '<span class="p-eta">' + h(store.etaMin) + " MINS</span>" +
+      '<div class="gp-price"><b>' + rs(item.price) + "</b>" + (num(c.mrp) > item.price ? "<s>MRP " + rs(c.mrp) + "</s>" : '<span class="gp-mrp">MRP ' + rs(c.mrp || item.price) + "</span>") +
+      (off ? '<span class="p-off inline">' + off + "% OFF</span>" : "") + '</div><p class="gp-tax">(Inclusive of all taxes)' + (usp ? " · Unit sale price " + h(usp) : "") + "</p>" +
+      '<p class="gp-fees">Our price is never above the MRP. Delivery, platform and maintenance fees are SCRAVEIT\'s own charges, shown separately in your bill before you pay.</p>' +
+      '<div class="gp-actions">' + stepperFor(store, item, true) + "</div>" +
+      sampleNotice(store) +
+      '<section class="gp-sec"><h2>Highlights</h2><dl class="facts">' +
+      factRow("Brand", c.brand ? h(c.brand) : "") +
+      factRow("Product type", c.foodCategory ? h(c.foodCategory) : "") +
+      factRow("Key features", item.description ? h(item.description) : "") +
+      factRow("Ingredients", c.ingredients ? h(c.ingredients) : "") +
+      factRow("Allergen information", c.allergens ? h(c.allergens) : "") +
+      factRow("Dietary preference", dietMark(item.diet) + " " + (veg ? "Vegetarian" : "Non-vegetarian")) +
+      "</dl>" + nutritionTable(c.nutrition) + "</section>" +
+      '<section class="gp-sec"><h2>Information</h2><dl class="facts">' +
+      factRow("Net quantity", c.netQuantity ? h(c.netQuantity) : "") +
+      factRow("MRP (incl. of all taxes)", c.mrp ? rs(c.mrp) : "") +
+      factRow("Shelf life", c.shelfLife ? h(c.shelfLife) : "") +
+      factRow("Best before / use by", c.bestBefore ? h(c.bestBefore) : "") +
+      factRow("Storage instructions", c.storage ? h(c.storage) : "") +
+      factRow("Country of origin", c.countryOfOrigin ? h(c.countryOfOrigin) : "") +
+      factRow("Manufacturer / packer name and address", c.manufacturer ? h(c.manufacturer) : "") +
+      factRow("Manufacturer FSSAI licence", c.manufacturerFssai ? h(c.manufacturerFssai) : "") +
+      factRow("Customer care details", c.customerCare ? h(c.customerCare) : "") +
+      factRow("Seller name", h(store.name)) +
+      factRow("Seller address", store.address ? h(store.address) : "") +
+      factRow("Seller FSSAI licence", c.sellerFssai ? h(c.sellerFssai) : (store.sellerFssai ? h(store.sellerFssai) : "")) +
+      factRow("Return policy", 'Not returnable once delivered. Damaged, expired or wrong items are refunded in full — see <a href="/refunds">refunds</a>.') +
+      "</dl></section></div></div>" + goodsDisclaimer(store);
+  }
+  document.addEventListener("click", (event) => {
+    if (event.target.closest(".gp-view")) {
+      const box = document.createElement("div");
+      box.className = "modal-backdrop zoom"; box.setAttribute("data-close-zoom", "1");
+      box.innerHTML = '<div class="zoom-box" role="dialog" aria-modal="true" aria-label="Enlarged product image"><button type="button" class="modal-close" data-close-zoom="1" aria-label="Close">×</button>' + event.target.closest(".gp-view").innerHTML + "</div>";
+      document.body.appendChild(box); document.body.classList.add("modal-open");
+      return;
+    }
+    const zoom = event.target.closest("[data-close-zoom]");
+    if (zoom && (zoom.classList.contains("modal-close") || event.target === zoom)) { document.querySelector(".modal-backdrop.zoom")?.remove(); document.body.classList.remove("modal-open"); return; }
+    const thumb = event.target.closest(".gp-thumb");
+    if (!thumb) return;
+    const view = document.getElementById("gp-view");
+    if (view) view.innerHTML = thumb.innerHTML;
+    document.querySelectorAll(".gp-thumb").forEach((t) => t.setAttribute("aria-selected", String(t === thumb)));
+  });
   async function viewItem(storeId, itemId) {
     await loadStores();
     const store = storeById(storeId);
+    if (store && store.storeType === "restaurant") { state.openDish = {storeId, itemId}; return viewStore(storeId); }
     const items = await loadMenu(store);
-    const item = items.find((i) => i.id === itemId);
+    const item = store && items.find((i) => i.id === itemId);
     if (!store || !item) { app.innerHTML = '<p class="s-empty">This product is not available. <a href="/shop">Back to the shop</a></p>'; return; }
     setTitle(item.name + " · " + store.name);
     setKindBar(store.storeType);
-    const img = item.imageUrl || item.imageThumbUrl;
-    const mrp = item.compliance && num(item.compliance.mrp);
-    const variants = Array.isArray(item.variants) ? item.variants : [];
-    app.innerHTML =
-      '<nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Shop</a><span>/</span><a href="/shop/store/' + encodeURIComponent(store.id) + '">' + h(store.name) + "</a><span>/</span><span>" + h(item.name) + "</span></nav>" +
-      '<div class="pdp"><div><div class="pdp-media">' + (img ? '<img src="' + h(img) + '" alt="' + h(item.name) + '">' : '<span class="glyph" aria-hidden="true">' + h(item.name.charAt(0)) + "</span>") + "</div>" +
-      (item.sample ? '<div class="notice warn" style="margin-top:14px"><div><strong>Sample listing.</strong>This page shows how every item will be displayed on SCRAVEIT. It cannot be ordered yet.</div></div>' : "") + "</div>" +
-      "<div><p class=\"eyebrow\">" + h(KIND_LABEL[store.storeType]) + " · " + h(item.category || "") + "</p><h1>" + dietMark(item.diet) + "<span>" + h(item.name) + "</span></h1>" +
-      '<p class="pdp-sub">Sold by <a href="/shop/store/' + encodeURIComponent(store.id) + '">' + h(store.name) + "</a></p>" +
-      '<div class="pdp-price"><strong>' + rs(item.price) + "</strong>" + (mrp ? "<s>MRP " + rs(mrp) + "</s><small>incl. of all taxes</small>" : "") + "</div>" +
-      (variants.length ? '<div class="field" style="max-width:320px"><label for="variant">Choose</label><select class="input" id="variant">' +
-        variants.map((v) => '<option value="' + h(v.id || v.name) + '">' + h(v.name) + " · " + rs(v.price) + "</option>").join("") + "</select></div>" : "") +
-      '<div class="pdp-actions">' + (item.available === false ? '<span class="pill closed">Currently unavailable</span>' :
-        '<button type="button" class="btn" data-cart="1" data-store="' + h(store.id) + '" data-item="' + h(item.id) + '">Add to cart</button><a class="btn ghost" href="/shop/cart">Go to cart</a>') + "</div>" +
-      labelPanel(store, item) + "</div></div>";
+    goodsProductPage(store, item);
   }
-
   // ---------------------------------------------------------------- cart
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-cart]");
@@ -550,19 +885,23 @@
   const DEMO_FLOW = [["Order placed", "We've received your order."], ["Accepted", "The seller has accepted your order."],
     ["Preparing", "Your order is being prepared and packed."], ["Out for delivery", "Your delivery partner is on the way."], ["Delivered", "Delivered. Enjoy!"]];
   function demoBill(store, subtotal) {
-    const deliveryFee = num(store.deliveryFee, store.storeType === "restaurant" ? 29 : 25);
-    const platformFee = num(store.platformFee, store.storeType === "restaurant" ? 15 : 10);
-    const food = store.storeType === "restaurant";
+    const food = store.storeType === "restaurant", goodsFees = CFG.goodsFees || {};
+    const deliveryFee = num(store.deliveryFee, food ? 29 : 25);
+    const platformFee = food ? num(store.platformFee, 15) : num(goodsFees.platformFee, 14.99);
+    // Grocery and dairy: items at or below MRP; Scraveit's service is billed as separate, disclosed fees.
+    const maintenanceFee = food ? 0 : num(goodsFees.maintenanceFee, 0);
     const tax = food ? Math.round(subtotal * 0.05 * 100) / 100 : 0;
-    return {subtotal, deliveryFee, platformFee, tax, taxLabel: food ? "GST on food (5%)" : "Taxes (included in MRP)",
-      total: Math.round((subtotal + deliveryFee + platformFee + tax) * 100) / 100};
+    return {subtotal, deliveryFee, platformFee, maintenanceFee, tax, taxLabel: food ? "GST on food (5%)" : "Taxes (included in MRP)",
+      total: Math.round((subtotal + deliveryFee + platformFee + maintenanceFee + tax) * 100) / 100};
   }
   function demoBanner() {
     return '<div class="notice warn demo-banner"><div><strong>Demo checkout.</strong>This shows every step of ordering on SCRAVEIT. No order is placed, no payment is taken and no seller is contacted. Ordering opens once SCRAVEIT\'s FSSAI licence is issued.</div></div>';
   }
   function billMarkup(b) {
     return '<div class="bill-row"><span>Item total</span><span>' + rs(b.subtotal) + '</span></div><div class="bill-row"><span>Delivery fee</span><span>' + rs(b.deliveryFee) +
-      '</span></div><div class="bill-row"><span>Platform fee</span><span>' + rs(b.platformFee) + '</span></div><div class="bill-row"><span>' + h(b.taxLabel) + "</span><span>" +
+      '</span></div><div class="bill-row"><span>Platform fee (incl. GST)</span><span>' + rs(b.platformFee) + "</span></div>" +
+      (b.maintenanceFee ? '<div class="bill-row"><span>Maintenance fee (incl. GST)</span><span>' + rs(b.maintenanceFee) + "</span></div>" : "") +
+      '<div class="bill-row"><span>' + h(b.taxLabel) + "</span><span>" +
       (b.tax ? rs(b.tax) : "Included") + '</span></div><div class="bill-row total"><span>To pay</span><span>' + rs(b.total) + "</span></div>";
   }
   async function viewDemoCheckout() {
@@ -684,7 +1023,7 @@
   }
 
   // ---------------------------------------------------------------- boot
-  document.getElementById("footer-legal").innerHTML = h((CFG.company || {}).legalName || "SCRAVEIT PRIVATE LIMITED") + " · CIN " + h((CFG.company || {}).cin || "") + " · Registered office: " + h((CFG.company || {}).address || "") +
+  document.getElementById("footer-legal").innerHTML = h((CFG.company || {}).legalName || "SCRAVEIT PRIVATE LIMITED") + " · CIN " + h((CFG.company || {}).cin || "") + ((CFG.company || {}).gstin ? " · GSTIN " + h(CFG.company.gstin) : "") + " · Registered office: " + h((CFG.company || {}).address || "") +
     '<br><b>FSSAI:</b> ' + h((CFG.company || {}).fssaiStatus || "") + ' · Grievance officer: <a href="/grievance">details</a> · © ' + new Date().getFullYear() + " SCRAVEIT PRIVATE LIMITED";
   persistCart();
   if (auth) {

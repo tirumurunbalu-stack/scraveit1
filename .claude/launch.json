@@ -4,8 +4,32 @@
     {
       "name": "website",
       "runtimeExecutable": "firebase",
-      "runtimeArgs": ["serve", "--only", "hosting", "--project", "savrivo-app", "--port", "5055", "--config", "website/firebase.json"],
+      "runtimeArgs": [
+        "serve",
+        "--only",
+        "hosting",
+        "--project",
+        "savrivo-app",
+        "--port",
+        "5055",
+        "--config",
+        "website/firebase.json"
+      ],
       "port": 5055
+    },
+    {
+      "name": "customer-app",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5071",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "native_android/app/src/main/assets"
+      ],
+      "port": 5071
     }
   ]
 }

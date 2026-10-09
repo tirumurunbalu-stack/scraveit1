@@ -1500,7 +1500,11 @@ em, .display em, .page-title em { font-family: var(--font-serif); font-style: it
 .hero2-chip { justify-self: start; margin-top: 4px; border: 0; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; font-weight: 800; color: inherit; background: rgba(255,255,255,.5); cursor: pointer; }
 .hero2.dark .hero2-chip { background: rgba(255,255,255,.16); }
 .hero2-stage { position: relative; height: 160px; }
-.hero2-rider { position: absolute; inset: 0 -10px 10px -20px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+/* About 25% bigger than before: the rider's box reaches up and left into empty sky, so
+   nothing else in the header moves and the wheels still sit on the road. */
+.hero2-rider { position: absolute; inset: -34px -30px 6px -42px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+/* The rider's tap area reaches up toward the header; keep the header buttons on top of it. */
+.hero2-top, .hh2 { position: relative; z-index: 5; }
 .hero2-rider .hero-rider-canvas { width: 100%; height: 100%; display: block; }
 .hero2-road { position: absolute; left: -30px; right: -20px; bottom: 6px; height: 14px; border-radius: 999px; background: rgba(14,27,61,.12); overflow: hidden; }
 .hero2.dark .hero2-road { background: rgba(255,255,255,.12); }
@@ -1839,5 +1843,121 @@ body:has(.home-capsule) .toast-region{bottom:calc(164px + var(--safe-bottom))}
 .menu-notes { margin: 0; padding-left: 18px; display: grid; gap: 8px; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
 .menu-report { justify-self: start; padding-left: 0; color: var(--danger); }
 .menu-fssai { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 0; color: var(--ink-soft); font-size: 13px; }
-.menu-fssai .fssai-word { font: italic 700 15px/1 Georgia, "Times New Roman", serif; letter-spacing: .02em; text-decoration: underline; text-underline-offset: 3px; }
+.menu-fssai .fssai-logo { height: 20px; width: auto; display: block; }
 .about-chips input[type=radio] { position: absolute; opacity: 0; pointer-events: none; }
+
+/* "Use current location" at the top of the address picker. */
+.use-location{display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;border:1px solid color-mix(in srgb,var(--brand,#1f5eff),transparent 70%);border-radius:16px;background:color-mix(in srgb,var(--brand,#1f5eff),transparent 92%);color:var(--brand,#1f5eff);text-align:left;font:inherit;cursor:pointer}
+.use-location .grow{display:flex;flex-direction:column;gap:2px;min-width:0}
+.use-location strong{font-size:16px}
+.use-location small{color:var(--muted,#667085);font-size:13px}
+.bill-seller { border-top: 1px dashed var(--line, rgba(0,0,0,.12)); padding-top: 10px; margin-top: 6px; font-size: 12px; }
+
+/* Sealed-packet photo on the order screen */
+.packed-photo { display: block; width: 100%; padding: 0; border: 0; border-radius: 16px; overflow: hidden; background: var(--surface-container, #f1f1f4); cursor: zoom-in; }
+.packed-photo img { display: block; width: 100%; max-height: 240px; object-fit: cover; }
+.photo-viewer { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 16px; background: rgba(8, 10, 14, .92); }
+.photo-viewer img { max-width: 100%; max-height: 100%; border-radius: 12px; object-fit: contain; }
+.photo-viewer-close { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 16px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, .16); color: #fff; display: grid; place-items: center; }
+
+/* Daily meal plans */
+.meal-plan-img { width: 100%; height: 150px; object-fit: cover; border-radius: 14px; }
+.meal-price { display: grid; justify-items: end; text-align: right; }
+.meal-price strong { font-size: 20px; }
+.meal-price span { font-size: 12px; color: var(--muted, #6b7280); }
+.meal-veg { display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -1px; border: 1.5px solid #15803d; border-radius: 3px; background: radial-gradient(circle, #15803d 0 3px, transparent 3.5px); }
+.meal-menu summary { cursor: pointer; font-weight: 700; }
+.meal-menu ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.meal-days { display: flex; gap: 8px; overflow-x: auto; padding: 6px 0 2px; scrollbar-width: none; }
+.meal-day { flex: 0 0 auto; display: grid; gap: 2px; min-width: 76px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--outline, #d7dbe3); background: var(--surface, #fff); color: inherit; text-align: left; font: inherit; }
+.meal-day small { font-size: 11px; color: var(--muted, #6b7280); }
+.meal-day.skipped { opacity: .62; text-decoration: line-through; background: var(--surface-container, #f3f4f6); }
+.meal-day:disabled { opacity: .55; }
+.meal-day-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.meal-day-pick { position: relative; }
+.meal-day-pick input { position: absolute; opacity: 0; inset: 0; }
+.meal-day-pick span { display: inline-block; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--outline, #d7dbe3); font-weight: 650; }
+.meal-day-pick input:checked + span { background: var(--primary, #1f4fd8); border-color: var(--primary, #1f4fd8); color: #fff; }
+.meal-day-pick input:focus-visible + span { outline: 2px solid var(--primary, #1f4fd8); outline-offset: 2px; }
+
+/* Language switch on the welcome screen */
+.welcome2-top { position: relative; }
+.welcome2-lang { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); padding: 7px 14px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .55); background: rgba(255, 255, 255, .18); color: inherit; font: inherit; font-weight: 700; font-size: 14px; }
+html[lang="te"] body { font-family: var(--font-body, "DM Sans"), "Noto Sans Telugu", system-ui, sans-serif; }
+
+/* Friends & chat */
+.chat-list { display: grid; gap: 4px; }
+.chat-row { display: flex; align-items: center; gap: 14px; width: 100%; padding: 12px 8px; border: 0; border-radius: 16px; background: transparent; color: inherit; font: inherit; text-align: left; }
+.chat-row:not(.static):active, .chat-row:not(.static):hover { background: var(--surface); }
+.chat-row .grow { display: grid; gap: 2px; min-width: 0; }
+.chat-preview { font-size: 14px; color: var(--muted, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-meta { display: grid; justify-items: end; gap: 4px; font-size: 12px; color: var(--muted, #64748b); }
+.chat-unread { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 12px; font-weight: 800; display: grid; place-items: center; }
+.chat-avatar { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 18px; }
+.chat-avatar.tone0 { background: #dce6ff; color: #1f4fd8; }
+.chat-avatar.tone1 { background: #fde7d6; color: #c2410c; }
+.chat-avatar.tone2 { background: #dcfce7; color: #15803d; }
+.chat-requests { width: 100%; text-align: left; }
+.chat-code-card { text-align: left; }
+.chat-code { font-size: 32px; font-weight: 800; letter-spacing: 4px; color: var(--brand); }
+.chat-place-img { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; }
+.dm-wrap { display: flex; flex-direction: column; min-height: calc(100vh - 24px); gap: 10px; }
+.dm-messages { flex: 1; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 8px 2px 4px; }
+.dm-msg { max-width: 80%; display: grid; gap: 6px; }
+.dm-msg p { margin: 0; padding: 10px 14px; border-radius: 18px; line-height: 1.4; word-wrap: break-word; }
+.dm-msg.theirs { align-self: flex-start; }
+.dm-msg.theirs p { background: var(--surface); border: 1px solid var(--border); }
+.dm-msg.mine { align-self: flex-end; }
+.dm-msg.mine p { background: var(--brand); color: #fff; }
+.dm-seen { align-self: flex-end; font-size: 12px; color: var(--muted, #64748b); }
+.dm-removed { align-self: center; font-size: 13px; font-style: italic; color: var(--muted, #64748b); }
+.dm-card { display: grid; grid-template-columns: 72px 1fr; gap: 12px; padding: 10px; border-radius: 18px; background: var(--surface); border: 1px solid var(--border); color: var(--ink); }
+.dm-card img { width: 72px; height: 72px; border-radius: 12px; object-fit: cover; }
+.dm-card small { color: var(--muted, #64748b); }
+.dm-composer { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); background: var(--canvas); }
+.dm-composer .input { flex: 1; border-radius: 999px; }
+.dm-food { width: 44px; height: 44px; border-radius: 50%; border: 0; background: #fde7d6; font-size: 20px; }
+
+/* Chats inbox, Instagram-style */
+.ig-search { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 46px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted, #64748b); }
+.ig-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 16px; color: var(--ink); }
+.ig-friends { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 6px; scrollbar-width: none; }
+.ig-friends::-webkit-scrollbar { display: none; }
+.ig-friend { flex: 0 0 auto; width: 72px; display: grid; justify-items: center; gap: 6px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; }
+.ig-friend span:last-child { max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-avatar.big { width: 58px; height: 58px; font-size: 22px; }
+.chat-avatar.add { background: var(--surface); border: 2px dashed var(--border); color: var(--brand); }
+.ig-head { display: flex; align-items: baseline; justify-content: space-between; }
+.ig-row { padding: 10px 4px; }
+.ig-row strong.soft { font-weight: 600; }
+.chat-preview.bold { font-weight: 700; color: var(--ink); }
+.ig-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--brand); flex: 0 0 auto; }
+.ig-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; padding: 0; }
+.ig-open .grow { display: grid; gap: 2px; min-width: 0; }
+
+/* Message reactions */
+.dm-msg { position: relative; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.dm-reacts { justify-self: end; margin-top: -10px; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); font-size: 15px; line-height: 1.4; box-shadow: 0 2px 6px rgba(15,23,42,.08); }
+.dm-msg.theirs .dm-reacts { justify-self: start; }
+.react-row { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.react-pick { width: 52px; height: 52px; border-radius: 50%; border: 0; background: var(--surface); font-size: 28px; }
+.react-pick.on { background: var(--brand-soft); outline: 2px solid var(--brand); }
+
+/* Chat profile: photo, name, username */
+.chat-avatar.photo { object-fit: cover; padding: 0; background: var(--surface); }
+.chat-avatar.huge { width: 76px; height: 76px; font-size: 30px; }
+.chat-me { display: flex; align-items: center; gap: 16px; }
+.chat-me-photo { position: relative; flex: 0 0 auto; border: 0; padding: 0; background: transparent; border-radius: 50%; }
+.chat-me-cam { position: absolute; right: -2px; bottom: -2px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--brand); color: #fff; border: 2px solid var(--surface); }
+.chat-radio { width: 100%; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: inherit; font: inherit; text-align: left; }
+.chat-radio-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border); flex: 0 0 auto; }
+.chat-radio.on { border-color: var(--brand); }
+.chat-radio.on .chat-radio-dot { border: 6px solid var(--brand); }
+
+/* A lighter back button: just the arrow, so it never crowds the page title. */
+.back-button { flex: none; width: 40px; height: 40px; margin-left: -8px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; }
+.back-button:active { background: var(--brand-soft); }
+.topbar .topbar-title { min-width: 0; }
+
+.hh2-avatar { overflow: hidden; padding: 0; }
+.hh2-photo { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
