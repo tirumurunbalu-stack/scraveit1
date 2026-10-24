@@ -24,6 +24,8 @@ functions/.operational-projections-backfill.checkpoint.json.tmp
 *.jks
 *.p12
 *.pem
+# Public test certificate (no private key) for the Aadhaar QR test
+!functions/test/fixtures/aadhaar/test-certificate.pem
 *.key
 
 # Firebase Functions generated/install outputs
