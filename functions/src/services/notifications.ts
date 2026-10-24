@@ -653,6 +653,41 @@ export async function notifyUserChat(input: {uid: string; key: string; title: st
   });
 }
 
+/**
+ * A friend is calling. Data-only and high priority, so the app's own code always runs and shows a
+ * ringing call notification with Answer/Decline, even when the app is closed. Useless after 40 s.
+ */
+export async function notifyCallIncoming(input: {uid: string; callId: string; pairId: string; kind: "audio" | "video"; fromName: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_CALL",
+    aggregateType: "call",
+    aggregateId: input.callId.slice(0, 120),
+    deduplicationKey: `customer-call:${input.callId}:ring`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      data: {type: "CALL_INCOMING", callId: input.callId, pairId: input.pairId, kind: input.kind, fromName: input.fromName.slice(0, 60)},
+      android: {priority: "high", ttl: 40_000},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** The call stopped ringing: the phone removes the ringing notification (and shows "Missed call" if it was missed). */
+export async function notifyCallEnded(input: {uid: string; callId: string; pairId: string; missed: boolean; kind: "audio" | "video"; fromName: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_CALL",
+    aggregateType: "call",
+    aggregateId: input.callId.slice(0, 120),
+    deduplicationKey: `customer-call:${input.callId}:end`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      data: {type: "CALL_ENDED", callId: input.callId, pairId: input.pairId, missed: input.missed ? "1" : "0", kind: input.kind, fromName: input.fromName.slice(0, 60), route: `dm:${input.pairId}`},
+      android: {priority: "high"},
+      apns: {headers: {"apns-priority": "5"}, payload: {aps: {}}},
+    }),
+  });
+}
+
 /** A reminder about items left in the cart (cartReminders.ts). Offers channel, so it can be muted in phone settings. */
 export async function notifyCartReminder(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
   await enqueueAndAttempt({

@@ -2609,3 +2609,80 @@ body:has(.kind-nav):has(.floating-cart) .toast-region, body:has(.kind-nav):has(.
 .se-thumb { width: 74px; }
 .se-thumb-img { width: 64px; height: 80px; }
 .se-thumb-name { max-width: 74px; font-size: 11px; letter-spacing: -.01em; }
+
+/* ===== Voice and video calls ===== */
+.call-ui { position: fixed; inset: 0; z-index: 300; overflow: hidden; background: #0b1020; color: #fff; font-family: var(--font-body); touch-action: none; animation: call-in .28s ease-out both; }
+@keyframes call-in { from { opacity: 0; transform: scale(1.02); } }
+.call-backdrop { position: absolute; inset: -60px; background: radial-gradient(120% 80% at 50% 20%, #24408f 0%, #0b1020 70%) center / cover no-repeat; filter: blur(42px) brightness(.5) saturate(1.25); transform: scale(1.1); }
+.call-ui.video .call-backdrop { filter: blur(42px) brightness(.35); }
+.call-remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; opacity: 0; transition: opacity .35s ease; }
+.call-ui.video.st-live .call-remote, .call-ui.video.st-reconnecting .call-remote { opacity: 1; }
+.call-ui.audio .call-remote { width: 1px; height: 1px; opacity: 0; }
+.call-remote-off { position: absolute; inset: 0; display: none; place-items: center; background: rgba(11,16,32,.75); }
+.call-ui.video.remote-cam-off.st-live .call-remote-off { display: grid; }
+.call-fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 6; }
+
+.call-top { position: absolute; left: 0; right: 0; top: calc(var(--safe-top, 0px) + 54px); z-index: 4; display: grid; justify-items: center; gap: 8px; padding: 0 24px; text-align: center; transition: top .3s ease, gap .3s ease; }
+.call-face { position: relative; width: 116px; height: 116px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(140deg, #4f7dff, #8b5cf6); font-size: 44px; font-weight: 800; box-shadow: 0 18px 50px rgba(0,0,0,.45); }
+.call-face img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.call-face.big { width: 140px; height: 140px; font-size: 54px; }
+.call-ui.st-incoming .call-face::before, .call-ui.st-calling .call-face::before, .call-ui.st-incoming .call-face::after, .call-ui.st-calling .call-face::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(255,255,255,.55); animation: call-ring 2s ease-out infinite; }
+.call-ui.st-incoming .call-face::after, .call-ui.st-calling .call-face::after { animation-delay: 1s; }
+@keyframes call-ring { from { transform: scale(1); opacity: .9; } to { transform: scale(1.75); opacity: 0; } }
+.call-name { font-size: 28px; font-weight: 800; letter-spacing: -.01em; text-shadow: 0 2px 14px rgba(0,0,0,.4); }
+.call-status { font-size: 16px; color: rgba(255,255,255,.78); font-variant-numeric: tabular-nums; text-shadow: 0 1px 8px rgba(0,0,0,.45); }
+/* Live video: a slim name bar instead of the big portrait. */
+.call-ui.video.st-live .call-top, .call-ui.video.st-reconnecting .call-top { top: calc(var(--safe-top, 0px) + 14px); gap: 2px; }
+.call-ui.video.st-live .call-top .call-face, .call-ui.video.st-reconnecting .call-top .call-face { display: none; }
+.call-ui.video.st-live .call-name, .call-ui.video.st-reconnecting .call-name { font-size: 18px; }
+.call-ui.video.st-live .call-status { font-size: 13px; }
+.call-ui.st-reconnecting .call-status { color: #fde68a; }
+.call-ui.st-ended .call-status { font-size: 18px; color: #fff; }
+
+/* Your own camera: full screen while it rings, then a draggable corner window. */
+.call-self { position: absolute; z-index: 5; right: 16px; top: calc(var(--safe-top, 0px) + 90px); width: min(30vw, 132px); aspect-ratio: 3 / 4; object-fit: cover; border-radius: 20px; background: #111827; box-shadow: 0 12px 34px rgba(0,0,0,.5), 0 0 0 1.5px rgba(255,255,255,.18); transition: left .25s ease, top .25s ease, width .3s ease, border-radius .3s ease, inset .3s ease; }
+.call-self.dragging { transition: none; transform-origin: center; }
+.call-ui.mirror .call-self { transform: scaleX(-1); }
+.call-ui.audio .call-self { display: none; }
+.call-ui.video.st-calling .call-self, .call-ui.video.st-connecting .call-self { inset: 0; width: 100%; height: 100%; border-radius: 0; box-shadow: none; z-index: 1; }
+.call-ui.video.st-incoming .call-self { display: none; }
+.call-ui.cam-off .call-self { opacity: .25; }
+
+.call-controls { position: absolute; left: 0; right: 0; bottom: calc(var(--safe-bottom, 0px) + 26px); z-index: 7; display: flex; justify-content: center; padding: 0 14px; }
+.call-row { display: flex; gap: 12px; padding: 12px 14px; border-radius: 32px; background: rgba(15,23,42,.42); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.call-btn { display: grid; justify-items: center; gap: 6px; border: 0; background: none; color: #fff; padding: 0; font: inherit; }
+.call-btn-icon { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.16); transition: transform .12s ease, background .15s ease; }
+.call-btn:active .call-btn-icon { transform: scale(.92); }
+.call-btn.on .call-btn-icon { background: #fff; color: #0b1020; }
+.call-btn.red .call-btn-icon { background: #ff3b30; color: #fff; }
+.call-btn.green .call-btn-icon { background: #34c759; color: #fff; animation: call-answer 1.4s ease-in-out infinite; }
+@keyframes call-answer { 0%, 100% { box-shadow: 0 0 0 0 rgba(52,199,89,.6); } 50% { box-shadow: 0 0 0 16px rgba(52,199,89,0); } }
+.call-btn svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.call-btn small { font-size: 12px; font-weight: 600; color: rgba(255,255,255,.85); text-shadow: 0 1px 6px rgba(0,0,0,.4); }
+.call-incoming { width: 100%; max-width: 360px; display: flex; justify-content: space-between; padding: 0 22px; }
+.call-incoming .call-btn-icon { width: 74px; height: 74px; }
+.call-incoming .call-btn svg { width: 32px; height: 32px; }
+.call-ui.st-ended .call-controls { display: none; }
+
+.call-react { position: absolute; left: 12px; right: 12px; bottom: calc(var(--safe-bottom, 0px) + 136px); z-index: 7; display: none; gap: 6px; overflow-x: auto; padding: 10px; border-radius: 26px; background: rgba(15,23,42,.55); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); scrollbar-width: none; }
+.call-react::-webkit-scrollbar { display: none; }
+.call-ui.react-open .call-react { display: flex; animation: vn-rise .18s ease-out both; }
+.call-react button { flex: 0 0 auto; width: 76px; display: grid; justify-items: center; gap: 4px; border: 0; border-radius: 18px; padding: 8px 4px; background: rgba(255,255,255,.08); color: #fff; font: inherit; }
+.call-react button:active { transform: scale(.94); }
+.call-react span { font-size: 30px; line-height: 1.1; }
+.call-react small { font-size: 10.5px; line-height: 1.2; color: rgba(255,255,255,.75); text-align: center; }
+.call-hint { position: absolute; left: 50%; bottom: calc(var(--safe-bottom, 0px) + 136px); z-index: 7; transform: translateX(-50%); max-width: 90%; padding: 9px 16px; border-radius: 999px; background: rgba(15,23,42,.55); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); font-size: 13.5px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+.call-hint:empty { display: none; }
+.call-hint.fade { animation: call-hint 7s ease forwards; }
+@keyframes call-hint { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+.call-ui.react-open .call-hint { display: none; }
+
+/* A call in the chat thread */
+.dm-msg.call-only { align-self: center; max-width: 100%; }
+.call-line { display: flex; align-items: center; gap: 12px; padding: 10px 16px 10px 10px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; }
+.call-line-icon { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: rgba(20,96,240,.1); color: var(--brand); }
+.call-line.missed .call-line-icon { background: #fee2e2; color: #dc2626; }
+.call-line-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; }
+.call-line strong { display: block; font-size: 14.5px; }
+.call-line.missed strong { color: #dc2626; }
+.call-line small { font-size: 12px; color: var(--muted, #64748b); }

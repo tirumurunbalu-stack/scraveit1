@@ -1,0 +1,4 @@
+MediaPipe Tasks Vision 1.0.1 (https://github.com/google-ai-edge/mediapipe)
+Copyright Google LLC. Licensed under the Apache License, Version 2.0.
+Used for on-device hand-gesture reactions in video calls. The gesture model is
+downloaded from Google's MediaPipe model storage on first use and runs on the phone.

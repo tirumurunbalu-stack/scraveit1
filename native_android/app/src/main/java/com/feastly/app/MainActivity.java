@@ -16,6 +16,13 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.location.Address;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.location.Geocoder;
 import android.location.Location;
 import android.location.LocationListener;
@@ -95,6 +102,14 @@ public class MainActivity extends ComponentActivity {
   private static final int MEDIA_REQUEST = 4405;
   /** The JS request waiting for the microphone/camera permission answer. */
   private String pendingMediaRequestId;
+  // Calls: whether the app is on screen (a ringing call shows in-app, not as a notification), the
+  // ringtone for a call arriving while it is, and the proximity lock that darkens the screen at the ear.
+  private static volatile boolean visible;
+  static boolean isVisible() { return visible; }
+  private Ringtone callRingtone;
+  private Vibrator callVibrator;
+  private PowerManager.WakeLock proximityLock;
+  private boolean callActive;
   private static final String ORDER_CHANNEL = CustomerMessagingService.ORDER_CHANNEL;
   private static final String TRUSTED_HOST = "appassets.androidplatform.net";
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
@@ -375,7 +390,10 @@ public class MainActivity extends ComponentActivity {
     String lower = path.toLowerCase(Locale.US);
     if (lower.endsWith(".html")) return "text/html";
     if (lower.endsWith(".css")) return "text/css";
-    if (lower.endsWith(".js")) return "application/javascript";
+    // Module scripts (.mjs) must be served as JavaScript or the browser refuses them; .wasm streams faster typed.
+    if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript";
+    if (lower.endsWith(".wasm")) return "application/wasm";
+    if (lower.endsWith(".woff2")) return "font/woff2";
     if (lower.endsWith(".json")) return "application/json";
     if (lower.endsWith(".svg")) return "image/svg+xml";
     if (lower.endsWith(".png")) return "image/png";
@@ -540,7 +558,7 @@ public class MainActivity extends ComponentActivity {
   static final java.util.Set<String> MEAL_PLAN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
       "subscribeMealPlan", "updateMealSubscription"));
   static final java.util.Set<String> SOCIAL_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
-      "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
+      "callIceServers", "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
       "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
       "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
       "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou"));
@@ -906,6 +924,34 @@ public class MainActivity extends ComponentActivity {
         if (pendingMediaRequestId != null) publishMediaPermission(pendingMediaRequestId);
         pendingMediaRequestId = requestId;
         requestPermissions(need.toArray(new String[0]), MEDIA_REQUEST);
+      });
+    }
+
+    /**
+     * Phone side of a call. payload: {ring, active, speaker, video, dismissCallId, background}.
+     * ring plays the phone's ringtone; active switches to call audio (earpiece unless speaker),
+     * keeps the screen on and, for voice calls at the ear, turns it off with the proximity sensor.
+     */
+    @JavascriptInterface public void callAudio(String requestId, String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          JSONObject p = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          String dismiss = p.optString("dismissCallId", "");
+          if (!dismiss.isEmpty()) {
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null) manager.cancel(CustomerMessagingService.callNotificationId(dismiss));
+          }
+          if (p.has("ring")) setCallRinging(p.optBoolean("ring", false));
+          if (p.has("active")) setCallActive(p.optBoolean("active", false), p.optBoolean("speaker", false), p.optBoolean("video", false));
+          JSONObject result = new JSONObject();
+          result.put("ok", true);
+          publishNativeSuccess(requestId, "callAudio", result);
+          if (p.optBoolean("background", false)) moveTaskToBack(true);
+        } catch (Exception error) {
+          FirebaseCrashlytics.getInstance().recordException(error);
+          publishNativeFailure(requestId, "callAudio", "CALL_AUDIO_FAILED", "Call audio isn’t available.");
+        }
       });
     }
 
@@ -1361,8 +1407,14 @@ public class MainActivity extends ComponentActivity {
     super.onStop();
   }
 
+  @Override protected void onPause() {
+    visible = false;
+    super.onPause();
+  }
+
   @Override protected void onResume() {
     super.onResume();
+    visible = true;
     openedOwnScreen = false;
     CartNudge.cancel(this);
     deliverPendingPushEvent();
@@ -1618,6 +1670,64 @@ public class MainActivity extends ComponentActivity {
         .replace("\n", "\\n").replace("\r", "");
   }
 
+  private void setCallRinging(boolean on) {
+    try {
+      if (callRingtone != null) { callRingtone.stop(); callRingtone = null; }
+      if (callVibrator != null) { callVibrator.cancel(); callVibrator = null; }
+      if (!on) return;
+      callRingtone = RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE));
+      if (callRingtone != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) callRingtone.setLooping(true);
+        callRingtone.play();
+      }
+      callVibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+      if (callVibrator != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        callVibrator.vibrate(VibrationEffect.createWaveform(new long[]{0, 900, 700}, 0));
+      }
+    } catch (Exception error) {
+      FirebaseCrashlytics.getInstance().recordException(error);
+    }
+  }
+
+  @SuppressWarnings("deprecation")
+  private void setCallActive(boolean on, boolean speaker, boolean video) {
+    AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+    if (on) setCallRinging(false);
+    if (audio != null) {
+      audio.setMode(on ? AudioManager.MODE_IN_COMMUNICATION : AudioManager.MODE_NORMAL);
+      if (Build.VERSION.SDK_INT >= 31) {
+        if (on && speaker) {
+          for (AudioDeviceInfo device : audio.getAvailableCommunicationDevices()) {
+            if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) { audio.setCommunicationDevice(device); break; }
+          }
+        } else {
+          audio.clearCommunicationDevice();
+        }
+      } else {
+        audio.setSpeakerphoneOn(on && speaker);
+      }
+    }
+    setVolumeControlStream(on ? AudioManager.STREAM_VOICE_CALL : AudioManager.USE_DEFAULT_STREAM_TYPE);
+    if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    boolean wantProximity = on && !video && !speaker;
+    try {
+      if (wantProximity && proximityLock == null) {
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (power != null && power.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+          proximityLock = power.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "scraveit:call");
+          proximityLock.acquire(4 * 60 * 60 * 1000L);
+        }
+      } else if (!wantProximity && proximityLock != null) {
+        if (proximityLock.isHeld()) proximityLock.release();
+        proximityLock = null;
+      }
+    } catch (Exception error) {
+      FirebaseCrashlytics.getInstance().recordException(error);
+    }
+    callActive = on;
+  }
+
   private void publishMediaPermission(String requestId) {
     JSONObject result = new JSONObject();
     try {
@@ -1644,6 +1754,9 @@ public class MainActivity extends ComponentActivity {
   }
 
   @Override protected void onDestroy() {
+    visible = false;
+    setCallRinging(false);
+    if (callActive) setCallActive(false, false, false);
     handler.removeCallbacksAndMessages(null);
     stopLocationUpdates();
     if (callableClient != null) callableClient.close();

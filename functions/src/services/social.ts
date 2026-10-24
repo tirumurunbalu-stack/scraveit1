@@ -1,3 +1,4 @@
+import {callPreview} from "./calls";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {FieldValue} from "firebase-admin/firestore";
 import {randomInt} from "node:crypto";
@@ -450,11 +451,14 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
   const card = message.card as Rec | undefined;
   const preview = card ? (card.type === "photo" ? (masked ? `📷 ${masked.slice(0, 110)}` : "📷 Photo")
     : card.type === "voice" ? `🎤 Voice message (${voiceLength(card.ms)})`
+    : card.type === "call" ? callPreview(card)
     : card.type === "story" ? "📸 Shared a story" : `🍽 ${String(card.name ?? "A dish")}`) : masked.slice(0, 120);
   const {streak, milestone} = streakUpdate(pair, from, now);
   await friendships().doc(pairId).update({lastText: preview, lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
   if (milestone) await celebrateStreak({...pair, id: pairId}, milestone);
   const names = (pair.names ?? {}) as Record<string, string>;
+  // Call lines: the ringing/missed-call push already told them.
+  if (card && card.type === "call") return;
   await notifyUserChat({uid: to, key: `chat:${pairId}:${messageId}`, title: names[from] || "New message", body: preview, data: {route: `dm:${pairId}`}})
     .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));
 }

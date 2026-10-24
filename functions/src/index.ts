@@ -45,6 +45,7 @@ import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/google
 import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
 import {CASHFREE_SECRETS, CashfreeGateway, cashfreeCheckoutPage, liveCashfreeConfig} from "./services/cashfree";
+import {CALL_SECRETS, callIceServers as iceServersFor, onCallWritten as handleCallWritten} from "./services/calls";
 import {VOICE_AGENT_SECRETS, handleVoiceWebhook, liveDeps as voiceAgentDeps, startConfirmationCall} from "./services/voiceAgent";
 import {
   resolveRiderFaceReview,
@@ -1481,6 +1482,38 @@ export const onOrderCreated = onDocumentCreated({
     logger.info("NEW_ORDER_PUSH_REQUESTED", {orderId: order.id, restaurantId: order.restaurantId});
     await notifyRestaurantNewOrder(order);
   });
+});
+
+/** Relay (TURN) credentials for one voice/video call between friends. */
+export const callIceServers = onCall({
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 15,
+  memory: "256MiB",
+  maxInstances: 20,
+  secrets: CALL_SECRETS,
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to call."));
+  try {
+    return await iceServersFor(request.auth.uid);
+  } catch (error) {
+    throw asHttpsError(error);
+  }
+});
+
+/** A call started or stopped: ring the friend's phone, stop the ringing, log the call in the chat. */
+export const onCallWritten = onDocumentWritten({
+  document: "calls/{callId}",
+  region: REGION,
+  retry: false,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  maxInstances: 20,
+}, async (event) => {
+  const before = event.data?.before?.exists ? event.data.before.data() as Record<string, unknown> : null;
+  const after = event.data?.after?.exists ? event.data.after.data() as Record<string, unknown> : null;
+  await handleCallWritten(String(event.params.callId), before, after)
+    .catch((error) => logger.warn("CALL_TRIGGER_FAILED", {callId: event.params.callId, error: String(error)}));
 });
 
 /**

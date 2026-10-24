@@ -636,6 +636,51 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Voice and video calls between friends. The call document carries the WebRTC offer/answer
+    // and the status; each side adds its own network candidates. No audio or video is stored.
+    match /calls/{callId} {
+      function callPair(pid) { return get(/databases/$(database)/documents/friendships/$(pid)).data; }
+      function callMe() { return get(/databases/$(database)/documents/chatProfiles/$(request.auth.uid)).data; }
+      function inCall() { return request.auth != null && (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to); }
+      allow read: if inCall();
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(["from", "to", "pairId", "kind", "status", "offer", "createdAt"])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.to is string && request.resource.data.to != request.auth.uid
+        && callPair(request.resource.data.pairId).status == "accepted"
+        && request.auth.uid in callPair(request.resource.data.pairId).members
+        && request.resource.data.to in callPair(request.resource.data.pairId).members
+        && (callMe().status == "active" || (callMe().status == "suspended" && callMe().suspendedUntil < request.time.toMillis()))
+        && (callMe().minor != true || callMe().parentStatus == "approved")
+        && request.resource.data.kind in ["audio", "video"]
+        && request.resource.data.status == "ringing"
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.offer is map && request.resource.data.offer.keys().hasOnly(["type", "sdp"])
+        && request.resource.data.offer.sdp is string && request.resource.data.offer.sdp.size() <= 20000;
+      // Who, what and when the call started never change. The person called answers (or declines);
+      // either side ends it; the caller can give up while it rings.
+      allow update: if inCall()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "answer", "answeredAt", "endedAt", "endedBy"])
+        && request.resource.data.status in ["ringing", "accepted", "declined", "busy", "missed", "cancelled", "ended"]
+        && !(resource.data.status in ["declined", "busy", "missed", "cancelled", "ended"])
+        && (!("answer" in request.resource.data.diff(resource.data).affectedKeys()) || (request.auth.uid == resource.data.to
+              && request.resource.data.answer is map && request.resource.data.answer.keys().hasOnly(["type", "sdp"])
+              && request.resource.data.answer.sdp is string && request.resource.data.answer.sdp.size() <= 20000))
+        && (request.resource.data.status != "accepted" || request.auth.uid == resource.data.to)
+        && (!(request.resource.data.status in ["declined", "busy"]) || request.auth.uid == resource.data.to)
+        && (!(request.resource.data.status in ["missed", "cancelled"]) || request.auth.uid == resource.data.from);
+      allow delete: if false;
+      match /candidates/{candidateId} {
+        function theCall() { return get(/databases/$(database)/documents/calls/$(callId)).data; }
+        allow read: if request.auth != null && (request.auth.uid == theCall().from || request.auth.uid == theCall().to);
+        allow create: if request.auth != null && (request.auth.uid == theCall().from || request.auth.uid == theCall().to)
+          && request.resource.data.keys().hasOnly(["by", "c"])
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.c is map && request.resource.data.c.size() <= 4;
+        allow update, delete: if false;
+      }
+    }
+
     // Friends' feed: food photos and 24-hour stories, seen only by the poster's friends.
     // The server copies each new post's card into the feed of the poster and each friend;
     // a friend reads a post and its photo only while that card is in their own feed.

@@ -9,6 +9,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
 import android.os.Build;
 
 import com.google.firebase.messaging.FirebaseMessagingService;
@@ -24,6 +26,8 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
   static final String PROMOTIONS_CHANNEL = "customer_promotions";
   // Its own channel so it pops up on screen like an order update (Offers is quieter).
   static final String REMINDERS_CHANNEL = "customer_reminders";
+  // Friends calling: rings with the phone's ringtone until answered, declined or the caller hangs up.
+  static final String CALLS_CHANNEL = "customer_calls";
   static final String PUSH_ACTION = "com.feastly.app.CUSTOMER_PUSH_EVENT";
   static final String EXTRA_PUSH_JSON = "savrivo_push_json";
   private static final String PREFS = "savrivo_customer_push_events_v1";
@@ -49,6 +53,13 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
       String title = event.optString("title", "Scraveit order update");
       String body = event.optString("body", "Your order has an update.");
       showOrderNotification(event, title, body);
+    } else if ("CALL_INCOMING".equals(type)) {
+      // With the app open, the page shows its own full-screen call.
+      if (!MainActivity.isVisible()) showCallNotification(event);
+    } else if ("CALL_ENDED".equals(type)) {
+      NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+      if (manager != null) manager.cancel(callNotificationId(event.optString("callId", "")));
+      if ("1".equals(event.optString("missed", "0"))) showMissedCall(event);
     } else if ("CUSTOMER_BROADCAST".equals(type)) {
       String title = event.optString("title", "Scraveit");
       String body = event.optString("body", "");
@@ -76,9 +87,18 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     NotificationChannel reminders = new NotificationChannel(
         REMINDERS_CHANNEL, "Cart reminders and meal ideas", NotificationManager.IMPORTANCE_HIGH);
     reminders.setDescription("A reminder about food left in your cart, and ideas at breakfast, lunch and dinner");
+    NotificationChannel calls = new NotificationChannel(
+        CALLS_CHANNEL, "Calls from friends", NotificationManager.IMPORTANCE_HIGH);
+    calls.setDescription("Voice and video calls from your Scraveit friends");
+    calls.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE), new AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+    calls.enableVibration(true);
+    calls.setVibrationPattern(new long[]{0, 900, 700, 900, 700, 900});
+    calls.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
     NotificationManager manager = context.getSystemService(NotificationManager.class);
     if (manager != null) {
       manager.createNotificationChannel(channel);
+      manager.createNotificationChannel(calls);
       manager.createNotificationChannel(promotions);
       manager.createNotificationChannel(reminders);
     }
@@ -185,6 +205,77 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
         .setContentIntent(pending);
     NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
     if (manager != null) manager.notify(notificationId, builder.build());
+  }
+
+  static int callNotificationId(String callId) {
+    return 0x5C000000 | ((callId == null ? 0 : callId.hashCode()) & 0x00ffffff);
+  }
+
+  private PendingIntent callIntent(JSONObject event, String action, int requestCode) {
+    JSONObject copy = new JSONObject();
+    try {
+      copy = new JSONObject(event.toString());
+      copy.put("callAction", action);
+    } catch (Exception ignored) { }
+    Intent launch = new Intent(this, MainActivity.class)
+        .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(EXTRA_PUSH_JSON, copy.toString());
+    return PendingIntent.getActivity(this, requestCode, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+  }
+
+  /** "Padhu is calling…" with Decline and Answer; keeps ringing until one is tapped or the call stops. */
+  private void showCallNotification(JSONObject event) {
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+    createNotificationChannels(this);
+    String callId = event.optString("callId", "");
+    if (callId.isEmpty()) return;
+    int id = callNotificationId(callId);
+    boolean video = "video".equals(event.optString("kind", "audio"));
+    String name = event.optString("fromName", "A friend");
+    Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ? new Notification.Builder(this, CALLS_CHANNEL) : new Notification.Builder(this);
+    builder.setSmallIcon(R.drawable.savrivo_notification)
+        .setColor(getColor(R.color.savrivo_primary))
+        .setContentTitle(name)
+        .setContentText(video ? "Incoming video call" : "Incoming voice call")
+        .setCategory(Notification.CATEGORY_CALL)
+        .setPriority(Notification.PRIORITY_MAX)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setOngoing(true)
+        .setAutoCancel(true)
+        .setContentIntent(callIntent(event, "open", id))
+        .addAction(new Notification.Action.Builder(null, "Decline", callIntent(event, "decline", id + 1)).build())
+        .addAction(new Notification.Action.Builder(null, video ? "Answer video" : "Answer", callIntent(event, "answer", id + 2)).build());
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(45_000);
+    Notification notification = builder.build();
+    notification.flags |= Notification.FLAG_INSISTENT;
+    NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager != null) manager.notify(id, notification);
+  }
+
+  private void showMissedCall(JSONObject event) {
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+    createNotificationChannels(this);
+    String callId = event.optString("callId", "");
+    int id = callNotificationId(callId) ^ 0x00800000;
+    boolean video = "video".equals(event.optString("kind", "audio"));
+    Intent launch = new Intent(this, MainActivity.class)
+        .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(EXTRA_PUSH_JSON, event.toString());
+    PendingIntent pending = PendingIntent.getActivity(this, id, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ? new Notification.Builder(this, ORDER_CHANNEL) : new Notification.Builder(this);
+    builder.setSmallIcon(R.drawable.savrivo_notification)
+        .setColor(getColor(R.color.savrivo_primary))
+        .setContentTitle(video ? "Missed video call" : "Missed voice call")
+        .setContentText(event.optString("fromName", "A friend") + " called you")
+        .setCategory(Build.VERSION.SDK_INT >= 30 ? Notification.CATEGORY_MISSED_CALL : Notification.CATEGORY_CALL)
+        .setAutoCancel(true)
+        .setContentIntent(pending);
+    NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager != null) manager.notify(id, builder.build());
   }
 
   private static void storePendingEvent(Context context, JSONObject event) {

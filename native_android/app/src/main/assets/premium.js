@@ -2172,6 +2172,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   window.savrivoPushReceived = async function(event){
     const payload=event||{},type=String(payload.type||"");
     if(type==="TOKEN_REFRESH"){registerPushTokenIfAllowed().catch(()=>{});return;}
+    if(type==="CALL_INCOMING"||type==="CALL_ENDED"){if(state.session&&callWatchUid)handleCallPush(payload);else pendingCallEvent=payload;return;}
     if(!state.session)return;
     if(type==="CART_REMINDER"&&payload.openedFromNotification===true){go(state.cart.length?"cart":"home");return;}
     if(type==="MEAL_SUGGESTION"&&payload.openedFromNotification===true){go("home");return;}
@@ -2379,6 +2380,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   let lastRenderedRoute = null;
   function render(options) {
     applyTheme();
+    ensureCallWatch();
     const preserving = !!(options && options.preserveScroll);
     const gated = privacyGateNeeded();
     if (gated && state.sheet) state.sheet = null;
@@ -4346,7 +4348,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       :'<div class="dm-card dm-story-card ended"><span class="stack"><strong>📸 '+h(who)+'</strong><small>This story has ended</small></span></div>'}
   function dishCard(card){const r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null,live=item&&item.available!==false,price=item?item.price:card.price;
     return'<div class="dm-card"><img src="'+h(safeUrl(card.image||(item&&item.image),r&&r.image))+'" alt=""><div class="stack"><strong>'+h(card.name||(item&&item.name)||(r&&r.name)||"A dish")+'</strong><small>'+h(card.restaurantName||(r&&r.name)||"")+(price?' · '+money(price):'')+'</small>'+(card.type==="dish"?'<button class="button primary small" data-action="dm-card-add" data-restaurant-id="'+h(card.restaurantId)+'" data-item-id="'+h(card.itemId||"")+'"'+(r&&item&&!live?' disabled':'')+'>'+(r&&item&&!live?'Not available now':'Add to my cart')+'</button>':'<button class="button primary small" data-action="go-restaurant" data-restaurant-id="'+h(card.restaurantId)+'">See menu</button>')+'</div></div>'}
-  function callsAvailable(){return typeof window.RTCPeerConnection==="function"&&nativeAvailable("callPermissions")}
+  function callsAvailable(){return typeof window.RTCPeerConnection==="function"&&nativeAvailable("callPermissions")&&nativeAvailable("callAudio")&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)}
   /** Chat header: photo, name and @username stay pinned at the top; calls on the right. */
   function dmHeader(p,pairId,other,blocked,st){
     const user=usernameOf(p,other),sub=blocked?"Blocked":user?"@"+user:"";
@@ -4362,7 +4364,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
     const st=streakOf(p);
     return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+dmHeader(p,pairId,other,blocked,st)
-      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
         :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
@@ -4484,6 +4486,198 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(!p.held){vnBegin(p.pairId,"locked");return}
       if(vnRec&&vnRec.mode==="hold")vnFinish(true)};
     document.addEventListener("pointerup",up);document.addEventListener("pointercancel",e=>{if(press&&e.pointerId===press.id){clearTimeout(press.timer);press=null;vnHolding=false;if(vnRec&&vnRec.mode==="hold")vnFinish(false)}})})();
+  // ===== Voice and video calls =====
+  // Phone to phone over WebRTC. The call document (calls/{id}) carries the offer, answer and status;
+  // each side adds its own network candidates. Cloudflare's relay carries media when two mobile
+  // networks can't meet directly. The call screen lives outside #app so re-renders never touch it.
+  const CALL_RING_MS=45000,CALL_DONE=["declined","busy","missed","cancelled","ended"];
+  let call=null,callWatchUid="",callWatchUnsub=null,pendingCallEvent=null,iceCache=null;
+  const callTs=v=>v&&typeof v.toMillis==="function"?v.toMillis():Number(v||0);
+  function callNative(p){if(!nativeAvailable("callAudio"))return Promise.resolve();return nativeInvoke("callAudio",p,{timeoutMs:6000}).catch(()=>{})}
+  function ensureCallWatch(){const uid=myUid();if(!uid||callWatchUid===uid||!callsAvailable())return;
+    if(callWatchUnsub){try{callWatchUnsub()}catch(_){}callWatchUnsub=null}callWatchUid=uid;
+    try{callWatchUnsub=fs.collection("calls").where("to","==",uid).where("status","==","ringing").onSnapshot(snap=>{snap.docChanges().forEach(ch=>{if(ch.type==="added")incomingCall(ch.doc.id,ch.doc.data())})},()=>{callWatchUid=""})}catch(_){callWatchUid="";return}
+    if(pendingCallEvent){const e=pendingCallEvent;pendingCallEvent=null;setTimeout(()=>handleCallPush(e),300)}}
+  async function callPairInfo(pairId,other){const c=chatState();let p=c.pairs.find(x=>x.id===pairId);
+    if(!p){try{const d=await fs.collection("friendships").doc(pairId).get();p=d.exists?Object.assign({id:d.id},d.data()):null}catch(_){p=null}}
+    let face=c.avatars&&c.avatars[other]||"";if(!face){try{const a=await fs.collection("chatAvatars").doc(other).get();face=a.exists?String(a.data().image||""):""}catch(_){}}
+    return{name:p?nameOf(p,other):"Friend",face}}
+  async function callIce(){if(iceCache&&iceCache.until>Date.now())return iceCache.list;
+    try{const res=await socialCall("callIceServers",{}),list=Array.isArray(res&&res.iceServers)?res.iceServers:[];if(list.length){iceCache={list,until:Date.now()+50*60000};return list}}catch(_){}
+    return[{urls:["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]}]}
+  function callNew(o){return Object.assign({id:"",ref:null,role:"caller",kind:"audio",pairId:"",other:"",name:"Friend",face:"",status:"calling",pc:null,local:null,remote:null,dc:null,unsubs:[],pendingCands:[],remoteCands:[],docReady:false,muted:false,camOff:false,remoteCamOff:false,remoteMuted:false,speaker:false,facing:"user",liveAt:0,timers:[],gestures:null,gestureState:"",ended:false,reactOpen:false},o)}
+  async function callPerms(video){try{const p=await nativeInvoke("callPermissions",{video},{timeoutMs:60000});
+      if(!p||p.audio!==true){toast("Allow the microphone for calls (Settings › Apps › Scraveit › Permissions).","warning");return false}
+      if(video&&p.video!==true){toast("Allow the camera for video calls (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}
+    catch(e){toast(chatError(e),"danger");return false}}
+  async function callMedia(){const video=call.kind==="video";
+    call.local=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:video?{facingMode:"user",width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}}:false});
+    const self=document.querySelector("#call-ui .call-self");if(self){self.srcObject=call.local;self.play().catch(()=>{})}}
+  function callSendCand(c){if(!call||!c)return;if(!call.docReady||!call.ref){call.pendingCands.push(c);return}
+    const j=c.toJSON?c.toJSON():c,body={};["candidate","sdpMid","sdpMLineIndex","usernameFragment"].forEach(k=>{if(j[k]!=null)body[k]=j[k]});
+    call.ref.collection("candidates").add({by:myUid(),c:body}).catch(()=>{})}
+  function callFlushCands(){if(!call)return;const q=call.pendingCands.splice(0);q.forEach(callSendCand)}
+  // The other phone's network candidates wait until this phone has their offer/answer to match them to.
+  function callAddRemoteCand(c){if(!call||!c)return;if(!call.pc||!call.pc.remoteDescription){call.remoteCands.push(c);return}call.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{})}
+  function callFlushRemote(){if(!call)return;const q=call.remoteCands.splice(0);q.forEach(callAddRemoteCand)}
+  async function callPeer(){const pc=new RTCPeerConnection({iceServers:await callIce(),bundlePolicy:"max-bundle"});call.pc=pc;
+    call.local.getTracks().forEach(t=>pc.addTrack(t,call.local));
+    pc.ontrack=e=>{if(!call)return;call.remote=e.streams[0]||new MediaStream([e.track]);const v=document.querySelector("#call-ui .call-remote");if(v&&v.srcObject!==call.remote){v.srcObject=call.remote;v.play().catch(()=>{})}};
+    pc.onicecandidate=e=>{if(e.candidate)callSendCand(e.candidate)};
+    pc.ondatachannel=e=>callWireData(e.channel);
+    pc.onconnectionstatechange=()=>{if(!call||call.pc!==pc)return;const st=pc.connectionState;
+      if(st==="connected"){callRingback(false);if(!call.liveAt){call.liveAt=Date.now();callNative({active:true,speaker:call.speaker,video:call.kind==="video"});callStartGestures();try{navigator.vibrate&&navigator.vibrate(30)}catch(_){}}call.status="live";callUpdate()}
+      else if(st==="disconnected"){call.status="reconnecting";callUpdate()}
+      else if(st==="failed"){callEnd("Call dropped. Check your connection.")}};
+    return pc}
+  function callWireData(dc){if(!call)return;call.dc=dc;dc.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}if(!call)return;
+      if(m.t==="fx"&&typeof m.id==="string")callPlayFx(m.id,null);
+      else if(m.t==="cam"){call.remoteCamOff=!!m.off;callUpdate()}
+      else if(m.t==="mute"){call.remoteMuted=!!m.on;callUpdate()}};
+    dc.onopen=()=>{if(call&&call.camOff)callSendData({t:"cam",off:true});if(call&&call.muted)callSendData({t:"mute",on:true})}}
+  function callSendData(m){try{if(call&&call.dc&&call.dc.readyState==="open")call.dc.send(JSON.stringify(m))}catch(_){}}
+  function callWatchDoc(){const ref=call.ref,me=call;
+    call.unsubs.push(ref.onSnapshot(async d=>{if(call!==me)return;const v=d.data();if(!v)return;
+      if(me.role==="caller"&&v.answer&&me.pc&&!me.pc.currentRemoteDescription){try{await me.pc.setRemoteDescription(v.answer);callFlushRemote();if(me.status==="calling")me.status="connecting";callUpdate()}catch(_){callEnd("Couldn’t connect the call.")}}
+      if(CALL_DONE.includes(v.status)&&!me.ended){const msg=v.status==="declined"?"Call declined":v.status==="busy"?"On another call":v.status==="missed"?"No answer":me.role==="callee"&&!me.liveAt?"Missed call":"Call ended";callEnd(msg,true)}}));
+    call.unsubs.push(ref.collection("candidates").where("by","==",call.other).onSnapshot(sn=>{if(call!==me)return;sn.docChanges().forEach(ch=>{if(ch.type==="added")callAddRemoteCand(ch.doc.data().c)})}))}
+
+  async function startCall(pairId,kind){
+    if(call){toast("You’re already on a call.","info");return}
+    if(!callsAvailable()){toast("Update Scraveit to make calls.","info");return}
+    const p=chatState().pairs.find(x=>x.id===pairId);if(!p||p.status!=="accepted"){toast("You can call friends only.","warning");return}
+    const other=otherOf(p);if(!await callPerms(kind==="video"))return;
+    call=callNew({role:"caller",kind:kind==="video"?"video":"audio",pairId,other,name:nameOf(p,other),face:chatState().avatars[other]||"",status:"calling",speaker:kind==="video"});
+    const me=call;callShow();
+    try{await callMedia();if(call!==me)return;await callPeer();if(call!==me)return;
+      callWireData(call.pc.createDataChannel("fx"));
+      const ref=fs.collection("calls").doc();call.ref=ref;call.id=ref.id;
+      const offer=await call.pc.createOffer();await call.pc.setLocalDescription(offer);
+      await ref.set({from:myUid(),to:other,pairId,kind:call.kind,status:"ringing",offer:{type:offer.type,sdp:offer.sdp},createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      // Hung up while the call was still being set up: cancel it rather than leave it ringing.
+      if(me.ended){ref.update({status:"cancelled",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
+      call.docReady=true;callFlushCands();callWatchDoc();callRingback(true);callUpdate();
+      callNative({active:true,speaker:call.speaker,video:call.kind==="video"});
+      call.timers.push(setTimeout(()=>{if(call===me&&!me.liveAt&&me.ref){me.ref.update({status:"missed",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});callEnd("No answer")}},CALL_RING_MS))}
+    catch(e){if(call===me)callEnd(/Permission|NotAllowed/i.test(String(e&&e.name||e))?"Microphone or camera is blocked.":"Couldn’t start the call. "+chatError(e))}}
+
+  async function incomingCall(id,data){if(!data||data.to!==myUid())return;const created=callTs(data.createdAt);if(!created||Date.now()-created>CALL_RING_MS)return;
+    if(call){if(call.id!==id)fs.collection("calls").doc(id).update({status:"busy",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
+    call=callNew({id,ref:fs.collection("calls").doc(id),role:"callee",kind:data.kind==="video"?"video":"audio",pairId:String(data.pairId||""),other:String(data.from||""),offer:data.offer,status:"incoming",speaker:data.kind==="video"});
+    const me=call;callShow();callWatchDoc();callNative({ring:true,dismissCallId:id});
+    callPairInfo(me.pairId,me.other).then(info=>{if(call===me){me.name=info.name;me.face=info.face;callUpdate(true)}});
+    call.timers.push(setTimeout(()=>{if(call===me&&me.status==="incoming")callEnd("Missed call",true)},Math.max(1000,CALL_RING_MS-(Date.now()-created))))}
+  async function acceptCall(){const me=call;if(!me||me.role!=="callee"||me.status!=="incoming")return;
+    callNative({ring:false,dismissCallId:me.id});me.status="connecting";callUpdate(true);
+    if(!await callPerms(me.kind==="video")){declineCall();return}
+    try{await callMedia();if(call!==me)return;await callPeer();if(call!==me)return;
+      await me.pc.setRemoteDescription(me.offer);callFlushRemote();
+      const answer=await me.pc.createAnswer();await me.pc.setLocalDescription(answer);
+      await me.ref.update({answer:{type:answer.type,sdp:answer.sdp},status:"accepted",answeredAt:firebase.firestore.FieldValue.serverTimestamp()});
+      if(call!==me)return;me.docReady=true;callFlushCands();callNative({active:true,speaker:me.speaker,video:me.kind==="video"});callUpdate()}
+    catch(e){if(call===me)callEnd("Couldn’t join the call. "+chatError(e))}}
+  function declineCall(){const me=call;if(!me)return;if(me.ref)me.ref.update({status:"declined",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});callEnd("Declined",true)}
+  async function handleCallPush(e){const id=String(e.callId||"");if(!id)return;
+    if(e.type==="CALL_ENDED"){if(call&&call.id===id&&call.status==="incoming")callEnd("Missed call",true);if(e.openedFromNotification===true&&e.pairId)go("dm",{pairId:String(e.pairId)});return}
+    if(!call||call.id!==id){let d;try{d=await fs.collection("calls").doc(id).get()}catch(_){return}const v=d.exists?d.data():null;
+      if(!v||v.status!=="ringing"){if(e.openedFromNotification===true&&e.pairId){toast("That call has ended.","info");go("dm",{pairId:String(e.pairId)})}return}
+      await incomingCall(id,v)}
+    if(!call||call.id!==id)return;
+    if(e.callAction==="answer")acceptCall();
+    else if(e.callAction==="decline"){declineCall();callNative({background:true})}}
+  // Hanging up: tell the other side, then tidy up this phone.
+  function callEnd(message,remote){const me=call;if(!me||me.ended)return;me.ended=true;
+    // A caller whose call isn't saved yet is cancelled by startCall once the save lands.
+    if(!remote&&me.ref&&(me.role==="callee"||me.docReady)){const st=me.liveAt?"ended":me.role==="caller"?"cancelled":"declined";me.ref.update({status:st,endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{})}
+    callRingback(false);
+    me.timers.forEach(t=>{clearTimeout(t);clearInterval(t)});me.unsubs.forEach(u=>{try{u()}catch(_){}});
+    if(me.gestures){try{me.gestures.stop()}catch(_){}}
+    if(me.local)me.local.getTracks().forEach(t=>t.stop());try{if(me.pc)me.pc.close()}catch(_){}
+    callNative({ring:false,active:false,dismissCallId:me.id||""});
+    me.status="ended";me.endMessage=message||"Call ended";callUpdate();
+    setTimeout(()=>{if(call===me){call=null;const o=document.getElementById("call-ui");if(o)o.remove();chatRerender()}},me.liveAt?1300:1800)}
+
+  // Ringback while the friend's phone rings: the familiar Indian double ring (400+450 Hz).
+  let ringback=null;
+  function callRingback(on){if(!on){if(ringback){clearInterval(ringback.t);try{ringback.ctx.close()}catch(_){}ringback=null}return}
+    if(ringback)return;try{const ctx=new (window.AudioContext||window.webkitAudioContext)(),gain=ctx.createGain();gain.gain.value=0;gain.connect(ctx.destination);
+      [400,450].forEach(f=>{const o=ctx.createOscillator();o.frequency.value=f;o.connect(gain);o.start()});
+      const ring=()=>{const t=ctx.currentTime,g=gain.gain;g.cancelScheduledValues(t);g.setValueAtTime(0,t);[[0,.4],[.6,1]].forEach(([a,b])=>{g.setValueAtTime(.08,t+a);g.setValueAtTime(0,t+b)})};
+      ring();ringback={ctx,t:setInterval(ring,3000)}}catch(_){}}
+
+  // ---- reactions ----
+  function callPlayFx(id,origin){const fx=window.ScraveitCallFx,cv=document.querySelector("#call-ui .call-fx");if(fx&&cv)fx.play(cv,id,origin)}
+  function callReact(id,origin){callPlayFx(id,origin);callSendData({t:"fx",id})}
+  function callStartGestures(){const me=call,fx=window.ScraveitCallFx,self=document.querySelector("#call-ui .call-self");if(!me||me.kind!=="video"||!fx||!self||me.gestures)return;
+    me.gestures=fx.watchGestures(self,(id,origin)=>{if(call===me&&!me.camOff)callReact(id,origin)},st=>{if(call===me){me.gestureState=st;callUpdate()}})}
+
+  // ---- the call screen ----
+  const CALL_ICONS={mic:'<svg viewBox="0 0 24 24"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg>',
+    micOff:'<svg viewBox="0 0 24 24"><path d="M15.4 10.4V6.2a3.4 3.4 0 0 0-6.6-1.1M8.6 8.6v2.8a3.4 3.4 0 0 0 5.2 2.9M5.2 11.4a6.8 6.8 0 0 0 10.8 5.5M18.8 11.4a6.7 6.7 0 0 1-.6 2.8M12 18.2v3M3.5 3.5l17 17"/></svg>',
+    cam:'<svg viewBox="0 0 24 24"><rect x="2.8" y="6" width="12.6" height="12" rx="3"/><path d="m15.4 10.4 5.8-3.4v10l-5.8-3.4"/></svg>',
+    camOff:'<svg viewBox="0 0 24 24"><path d="M15.4 13.6v1.4a3 3 0 0 1-3 3H5.8a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h1M10 6h2.4a3 3 0 0 1 3 3v1.4l5.8-3.4v10M3 3l18 18"/></svg>',
+    flip:'<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.6 3.6v3.6H15M5.4 20.4v-3.6H9"/></svg>',
+    speaker:'<svg viewBox="0 0 24 24"><path d="M4 9.5h3.2L12 5.2v13.6l-4.8-4.3H4z"/><path d="M15.6 9a4.2 4.2 0 0 1 0 6M18.3 6.4a8 8 0 0 1 0 11.2"/></svg>',
+    end:'<svg viewBox="0 0 24 24"><path d="M3.4 14.4c4.7-4.6 12.5-4.6 17.2 0l-1.9 2.6-3.4-1.5-.4-2.6a10.6 10.6 0 0 0-5.8 0l-.4 2.6-3.4 1.5z" fill="currentColor"/></svg>',
+    answer:'<svg viewBox="0 0 24 24"><path d="M6.6 3.8h2.6l1.4 4.1-2 1.5a12.5 12.5 0 0 0 6 6l1.5-2 4.1 1.4v2.6a2 2 0 0 1-2.2 2A17 17 0 0 1 4.6 6a2 2 0 0 1 2-2.2Z" fill="currentColor"/></svg>',
+    smile:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.2a4.5 4.5 0 0 0 7 0"/><circle cx="9.2" cy="10" r=".9" fill="currentColor"/><circle cx="14.8" cy="10" r=".9" fill="currentColor"/></svg>'};
+  function callFace(){const c=call;return c.face?'<img src="'+h(c.face)+'" alt="">':'<span>'+h(String(c.name||"?").trim().charAt(0).toUpperCase()||"?")+'</span>'}
+  function callClock(){if(!call||!call.liveAt)return"";const s=Math.floor((Date.now()-call.liveAt)/1000);return(s>=3600?Math.floor(s/3600)+":":"")+String(Math.floor(s%3600/60)).padStart(s>=3600?2:1,"0")+":"+String(s%60).padStart(2,"0")}
+  function callStatusText(){const c=call;if(!c)return"";
+    if(c.status==="ended")return c.endMessage||"Call ended";if(c.status==="incoming")return c.kind==="video"?"Incoming video call":"Incoming voice call";
+    if(c.status==="calling")return c.docReady?"Ringing…":"Calling…";if(c.status==="connecting")return"Connecting…";if(c.status==="reconnecting")return"Reconnecting…";return callClock()}
+  function callShow(){let o=document.getElementById("call-ui");if(o)o.remove();o=document.createElement("div");o.id="call-ui";o.setAttribute("role","dialog");o.setAttribute("aria-modal","true");o.setAttribute("aria-label","Call");
+    o.innerHTML='<div class="call-backdrop"></div><video class="call-remote" autoplay playsinline></video><div class="call-remote-off"></div><canvas class="call-fx"></canvas>'
+      +'<div class="call-top"><div class="call-face"></div><strong class="call-name"></strong><span class="call-status"></span></div>'
+      +'<video class="call-self" autoplay playsinline muted></video><div class="call-hint"></div><div class="call-react"></div><div class="call-controls"></div>';
+    document.body.appendChild(o);
+    o.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-call]");if(!b||!call)return;const a=b.dataset.call;
+      if(a==="accept")acceptCall();else if(a==="decline")declineCall();else if(a==="end")callEnd();
+      else if(a==="mute"){call.muted=!call.muted;if(call.local)call.local.getAudioTracks().forEach(t=>{t.enabled=!call.muted});callSendData({t:"mute",on:call.muted});callUpdate()}
+      else if(a==="cam"){call.camOff=!call.camOff;if(call.local)call.local.getVideoTracks().forEach(t=>{t.enabled=!call.camOff});callSendData({t:"cam",off:call.camOff});callUpdate()}
+      else if(a==="speaker"){call.speaker=!call.speaker;callNative({active:true,speaker:call.speaker,video:call.kind==="video"});callUpdate()}
+      else if(a==="flip")callFlip();
+      else if(a==="reactions"){call.reactOpen=!call.reactOpen;callUpdate()}
+      else if(a==="react"){call.reactOpen=false;callReact(String(b.dataset.id||""),null);callUpdate()}});
+    callDragSelf(o.querySelector(".call-self"));
+    const t=setInterval(()=>{if(!call){clearInterval(t);return}const st=document.querySelector("#call-ui .call-status");if(st&&call.liveAt&&call.status==="live")st.textContent=callClock()},1000);call.timers.push(t);
+    callUpdate(true)}
+  function callUpdate(full){const c=call,o=document.getElementById("call-ui");if(!c||!o)return;
+    const video=c.kind==="video",live=["live","reconnecting"].includes(c.status);
+    o.className="call-ui "+(video?"video":"audio")+" st-"+c.status+(c.remoteCamOff?" remote-cam-off":"")+(c.camOff?" cam-off":"")+(c.facing==="user"?" mirror":"")+(c.reactOpen?" react-open":"");
+    if(full){o.querySelector(".call-face").innerHTML=callFace();o.querySelector(".call-name").textContent=c.name;o.querySelector(".call-remote-off").innerHTML='<div class="call-face big">'+callFace()+'</div>';
+      o.querySelector(".call-backdrop").style.backgroundImage=c.face?'url("'+c.face.replace(/"/g,"")+'")':""}
+    o.querySelector(".call-status").textContent=callStatusText()+(c.remoteMuted&&live?" · muted":"");
+    const btn=(a,label,icon,on,extra)=>'<button type="button" class="call-btn'+(on?' on':'')+(extra?' '+extra:'')+'" data-call="'+a+'" aria-label="'+label+'" aria-pressed="'+(!!on)+'"><span class="call-btn-icon">'+icon+'</span><small>'+label+'</small></button>';
+    let controls="";
+    if(c.status==="incoming")controls='<div class="call-incoming">'+btn("decline","Decline",CALL_ICONS.end,false,"red")+btn("accept",video?"Answer video":"Answer",CALL_ICONS.answer,false,"green")+'</div>';
+    else if(c.status!=="ended")controls='<div class="call-row">'+(video?btn("flip","Flip",CALL_ICONS.flip,false)+btn("cam",c.camOff?"Camera off":"Camera",c.camOff?CALL_ICONS.camOff:CALL_ICONS.cam,c.camOff):btn("speaker","Speaker",CALL_ICONS.speaker,c.speaker))
+      +btn("mute",c.muted?"Muted":"Mute",c.muted?CALL_ICONS.micOff:CALL_ICONS.mic,c.muted)+(live?btn("reactions","React",CALL_ICONS.smile,c.reactOpen):"")+btn("end","End",CALL_ICONS.end,false,"red")+'</div>';
+    const ctl=o.querySelector(".call-controls");if(ctl.dataset.html!==controls){ctl.innerHTML=controls;ctl.dataset.html=controls}
+    const fx=window.ScraveitCallFx,react=o.querySelector(".call-react"),rh=c.reactOpen&&fx?fx.REACTIONS.map(r=>'<button type="button" data-call="react" data-id="'+r.id+'" aria-label="'+h(r.name)+'"><span>'+r.emoji+'</span><small>'+h(video?r.how:r.name)+'</small></button>').join(""):"";
+    if(react.dataset.html!==rh){react.innerHTML=rh;react.dataset.html=rh}
+    const hint=o.querySelector(".call-hint"),ht=video&&live&&!c.camOff?(c.gestureState==="ready"?"Try 👍  ✌️  🫶  🤟 — or two hands for more":c.gestureState==="loading"?"Getting hand reactions ready…":""):"";
+    if(hint.textContent!==ht){hint.textContent=ht;hint.classList.remove("fade");if(ht&&c.gestureState==="ready"){void hint.offsetWidth;hint.classList.add("fade")}}}
+  async function callFlip(){const c=call;if(!c||!c.local||c.kind!=="video"||!c.pc)return;const want=c.facing==="user"?"environment":"user";
+    try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:want,width:{ideal:1280},height:{ideal:720}}}),track=s.getVideoTracks()[0];
+      const sender=c.pc.getSenders().find(x=>x.track&&x.track.kind==="video");if(sender)await sender.replaceTrack(track);
+      c.local.getVideoTracks().forEach(t=>{c.local.removeTrack(t);t.stop()});c.local.addTrack(track);track.enabled=!c.camOff;c.facing=want;
+      const self=document.querySelector("#call-ui .call-self");if(self){self.srcObject=null;self.srcObject=c.local;self.play().catch(()=>{})}callUpdate()}
+    catch(_){toast("Couldn’t switch camera.","danger")}}
+  // Your own video: drag it anywhere; it settles into the nearest corner.
+  function callDragSelf(el){if(!el)return;let d=null;
+    el.addEventListener("pointerdown",e=>{const r=el.getBoundingClientRect();d={id:e.pointerId,dx:e.clientX-r.left,dy:e.clientY-r.top};try{el.setPointerCapture(e.pointerId)}catch(_){}el.classList.add("dragging")});
+    el.addEventListener("pointermove",e=>{if(!d||e.pointerId!==d.id)return;el.style.left=(e.clientX-d.dx)+"px";el.style.top=(e.clientY-d.dy)+"px";el.style.right="auto"});
+    const up=e=>{if(!d||e.pointerId!==d.id)return;d=null;el.classList.remove("dragging");const r=el.getBoundingClientRect(),W=innerWidth,H=innerHeight,m=16;
+      el.style.left=(r.left+r.width/2<W/2?m:W-r.width-m)+"px";el.style.top=(r.top+r.height/2<H/2?Math.max(m+60,r.top<120?100:r.top):H-r.height-170)+"px"};
+    el.addEventListener("pointerup",up);el.addEventListener("pointercancel",up)}
+  /** A call in the chat thread: centred pill, tap to call back. */
+  function callLine(card,pairId,mine){const video=card.kind==="video",what=video?"video call":"voice call",done=card.status==="done";
+    const s=Math.max(0,Math.round(Number(card.ms||0)/1000)),len=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
+    const text=done?(mine?"Outgoing ":"Incoming ")+what+" · "+len:card.status==="declined"?(mine?"Call declined":"You declined a "+what):card.status==="busy"?(mine?"They were on another call":"Missed "+what):(mine?"No answer":"Missed "+what);
+    const missed=!done&&!mine;
+    return'<button type="button" class="call-line'+(missed?' missed':'')+'" data-action="call-start" data-kind="'+(video?"video":"audio")+'" data-pair-id="'+h(pairId)+'"><span class="call-line-icon">'+(video?CALL_ICONS.cam:CALL_ICONS.answer)+'</span><span><strong>'+h(text)+'</strong><small>Tap to call back</small></span></button>'}
+
   function shareFriendSheet(sheet){const friends=chatState().pairs.filter(p=>p.status==="accepted");
     return sheetShell("Send to a friend",sheet.title||"",friends.length?'<div class="stack">'+friends.map((p,i)=>'<button class="chat-row" data-action="share-to-friend" data-pair-id="'+h(p.id)+'">'+avatar(nameOf(p,otherOf(p)),i,otherOf(p))+'<span class="grow"><strong>'+h(nameOf(p,otherOf(p)))+'</strong></span>'+icon("chevron","small")+'</button>').join("")+'</div>':'<p class="supporting">Add friends first from Chats › Friends.</p>')}
   function sharePlaceSheet(sheet){const list=restaurantsFiltered().slice(0,12);
@@ -4619,7 +4813,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="crave"){setCraving(control.dataset.dish||"");return true}
     if(action==="dm-fun"){setSheet({type:"fun",pairId:pid});return true}
     if(action==="dm-photo"){sendDmPhoto(pid);return true}
-    if(action==="call-start"){if(typeof startCall==="function")startCall(pid,String(control.dataset.kind||"audio"));else toast("Calls need the latest Scraveit update.","info");return true}
+    if(action==="call-start"){startCall(pid,String(control.dataset.kind||"audio"));return true}
     if(action==="vn-play"){vnToggle(pid,String(control.dataset.voiceId||""));return true}
     if(action==="vn-speed"){vnPlay.speed=vnPlay.speed===1?1.5:vnPlay.speed===1.5?2:1;if(vnPlay.el)vnPlay.el.playbackRate=vnPlay.speed;chatRerender();return true}
     if(action==="dm-photo-open"){const id=String(control.dataset.photoId||""),ph=dmPhotos.get(id);if(!ph||!ph.url)return true;const mine=!!control.closest(".dm-msg.mine");if(photoVeiled(mine,id)){dmPhotoSeen.add(id);render({preserveScroll:true});return true}setSheet({type:"photo",photoId:id});return true}
