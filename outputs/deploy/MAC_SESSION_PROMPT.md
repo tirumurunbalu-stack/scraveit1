@@ -6,6 +6,7 @@ Branch: feature/parent-pay-32g08n
 ## Rules (always)
 - Never type, print or echo passwords, API keys, tokens or the App Check debug token. When a secret is needed, run the command and let me paste it into the prompt myself.
 - Never read ~/scraveit-upload-key/upload-key-password.txt or play-review-accounts.txt.
+- Voice agent (Plivo, Sarvam, onCodOrderConfirmCall, voiceAgent) is paused: skip it completely.
 - Never delete these deployed functions: auditRestaurantListing, auditRiderDecision, auditSettingsChange, auditStaffAccess.
 - Deploy functions ONE AT A TIME (Cloud Run CPU quota). If one fails with quota/503, wait 60 s and retry that one.
 - Ask me before accepting any terms, before payments, and before anything in Play Console that publishes to users.
@@ -27,15 +28,9 @@ firebase functions:secrets:set CASHFREE_APP_ID
 firebase functions:secrets:set CASHFREE_SECRET_KEY
 firebase functions:secrets:set CLOUDFLARE_TURN_KEY_ID
 firebase functions:secrets:set CLOUDFLARE_TURN_API_TOKEN
-firebase functions:secrets:set PLIVO_AUTH_ID
-firebase functions:secrets:set PLIVO_AUTH_TOKEN
-firebase functions:secrets:set PLIVO_FROM_NUMBER
-firebase functions:secrets:set SARVAM_API_KEY
-firebase functions:secrets:set ANTHROPIC_API_KEY
 ```
 - Cloudflare TURN: dashboard → Realtime / Calls → TURN → Create key. It gives a Key ID and an API token. Guide me there if I don't have them.
 - CASHFREE_ENV is a plain param (not secret), default `sandbox`. Keep sandbox until I say "go live"; then set `CASHFREE_ENV=production` in `functions/.env.<projectId>` and use the production keys.
-- If I don't have Plivo/Sarvam/Anthropic keys yet, skip the voice-agent deploys and tell me.
 
 ## Step 2 — Deploy (one at a time, in this order)
 ```
@@ -50,16 +45,12 @@ firebase deploy --only functions:getCheckoutConfiguration
 firebase deploy --only functions:createPaymentIntent
 firebase deploy --only functions:createPhonePeIntent
 firebase deploy --only functions:parentPayRespond
-firebase deploy --only functions:onCodOrderConfirmCall
-firebase deploy --only functions:voiceAgent
 ```
 If the CLI asks to delete functions that are not in the source, answer NO.
 
 After deploy:
 - Give me the cashfreeWebhook URL. I will paste it in Cashfree dashboard → Developers → Webhooks (payment events, latest version).
-- Give me the voiceAgent URL for Plivo (Answer URL, POST).
 - Admin app → Settings: payment provider = Cashfree.
-- Firestore `settings/voiceAgent`: keep `enabled: false` and `onlyPhones: [my number]` for testing first.
 
 ## Step 3 — Build and install on my phone
 Use the one-command script (finds Java 17 and adb itself):
@@ -82,7 +73,6 @@ Customer 3.30.0:
 5. Video call gestures: 👍 thumbs, 🫶 hearts, ✌️ balloons, two 👍 fireworks, two ✌️ confetti, two 👎 rain, 🤟 lasers. First video call downloads ~8 MB once.
 6. Payment: UPI app list opens PhonePe/GPay directly; card pays in-app (sandbox).
 Restaurant: agreement shows the commission set in Admin; sign box is empty (no name placeholder) and autofill works; PAN/FSSAI not overwritten by autofill.
-Voice agent: place a COD order from my number → I get a Telugu/English confirmation call; result in `codConfirmations/{orderId}`.
 
 ## Step 5 — Play Store release (only after I say testing is OK)
 - Build signed release bundles (the keystore password is entered by me, never read from the file).
@@ -97,7 +87,5 @@ Voice agent: place a COD order from my number → I get a Telugu/English confirm
 - Clean secrets from ~/.zsh_history (remove lines that contain keys; don't print them).
 - Pending emails: eShram; FSSAI licence follow-ups.
 
-## Open question for me
-Voice agent model: keep Opus 5.5 (best Telugu understanding) or switch to Haiku 5.5 (cheaper, faster)? Ask me once.
 
 When everything in a step is done, tell me in 2–3 lines what's done and what you need from me next.
