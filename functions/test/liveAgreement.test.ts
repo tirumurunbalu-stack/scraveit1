@@ -41,6 +41,14 @@ describe("a live store's partner agreement", () => {
     expect(filled.sections.find((s) => s.heading.startsWith("8."))?.body).toContain("ABCPK1234D");
   });
 
+  it("treats the \"<store> Owner\" name Admin creates as missing, so the owner types their real name", async () => {
+    const db = await liveStore();
+    db.seed("restaurantMembers/waffle_owner1", {active: true, role: "restaurant_owner", restaurantId: "waffle", name: "The Waffle Spot Owner"});
+    const view = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {}}, db, NOW);
+    expect(view.known.ownerName).toBe(false);
+    expect(view.issues).toContain("Owner's full name");
+  });
+
   it("only the owner can see or sign it; an admin can look", async () => {
     const db = await liveStore();
     await expect(onboarding.getLiveRestaurantAgreement("staff1", staff, {restaurantId: "waffle", details: {}}, db, NOW)).rejects.toThrow(/owner/);

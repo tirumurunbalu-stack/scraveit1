@@ -508,8 +508,12 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
   const payout = rec(payoutSnap.exists ? payoutSnap.data() : null);
   const storeType = ["grocery", "dairy"].includes(str(restaurant.storeType)) ? str(restaurant.storeType) : "restaurant";
   // What Scraveit holds always wins; details fill only the gaps.
+  // Admin creates the owner as "<store name> Owner": a placeholder, not a person, so ask for the real name.
+  const memberName = str(member.name, 120);
+  const storeName = normalizePersonName(str(restaurant.name, 120));
+  const placeholderName = Boolean(storeName) && normalizePersonName(memberName) === `${storeName} OWNER`;
   const held = {
-    ownerName: str(member.name, 120),
+    ownerName: placeholderName ? "" : memberName,
     pan: str(payout.panNumber, 10).toUpperCase(),
     fssaiNumber: str(restaurant.fssaiNumber, 14),
     gstin: str(payout.gstin, 15).toUpperCase(),
