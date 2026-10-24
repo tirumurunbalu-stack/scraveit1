@@ -170,7 +170,7 @@ export async function parentPayRespond(
       contactless: request.contactless === true,
       useWallet: false,
       paymentMethod: input.paymentMethod,
-      ...(input.paymentMethod === "upi" ? {paymentProvider: "phonepe" as const} : {}),
+      ...(input.paymentMethod === "upi" ? {paymentProvider: "cashfree" as const} : {}),
     }, {payerUid: uid});
   } catch (error) {
     await ref.set({lastError: error instanceof Error ? error.message.slice(0, 200) : "failed", updatedAt: now}, {merge: true});

@@ -33,13 +33,19 @@ describe("finance payment policy", () => {
       },
     });
 
+    // A saved "phonepe" (older Admin builds) means the live gateway, Cashfree.
     expect(resolveFinancePaymentSelection(policy, {paymentMethod: "upi"})).toEqual({
       paymentMethod: "upi",
-      paymentProvider: "phonepe",
+      paymentProvider: "cashfree",
     });
     expect(resolveFinancePaymentSelection(policy, {paymentMethod: "card"})).toEqual({
       paymentMethod: "card",
-      paymentProvider: "phonepe",
+      paymentProvider: "cashfree",
+    });
+    // Released Customer apps still send "phonepe"; they get Cashfree.
+    expect(resolveFinancePaymentSelection(policy, {paymentMethod: "upi", paymentProvider: "phonepe"})).toEqual({
+      paymentMethod: "upi",
+      paymentProvider: "cashfree",
     });
   });
 

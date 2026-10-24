@@ -30,8 +30,8 @@ const financePaymentsPatchSchema = z.object({
   codEnabled: z.boolean().optional(),
   upiEnabled: z.boolean().optional(),
   cardEnabled: z.boolean().optional(),
-  upiProvider: z.literal("phonepe").optional(),
-  cardProvider: z.literal("phonepe").optional(),
+  upiProvider: z.enum(["phonepe", "cashfree"]).optional(),
+  cardProvider: z.enum(["phonepe", "cashfree"]).optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "Payment patch cannot be empty.");
 
 const financePayoutBeneficiaryPatchSchema = z.object({

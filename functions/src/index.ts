@@ -44,6 +44,7 @@ import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weat
 import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/googleMaps";
 import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
+import {CASHFREE_SECRETS, CashfreeGateway, cashfreeCheckoutPage, liveCashfreeConfig} from "./services/cashfree";
 import {VOICE_AGENT_SECRETS, handleVoiceWebhook, liveDeps as voiceAgentDeps, startConfirmationCall} from "./services/voiceAgent";
 import {
   resolveRiderFaceReview,
@@ -259,10 +260,10 @@ import {lawBasedCheckoutTax, recordDeliveredOrderTax, resolveTdsReversal, revers
 import {exportTaxPack as buildTaxPackExport} from "./services/taxPack";
 import {backfillLedgerPartyIndex} from "./services/ledgerPartyIndex";
 import {
+  UnconfiguredPhonePeGateway,
   applyVerifiedPayment,
   callbackHash,
   initiatePayment,
-  UnconfiguredPhonePeGateway,
 } from "./services/payments";
 import type {SavrivoOrder} from "./types";
 
@@ -331,6 +332,7 @@ export const createCodOrder = onCall({
 
 export const createOrder = onCall({
   region: REGION,
+  secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -338,7 +340,7 @@ export const createOrder = onCall({
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
   try {
     const input = parse(createOrderSchema, request.data);
-    if (input.paymentMethod !== "cod" && !phonePeGateway.configured) {
+    if (input.paymentMethod !== "cod" && !paymentGateway.configured) {
       throw new DomainError("failed-precondition", "Online payments are not available right now.");
     }
     const result = await createAuthoritativeOrder(request.auth.uid, input);
@@ -582,13 +584,14 @@ export const getPlatformConfiguration = onCall({
  */
 export const getCheckoutConfiguration = onCall({
   region: REGION,
+  secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 15,
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to view checkout configuration."));
   try {
-    const config = await loadCheckoutConfiguration(phonePeGateway.configured);
+    const config = await loadCheckoutConfiguration(paymentGateway.configured);
     const data = request.data as Record<string, unknown> | null | undefined;
     if (!data || !data.restaurantId) return config;
     try {
@@ -1067,6 +1070,9 @@ export const getRestaurantSettlementSummary = onCall({
   }
 });
 
+// Cashfree is the live gateway. Without its keys `configured` is false and checkout offers COD only.
+const paymentGateway = new CashfreeGateway(liveCashfreeConfig);
+/** PhonePe was never switched on; its webhook stays deployed but rejects everything. */
 const phonePeGateway = new UnconfiguredPhonePeGateway();
 
 async function handleCreatePaymentIntent(request: {
@@ -1075,11 +1081,12 @@ async function handleCreatePaymentIntent(request: {
 }): Promise<unknown> {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to start payment."));
   const input = parse(initiatePaymentSchema, request.data);
-  return await initiatePayment(request.auth.uid, input, phonePeGateway);
+  return await initiatePayment(request.auth.uid, input, paymentGateway);
 }
 
 export const createPaymentIntent = onCall({
   region: REGION,
+  secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -1093,6 +1100,7 @@ export const createPaymentIntent = onCall({
 
 export const createPhonePeIntent = onCall({
   region: REGION,
+  secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -1138,6 +1146,61 @@ export const phonePeWebhook = onRequest({
     // money movement.
     response.status(500).json({accepted: false, reason: "CALLBACK_APPLICATION_FAILED"});
   }
+});
+
+/**
+ * Cashfree payment webhooks. Signed with our secret key and then re-checked
+ * against Cashfree's order record before the order is marked paid or failed.
+ */
+export const cashfreeWebhook = onRequest({
+  region: REGION,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  invoker: "public",
+  secrets: CASHFREE_SECRETS,
+}, async (request, response) => {
+  if (request.method !== "POST") {
+    response.status(405).set("Allow", "POST").send("Method Not Allowed");
+    return;
+  }
+  const rawBody = request.rawBody ?? Buffer.from("");
+  const rawEventHash = callbackHash(rawBody);
+  try {
+    const result = await paymentGateway.verifyWebhook(
+      Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, Array.isArray(value) ? value[0] : value])),
+      rawBody,
+    );
+    if (!result.verified) {
+      // Events we don't act on (e.g. a failed try on an order that was then paid) are acknowledged so Cashfree stops resending.
+      const ignored = result.reason.startsWith("IGNORED_");
+      logger[ignored ? "info" : "warn"]("Cashfree callback not applied", {reason: result.reason, callbackHash: rawEventHash});
+      response.status(ignored ? 200 : 401).json({accepted: false, reason: result.reason});
+      return;
+    }
+    await applyVerifiedPayment({...result, rawEventHash});
+    response.status(200).json({accepted: true});
+  } catch (error) {
+    logger.error("Verified Cashfree callback could not be applied", {callbackHash: rawEventHash, error});
+    // Non-2xx makes Cashfree retry; payment and ledger writes are idempotent.
+    response.status(500).json({accepted: false, reason: "CALLBACK_APPLICATION_FAILED"});
+  }
+});
+
+/** Our checkout page (opens Cashfree's hosted checkout) and the page customers return to. */
+export const cashfreeCheckout = onRequest({
+  region: REGION,
+  timeoutSeconds: 15,
+  memory: "256MiB",
+  maxInstances: 20,
+  invoker: "public",
+}, async (request, response) => {
+  const query = Object.fromEntries(Object.entries(request.query).map(([k, v]) => [k, String(Array.isArray(v) ? v[0] : v ?? "").slice(0, 600)]));
+  const {status, html} = cashfreeCheckoutPage(query, liveCashfreeConfig().env);
+  response.status(status)
+    .set("Content-Type", "text/html; charset=utf-8")
+    .set("Cache-Control", "no-store")
+    .set("Referrer-Policy", "no-referrer")
+    .send(html);
 });
 
 export const dispatchOfferTimeout = onTaskDispatched({
@@ -1933,9 +1996,11 @@ function economicsCallable<S extends z.ZodTypeAny, R>(
   name: string,
   schema: S,
   handler: (uid: string, token: DecodedIdTokenLike, input: z.infer<S>) => Promise<R>,
+  options: {secrets?: typeof CASHFREE_SECRETS} = {},
 ) {
   // Admin and store set-up screens only: a few instances are plenty (and keep the project inside its CPU quota).
-  return onCall({region: REGION, maxInstances: 10, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+  return onCall({region: REGION, maxInstances: 10, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB",
+    ...(options.secrets ? {secrets: options.secrets} : {})}, async (request) => {
     if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
     try {
       return await handler(request.auth.uid, request.auth.token, parse(schema, request.data ?? {}));
@@ -2318,7 +2383,7 @@ export const accountParentRevoke = economicsCallable("accountParentRevoke", chat
 export const parentPayRequest = economicsCallable("parentPayRequest", parentPayRequestSchema, (uid, _t, input) => parentPay.parentPayRequest(uid, input));
 export const parentPayCancel = economicsCallable("parentPayCancel", parentPayIdSchema, (uid, _t, input) => parentPay.parentPayCancel(uid, input));
 export const parentPayRespond = economicsCallable("parentPayRespond", parentPayRespondSchema, (uid, _t, input) =>
-  parentPay.parentPayRespond(uid, input, {onlineAvailable: phonePeGateway.configured}));
+  parentPay.parentPayRespond(uid, input, {onlineAvailable: paymentGateway.configured}), {secrets: CASHFREE_SECRETS});
 
 // ---- Friends & chat ----
 export const chatSetup = economicsCallable("chatSetup", chatSetupSchema, (uid, _t, input) => social.chatSetup(uid, input));

@@ -1,5 +1,5 @@
 export type CheckoutPaymentMethod = "cod" | "upi" | "card";
-export type CheckoutPaymentProvider = "phonepe";
+export type CheckoutPaymentProvider = "phonepe" | "cashfree";
 export type FinancePayoutMethod = "upi" | "imps" | "neft";
 export type FinancePayoutBankMethod = "imps" | "neft";
 export type FinanceBeneficiaryAccountType = "savings" | "current";
@@ -108,8 +108,8 @@ export const DEFAULT_FINANCE_PAYMENT_POLICY: Readonly<FinancePaymentPolicy> = Ob
   codEnabled: true,
   upiEnabled: false,
   cardEnabled: false,
-  upiProvider: "phonepe",
-  cardProvider: "phonepe",
+  upiProvider: "cashfree",
+  cardProvider: "cashfree",
 });
 
 export const DEFAULT_FINANCE_PAYOUT_BENEFICIARY: Readonly<FinancePayoutBeneficiaryProfile> = Object.freeze({
@@ -178,8 +178,10 @@ function paymentMethod(value: unknown, fallback: CheckoutPaymentMethod): Checkou
   return value === "cod" || value === "upi" || value === "card" ? value : fallback;
 }
 
+// Cashfree is the live gateway. PhonePe was a never-configured placeholder, so a
+// saved "phonepe" setting (older Admin builds always wrote it) means Cashfree.
 function paymentProvider(value: unknown, fallback: CheckoutPaymentProvider): CheckoutPaymentProvider {
-  return value === "phonepe" ? value : fallback;
+  return value === "cashfree" || value === "phonepe" ? "cashfree" : fallback;
 }
 
 function payoutMethod(value: unknown, fallback: FinancePayoutMethod): FinancePayoutMethod {

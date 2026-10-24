@@ -4,7 +4,7 @@ import {MAX_CART_LINES, MAX_ITEMS_PER_LINE} from "./config";
 
 const identifier = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
 const paymentMethodSchema = z.enum(["cod", "upi", "card"]);
-const paymentProviderSchema = z.enum(["phonepe"]);
+const paymentProviderSchema = z.enum(["phonepe", "cashfree"]);
 
 export const cartLineSchema = z.object({
   itemId: identifier,
@@ -98,7 +98,7 @@ export const markRiderArrivedRestaurantSchema = claimOrderSchema;
 export const initiatePaymentSchema = z.object({
   customerId: identifier,
   orderId: identifier,
-  provider: z.literal("phonepe"),
+  provider: paymentProviderSchema,
 }).strict();
 
 /**

@@ -25,10 +25,11 @@ import {
   persistLedgerJournal,
 } from "./ledger";
 import type {SavrivoOrder} from "../types";
+import type {CheckoutPaymentProvider} from "../domain/financePolicy";
 import type {InitiatePaymentInput} from "./serviceTypes";
 
 export interface PaymentIntent {
-  provider: "phonepe";
+  provider: CheckoutPaymentProvider;
   merchantOrderId: string;
   redirectUrl: string;
   expiresAt: number;
@@ -42,7 +43,7 @@ export interface PaymentIntentRequest {
 
 export interface VerifiedPaymentEvent {
   verified: true;
-  provider: "phonepe";
+  provider: CheckoutPaymentProvider;
   merchantOrderId: string;
   providerTransactionId: string;
   amountPaise: number;
@@ -56,7 +57,7 @@ export type VerificationResult =
   | {verified: false; reason: string};
 
 export interface PaymentGateway {
-  readonly provider: "phonepe";
+  readonly provider: CheckoutPaymentProvider;
   readonly configured: boolean;
   createIntent(order: SavrivoOrder, request: PaymentIntentRequest): Promise<PaymentIntent>;
   verifyWebhook(headers: Record<string, string | undefined>, rawBody: Buffer): Promise<VerificationResult>;
@@ -67,7 +68,7 @@ export type PaymentDatabase = FirestoreLike;
 export interface CanonicalPaymentAttempt {
   schemaVersion: 1;
   attemptId: string;
-  provider: "phonepe";
+  provider: CheckoutPaymentProvider;
   state: CanonicalPaymentState;
   redirectUrl: string;
   createdAt: number;
@@ -173,13 +174,18 @@ function eligibleOnlinePaymentMethod(value: SavrivoOrder["paymentMethod"]): valu
   return value === "upi" || value === "card";
 }
 
+/** The gateway an online order was placed with; orders from before Cashfree carry "phonepe". */
+export function orderPaymentProvider(order: Pick<SavrivoOrder, "paymentProvider">): CheckoutPaymentProvider {
+  return order.paymentProvider === "cashfree" ? "cashfree" : "phonepe";
+}
+
 function newPaymentForIntent(order: SavrivoOrder, occurredAt: number): PaymentAggregate {
   const common = {
     paymentId: canonicalPaymentId(order.id),
     orderId: order.id,
     customerId: order.customerId,
     method: order.paymentMethod,
-    provider: "phonepe",
+    provider: orderPaymentProvider(order),
     amountPaise: orderAmountPaise(order),
     createdAt: Number.isSafeInteger(order.createdAt) && order.createdAt > 0 ? order.createdAt : occurredAt,
   } as const;
@@ -195,7 +201,7 @@ function newPaymentForCallback(order: SavrivoOrder, attemptId: string, occurredA
     orderId: order.id,
     customerId: order.customerId,
     method: order.paymentMethod,
-    provider: "phonepe",
+    provider: orderPaymentProvider(order),
     amountPaise: orderAmountPaise(order),
     createdAt: Number.isSafeInteger(order.createdAt) && order.createdAt > 0 ? order.createdAt : occurredAt,
     legacyState: order.paymentState,
@@ -255,7 +261,7 @@ function assertPaymentMatchesOrder(record: CanonicalPaymentRecord, order: Savriv
     payment.customerId !== order.customerId ||
     payment.amountPaise !== orderAmountPaise(order) ||
     payment.method !== order.paymentMethod ||
-    payment.provider !== "phonepe"
+    payment.provider !== orderPaymentProvider(order)
   ) {
     throw new DomainError("data-loss", "Canonical payment does not match the authoritative order.");
   }
@@ -341,6 +347,9 @@ export async function initiatePayment(
     );
   }
 
+  if (gateway.provider !== orderPaymentProvider(order)) {
+    throw new DomainError("failed-precondition", "This order was set up for a different payment gateway. Please place it again.");
+  }
   const observedAt = now();
   const observed = await readCanonicalPayment(order.id, database);
   if (observed) assertPaymentMatchesOrder(observed, order);
@@ -396,7 +405,7 @@ export async function initiatePayment(
       record = appendMutation(record, applyPaymentCommand(record.aggregate, {
         operationId: timeoutOperationId,
         toState: "timed_out",
-        actor: {role: "system", id: "system:phonepe-intent"},
+        actor: {role: "system", id: `system:${gateway.provider}-intent`},
         occurredAt: observedAt,
         attemptId: record.aggregate.currentAttemptId,
         reasonCode: "PROVIDER_INTENT_EXPIRED",
@@ -411,7 +420,7 @@ export async function initiatePayment(
       payment: record.aggregate,
       operationId: startOperationId,
       attemptId: requestedMerchantOrderId,
-      actor: {role: "system", id: "system:phonepe-intent"},
+      actor: {role: "system", id: `system:${gateway.provider}-intent`},
       occurredAt: observedAt,
       priorOperation: priorOperation(record, startOperationId),
     }));
@@ -419,7 +428,7 @@ export async function initiatePayment(
     record = appendMutation(record, applyPaymentCommand(record.aggregate, {
       operationId: pendingOperationId,
       toState: "pending",
-      actor: {role: "system", id: "system:phonepe-intent"},
+      actor: {role: "system", id: `system:${gateway.provider}-intent`},
       occurredAt: observedAt,
       attemptId: requestedMerchantOrderId,
     }, priorOperation(record, pendingOperationId)));
@@ -480,7 +489,7 @@ function appendPaymentCallback(
     record = appendMutation(record, applyPaymentCommand(record.aggregate, {
       operationId: requestOperationId,
       toState: "refund_requested",
-      actor: {role: "system", id: "system:phonepe-refund"},
+      actor: {role: "system", id: `system:${event.provider}-refund`},
       occurredAt: receivedAt,
       refundRequestId,
       refundAmountPaise: event.amountPaise,
@@ -491,7 +500,7 @@ function appendPaymentCallback(
     record = appendMutation(record, applyPaymentCommand(record.aggregate, {
       operationId: processingOperationId,
       toState: "refund_processing",
-      actor: {role: "system", id: "system:phonepe-refund"},
+      actor: {role: "system", id: `system:${event.provider}-refund`},
       occurredAt: receivedAt,
       refundRequestId,
       refundAmountPaise: event.amountPaise,
