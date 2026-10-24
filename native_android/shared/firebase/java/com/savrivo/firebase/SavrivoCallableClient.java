@@ -348,6 +348,12 @@ public final class SavrivoCallableClient {
     private static void perform(
             Context context, FirebaseApp app, String function, String idToken, String appCheck,
             JSONObject data, Callback callback, boolean mayRetryAppCheck) {
+        perform(context, app, function, idToken, appCheck, data, callback, mayRetryAppCheck, true);
+    }
+
+    private static void perform(
+            Context context, FirebaseApp app, String function, String idToken, String appCheck,
+            JSONObject data, Callback callback, boolean mayRetryAppCheck, boolean mayRetryGateway) {
         HttpURLConnection connection = null;
         try {
             String project = SavrivoFirebase.projectId(context);
@@ -388,6 +394,16 @@ public final class SavrivoCallableClient {
                     ? connection.getInputStream() : connection.getErrorStream();
             String responseBody = readLimited(stream);
             if (!looksLikeJson(responseBody)) {
+                // 502/503/504 with a Google HTML page: the function never ran (cold start,
+                // instance limit or a revision still rolling out). Safe to try once more.
+                if (mayRetryGateway && (status == 502 || status == 503 || status == 504)) {
+                    connection.disconnect();
+                    connection = null;
+                    Thread.sleep(2_000);
+                    perform(context, app, function, idToken, appCheck, data, callback,
+                            mayRetryAppCheck, false);
+                    return;
+                }
                 fail(callback, "FUNCTION_HTTP_" + status);
                 return;
             }
