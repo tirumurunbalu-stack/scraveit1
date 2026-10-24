@@ -616,6 +616,25 @@ service cloud.firestore {
         && request.resource.data.h is int && request.resource.data.h > 0 && request.resource.data.h <= 4096;
       allow update, delete: if false;
     }
+    // A voice message: like a photo, its own document pointed to by a message card. Opus audio
+    // up to 2 minutes (about 450 KB as text); only the two friends hear it, and it can't be changed.
+    match /chats/{pairId}/voices/{voiceId} {
+      function voicePair() { return get(/databases/$(database)/documents/friendships/$(pairId)).data; }
+      function voiceMe() { return get(/databases/$(database)/documents/chatProfiles/$(request.auth.uid)).data; }
+      allow read: if request.auth != null && (isPrivileged()
+        || (request.auth.uid in voicePair().members && resource.data.get("removed", false) != true));
+      allow create: if request.auth != null
+        && request.auth.uid in voicePair().members && voicePair().status == "accepted"
+        && (voiceMe().status == "active" || (voiceMe().status == "suspended" && voiceMe().suspendedUntil < request.time.toMillis()))
+        && (voiceMe().minor != true || voiceMe().parentStatus == "approved")
+        && request.resource.data.keys().hasOnly(["from", "audio", "ms", "at"])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.audio is string && request.resource.data.audio.size() <= 650000
+        && request.resource.data.audio.matches("data:audio/(webm|ogg|mp4|aac)(;codecs=opus)?;base64,[A-Za-z0-9+/=]+")
+        && request.resource.data.ms is int && request.resource.data.ms > 0 && request.resource.data.ms <= 120500;
+      allow update, delete: if false;
+    }
 
     // Friends' feed: food photos and 24-hour stories, seen only by the poster's friends.
     // The server copies each new post's card into the feed of the poster and each friend;

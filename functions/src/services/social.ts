@@ -409,8 +409,10 @@ export async function resolveChatReport(adminUid: string, token: DecodedIdToken,
     const batch = firestoreDb.batch();
     // Their photos in that chat are hidden the same way (kept for the investigation, not readable by the pair).
     const photos = await firestoreDb.collection("chats").doc(String(report.pairId)).collection("photos").where("from", "==", reported).get();
-    theirs.docs.concat(photos.docs).forEach((d) => batch.update(d.ref, {removed: true, removedAt: now, deleteAfter: now + REMOVED_KEEP_MS}));
-    if (!theirs.empty || !photos.empty) await batch.commit();
+    // Voice messages likewise.
+    const voices = await firestoreDb.collection("chats").doc(String(report.pairId)).collection("voices").where("from", "==", reported).get();
+    theirs.docs.concat(photos.docs, voices.docs).forEach((d) => batch.update(d.ref, {removed: true, removedAt: now, deleteAfter: now + REMOVED_KEEP_MS}));
+    if (!theirs.empty || !photos.empty || !voices.empty) await batch.commit();
   }
   if (input.action === "remove" || input.action === "suspend" || input.action === "ban") {
     await firestoreDb.collection("chatAvatars").doc(reported).delete().catch(() => undefined);
@@ -447,6 +449,7 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
   if (!to) return;
   const card = message.card as Rec | undefined;
   const preview = card ? (card.type === "photo" ? (masked ? `📷 ${masked.slice(0, 110)}` : "📷 Photo")
+    : card.type === "voice" ? `🎤 Voice message (${voiceLength(card.ms)})`
     : card.type === "story" ? "📸 Shared a story" : `🍽 ${String(card.name ?? "A dish")}`) : masked.slice(0, 120);
   const {streak, milestone} = streakUpdate(pair, from, now);
   await friendships().doc(pairId).update({lastText: preview, lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
@@ -454,6 +457,12 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
   const names = (pair.names ?? {}) as Record<string, string>;
   await notifyUserChat({uid: to, key: `chat:${pairId}:${messageId}`, title: names[from] || "New message", body: preview, data: {route: `dm:${pairId}`}})
     .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));
+}
+
+/** 0:07 style length for a voice message preview. */
+function voiceLength(ms: unknown): string {
+  const total = Math.max(1, Math.min(600, Math.round(Number(ms) / 1000) || 1));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
 /** Someone reacted to a message: the inbox shows "Reacted 😂 to your message" and the author gets a push. */

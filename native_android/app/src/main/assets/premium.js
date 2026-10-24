@@ -4430,14 +4430,25 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       :'<div class="dm-card dm-story-card ended"><span class="stack"><strong>📸 '+h(who)+'</strong><small>This story has ended</small></span></div>'}
   function dishCard(card){const r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null,live=item&&item.available!==false,price=item?item.price:card.price;
     return'<div class="dm-card"><img src="'+h(safeUrl(card.image||(item&&item.image),r&&r.image))+'" alt=""><div class="stack"><strong>'+h(card.name||(item&&item.name)||(r&&r.name)||"A dish")+'</strong><small>'+h(card.restaurantName||(r&&r.name)||"")+(price?' · '+money(price):'')+'</small>'+(card.type==="dish"?'<button class="button primary small" data-action="dm-card-add" data-restaurant-id="'+h(card.restaurantId)+'" data-item-id="'+h(card.itemId||"")+'"'+(r&&item&&!live?' disabled':'')+'>'+(r&&item&&!live?'Not available now':'Add to my cart')+'</button>':'<button class="button primary small" data-action="go-restaurant" data-restaurant-id="'+h(card.restaurantId)+'">See menu</button>')+'</div></div>'}
+  function callsAvailable(){return typeof window.RTCPeerConnection==="function"&&nativeAvailable("callPermissions")}
+  /** Chat header: photo, name and @username stay pinned at the top; calls on the right. */
+  function dmHeader(p,pairId,other,blocked,st){
+    const user=usernameOf(p,other),sub=blocked?"Blocked":user?"@"+user:"";
+    const callBtn=(kind,label,svg)=>'<button class="dm-head-btn" data-action="call-start" data-kind="'+kind+'" data-pair-id="'+h(pairId)+'" aria-label="'+label+'"'+(blocked||!callsAvailable()?' disabled':'')+'>'+svg+'</button>';
+    return'<header class="dm-head"><button class="back-button" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +(storyGroups().has(other)?'<button class="dm-head-who has-story" data-action="story-open" data-uid="'+h(other)+'" aria-label="See story">':'<div class="dm-head-who">')+avatar(nameOf(p,other),0,other).replace('class="chat-avatar','class="chat-avatar dm-head-face')
+      +'<span class="dm-head-text"><strong>'+h(nameOf(p,other))+(st&&!blocked?'<span class="dm-head-streak" title="'+h(st.count+"-day streak")+'">'+h(st.emoji)+st.count+'</span>':'')+'</strong>'+(sub?'<small>'+h(sub)+'</small>':'')+'</span>'+(storyGroups().has(other)?'</button>':'</div>')
+      +callBtn("audio","Voice call",'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 3.8h2.6l1.4 4.1-2 1.5a12.5 12.5 0 0 0 6 6l1.5-2 4.1 1.4v2.6a2 2 0 0 1-2.2 2A17 17 0 0 1 4.6 6a2 2 0 0 1 2-2.2Z"/></svg>')
+      +callBtn("video","Video call",'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.8" y="6" width="12.6" height="12" rx="3"/><path d="m15.4 10.4 5.8-3.4v10l-5.8-3.4"/></svg>')
+      +'<button class="dm-head-btn" data-action="dm-menu" data-pair-id="'+h(pairId)+'" aria-label="Report or block">⋮</button></header>'}
   function screenDm(){ensureChatSync();const c=chatState(),uid=myUid(),pairId=String(state.routeData.pairId||""),p=c.pairs.find(x=>x.id===pairId);openThread(pairId);
     if(!p)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Chat","")+emptyState("chat","Chat not available","This person may have removed you or been blocked.")+'</div>'+nav()+'</main>';
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
     const st=streakOf(p);
-    return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+topbar(nameOf(p,other),blocked?"Blocked":[usernameOf(p,other)?"@"+usernameOf(p,other):"",st?st.emoji+" "+st.count+"-day streak":""].filter(Boolean).join(" · "),'<button class="icon-button flat" data-action="dm-menu" data-pair-id="'+h(pairId)+'" aria-label="Report or block">⋮</button>')
-      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+    return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+dmHeader(p,pairId,other,blocked,st)
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
-        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small" type="submit">Send</button></form>')
+        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
   // Photos in chats: each photo is its own document beside the messages (only the two friends can read it);
   // the message carries a small card pointing to it. Photos are fetched once and shown from memory.
@@ -4471,6 +4482,92 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     catch(e){toast("Photo not sent. "+chatError(e),"danger")}}
   async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const body={from:uid,text:String(text||"").slice(0,1000),at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
     try{await fs.collection("chats").doc(pairId).collection("messages").add(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
+  // ---- Voice messages ----
+  // Recorded as Opus (about 3 KB a second) up to 2 minutes; each one is its own document beside the
+  // messages, readable only by the two friends. The message card carries the length and a waveform.
+  const VN_MAX_MS=120000,VN_MIN_MS=700,VN_BARS=36,vnAudio=new Map(),vnLoading=new Set();
+  const vnPlay={id:"",el:null,speed:1};
+  let vnRec=null,vnHolding=false;
+  function voiceNotesAvailable(){return nativeAvailable("callPermissions")&&typeof window.MediaRecorder==="function"&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)}
+  function vnClock(ms){const t=Math.max(0,Math.round(Number(ms||0)/1000));return Math.floor(t/60)+":"+String(t%60).padStart(2,"0")}
+  function vnWave(card){const w=Array.isArray(card.wave)?card.wave.map(n=>Math.max(1,Math.min(9,Math.round(Number(n)||1)))):[];if(w.length>=8)return w;
+    let seed=0;String(card.voiceId||"x").split("").forEach(ch=>{seed=(seed*31+ch.charCodeAt(0))>>>0});return Array.from({length:VN_BARS},(_,i)=>{seed=(seed*1103515245+12345)>>>0;return 2+((seed>>>16)%6)+(i%7===3?1:0)})}
+  function voiceBubble(card,pairId,mine){const id=String(card.voiceId||""),ms=Math.max(0,Number(card.ms)||0),playing=vnPlay.id===id&&vnPlay.el&&!vnPlay.el.paused,loading=vnLoading.has(id);
+    const bars=vnWave(card).map(n=>'<i style="--h:'+n+'"></i>').join("");
+    return'<div class="vn'+(playing?' playing':'')+(mine?' mine':'')+'" data-voice-id="'+h(id)+'" data-pair-id="'+h(pairId)+'" data-ms="'+ms+'">'
+      +'<button type="button" class="vn-play" data-action="vn-play" data-voice-id="'+h(id)+'" data-pair-id="'+h(pairId)+'" aria-label="'+(playing?'Pause':'Play voice message')+'">'+(loading?'<span class="spinner"></span>':playing?'<svg viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.3"/><rect x="13.5" y="5" width="4" height="14" rx="1.3"/></svg>':'<svg viewBox="0 0 24 24"><path d="M8 5.3v13.4a1 1 0 0 0 1.5.9l10.6-6.7a1 1 0 0 0 0-1.8L9.5 4.4A1 1 0 0 0 8 5.3Z"/></svg>')+'</button>'
+      +'<div class="vn-body"><div class="vn-wave" data-voice-id="'+h(id)+'">'+bars+'</div><div class="vn-meta"><span class="vn-time">'+vnClock(ms)+'</span><span>🎤</span></div></div>'
+      +'<button type="button" class="vn-speed" data-action="vn-speed" aria-label="Playback speed">'+(vnPlay.speed===1?'1×':vnPlay.speed===1.5?'1.5×':'2×')+'</button></div>'}
+  async function vnLoad(pairId,id){if(vnAudio.has(id))return vnAudio.get(id);if(vnLoading.has(id))return null;vnLoading.add(id);chatRerender();
+    try{const d=await fs.collection("chats").doc(pairId).collection("voices").doc(id).get(),a=d.exists?String(d.data().audio||""):"";
+      if(!/^data:audio\/[a-z0-9]+(;codecs=opus)?;base64,/.test(a))throw new Error("VOICE_MISSING");
+      const comma=a.indexOf(","),mime=a.slice(5,a.indexOf(";")),b=atob(a.slice(comma+1)),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);
+      const url=URL.createObjectURL(new Blob([bytes],{type:mime}));vnAudio.set(id,url);return url}
+    catch(_){toast("This voice message isn’t available.","danger");return null}
+    finally{vnLoading.delete(id);chatRerender()}}
+  async function vnToggle(pairId,id){
+    if(vnPlay.id===id&&vnPlay.el){if(vnPlay.el.paused){vnPlay.el.play().catch(()=>{})}else vnPlay.el.pause();chatRerender();return}
+    if(vnPlay.el){vnPlay.el.pause();vnPlay.el=null}
+    const url=await vnLoad(pairId,id);if(!url)return;
+    const el=new Audio(url);el.playbackRate=vnPlay.speed;vnPlay.id=id;vnPlay.el=el;
+    el.addEventListener("ended",()=>{if(vnPlay.el===el){vnPlay.id="";vnPlay.el=null;chatRerender();vnPaint(id,0,true)}});
+    el.addEventListener("pause",chatRerender);el.addEventListener("play",()=>{chatRerender();requestAnimationFrame(vnTick)});
+    el.play().catch(()=>toast("Couldn’t play this voice message.","danger"))}
+  // Played part of the waveform lights up; the clock counts down like WhatsApp.
+  function vnPaint(id,p,reset){document.querySelectorAll('.vn[data-voice-id="'+CSS.escape(id)+'"]').forEach(v=>{const bars=v.querySelectorAll(".vn-wave i"),on=reset?0:Math.round(p*bars.length);bars.forEach((b,i)=>b.classList.toggle("on",i<on));const t=v.querySelector(".vn-time"),ms=Number(v.dataset.ms)||0;if(t)t.textContent=reset?vnClock(ms):vnClock(Math.max(0,ms-p*ms))})}
+  function vnTick(){const el=vnPlay.el;if(!el||el.paused)return;const d=el.duration&&isFinite(el.duration)?el.duration:0,ms=Number((document.querySelector('.vn[data-voice-id="'+CSS.escape(vnPlay.id)+'"]')||{dataset:{}}).dataset.ms)||0,total=d||ms/1000;vnPaint(vnPlay.id,total?Math.min(1,el.currentTime/total):0);requestAnimationFrame(vnTick)}
+  document.addEventListener("pointerdown",e=>{const w=e.target.closest&&e.target.closest(".vn-wave");if(!w||vnPlay.id!==w.dataset.voiceId||!vnPlay.el)return;const r=w.getBoundingClientRect(),p=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),el=vnPlay.el,d=el.duration&&isFinite(el.duration)?el.duration:(Number(w.closest(".vn").dataset.ms)||0)/1000;if(d){el.currentTime=p*d;vnPaint(vnPlay.id,p)}});
+
+  // Recording: hold the mic and let go to send (slide left to cancel), or tap it to record hands-free.
+  function vnLevelsToWave(levels){if(!levels.length)return[];const out=[],step=levels.length/VN_BARS;for(let i=0;i<VN_BARS;i++){const a=Math.floor(i*step),b=Math.max(a+1,Math.floor((i+1)*step));let m=0;for(let j=a;j<b&&j<levels.length;j++)m=Math.max(m,levels[j]);out.push(m)}
+    const top=Math.max(...out,0.02);return out.map(v=>Math.max(1,Math.min(9,Math.round(1+8*Math.pow(v/top,0.8)))))}
+  function vnOverlay(){let o=document.getElementById("vn-rec");if(o)return o;o=document.createElement("div");o.id="vn-rec";o.className="vn-rec";o.setAttribute("role","status");
+    o.innerHTML='<button type="button" class="vn-rec-trash" aria-label="Delete recording"><svg viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l1 12.2a1.6 1.6 0 0 0 1.6 1.5h5.8a1.6 1.6 0 0 0 1.6-1.5l1-12.2"/></svg></button><span class="vn-rec-dot"></span><span class="vn-rec-time">0:00</span><canvas class="vn-rec-wave" width="300" height="56"></canvas><span class="vn-rec-hint">‹ Slide to cancel</span><button type="button" class="vn-rec-send" aria-label="Send voice message"><svg viewBox="0 0 24 24"><path d="M4 12.5 20 4l-5.6 16-3.1-6.8L4 12.5Z"/></svg></button>';
+    o.querySelector(".vn-rec-trash").addEventListener("click",()=>vnFinish(false));o.querySelector(".vn-rec-send").addEventListener("click",()=>vnFinish(true));document.body.appendChild(o);return o}
+  async function vnBegin(pairId,mode){if(vnRec)return;
+    try{const perm=await nativeInvoke("callPermissions",{video:false},{timeoutMs:60000});if(!perm||perm.audio!==true){toast("Allow the microphone to send voice messages (Settings › Apps › Scraveit › Permissions).","warning");return}}
+    catch(e){toast(chatError(e),"danger");return}
+    let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}})}catch(_){toast("The microphone is busy or blocked.","danger");return}
+    const mime=["audio/webm;codecs=opus","audio/ogg;codecs=opus","audio/webm"].find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t))||"";
+    let rec;try{rec=new MediaRecorder(stream,mime?{mimeType:mime,audioBitsPerSecond:24000}:{audioBitsPerSecond:24000})}catch(_){stream.getTracks().forEach(t=>t.stop());toast("Recording isn’t supported on this phone.","danger");return}
+    const ctx=new (window.AudioContext||window.webkitAudioContext)(),an=ctx.createAnalyser();an.fftSize=512;ctx.createMediaStreamSource(stream).connect(an);
+    const r={pairId,mode,stream,rec,ctx,an,chunks:[],levels:[],start:Date.now(),buf:new Float32Array(an.fftSize),live:[]};vnRec=r;
+    rec.ondataavailable=e=>{if(e.data&&e.data.size)r.chunks.push(e.data)};rec.start(250);
+    try{navigator.vibrate&&navigator.vibrate(18)}catch(_){}
+    // Let go while Android was still asking for the microphone: keep recording hands-free.
+    if(mode==="hold"&&!vnHolding)r.mode=mode="locked";
+    const o=vnOverlay();o.classList.toggle("locked",mode==="locked");o.classList.add("on");o.style.setProperty("--slide","0px");
+    const cv=o.querySelector(".vn-rec-wave"),g=cv.getContext("2d"),time=o.querySelector(".vn-rec-time");
+    r.timer=setInterval(()=>{an.getFloatTimeDomainData(r.buf);let sum=0;for(const v of r.buf)sum+=v*v;const lvl=Math.min(1,Math.sqrt(sum/r.buf.length)*4.2);r.levels.push(lvl);r.live.push(lvl);if(r.live.length>60)r.live.shift();
+      const ms=Date.now()-r.start;time.textContent=vnClock(ms);
+      g.clearRect(0,0,cv.width,cv.height);const bw=5,gap=3,n=Math.floor(cv.width/(bw+gap));const pts=r.live.slice(-n);
+      pts.forEach((v,i)=>{const hgt=Math.max(4,v*cv.height*0.95),x=cv.width-(pts.length-i)*(bw+gap);g.fillStyle=i>pts.length-4?"#ef4444":"#1460f0";g.beginPath();if(g.roundRect)g.roundRect(x,(cv.height-hgt)/2,bw,hgt,2.5);else g.rect(x,(cv.height-hgt)/2,bw,hgt);g.fill()});
+      if(ms>=VN_MAX_MS){toast("Voice messages can be up to 2 minutes.","info");vnFinish(true)}},80)}
+  function vnFinish(send){const r=vnRec;if(!r)return;vnRec=null;clearInterval(r.timer);const o=document.getElementById("vn-rec");if(o)o.classList.remove("on","locked");
+    const ms=Date.now()-r.start;
+    r.rec.onstop=()=>{r.stream.getTracks().forEach(t=>t.stop());try{r.ctx.close()}catch(_){}
+      if(!send)return;if(ms<VN_MIN_MS){toast("Hold the mic to record, let go to send.","info");return}
+      vnUpload(r.pairId,new Blob(r.chunks,{type:r.rec.mimeType||"audio/webm"}),Math.min(ms,VN_MAX_MS),vnLevelsToWave(r.levels))};
+    try{r.rec.stop()}catch(_){r.rec.onstop()}
+    try{navigator.vibrate&&navigator.vibrate(send?12:[10,40,10])}catch(_){}}
+  async function vnUpload(pairId,blob,ms,wave){
+    const audio=await new Promise((ok,bad)=>{const fr=new FileReader();fr.onload=()=>ok(String(fr.result||""));fr.onerror=bad;fr.readAsDataURL(blob)}).catch(()=>"");
+    if(!/^data:audio\/(webm|ogg|mp4|aac)(;codecs=opus)?;base64,/.test(audio)){toast("Voice message not sent. Try again.","danger");return}
+    if(audio.length>650000){toast("That recording is too long to send.","danger");return}
+    try{const ref=fs.collection("chats").doc(pairId).collection("voices").doc();
+      vnAudio.set(ref.id,URL.createObjectURL(blob));
+      await ref.set({from:myUid(),audio,ms:Math.round(ms),at:firebase.firestore.FieldValue.serverTimestamp()});
+      await sendDm(pairId,"",{type:"voice",voiceId:ref.id,ms:Math.round(ms),wave});scrollThreadToEnd()}
+    catch(e){toast("Voice message not sent. "+chatError(e),"danger")}}
+  // Hold vs tap on the mic.
+  (function(){let press=null;
+    document.addEventListener("pointerdown",e=>{const b=e.target.closest&&e.target.closest(".dm-mic");if(!b||vnRec)return;e.preventDefault();try{b.setPointerCapture(e.pointerId)}catch(_){}
+      press={id:e.pointerId,x:e.clientX,pairId:b.dataset.pairId,held:false,timer:setTimeout(()=>{if(press){press.held=true;vnHolding=true;vnBegin(press.pairId,"hold")}},230)}});
+    document.addEventListener("pointermove",e=>{if(!press||e.pointerId!==press.id||!vnRec||vnRec.mode!=="hold")return;const dx=Math.min(0,e.clientX-press.x),o=document.getElementById("vn-rec");if(o)o.style.setProperty("--slide",dx+"px");if(dx<-110){press=null;vnHolding=false;vnFinish(false);toast("Recording cancelled.","info")}});
+    const up=e=>{if(!press||e.pointerId!==press.id)return;clearTimeout(press.timer);const p=press;press=null;vnHolding=false;
+      if(!p.held){vnBegin(p.pairId,"locked");return}
+      if(vnRec&&vnRec.mode==="hold")vnFinish(true)};
+    document.addEventListener("pointerup",up);document.addEventListener("pointercancel",e=>{if(press&&e.pointerId===press.id){clearTimeout(press.timer);press=null;vnHolding=false;if(vnRec&&vnRec.mode==="hold")vnFinish(false)}})})();
   function shareFriendSheet(sheet){const friends=chatState().pairs.filter(p=>p.status==="accepted");
     return sheetShell("Send to a friend",sheet.title||"",friends.length?'<div class="stack">'+friends.map((p,i)=>'<button class="chat-row" data-action="share-to-friend" data-pair-id="'+h(p.id)+'">'+avatar(nameOf(p,otherOf(p)),i,otherOf(p))+'<span class="grow"><strong>'+h(nameOf(p,otherOf(p)))+'</strong></span>'+icon("chevron","small")+'</button>').join("")+'</div>':'<p class="supporting">Add friends first from Chats › Friends.</p>')}
   function sharePlaceSheet(sheet){const list=restaurantsFiltered().slice(0,12);
@@ -4606,6 +4703,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="crave"){setCraving(control.dataset.dish||"");return true}
     if(action==="dm-fun"){setSheet({type:"fun",pairId:pid});return true}
     if(action==="dm-photo"){sendDmPhoto(pid);return true}
+    if(action==="call-start"){if(typeof startCall==="function")startCall(pid,String(control.dataset.kind||"audio"));else toast("Calls need the latest Scraveit update.","info");return true}
+    if(action==="vn-play"){vnToggle(pid,String(control.dataset.voiceId||""));return true}
+    if(action==="vn-speed"){vnPlay.speed=vnPlay.speed===1?1.5:vnPlay.speed===1.5?2:1;if(vnPlay.el)vnPlay.el.playbackRate=vnPlay.speed;chatRerender();return true}
     if(action==="dm-photo-open"){const id=String(control.dataset.photoId||""),ph=dmPhotos.get(id);if(!ph||!ph.url)return true;const mine=!!control.closest(".dm-msg.mine");if(photoVeiled(mine,id)){dmPhotoSeen.add(id);render({preserveScroll:true});return true}setSheet({type:"photo",photoId:id});return true}
     if(action==="dm-spin"){openWheel(pid);return true}
     if(action==="dm-iou"){chatState().iouDraft={treat:"waffles",owedBy:"them"};setSheet({type:"iou",pairId:pid});return true}

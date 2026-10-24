@@ -4,6 +4,12 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Voice messages and voice/video calls with friends. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- The Cashfree SDK asks for NFC (tap-to-pay cards); Scraveit does not use it. -->
     <uses-permission android:name="android.permission.NFC" tools:node="remove" />
     <!-- Lets checkout list the UPI apps on this phone (PhonePe, GPay, Paytm...). -->

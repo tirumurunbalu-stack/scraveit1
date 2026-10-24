@@ -37,6 +37,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import com.google.mlkit.vision.barcode.common.Barcode;
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
@@ -91,6 +92,9 @@ import java.util.concurrent.Executors;
 public class MainActivity extends ComponentActivity {
   private static final int LOCATION_REQUEST = 4401;
   private static final int NOTIFICATION_REQUEST = 4403;
+  private static final int MEDIA_REQUEST = 4405;
+  /** The JS request waiting for the microphone/camera permission answer. */
+  private String pendingMediaRequestId;
   private static final String ORDER_CHANNEL = CustomerMessagingService.ORDER_CHANNEL;
   private static final String TRUSTED_HOST = "appassets.androidplatform.net";
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
@@ -183,7 +187,8 @@ public class MainActivity extends ComponentActivity {
     settings.setAllowUniversalAccessFromFileURLs(false);
     settings.setJavaScriptCanOpenWindowsAutomatically(false);
     settings.setSupportMultipleWindows(false);
-    settings.setMediaPlaybackRequiresUserGesture(true);
+    // Our own page only (see TRUSTED_PAGE): a call's audio must start without a tap.
+    settings.setMediaPlaybackRequiresUserGesture(false);
     settings.setSaveFormData(false);
     settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -195,7 +200,23 @@ public class MainActivity extends ComponentActivity {
     view.removeJavascriptInterface("searchBoxJavaBridge_");
     view.removeJavascriptInterface("accessibility");
     view.removeJavascriptInterface("accessibilityTraversal");
-    view.setWebChromeClient(new WebChromeClient());
+    view.setWebChromeClient(new WebChromeClient() {
+      // Microphone/camera for voice messages and calls: only our own page, and only what Android already allowed.
+      @Override public void onPermissionRequest(PermissionRequest request) {
+        runOnUiThread(() -> {
+          Uri origin = request.getOrigin();
+          if (origin == null || !TRUSTED_HOST.equals(origin.getHost())) { request.deny(); return; }
+          java.util.ArrayList<String> allowed = new java.util.ArrayList<>();
+          for (String resource : request.getResources()) {
+            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) allowed.add(resource);
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)
+                && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) allowed.add(resource);
+          }
+          if (allowed.isEmpty()) request.deny(); else request.grant(allowed.toArray(new String[0]));
+        });
+      }
+    });
     view.addJavascriptInterface(new NativeBridge(), "FeastlyNative");
     createOrderNotificationChannel();
     final FrameLayout splash = new FrameLayout(this);
@@ -869,6 +890,22 @@ public class MainActivity extends ComponentActivity {
           publishNativeFailure(requestId, "createPhonePeIntent", "INVALID_ARGUMENT",
               "The payment request is invalid. Refresh and try again.");
         }
+      });
+    }
+
+    /** Asks Android for the microphone (and the camera for video). payload: {video: boolean}. */
+    @JavascriptInterface public void callPermissions(String requestId, String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        boolean video = false;
+        try { video = new JSONObject(payloadJson == null ? "{}" : payloadJson).optBoolean("video", false); } catch (Exception ignored) { }
+        java.util.ArrayList<String> need = new java.util.ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.RECORD_AUDIO);
+        if (video && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.CAMERA);
+        if (need.isEmpty()) { publishMediaPermission(requestId); return; }
+        if (pendingMediaRequestId != null) publishMediaPermission(pendingMediaRequestId);
+        pendingMediaRequestId = requestId;
+        requestPermissions(need.toArray(new String[0]), MEDIA_REQUEST);
       });
     }
 
@@ -1581,8 +1618,23 @@ public class MainActivity extends ComponentActivity {
         .replace("\n", "\\n").replace("\r", "");
   }
 
+  private void publishMediaPermission(String requestId) {
+    JSONObject result = new JSONObject();
+    try {
+      result.put("audio", checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED);
+      result.put("video", checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED);
+    } catch (Exception ignored) { }
+    publishNativeSuccess(requestId, "callPermissions", result);
+  }
+
   @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    if (requestCode == MEDIA_REQUEST) {
+      String requestId = pendingMediaRequestId;
+      pendingMediaRequestId = null;
+      if (requestId != null) publishMediaPermission(requestId);
+      return;
+    }
     if (requestCode == LOCATION_REQUEST) {
       if (!isTrustedPageLoaded()) return;
       boolean granted = false;

@@ -2520,3 +2520,65 @@ body:has(.kind-nav):has(.floating-cart) .toast-region, body:has(.kind-nav):has(.
 .account-lang { flex: 0 0 auto; display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--surface-raised, rgba(15,23,42,.06)); }
 .account-lang button { min-height: 34px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-soft, inherit); font: 700 13.5px/1 var(--font-body); }
 .account-lang button.on { background: var(--brand); color: #fff; }
+
+/* ===== Chat thread: fixed header, scrolling messages, composer on the bottom edge ===== */
+#app > main.screen.dm-screen { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding: 0 !important; }
+.dm-screen .dm-wrap { flex: 1; min-height: 0; width: 100%; gap: 0; }
+.dm-screen .dm-messages { min-height: 0; padding: 12px 14px 8px; }
+.dm-screen .dm-composer { position: static; padding: 8px 12px calc(10px + var(--safe-bottom, 0px)); border-top: 1px solid var(--border); }
+.dm-screen .dm-wrap > :not(.dm-head):not(.dm-messages):not(.dm-composer) { flex: none; margin: 8px 12px 0; }
+.dm-head { flex: none; display: flex; align-items: center; gap: 6px; padding: calc(var(--safe-top) + 8px) 8px 10px; background: var(--canvas); border-bottom: 1px solid var(--border); }
+.dm-head .back-button { flex: none; }
+.dm-head-who { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 4px; font: inherit; color: var(--ink); text-align: left; border-radius: 14px; }
+.dm-head-who:active { background: var(--surface); }
+.dm-head-who.has-story .dm-head-face { box-shadow: 0 0 0 2px var(--canvas), 0 0 0 4px #f97316; }
+.chat-avatar.dm-head-face { width: 42px; height: 42px; font-size: 17px; flex: none; }
+.dm-head-text { min-width: 0; display: grid; gap: 1px; }
+.dm-head-text strong { font-size: 17px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-head-streak { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: #fff1e6; color: #c2410c; font-size: 12px; font-weight: 800; vertical-align: 2px; }
+.dm-head-text small { font-size: 13px; color: var(--muted, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-head-btn { flex: none; width: 42px; height: 42px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--brand); font-size: 22px; font-weight: 700; }
+.dm-head-btn:active { background: var(--surface); }
+.dm-head-btn:disabled { opacity: .35; }
+.dm-head-btn svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linejoin: round; stroke-linecap: round; }
+
+/* ===== Voice messages ===== */
+/* Empty message box: the mic shows; typing swaps it for Send (CSS only, survives re-renders). */
+.dm-mic { display: none; flex: none; width: 46px; height: 46px; border: 0; border-radius: 50%; background: var(--brand); color: #fff; place-items: center; touch-action: none; user-select: none; -webkit-user-select: none; box-shadow: 0 6px 16px rgba(20,96,240,.32); }
+.dm-mic svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.dm-mic:active { transform: scale(1.12); }
+.dm-composer:has(.dm-mic):has(.input:placeholder-shown) .dm-mic { display: grid; }
+.dm-composer:has(.dm-mic):has(.input:placeholder-shown) .dm-send { display: none; }
+
+.dm-msg.voice-only { max-width: 86%; }
+.vn { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 10px 9px 9px; min-width: 236px; border-radius: 22px; background: var(--surface); border: 1px solid var(--border); color: var(--ink); }
+.vn.mine { background: var(--brand); border-color: transparent; color: #fff; }
+.vn-play { width: 42px; height: 42px; border-radius: 50%; border: 0; display: grid; place-items: center; background: var(--brand); color: #fff; }
+.vn.mine .vn-play { background: #fff; color: var(--brand); }
+.vn-play svg { width: 19px; height: 19px; fill: currentColor; }
+.vn-play .spinner { width: 18px; height: 18px; }
+.vn-body { min-width: 0; display: grid; gap: 3px; }
+.vn-wave { display: flex; align-items: center; gap: 2px; height: 30px; cursor: pointer; }
+.vn-wave i { flex: 1; min-width: 2px; max-width: 4px; height: calc(var(--h) * 3px + 3px); border-radius: 3px; background: currentColor; opacity: .32; transition: opacity .12s, transform .12s; }
+.vn-wave i.on { opacity: 1; }
+.vn.playing .vn-wave i.on:last-of-type { transform: scaleY(1.15); }
+.vn-meta { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; opacity: .78; }
+.vn-speed { align-self: center; min-width: 40px; height: 26px; padding: 0 8px; border-radius: 999px; border: 0; font: inherit; font-size: 12px; font-weight: 800; background: rgba(20,96,240,.1); color: var(--brand); }
+.vn.mine .vn-speed { background: rgba(255,255,255,.22); color: #fff; }
+
+/* Recording bar: sits over the message box, outside the re-rendered page. */
+.vn-rec { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; display: none; align-items: center; gap: 10px; padding: 10px 12px calc(12px + var(--safe-bottom, 0px)); background: var(--canvas); border-top: 1px solid var(--border); box-shadow: 0 -10px 30px rgba(15,23,42,.08); }
+.vn-rec.on { display: flex; animation: vn-rise .18s ease-out both; }
+@keyframes vn-rise { from { transform: translateY(14px); opacity: 0; } }
+.vn-rec-dot { flex: none; width: 11px; height: 11px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 0 rgba(239,68,68,.5); animation: vn-pulse 1.2s infinite; }
+@keyframes vn-pulse { 70% { box-shadow: 0 0 0 9px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+.vn-rec-time { flex: none; font-weight: 800; font-variant-numeric: tabular-nums; min-width: 38px; }
+.vn-rec-wave { flex: 1; min-width: 0; height: 28px; transform: translateX(var(--slide, 0px)); }
+.vn-rec-hint { display: none; flex: none; font-size: 13px; color: var(--muted, #64748b); transform: translateX(var(--slide, 0px)); }
+.vn-rec:not(.locked) .vn-rec-hint { display: block; }
+.vn-rec:not(.locked) .vn-rec-trash, .vn-rec:not(.locked) .vn-rec-send { display: none; }
+.vn-rec-trash, .vn-rec-send { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; display: grid; place-items: center; }
+.vn-rec-trash { background: #fee2e2; color: #dc2626; }
+.vn-rec-send { background: var(--brand); color: #fff; box-shadow: 0 6px 16px rgba(20,96,240,.32); }
+.vn-rec-trash svg, .vn-rec-send svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.vn-rec-send svg { fill: currentColor; stroke: none; }
