@@ -1989,7 +1989,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
    *  it applies the profitability cap and who-pays split the order will get. */
   function serverOffer(){const coupon=eligibleCoupon(),p=state.dynamicPricing&&state.dynamicPricing.offer;if(!coupon||!p||p.valid!==true||String(p.code)!==String(coupon.code)||Math.abs(Number(p.subtotal)-cartSubtotal())>0.001)return null;return p}
   function discount(){const server=serverOffer(),coupon=eligibleCoupon();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(coupon,promotionBase(coupon,cartSubtotal()));}
-  function tax(){const s=serverLine("tax");if(s!=null)return s;return Math.max(0,(cartSubtotal()-discount())*Number(state.settings.taxRate||0)/100);}
+  function tax(){const s=serverLine("tax");if(s!=null)return s;const rate=Number(state.settings.taxRate||0);if(rate>0)return Math.max(0,(cartSubtotal()-discount())*rate/100);
+    // GST comes from the server's tax rules. While a changed cart is being re-priced, scale the
+    // last server GST so the line doesn't vanish and come back.
+    const last=state.lastServerCheckout;return last&&Number(last.subtotalAtRequest)>0?Math.max(0,Number(last.tax||0)*cartSubtotal()/Number(last.subtotalAtRequest)):0;}
   function smallOrderFee(){const s=serverLine("smallOrderFee");if(s!=null)return s;return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
   function lateNightFee(){const s=serverLine("lateNightFee");if(s!=null)return s;if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
   function rainFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.rainFee||0));}
@@ -2009,7 +2012,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // checkout is never blocked by a preview problem; the real, authoritative
   // fee is still enforced server-side when the order is actually placed.
   const dynamicPricingFallback=()=>({rainFee:0,surgeFee:0,riderIncentiveFee:0,riderIncentiveItems:[],weatherSeverity:"",weatherChecked:false,activeOrders:0,serverAuthoritative:true,checkedAt:Date.now()});
+  let pricingSeq=0,pricingTimer=null;
+  // Re-price the cart shortly after the customer stops tapping (quantity, tip, coupon).
+  function scheduleCheckoutRefresh(){clearTimeout(pricingTimer);pricingTimer=setTimeout(()=>{if(!state.cart.length||(state.route!=="cart"&&state.route!=="checkout"))return;refreshDynamicPricing().then(()=>{if(state.route==="cart"||state.route==="checkout")render({preserveScroll:true})}).catch(()=>{})},400)}
   async function refreshDynamicPricing(){
+    const seq=++pricingSeq;
     const fallback=dynamicPricingFallback();
     const r=cartRestaurant(),addr=currentAddress();
     if(!state.session||!r||!addr||!state.cart.length||!nativeAvailable("getCheckoutConfiguration")){state.dynamicPricing=fallback;return fallback}
@@ -2029,9 +2036,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         // The server's own bill for exactly this cart, coupon, tip and wallet choice.
         checkout:raw&&raw.checkoutPreview&&typeof raw.checkoutPreview==="object"?Object.assign({},raw.checkoutPreview,{subtotalAtRequest:subtotalAtRequest,couponAtRequest:coupon?String(coupon.code||""):"",tipAtRequest:Number(state.tip||0),walletAtRequest:state.useWallet===true}):null
       }:fallback;
+      if(seq!==pricingSeq)return state.dynamicPricing;
+      if(next.checkout)state.lastServerCheckout=next.checkout;
       state.dynamicPricing=next;
       return next;
     }catch(_){
+      if(seq!==pricingSeq)return state.dynamicPricing;
       state.dynamicPricing=fallback;
       return fallback;
     }
@@ -2068,7 +2078,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     item.quantity += delta;
     if(item.quantity<=0) state.cart=state.cart.filter(x=>x.key!==key);
     if(!state.cart.length){state.coupon=null;state.tip=0;}
-    persistCart(); render({preserveScroll:true});
+    persistCart(); render({preserveScroll:true}); scheduleCheckoutRefresh();
   }
 
   function addressDeletionPlan(addresses,selectedAddressId,addressId){
@@ -6896,7 +6906,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const saved=Object.assign({id:orderId},order||{});
     state.orders=[saved].concat(state.orders.filter(x=>x.id!==orderId));persistOrders();
     if(deliveryOtp)state.deliveryOtps[orderId]=deliveryOtp;
-    state.cart=[];state.coupon=null;state.tip=0;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
+    state.cart=[];state.coupon=null;state.tip=0;state.lastServerCheckout=null;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
     toast(recovered?"Your existing order was restored safely.":"Order placed successfully.","success");go("order",{orderId:orderId});
     if(!recovered)orderPlacedMoment(saved);
     const squad=state.squad;
@@ -7311,7 +7321,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="remove-coupon"){
       state.couponDismissedFor=state.cart.length?state.cart[0].restaurantId:"";
       state.coupon=null;state.couponAuto=false;
-      toast("Offer removed.","success");render({preserveScroll:true});return;
+      toast("Offer removed.","success");render({preserveScroll:true});scheduleCheckoutRefresh();return;
     }
     if(action==="toggle-wallet"){state.useWallet=!state.useWallet;render({preserveScroll:true});refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});return;}
     if(action==="wallet-refresh"){loadWallet(true);return;}
@@ -7319,7 +7329,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="set-tip"){
       state.tip=Math.max(0,Math.min(1000,Number(control.dataset.value||0)));
       render({preserveScroll:true});
-      if(state.route==="checkout")refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});
+      scheduleCheckoutRefresh();
       return;
     }
     if(action==="apply-custom-tip"){
@@ -7327,6 +7337,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       const value=Math.max(0,Math.min(1000,Number(input&&input.value||0)));
       state.tip=Number.isFinite(value)?value:0;
       render({preserveScroll:true});
+      scheduleCheckoutRefresh();
       return;
     }
     if(action==="delivery-mode"){if(control.dataset.value==="scheduled"){toast("Scheduling activates with the production dispatch backend.");return;}state.checkout.deliveryMode="asap";render({preserveScroll:true});return;}

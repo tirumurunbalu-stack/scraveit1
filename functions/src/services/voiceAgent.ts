@@ -148,7 +148,7 @@ async function speak(deps: VoiceAgentDeps, text: string, lang: VoiceLang): Promi
   const res = await deps.fetch("https://api.sarvam.ai/text-to-speech", {
     method: "POST",
     headers: {"api-subscription-key": deps.secrets.sarvamKey, "Content-Type": "application/json"},
-    body: JSON.stringify({text, target_language_code: lang, model: "bulbul:v2", speaker: "anushka", speech_sample_rate: 8000}),
+    body: JSON.stringify({text, target_language_code: lang, model: "bulbul:v3", speaker: "kavitha", speech_sample_rate: 8000}),
   });
   if (!res.ok) throw new Error(`TTS_HTTP_${res.status}`);
   const body = await res.json() as {audios?: string[]};
@@ -161,7 +161,7 @@ async function speak(deps: VoiceAgentDeps, text: string, lang: VoiceLang): Promi
 async function transcribe(deps: VoiceAgentDeps, wav: Buffer, fallback: VoiceLang): Promise<{text: string; lang: VoiceLang}> {
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(wav)], {type: "audio/wav"}), "reply.wav");
-  form.append("model", "saarika:v2.5");
+  form.append("model", "saaras:v3");
   form.append("language_code", "unknown");
   const res = await deps.fetch("https://api.sarvam.ai/speech-to-text", {
     method: "POST", headers: {"api-subscription-key": deps.secrets.sarvamKey}, body: form,
