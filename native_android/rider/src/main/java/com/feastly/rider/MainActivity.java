@@ -67,6 +67,7 @@ public class MainActivity extends ComponentActivity {
     private static final int FILE_CHOOSER_REQUEST = 6202;
     private static final int FACE_CAPTURE_REQUEST = 6203;
     private static final int CAMERA_PERMISSION_REQUEST = 6204;
+    private static final int CHOOSER_CAMERA_PERMISSION_REQUEST = 6206;
     private static final String TRUSTED_ORIGIN = "https://appassets.androidplatform.net/assets/";
     private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
     private static final int CANVAS = Color.rgb(7, 20, 38);
@@ -76,6 +77,8 @@ public class MainActivity extends ComponentActivity {
     private WebView webView;
     private GoogleCredentialSignIn googleSignIn;
     private ValueCallback<Uri[]> fileChooserCallback;
+    /** Where the camera writes a photo taken from the "take or choose" picker. */
+    private java.io.File chooserCameraFile;
     private SavrivoWebPushBinder pushBinder;
     private final java.util.concurrent.ExecutorService faceExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
     private long openedAt;
@@ -153,17 +156,14 @@ public class MainActivity extends ComponentActivity {
                 if (!isTrustedPageLoaded()) return false;
                 if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
                 fileChooserCallback = callback;
-                Intent chooser = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                chooser.addCategory(Intent.CATEGORY_OPENABLE);
-                chooser.setType("image/*");
-                try {
-                    startActivityForResult(chooser, FILE_CHOOSER_REQUEST);
+                // Take a photo or choose one. The camera needs its permission first
+                // (usually already given for the face scan).
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, CHOOSER_CAMERA_PERMISSION_REQUEST);
                     return true;
-                } catch (Exception error) {
-                    fileChooserCallback.onReceiveValue(null);
-                    fileChooserCallback = null;
-                    return false;
                 }
+                return showPhotoChooser(true);
             }
         });
 
@@ -224,7 +224,7 @@ public class MainActivity extends ComponentActivity {
         splash.setClickable(false);
 
         ImageView logo = new ImageView(this);
-        logo.setImageResource(com.feastly.rider.R.drawable.savrivo_partner_icon);
+        logo.setImageResource(com.feastly.rider.R.mipmap.ic_launcher);
         logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         logo.setAlpha(0f);
         logo.setScaleX(.76f);
@@ -235,7 +235,7 @@ public class MainActivity extends ComponentActivity {
 
         TextView brand = new TextView(this);
         brand.setText("PARTNER");
-        brand.setTextColor(Color.rgb(185, 224, 255));
+        brand.setTextColor(Color.rgb(182, 242, 217));
         brand.setTextSize(17);
         brand.setGravity(Gravity.CENTER);
         brand.setLetterSpacing(.13f);
@@ -247,7 +247,7 @@ public class MainActivity extends ComponentActivity {
 
         TextView tagline = new TextView(this);
         tagline.setText("CLEAR JOBS. SAFER JOURNEYS.");
-        tagline.setTextColor(Color.rgb(120, 161, 202));
+        tagline.setTextColor(Color.rgb(127, 196, 168));
         tagline.setTextSize(9);
         tagline.setGravity(Gravity.CENTER);
         tagline.setLetterSpacing(.10f);
@@ -956,9 +956,54 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
+    /** One picker: the camera, plus the gallery and files. Without camera permission, only the gallery. */
+    private boolean showPhotoChooser(boolean withCamera) {
+        if (fileChooserCallback == null) return false;
+        Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("image/*");
+        Intent chooser = Intent.createChooser(pick, "Take a photo or choose one");
+        Intent camera = withCamera ? chooserCameraIntent() : null;
+        if (camera != null) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{camera});
+        try {
+            startActivityForResult(chooser, FILE_CHOOSER_REQUEST);
+            return true;
+        } catch (Exception error) {
+            fileChooserCallback.onReceiveValue(null);
+            fileChooserCallback = null;
+            chooserCameraFile = null;
+            return false;
+        }
+    }
+
+    private Intent chooserCameraIntent() {
+        try {
+            java.io.File dir = new java.io.File(getCacheDir(), "savrivo-photos");
+            if (!dir.exists() && !dir.mkdirs()) return null;
+            java.io.File target = new java.io.File(dir, "photo-" + System.currentTimeMillis() + ".jpg");
+            Uri output = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", target);
+            Intent camera = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            camera.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, output);
+            camera.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            // The grant travels with ClipData when the camera is opened from the picker.
+            camera.setClipData(android.content.ClipData.newRawUri("", output));
+            chooserCameraFile = target;
+            return camera;
+        } catch (Exception error) {
+            chooserCameraFile = null;
+            return null;
+        }
+    }
+
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                                      int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CHOOSER_CAMERA_PERMISSION_REQUEST) {
+            boolean cameraGranted = false;
+            for (int result : grantResults) if (result == PackageManager.PERMISSION_GRANTED) cameraGranted = true;
+            showPhotoChooser(cameraGranted);
+            return;
+        }
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
             boolean cameraGranted = false;
             for (int result : grantResults) if (result == PackageManager.PERMISSION_GRANTED) cameraGranted = true;
@@ -985,7 +1030,16 @@ public class MainActivity extends ComponentActivity {
             return;
         }
         if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) return;
-        Uri[] result = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+        // A photo picked from the gallery comes back as data; one taken with the camera is in our file.
+        java.io.File captured = chooserCameraFile;
+        chooserCameraFile = null;
+        Uri picked = resultCode == RESULT_OK && data != null ? data.getData() : null;
+        Uri[] result = null;
+        if (picked != null) result = new Uri[]{picked};
+        else if (resultCode == RESULT_OK && captured != null && captured.isFile() && captured.length() > 0) {
+            result = new Uri[]{androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", captured)};
+        }
+        if (result == null && captured != null) captured.delete();
         fileChooserCallback.onReceiveValue(result);
         fileChooserCallback = null;
     }

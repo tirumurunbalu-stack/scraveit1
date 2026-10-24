@@ -9,6 +9,7 @@
         <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/savrivo_notification" />
         <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@color/savrivo_primary" />
         <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="customer_orders" />
+        <receiver android:name=".CartNudge" android:exported="false" />
         <service android:name=".CustomerMessagingService" android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />

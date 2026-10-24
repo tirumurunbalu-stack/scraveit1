@@ -56,6 +56,28 @@ public final class SavrivoOperationsBridge {
         });
     }
 
+    /**
+     * Signed out (or no account in this app): drop this installation's push token
+     * itself and clear what it showed. FCM then refuses anything still addressed to
+     * it, so no account's notifications reach a signed-out phone, even when the
+     * server call to forget the token failed. Signing in again creates a new token.
+     */
+    @JavascriptInterface public void clearPushIdentity() {
+        activity.runOnUiThread(() -> {
+            if (!trustedPage.isTrusted()) return;
+            try {
+                if (SavrivoFirebase.ensureInitialized(activity) != null) {
+                    com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken()
+                            .addOnFailureListener(error -> Log.w(TAG, "PUSH_TOKEN_DELETE_FAILED", error));
+                }
+                NotificationManager manager = activity.getSystemService(NotificationManager.class);
+                if (manager != null) manager.cancelAll();
+            } catch (Throwable error) {
+                Log.w(TAG, "PUSH_IDENTITY_CLEAR_FAILED", error);
+            }
+        });
+    }
+
     @JavascriptInterface public void updateOrderStatus(
             String requestId, String idToken, String payloadJson) {
         try {

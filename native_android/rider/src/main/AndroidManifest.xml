@@ -28,7 +28,7 @@
         <meta-data android:name="com.savrivo.firebase.PROJECT_ID" android:value="@string/project_id" />
         <meta-data android:name="com.savrivo.firebase.APP_ROLE" android:value="rider" />
         <meta-data android:name="com.savrivo.firebase.FUNCTIONS_REGION" android:value="asia-south1" />
-        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="rider_offers_v4" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="rider_offers_v5" />
         <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/savrivo_partner_notification" />
         <meta-data android:name="firebase_messaging_notification_delegation_enabled" android:value="false" />
         <service android:name="com.savrivo.firebase.SavrivoMessagingService" android:exported="false">
@@ -53,5 +53,8 @@
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/SavrivoPartnerTheme" />
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

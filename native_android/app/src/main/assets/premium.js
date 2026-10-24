@@ -10,6 +10,12 @@
   firebase.initializeApp(CONFIG);
   const fbAuth = firebase.auth(), fs = firebase.firestore();
   function userDoc(uidValue){return fs.collection("users").doc(uidValue)}
+  // Privacy notice consent (DPDP Act, 2023). A signed-in account that has not agreed to the
+  // current notice sees the notice full-screen until it agrees or signs out.
+  function privacyConsentDoc(){return fs.collection("privacyConsents").doc(ScraveitPrivacy.consentDocId(state.session.uid,"customer"))}
+  async function checkPrivacyConsent(){if(!state.session||!window.ScraveitPrivacy)return;const uidNow=state.session.uid;try{const snap=await privacyConsentDoc().get();if(!state.session||state.session.uid!==uidNow)return;if(state.privacyConsentChecked===uidNow&&ScraveitPrivacy.isCurrent(state.privacyConsent))return;state.privacyConsent=snap.exists?snap.data():null;state.privacyConsentChecked=uidNow;render({preserveScroll:true})}catch(_){/* offline: checked again on the next launch */}}
+  function privacyGateNeeded(){return !!(window.ScraveitPrivacy&&state.session&&state.privacyConsentChecked===state.session.uid&&!ScraveitPrivacy.isCurrent(state.privacyConsent))}
+  async function savePrivacyConsent(method,lang){const record=ScraveitPrivacy.consentRecord(state.session.uid,"customer",lang||ScraveitPrivacy.lang(),method,"customer");await privacyConsentDoc().set(record);state.privacyConsent=record;state.privacyConsentChecked=state.session.uid}
   function restaurantsCollectionRef(){return fs.collection("restaurants")}
   function restaurantDocRef(restaurantId){return restaurantsCollectionRef().doc(restaurantId)}
   function menuItemsCollectionRef(restaurantId){return fs.collection("menus").doc(restaurantId).collection("items")}
@@ -107,7 +113,7 @@
     catch (_) { return fallback; }
   }
   function saveJSON(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
-  const HOME_CACHE_KEY = "savrivo.customer.homeCache.v1";
+  const HOME_CACHE_KEY = "savrivo.customer.homeCache.v2";
   const MENU_CACHE_KEY = "savrivo.customer.menuCache.v1";
   const HOME_CACHE_MAX_AREAS = 8;
   const MENU_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -147,7 +153,9 @@
   function logo(extra) {
     return '<span class="logo-mark '+h(extra || "")+'" aria-hidden="true">'+wordmark()+'</span>';
   }
-  function money(value) { return "₹" + Math.round(Number(value || 0)).toLocaleString("en-IN"); }
+  // Whole rupees show as ₹120; amounts with paise show both digits (₹14.99), so the
+// bill always matches what the customer is actually charged.
+function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "₹" + (Number.isInteger(v) ? v.toLocaleString("en-IN") : v.toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2})); }
   function searchKey(value) { return String(value == null ? "" : value).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
   function searchMatches(value, query) { const haystack=searchKey(value),needle=searchKey(query);if(!needle)return true;if(haystack.includes(needle))return true;let at=0;for(let i=0;i<haystack.length&&at<needle.length;i++)if(haystack[i]===needle[at])at++;return at===needle.length; }
   function timeAgo(timestamp) {
@@ -202,7 +210,7 @@
     searchCatalog:{}, searchFetched:{}, searchLoading:false, searchSequence:0,
     promotions: [], settings: {platformFee:15, taxRate:0, freeDeliveryAbove:0, maxDeliveryKm:15, deliverySlabs:{"0":{maxKm:2,fee:29},"1":{maxKm:4,fee:39},"2":{maxKm:6,fee:59},"3":{maxKm:8,fee:79},"4":{maxKm:10,fee:99},"5":{maxKm:12,fee:119},"6":{maxKm:15,fee:139}}, platformFeeOverrides:{cities:{},categories:{},restaurants:{},orderValueRules:{}}, rainFeeEnabled:true,rainLightFee:9,rainModerateFee:19,rainHeavyFee:29,rainSevereFee:39,rainMinProbability:35,rainLightMm:0.1,rainModerateMm:1,rainHeavyMm:4,rainSevereMm:10,surgeEnabled:true,surgeLowOrders:4,surgeMediumOrders:8,surgeHighOrders:12,surgeLowFee:9,surgeMediumFee:19,surgeHighFee:29,maxSurgeFee:39,smallOrderFeeEnabled:true,smallOrderThreshold:149,smallOrderFee:19,lateNightFeeEnabled:true,lateNightStartHour:23,lateNightEndHour:5,lateNightFee:19}, checkoutConfig:null,
     orders: loadJSON("savrivo.customer.orders", []), ordersHydrated:false, ordersHydratedUid:"", tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
-    cart: loadJSON("savrivo.customer.cart", []), coupon: null, tip: 0,
+    cart: loadJSON("savrivo.customer.cart", []), carts: loadJSON("savrivo.customer.carts", {}), coupon: null, tip: 0,
     // couponAuto: this offer was chosen for the customer, so a better one may
     // replace it. couponDismissedFor: the restaurant whose auto-offer they
     // removed, so it is not silently re-applied under them.
@@ -241,7 +249,38 @@
   // that can keep the auto-applied offer honest as the basket changes - an
   // offer that stops qualifying (basket dropped below its minimum) has to be
   // dropped too, or checkout would send a code the server then rejects.
-  function persistCart() { refreshAutoOffer(); saveJSON("savrivo.customer.cart", state.cart); }
+  function persistCart() { refreshAutoOffer(); saveJSON("savrivo.customer.cart", state.cart); saveJSON("savrivo.customer.carts", state.carts||{}); scheduleCartSnapshot(); }
+  // The server sends one follow-up about a cart left for a day (cartReminders.ts). It only needs the
+  // store, the first item, how many items and when; nothing else about the cart leaves the phone.
+  let cartSnapTimer=null,lastCartSnap=null;
+  function scheduleCartSnapshot(){clearTimeout(cartSnapTimer);cartSnapTimer=setTimeout(syncCartSnapshot,4000)}
+  function cartSnapshot(){if(!state.cart.length)return null;const first=state.cart[0]||{},r=cartRestaurant()||{};return{restaurantId:String(first.restaurantId||""),restaurantName:String(r.name||"").slice(0,60),storeType:storeKind(r),itemCount:state.cart.reduce((n,i)=>n+Number(i.quantity||1),0),firstItem:String(first.name||"").slice(0,60),subtotal:Math.round(state.cart.reduce((a,i)=>a+lineTotal(i),0)),updatedAt:Date.now()}}
+  async function syncCartSnapshot(){if(!state.session)return;const snap=cartSnapshot(),key=snap?[snap.restaurantId,snap.itemCount,snap.firstItem,snap.subtotal].join("|"):"";if(key===lastCartSnap)return;lastCartSnap=key;try{await userDoc(state.session.uid).set({cartSnapshot:snap},{merge:true})}catch(_){lastCartSnap=null}}
+  // Like Zomato: leave the app with food in the cart and the phone itself reminds you about 5 seconds
+  // later. MainActivity asks for this when the app goes to the background, cancels it as soon as you
+  // come back, and shows at most one a day. None from 10 pm to 8 am, to anyone under 18 (DPDP Act,
+  // s.9(3)), with reminders switched off, or when the store has closed.
+  const CART_NUDGE_DELAY=5*1000;
+  function cartNudgeCopy(snap,hour){const what=snap.firstItem+(snap.itemCount>1?" and "+(snap.itemCount-1)+" more":""),store=snap.restaurantName||"the store";
+    if(snap.storeType==="dairy")return{title:"🥛 Your milk run is waiting",body:what+" from "+store+" is still in your cart. Order now for fresh delivery 🐄"};
+    if(snap.storeType==="grocery")return{title:"🧺 Forgot something?",body:what+" is still in your "+store+" basket. Finish your order in a tap 🛒"};
+    if(hour<11)return{title:"☀️ Breakfast is one tap away",body:what+" from "+store+" is still in your cart. Start your day right 😋"};
+    if(hour<15)return{title:"🍛 Your lunch is waiting",body:what+" from "+store+" is still in your cart. Order before you get hangry 😋"};
+    if(hour<19)return{title:"☕ Snack break?",body:what+" from "+store+" is still in your cart. Go on, treat yourself 🤤"};
+    return{title:"🌙 Dinner, sorted",body:what+" from "+store+" is still in your cart. Tap to order 🍽️"}}
+  window.savrivoCartNudge=function(){try{
+    if(!state.session||!state.cart.length)return"";
+    const prefs=state.profile.preferences||{};if(prefs.notifications===false||prefs.cartReminders===false)return"";
+    const acct=chatState().account;if(state.minorAccount===true||(acct&&acct.minor===true))return"";
+    const r=cartRestaurant(),snap=cartSnapshot();if(!r||!snap||r.open===false||r.acceptingOrders===false)return"";
+    const hour=new Date(Date.now()+CART_NUDGE_DELAY).getHours();if(hour<8||hour>=22)return"";
+    clearTimeout(cartSnapTimer);syncCartSnapshot();
+    const copy=cartNudgeCopy(snap,hour),img=String(state.cart[0].image||"");
+    return JSON.stringify({title:copy.title,body:copy.body,image:/^https:\/\//.test(img)?img:"",delayMs:CART_NUDGE_DELAY});
+  }catch(_){return""}};
+  // Reminders and meal-time suggestions are sent by the server, so it needs to know the switches.
+  function syncNotificationPrefs(){if(!state.session)return;const p=state.profile.preferences||{};userDoc(state.session.uid).set({preferences:{notifications:p.notifications!==false,cartReminders:p.cartReminders!==false,mealSuggestions:p.mealSuggestions!==false}},{merge:true}).catch(()=>{})}
+  async function loadAccountAge(){if(!state.session)return;const uid=state.session.uid;try{const s=await fs.collection("accountAges").doc(uid).get();if(state.session&&state.session.uid===uid)state.minorAccount=s.exists&&s.data().minor===true}catch(_){}}
   function persistCheckout() { saveJSON("savrivo.customer.checkout", state.checkout); }
   function persistOrders() { saveJSON("savrivo.customer.orders", state.orders.slice(0,60)); }
   function persistReviews() { if(state.session&&state.session.uid)saveJSON(reviewCacheKey(state.session.uid),state.reviews||{}); }
@@ -298,7 +337,7 @@
 
   function homeSummary(restaurant){
     const summary={};
-    ["id","name","dineIn","image","imageUrl","imageThumb","imageThumbUrl","coverImages","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","fssaiNumber","updatedAt"].forEach(key=>{
+    ["id","name","storeType","dineIn","image","imageUrl","imageThumb","imageThumbUrl","coverImages","coverThumbs","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","fssaiNumber","updatedAt"].forEach(key=>{
       if(restaurant[key]!==undefined)summary[key]=restaurant[key];
     });
     summary.menuIndex=discoveryIndex((restaurant.menu&&restaurant.menu.length)?restaurant.menu:restaurant.menuIndex);
@@ -434,6 +473,8 @@
           FeastlyNative.invokeDineIn(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "pickProfilePhoto") {
           FeastlyNative.pickProfilePhoto(requestId);
+        } else if (operation === "pickChatPhoto") {
+          FeastlyNative.pickChatPhoto(requestId);
         } else if (operation === "invokeSocial") {
           FeastlyNative.invokeSocial(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "invokeMealPlan") {
@@ -454,12 +495,17 @@
   async function registerPushTokenIfAllowed() {
     if (!state.session || state.profile.preferences.notifications === false || !nativeAvailable("registerPushToken")) return;
     await ensureSession();
-    return nativeInvoke("registerPushToken", null, {idToken:state.session.idToken});
+    const result=await nativeInvoke("registerPushToken", null, {idToken:state.session.idToken});
+    state.pushRegisteredAt=Date.now();
+    return result;
   }
+  // The server drops a customer phone that hasn't checked in for a month, so a phone
+  // kept open for days (never restarted) checks in again when it comes back to the front.
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&state.session&&Date.now()-Number(state.pushRegisteredAt||0)>12*60*60*1000)registerPushTokenIfAllowed().catch(()=>{})});
 
   function unregisterPushTokenBestEffort() {
-    if (!state.session || !state.session.idToken || !nativeAvailable("unregisterPushToken")) return;
-    nativeInvoke("unregisterPushToken", null, {idToken:state.session.idToken,timeoutMs:8000}).catch(()=>{});
+    if (!state.session || !state.session.idToken || !nativeAvailable("unregisterPushToken")) return Promise.resolve();
+    return nativeInvoke("unregisterPushToken", null, {idToken:state.session.idToken,timeoutMs:8000}).catch(()=>{});
   }
 
   async function hydrateDeliveryOtp(orderId) {
@@ -664,8 +710,12 @@
     data.imageThumb = data.imageThumbUrl || data.imageThumb || data.image;
     // Store-uploaded cover photos (up to 10), shown as a looping slideshow on
     // the restaurant page; a store with none keeps its single cover image.
-    data.coverImages = (Array.isArray(data.coverImages) ? data.coverImages : [])
-      .map(x=>typeof x==="string"?x:x&&x.url).filter(Boolean).slice(0,10);
+    const covers = (Array.isArray(data.coverImages) ? data.coverImages : [])
+      .map(x=>typeof x==="string"?{url:x,thumb:x}:x&&x.url?{url:String(x.url),thumb:String(x.thumbUrl||x.url)}:null).filter(Boolean).slice(0,10);
+    data.coverImages = covers.map(x=>x.url);
+    // The store app saves a small copy of each; store cards show those (a card is small, and
+    // every photo is a fresh trip to Storage the first time round).
+    data.coverThumbs = covers.map(x=>x.thumb);
     if(!data.coverImages.length) data.coverImages=[data.image].filter(Boolean);
     data.cuisines = Array.isArray(data.cuisines) ? data.cuisines : String(data.type || "Food").split(/[·,]/).map(x=>x.trim()).filter(Boolean);
     data.menu = Array.isArray(data.menu) ? data.menu : data.items && typeof data.items === "object" ? Object.keys(data.items).map(key => Object.assign({id:key}, data.items[key])) : [];
@@ -1524,7 +1574,7 @@
     else state.route = state.session ? "home" : "login";
     render();
     perfLog("HOME_SHELL_RENDERED",started,{route:state.route,cacheAvailable});
-    if (!state.session) return;
+    if (!state.session) { clearPushIdentity(); return; }
     state.loading = false; render({preserveScroll:true});
     try {
       const authStarted=perfNow();
@@ -1537,6 +1587,7 @@
       if(!authUser)throw new Error("AUTH_REQUIRED");
       applyAuthUser(authUser);
       await ensureSession();
+      checkPrivacyConsent();loadAccountAge();
       perfLog("AUTH_SESSION_READY",authStarted,{});
       const profilePromise=state.profileLoad=syncProfile(false).then(()=>{migrateSavedAddresses();return true});
       const results=await Promise.allSettled([profilePromise,syncCatalog(),syncOrders(true),syncEmailVerification(),syncSecondaryHomeData()]);
@@ -1572,8 +1623,8 @@
   function stopPolling() { state.timers.forEach(clearInterval); state.timers = []; stopRealtime(); stopSquadOrderWatch(); dineInStop(); }
 
   function toast(msg,type){clearTimeout(state.toastTimer);const kind=type==="success"?"success":type==="danger"?"danger":type==="warning"?"warning":"info",mark=kind==="success"?'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':kind==="info"?'':'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.6v5.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg></span>';const text=kind==="success"?String(msg||"").split(/(?<=[.!])\s+/)[0].replace(/\.$/,""):msg;toastRegion.innerHTML='<div class="toast '+kind+'">'+mark+'<span class="toast-text">'+h(text)+'</span></div>';state.toastTimer=setTimeout(()=>{const t=toastRegion.firstElementChild;if(!t)return;t.classList.add("out");setTimeout(()=>{if(toastRegion.firstElementChild===t)toastRegion.innerHTML=""},200)},kind==="success"?1500:kind==="info"?2600:4000)}
-  function setSheet(sheet) { state.sheet = sheet; renderSheet(); }
-  function closeSheet() { if(pendingConfirm){settleConfirm(false);return;} state.sheet = null; renderSheet(); if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
+  function setSheet(sheet) { state.sheet = sheet; renderSheet(); try{syncStatusBar();}catch(_){} }
+  function closeSheet() { if(pendingConfirm){settleConfirm(false);return;} state.sheet = null; renderSheet(); try{syncStatusBar();}catch(_){} if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
   // In-app replacement for the browser confirm dialog, which blocks the WebView with a
   // system dialog. Resolves true only on the confirm button; closing the sheet
   // any other way is a "no". The sheet that was open underneath comes back
@@ -1640,6 +1691,11 @@
     const wasLive = liveOrderRoute();
     if (!replace && state.route !== route) state.history.push({route:state.route,data:state.routeData});
     state.route = route; state.routeData = data || {};
+    // Each restaurant has its own cart: opening one shows its cart and keeps the others in the dock.
+    if (route === "restaurant" && data && data.restaurantId && typeof parkedCarts === "function"
+      && (parkedCarts()[data.restaurantId] || (state.cart.length && state.cart[0].restaurantId !== data.restaurantId))) activateCart(data.restaurantId);
+    // A chat always opens at the newest message.
+    if (route === "dm" && typeof scrollThreadToEnd === "function") setTimeout(scrollThreadToEnd, 0);
     if (data && data.restaurantId) state.selectedRestaurantId = data.restaurantId;
     if (data && data.orderId) state.selectedOrderId = data.orderId;
     if (route === "order") state.timelineExpanded = false;
@@ -1662,6 +1718,8 @@
     state.route = state.session ? "home" : "login"; state.routeData={}; closeSheet(); render(); return true;
   }
   window.handleAndroidBack = function () {
+    if (state.sheet && state.sheet.type === "friendStory" && storyPanelOpen(state.sheet)) { closeStoryPanel(); return "handled"; }
+    if (state.sheet && state.sheet.type === "compose") { seCloseAsk(); return "handled"; }
     if (state.sheet) { closeSheet(); return "handled"; }
     return goBack() ? "handled" : "root";
   };
@@ -1764,6 +1822,50 @@
   function menuItem(rid,iid){const r=restaurant(rid);return r&&r.menu.find(x=>x.id===iid);}
   function cartCount(){return state.cart.reduce((sum,item)=>sum+Number(item.quantity||0),0);}
   function cartRestaurant(){return state.cart.length?restaurant(state.cart[0].restaurantId):null;}
+  // One cart per restaurant. state.cart is the one being edited; the rest wait in state.carts.
+  const MAX_CARTS=6;
+  function parkedCarts(){const c=state.carts||(state.carts={});Object.keys(c).forEach(k=>{if(!Array.isArray(c[k])||!c[k].length)delete c[k]});return c}
+  function activateCart(rid){const c=parkedCarts(),cur=state.cart.length?state.cart[0].restaurantId:"";if(cur===rid)return;
+    if(cur){c[cur]=state.cart;const extra=Object.keys(c).filter(k=>k!==rid);if(extra.length>=MAX_CARTS)delete c[extra[0]]}
+    state.cart=c[rid]||[];delete c[rid];state.coupon=null;state.tip=0;persistCart();persistCheckout()}
+  function allCarts(){const list=[];if(state.cart.length)list.push({rid:state.cart[0].restaurantId,items:state.cart,current:true});Object.entries(parkedCarts()).forEach(([rid,items])=>list.push({rid,items,current:false}));return list}
+  function cartSummary(entry){const r=restaurant(entry.rid),first=entry.items[0]||{},count=entry.items.reduce((n,x)=>n+Number(x.quantity||0),0),sub=entry.items.reduce((n,x)=>n+(Number(x.price||0)+Number(x.variantPrice||0)+Number(x.addOnTotal||0))*Number(x.quantity||1),0);
+    return{rid:entry.rid,name:(r&&r.name)||first.restaurantName||"Restaurant",image:safeUrl((r&&(r.imageThumb||r.image))||first.image||""),count,subtotal:sub,current:entry.current}}
+  function removeCart(rid){if(state.cart.length&&state.cart[0].restaurantId===rid){state.cart=[];state.coupon=null}else delete parkedCarts()[rid];persistCart();render({preserveScroll:true})}
+  // Bottom dock: live orders and every cart, one slide each. Swipe across; "All" lists them.
+  function dockRateOrders(){if(typeof reviewStateReady!=="function"||!reviewStateReady())return[];const gone=capsuleDismissed(),now=Date.now();
+    return state.orders.filter(o=>o.status==="Delivered"&&!isGuestOrder(o)&&!state.reviews[o.id]&&!gone["rate:"+o.id]&&now-Number(o.deliveredAt||o.updatedAt||o.createdAt||0)<3*86400000).slice(0,2)}
+  function dockSlides(){const orders=activeOrders().slice(0,4).map(o=>({kind:"order",o})),rates=[];
+    dockRateOrders().forEach(o=>{rates.push({kind:"rate",o});if(o.riderId)rates.push({kind:"rider",o})});
+    return orders.concat(rates,allCarts().map(e=>({kind:"cart",c:cartSummary(e)})))}
+  function dockStars(o,action){return'<span class="dock-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="dock-star" data-action="'+action+'" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">★</button>').join("")+'</span>'}
+  function dockSlide(x){
+    if(x.kind==="order"){const o=x.o,r=restaurant(o.restaurantId),img=safeUrl(r&&(r.imageThumb||r.image)||"");
+      return'<div class="dock-slide order"><button class="dock-main" data-action="open-order" data-order-id="'+h(o.id)+'"><span class="dock-thumb">'+(img?'<img src="'+h(img)+'" alt="">':icon("orders"))+'<i class="dock-live" aria-hidden="true"></i></span><span class="dock-copy"><strong>'+h(o.status||"Order placed")+'</strong><small>'+h(o.restaurant||"Your order")+' · '+h(etaText(o))+'</small><span class="dock-progress"><span style="width:'+orderProgress(o)+'%"></span></span></span></button><button class="dock-cta order" data-action="open-order" data-order-id="'+h(o.id)+'">Track</button></div>'}
+    if(x.kind==="rate"||x.kind==="rider"){const o=x.o,r=restaurant(o.restaurantId),img=safeUrl(r&&(r.imageThumb||r.image)||""),rider=String(o.riderName||"your delivery partner").split(" ")[0];
+      return'<div class="dock-slide rate"><span class="dock-thumb'+(x.kind==="rider"?' rider':'')+'">'+(x.kind==="rider"?'<span class="dock-rider" aria-hidden="true">🛵</span>':img?'<img src="'+h(img)+'" alt="">':icon("star"))+'</span><span class="dock-copy"><strong>'+(x.kind==="rider"?'Rate '+h(rider):'How was '+h(o.restaurant||(r&&r.name)||"your food")+'?')+'</strong>'+dockStars(o,x.kind==="rider"?"dock-rate-rider":"quick-rate")+'</span><button class="dock-x" data-action="dock-rate-skip" data-order-id="'+h(o.id)+'" aria-label="Not now">×</button></div>'}
+    const c=x.c;return'<div class="dock-slide cart"><button class="dock-main" data-action="dock-menu" data-restaurant-id="'+h(c.rid)+'"><span class="dock-thumb">'+(c.image?'<img src="'+h(c.image)+'" alt="">':icon("cart"))+'</span><span class="dock-copy"><strong>'+h(c.name)+'</strong><small>View menu ›</small></span></button><button class="dock-cta" data-action="dock-cart" data-restaurant-id="'+h(c.rid)+'"><b>View cart</b><small>'+h(c.count)+' item'+(c.count===1?'':'s')+' · '+money(c.subtotal)+'</small></button></div>'}
+  function bottomDock(){const slides=dockSlides();if(!slides.length)return"";const many=slides.length>1,carts=allCarts().length;
+    return'<div class="floating-cart bottom-dock'+(many?' many':'')+(carts>1?' stacked':'')+'">'+(carts>1?'<button class="dock-all-tab" data-action="dock-all">🛒 '+carts+' carts · View all</button>':'')+'<div class="dock-rail" id="dock-rail">'+slides.map(dockSlide).join("")+'</div>'
+      +(many?'<span class="dock-dots" aria-hidden="true">'+slides.map((_,i)=>'<i'+(i===dockIndex(slides.length)?' class="on"':'')+'></i>').join("")+'</span>':'')+'</div>'}
+  // Dots show how many slides there are and which one is showing.
+  function dockIndex(n){const i=Number(state.dockIndex||0);return i<n?i:0}
+  function dockStep(rail){const n=rail.children.length;return Math.max(1,n>1?(rail.scrollWidth-rail.clientWidth)/(n-1):rail.clientWidth)}
+  function setDockDot(i){state.dockIndex=i;document.querySelectorAll(".dock-dots i").forEach((d,k)=>d.classList.toggle("on",k===i))}
+  function syncDock(){const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(!n)return;const i=dockIndex(n);if(Math.round(rail.scrollLeft/dockStep(rail))!==i)rail.scrollLeft=i*dockStep(rail)}
+  document.addEventListener("scroll",e=>{const rail=e.target;if(!rail||rail.id!=="dock-rail")return;const i=Math.round(rail.scrollLeft/dockStep(rail));if(i!==state.dockIndex)setDockDot(i)},true);
+  // The strip slides to its next card on its own (back to the first after the last). It waits while the
+  // customer is touching it, while a sheet is open and while the app is in the background.
+  const DOCK_SLIDE_MS=4000;let dockTouchedAt=0;
+  document.addEventListener("touchstart",e=>{if(e.target&&e.target.closest&&e.target.closest(".bottom-dock"))dockTouchedAt=Date.now()},{passive:true,capture:true});
+  setInterval(()=>{const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(n<2||state.sheet||document.visibilityState!=="visible"||Date.now()-dockTouchedAt<DOCK_SLIDE_MS*2)return;
+    rail.scrollTo({left:((dockIndex(n)+1)%n)*dockStep(rail),behavior:"smooth"})},DOCK_SLIDE_MS);
+
+  function dockSheet(){const carts=dockSlides().filter(x=>x.kind==="cart"),slides=carts;
+    return sheetShell("Your carts",carts.length+" restaurants",''
+      +(carts.length?'<div class="stack">'+carts.map(x=>'<div class="dock-row">'+dockSlide(x)+'<button class="icon-button flat dock-remove" data-action="dock-remove" data-restaurant-id="'+h(x.c.rid)+'" aria-label="Remove '+h(x.c.name)+' cart">✕</button></div>').join("")+'</div>':'')
+      +(!slides.length?'<p class="supporting">Nothing here yet.</p>':''))}
+
   function cartSubtotal(){return state.cart.reduce((sum,item)=>sum+(Number(item.price)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||0),0);}
   /** A bill line from the server's own bill for this exact cart, or null while it has none. */
   function serverLine(field){const c=serverCheckout();return c&&c[field]!=null&&Number.isFinite(Number(c[field]))?Math.max(0,Number(c[field])):null}
@@ -1934,7 +2036,8 @@
     const r = restaurant(rid), item = menuItem(rid,iid);
     if (!r || !item || item.available === false) { toast("This item is unavailable right now.","danger"); return; }
     if (state.cart.length && state.cart[0].restaurantId !== rid) {
-      setSheet({type:"replaceCart", restaurantId:rid, itemId:iid, custom:custom||{}}); return;
+      const previous=cartRestaurant();activateCart(rid);
+      toast((previous?previous.name:"Your other")+" cart is saved below. Started one for "+r.name+".","success");
     }
     const variant = custom && custom.variant || null;
     const addOns = custom && custom.addOns || [];
@@ -2041,7 +2144,7 @@
     try{
       const credential=tokenType==="id_token"?firebase.auth.GoogleAuthProvider.credential(token):firebase.auth.GoogleAuthProvider.credential(null,token);
       const result=await fbAuth.signInWithCredential(credential),authUser=result.user;
-      applyAuthUser(authUser);state.profile.name=authUser.displayName||state.profile.name;state.profile.email=authUser.email||state.profile.email;await afterAuth();
+      applyAuthUser(authUser);state.profile.name=authUser.displayName||state.profile.name;state.profile.email=authUser.email||state.profile.email;if(state.pendingPrivacyConsent){state.pendingPrivacyConsent=false;try{await savePrivacyConsent("signup")}catch(_){}}await afterAuth();
     }catch(error){toast(friendlyError(error),"danger");}finally{state.loading=false;render();}
   }
   window.googleIdTokenReceived = function(idToken){return completeGoogleSignIn("id_token",idToken);};
@@ -2051,7 +2154,9 @@
     const payload=event||{},type=String(payload.type||"");
     if(type==="TOKEN_REFRESH"){registerPushTokenIfAllowed().catch(()=>{});return;}
     if(!state.session)return;
-    if(type==="CHAT"&&payload.openedFromNotification===true){const route=String(payload.route||"");if(route.startsWith("dm:"))go("dm",{pairId:route.slice(3)});else go(route==="friends"?"friends":"chats");return;}
+    if(type==="CART_REMINDER"&&payload.openedFromNotification===true){go(state.cart.length?"cart":"home");return;}
+    if(type==="MEAL_SUGGESTION"&&payload.openedFromNotification===true){go("home");return;}
+    if(type==="CHAT"&&payload.openedFromNotification===true){const route=String(payload.route||"");if(route.startsWith("dm:"))go("dm",{pairId:route.slice(3)});else if(route==="week"){go("chats");setTimeout(openWeekCard,500)}else go(route==="friends"?"friends":"chats");return;}
     if(type==="ORDER_STATUS"||type==="RIDER_ASSIGNED"||type==="FCM_MESSAGES_DELETED"){
       await syncOrders(true);
       if(state.route==="review")return;
@@ -2100,18 +2205,24 @@
       migrateSavedAddresses();render({preserveScroll:true});
     });
     registerPushTokenIfAllowed().catch(()=>{});
+    checkPrivacyConsent();loadAccountAge();
   }
+  /** No account on this phone: its push token is dropped, so no one's notifications arrive here. */
+  function clearPushIdentity(){if(nativeAvailable("clearPushIdentity")){try{FeastlyNative.clearPushIdentity()}catch(_){}}}
   function signOut(showMessage) {
-    unregisterPushTokenBestEffort();
+    // The server forgets this phone's token first (that call needs the signed-in user), then the
+    // token itself is dropped, so notifications stop even if the server call failed.
+    const forgotten=unregisterPushTokenBestEffort();
+    try{dropPeopleCache(myUid())}catch(_){}
     try{stopChatSync()}catch(_){}
     if(nativeAvailable("clearDeliveryOtps")){try{FeastlyNative.clearDeliveryOtps()}catch(_){}}
-    fbAuth.signOut().catch(()=>{});
-    stopPolling();state.session=null;state.remoteProfileUid="";persistSession();
+    Promise.race([forgotten,new Promise(r=>setTimeout(r,6000))]).finally(()=>{if(state.session)return;clearPushIdentity();fbAuth.signOut().catch(()=>{})});
+    stopPolling();state.session=null;state.remoteProfileUid="";state.minorAccount=false;persistSession();
     state.profile={name:"",email:"",phone:"",addresses:[],selectedAddressId:"",favourites:[],preferences:{theme:"system",vegetarian:false,notifications:true}};
     state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial";
     clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";state.recentSearches=[];
-    state.orders=[];state.tracking={};state.trackingHydrated={};state.trackingSeenAt={};state.trackingMap=null;state.reviews={};state.reviewsHydrated=false;state.reviewsHydratedUid="";state.reviewSyncSequence++;state.cart=[];state.checkout={deliveryMode:"asap",payment:"cod",instructions:"",contactless:false,pendingOrderId:"",pendingIdempotencyKey:""};state.history=[];state.route="login";
-    ["savrivo.customer.profile","savrivo.customer.orders","savrivo.customer.cart","savrivo.customer.checkout","savrivo.customer.deliveryOtps"].forEach(key=>localStorage.removeItem(key));state.deliveryOtps={};
+    state.orders=[];state.tracking={};state.trackingHydrated={};state.trackingSeenAt={};state.trackingMap=null;state.reviews={};state.reviewsHydrated=false;state.reviewsHydratedUid="";state.reviewSyncSequence++;state.cart=[];state.carts={};state.checkout={deliveryMode:"asap",payment:"cod",instructions:"",contactless:false,pendingOrderId:"",pendingIdempotencyKey:""};state.history=[];state.route="login";
+    ["savrivo.customer.profile","savrivo.customer.orders","savrivo.customer.cart","savrivo.customer.carts","savrivo.customer.checkout","savrivo.customer.deliveryOtps"].forEach(key=>localStorage.removeItem(key));state.deliveryOtps={};
     applyTheme();render();if(showMessage!==false)toast("You have signed out safely.");
   }
 
@@ -2150,7 +2261,7 @@
     ["grocery","Groceries",'<path d="M5 8h14l-1.4 11.2a2 2 0 0 1-2 1.8H8.4a2 2 0 0 1-2-1.8z"/><path d="M9 8a3 3 0 0 1 6 0"/>'],
     ["dairy","Dairy",'<path d="M9 3h6v3l2 3v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9l2-3z"/><path d="M7 12h10"/>'],
   ];
-  function storeKind(r){const k=String(r&&r.storeType||"restaurant").toLowerCase();return k==="grocery"||k==="dairy"?k:"restaurant";}
+  function storeKind(r){const k=String(r&&r.storeType||"").toLowerCase(),c=String(r&&r.category||"").toLowerCase();return k==="grocery"||k==="dairy"?k:k?"restaurant":c==="dairy"?"dairy":c==="grocery"||c==="groceries"?"grocery":"restaurant";}
   function nav() {
     const selected=state.homeKind||"restaurant", onHome=state.route==="home";
     return '<nav class="bottom-nav kind-nav" aria-label="Browse by store type">'+STORE_KINDS.map(([kind,label,path])=>{const active=selected===kind;return'<button class="nav-button '+(active?'active':'')+'" data-action="home-kind" data-value="'+kind+'" aria-current="'+(active&&onHome?'page':'false')+'"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+path+'</svg><span>'+label+'</span></button>'}).join("")+'</nav>';
@@ -2250,15 +2361,18 @@
   function render(options) {
     applyTheme();
     const preserving = !!(options && options.preserveScroll);
-    const renderer = SCREENS[state.route] || screenHome;
+    const gated = privacyGateNeeded();
+    if (gated && state.sheet) state.sheet = null;
+    const routeKey = gated ? "__privacy" : state.route;
+    const renderer = gated ? (()=>ScraveitPrivacy.gateHtml("customer",ScraveitPrivacy.lang(),false)) : (SCREENS[state.route] || screenHome);
     const html = renderer();
     // Nothing on screen would change: leave the DOM (and any active gesture)
     // strictly alone.
     if (preserving && html === lastRenderedHtml) { renderSheet(); return; }
 
     const canMorph = lastRenderedHtml !== null
-      && state.route === lastRenderedRoute
-      && !MORPH_BLOCKED_ROUTES[state.route]
+      && routeKey === lastRenderedRoute
+      && !MORPH_BLOCKED_ROUTES[routeKey]
       && !!app.firstElementChild;
     // Only meaningful when the scroller is about to be destroyed; must be read
     // before any DOM write.
@@ -2267,7 +2381,7 @@
       : 0;
 
     lastRenderedHtml = html;
-    lastRenderedRoute = state.route;
+    lastRenderedRoute = routeKey;
 
     if (canMorph) {
       const incoming = document.createElement("div");
@@ -2296,6 +2410,7 @@
     }
     refreshAdRails();
     refreshCardPhotos();
+    if (typeof syncDock === "function") syncDock();
     afterHomeRender();
     renderSheet();
     // After a reconcile the scroller survived untouched, so there is no
@@ -2330,7 +2445,10 @@
     // Home 2.0: the sky runs up under the clock, so the bar takes its colour.
     const sky=state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2"))||(state.route==="welcome"&&document.querySelector(".welcome2")));
     if(sky){color=state.heroTheme.top;darkIcons=!state.heroTheme.dark;}
-    const scrim=statusScrimElement();if(scrim)scrim.style.background=sky?state.heroTheme.top:"";
+    // A story or a full-screen photo is black edge to edge, clock included.
+    const black=!!(state.sheet&&["friendStory","photo","compose"].includes(state.sheet.type));
+    if(black){color="#05080F";darkIcons=false;}
+    const scrim=statusScrimElement();if(scrim){scrim.style.background=sky?state.heroTheme.top:"";scrim.style.visibility=black?"hidden":"";}
     const next=color+(darkIcons?":dark":":light");
     updateStatusScrim(hero);
     if(next===statusBarApplied)return;
@@ -2368,7 +2486,7 @@
       +'<section class="welcome2-copy"><p class="welcome2-eyebrow">'+h(theme.kind==="festival"?theme.head:"Hungry? Same.")+'</p><h1>Cravings,<br>sorted in minutes.</h1>'
         +'<p>Your favourite local kitchens, a rider you can watch all the way to your door, and every rupee shown before you pay.</p>'
         +'</section>'
-      +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button>'+(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')+'<p class="caption" style="text-align:center">By continuing, you agree to Scraveit’s Terms and Privacy Notice.</p></section>'
+      +'<section class="welcome2-sheet"><button class="button primary full" data-action="welcome-signup">Create your account</button><button class="button tonal full" data-action="welcome-login">I already have an account</button>'+(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')+'<p class="caption" style="text-align:center">Before you use Scraveit we show you our <a href="https://www.scraveit.in/privacy">Privacy Notice</a> and ask for your consent. <a href="https://www.scraveit.in/terms">Terms</a></p></section>'
       +'</main>';
   }
 
@@ -2395,7 +2513,7 @@
       +'<div class="field"><label for="signup-phone">Mobile number</label><input class="input" id="signup-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="10-digit mobile number" required><div class="field-error" data-error-for="signup-phone"></div></div>'
       +'<div class="field"><label for="signup-dob">Date of birth</label><input class="input" id="signup-dob" name="birthDate" type="date" required min="1900-01-01" max="'+h(new Date().toISOString().slice(0,10))+'"><p class="caption">Scraveit is for 13 and over. Under 18, a parent approves your account. You can edit it later.</p><div class="field-error" data-error-for="signup-dob"></div></div>'
       +passwordField("signup-password","Create password","new-password")+passwordField("signup-confirm","Confirm password","new-password")
-      +'<label class="notice info"><input id="signup-consent" type="checkbox" required><span>I agree to the Terms of Service and acknowledge the Privacy Notice.</span></label>'
+      +(window.ScraveitPrivacy?ScraveitPrivacy.consentLabel("customer",ScraveitPrivacy.lang(),"signup-consent"):'<label class="notice info"><input id="signup-consent" type="checkbox" required><span>I agree to the Terms of Service and the Privacy Notice.</span></label>')
       +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Creating account…':'Create my account')+'</button></form>'
       +(googleSignInAvailable()?'<div class="divider" style="margin:22px 0">or</div><button class="button tonal full" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Sign up with Google</button>':'')+'</div></main>';
   }
@@ -2413,8 +2531,7 @@
     return '<header class="home-header hh2"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
       +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
       +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
-      +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
-      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+(state.social&&state.social.avatars&&state.social.avatars[myUid()]?'<img class="hh2-photo" src="'+h(state.social.avatars[myUid()])+'" alt="">':h(initials()))+'</button></div></header>';
+      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></header>';
   }
   function orderProgress(order) { const progress=Math.min(100,Math.max(6,(statusIndex(order.status)+1)/ORDER_FLOW.length*100)); return progress; }
   function audienceMatch(record){
@@ -2478,32 +2595,68 @@
     },AD_RAIL_INTERVAL_MS);
   }
   // Store cards with several photos (restaurants, groceries and dairies alike)
-  // slide through them on their own. Only cards on screen move, one after
-  // another rather than all at once; a card the customer just swiped, or a
-  // list they are scrolling, waits.
-  let cardPhotoTimer=null, pageScrolledAt=0;
-  const CARD_PHOTO_INTERVAL_MS=3500, cardPhotoTouched=new WeakMap();
+  // slide through them on their own. Only cards on screen move; a card the
+  // customer just swiped, or a list they are scrolling, waits.
+  // A timer moves them (as with the bottom dock), and which photo each store is
+  // on is kept here by store id, so a re-render that rebuilds a card carries on
+  // from the same photo instead of starting over.
+  let pageScrolledAt=0;
+  const CARD_PHOTO_INTERVAL_MS=3500, cardPhotoTouched=new WeakMap(), cardPhotoAt={};
   function cardPhotoOnScreen(track){const r=track.getBoundingClientRect();return r.width>0&&r.bottom>r.height*0.4&&r.top<window.innerHeight-r.height*0.4;}
-  function syncCardPhotoDots(track){const dots=track.nextElementSibling;if(!dots||!dots.classList.contains("photo-dots"))return;const i=Math.round(track.scrollLeft/Math.max(1,track.clientWidth));Array.from(dots.children).forEach((d,n)=>d.classList.toggle("on",n===i));}
-  function refreshCardPhotos(){
-    document.querySelectorAll(".photo-track").forEach(syncCardPhotoDots);
-    if(cardPhotoTimer||!document.querySelector(".photo-track"))return;
-    cardPhotoTimer=setInterval(()=>{
-      const tracks=Array.from(document.querySelectorAll(".photo-track"));
-      if(!tracks.length){clearInterval(cardPhotoTimer);cardPhotoTimer=null;return;}
-      if(document.visibilityState!=="visible"||state.sheet||Date.now()-pageScrolledAt<1200)return;
-      const behavior=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth";
-      tracks.filter(t=>t.children.length>1&&Date.now()-(cardPhotoTouched.get(t)||0)>CARD_PHOTO_INTERVAL_MS*2&&cardPhotoOnScreen(t))
-        .forEach((t,i)=>setTimeout(()=>{if(!t.isConnected)return;const w=t.clientWidth||1,next=(Math.round(t.scrollLeft/w)+1)%t.children.length;t.scrollTo({left:next*w,behavior});},i*450));
-    },CARD_PHOTO_INTERVAL_MS);
-  }
+  function cardPhotoSlot(rid,n){let s=cardPhotoAt[rid];if(!s)s=cardPhotoAt[rid]={i:0,at:Date.now()};if(s.i>=n)s.i=0;return s}
+  // The showing photo's dot fills like a loading bar over the same 3.5 seconds. A card rebuilt
+  // by a re-render picks its bar up where it was (negative delay), so it never fills twice.
+  function setCardPhotoDot(track,i,restart){const dots=track.nextElementSibling;if(!dots||!dots.classList.contains("photo-dots"))return;
+    const s=cardPhotoAt[track.getAttribute("data-rid")],done=s?Math.min(CARD_PHOTO_INTERVAL_MS,Math.max(0,Date.now()-s.at)):0;
+    Array.from(dots.children).forEach((d,n)=>{if(n===i&&restart&&d.classList.contains("on")){d.classList.remove("on");void d.offsetWidth}d.classList.toggle("on",n===i);
+      const b=d.firstElementChild;if(b)b.style.animationDelay=n===i?-done+"ms":""})}
+  function cardPhotoWidth(track){return track.clientWidth||1}
+  // A swipe by the customer: that photo becomes the one showing, and its wait starts again.
+  function syncCardPhotoDots(track){const rid=track.getAttribute("data-rid"),n=track.children.length;if(!rid||n<2)return;
+    if(Date.now()-(cardPhotoTouched.get(track)||0)>1500)return;
+    const i=Math.min(n-1,Math.max(0,Math.round(track.scrollLeft/cardPhotoWidth(track)))),s=cardPhotoSlot(rid,n);
+    if(i!==s.i){s.i=i;s.at=Date.now();setCardPhotoDot(track,i)}}
+  function showCardPhoto(track,i){const w=cardPhotoWidth(track),reduce=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+    track.scrollTo({left:i*w,behavior:reduce?"auto":"smooth"});setCardPhotoDot(track,i);
+    // If the smooth slide was cut short, finish it.
+    setTimeout(()=>{if(!track.isConnected||Date.now()-(cardPhotoTouched.get(track)||0)<1500)return;const s=cardPhotoAt[track.getAttribute("data-rid")];
+      if(s&&s.i===i&&Math.round(track.scrollLeft/cardPhotoWidth(track))!==i)track.scrollLeft=i*cardPhotoWidth(track)},900)}
+  setInterval(()=>{const tracks=document.querySelectorAll(".photo-track");if(!tracks.length)return;
+    const now=Date.now(),calm=document.visibilityState==="visible"&&!state.sheet&&now-pageScrolledAt>600;
+    // The same store can show in two lists; its cards move together.
+    const byStore={};tracks.forEach(t=>{const rid=t.getAttribute("data-rid");if(rid&&t.children.length>1)(byStore[rid]=byStore[rid]||[]).push(t);if(cardPhotoNearScreen(t))warmCardPhotos(t)});
+    Object.keys(byStore).forEach(rid=>{const list=byStore[rid],n=list[0].children.length,s=cardPhotoSlot(rid,n);if(now-s.at<CARD_PHOTO_INTERVAL_MS)return;
+      // Off screen: start its wait again, unseen, so it doesn't jump the moment it scrolls into view.
+      if(!list.some(cardPhotoOnScreen)){s.at=now;list.forEach(t=>setCardPhotoDot(t,s.i,true));return}
+      // On screen but the page is still settling (opening, scrolling, a sheet, a finger on it): the
+      // bar stays full and the photo moves as soon as it's calm. Refilling it here made the first
+      // photo's bar run two or three times after the app opened.
+      if(!calm||!list.every(t=>now-(cardPhotoTouched.get(t)||0)>=CARD_PHOTO_INTERVAL_MS)){cardPhotoWaitLog(rid,!calm?"settling":"swiped",now-s.at);return}
+      // Never slide onto a photo that hasn't arrived: hold until it has.
+      // (On a very slow connection, give up waiting after 6 more seconds.)
+      const next=(s.i+1)%n;if(!list.some(t=>cardPhotoReady(t,next))&&now-s.at<CARD_PHOTO_INTERVAL_MS+6000){cardPhotoWaitLog(rid,"photo",now-s.at);return}
+      const late=now-s.at-CARD_PHOTO_INTERVAL_MS;if(late>400)try{console.info("CARD_PHOTO_SLIDE_LATE",rid,Math.round(late))}catch(_){}
+      s.at=now;s.i=next;list.forEach(t=>showCardPhoto(t,s.i))})},250);
+  // Photos are lazy-loaded, and the browser only fetches one sitting off to the side when it is
+  // nearly in view, so each slide used to wait for its photo the first time round. A card fetches
+  // all of its (small) photos as soon as it comes near the screen, well before its first slide.
+  function cardPhotoNearScreen(track){const r=track.getBoundingClientRect(),vh=window.innerHeight||800;return r.width>0&&r.bottom>-vh*0.5&&r.top<vh*1.5}
+  // Why a due slide is waiting, at most once a second per store (logcat: CARD_PHOTO_WAIT).
+  const cardPhotoWaitAt={};function cardPhotoWaitLog(rid,why,ms){const now=Date.now();if(now-(cardPhotoWaitAt[rid]||0)<1000)return;cardPhotoWaitAt[rid]=now;try{console.info("CARD_PHOTO_WAIT",rid,why,Math.round(ms-CARD_PHOTO_INTERVAL_MS))}catch(_){}}
+  function warmCardPhotos(track){if(track.dataset.warm)return;track.dataset.warm="1";Array.from(track.children).forEach(img=>{if(img.loading==="lazy")img.loading="eager"})}
+  function cardPhotoReady(track,i){const img=track.children[i];return!img||(img.complete&&img.naturalWidth>0)}
+  // After a render: each card shows the photo its store is on.
+  function refreshCardPhotos(){document.querySelectorAll(".photo-track").forEach(t=>{const rid=t.getAttribute("data-rid"),n=t.children.length;if(!rid||n<2)return;if(cardPhotoOnScreen(t))warmCardPhotos(t);
+    const s=cardPhotoSlot(rid,n),w=cardPhotoWidth(t);if(Date.now()-(cardPhotoTouched.get(t)||0)<1500)return;if(Math.round(t.scrollLeft/w)!==s.i)t.scrollLeft=s.i*w;setCardPhotoDot(t,s.i)})}
   /** Restaurants the customer had delivered before, newest first: one tap reorders. */
   /** Open restaurants that deliver here, nearest first. */
-  function nearbyRestaurantsMarkup(){
-    const list=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false)
+  // Per-tab words: the Restaurants, Groceries and Dairy tabs share one layout.
+  const KIND_WORDS={restaurant:{one:"restaurant",many:"restaurants",Many:"Restaurants"},grocery:{one:"grocery store",many:"grocery stores",Many:"Grocery stores"},dairy:{one:"dairy",many:"dairies",Many:"Dairies"}};
+  function nearbyRestaurantsMarkup(kind){kind=kind||"restaurant";const w=KIND_WORDS[kind]||KIND_WORDS.restaurant;
+    const list=restaurantsFiltered().filter(r=>storeKind(r)===kind&&r.open!==false)
       .map(r=>({r,d:restaurantDistanceKm(r)})).sort((a,b)=>(a.d==null?999:a.d)-(b.d==null?999:b.d)).slice(0,10);
     if(!list.length)return"";
-    return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Restaurants near you</h2><p class="supporting">Closest first</p></div><button class="text-button" data-action="go" data-route="search">See all</button></div><div class="order-again-row">'
+    return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">'+w.Many+' near you</h2><p class="supporting">Closest first</p></div><button class="text-button" data-action="go" data-route="search">See all</button></div><div class="order-again-row">'
       +list.map(({r,d})=>{const rating=ratingForRestaurant(r);return'<button type="button" class="order-again-card near-card" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+(d!=null&&Number.isFinite(d)?(d<1?Math.round(d*1000)+' m':d.toFixed(1)+' km')+' away':'Nearby')+'</span><span class="caption">'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min'+(rating.value?' · '+rating.value.toFixed(1)+'★':'')+'</span></button>'}).join("")
       +'</div></section>';
   }
@@ -2610,7 +2763,7 @@
 
   let categoryCache={signature:null,list:[]};
   function browsableCategories() {
-    const list=restaurantsAtAddress(),address=currentAddress()||{};
+    const tabKind=state.homeKind==="grocery"||state.homeKind==="dairy"?state.homeKind:"restaurant",list=restaurantsAtAddress().filter(r=>storeKind(r)===tabKind),address=currentAddress()||{};
     // Counting walks every menu, which is wasted work on the many renders
     // where nothing about the catalogue changed. The signature covers only
     // restaurants, so it stays cheap as the catalogue grows.
@@ -2802,21 +2955,26 @@
     const fallback=' onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"';
     const photos=(Array.isArray(r.coverImages)?r.coverImages:[]).filter(Boolean).slice(0,6);
     if(photos.length<2)return'<img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+'" loading="lazy" decoding="async"'+fallback+'>';
-    return'<div class="photo-track">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||url):url,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
-      +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===0?' class="on"':'')+'></span>').join("")+'</div>';
+    const at=cardPhotoAt[r.id],cur=at&&at.i<photos.length?at.i:0,thumbs=Array.isArray(r.coverThumbs)?r.coverThumbs:[];
+    return'<div class="photo-track" data-rid="'+h(r.id)+'">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||thumbs[0]||url):(thumbs[i]||url),"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
+      +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===cur?' class="on"':'')+'><b></b></span>').join("")+'</div>';
   }
   function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · ");return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button><span class="rc2-eta">'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed')+'</span></div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating">'+h(ratingText)+' ★</span></div><p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+(cuisines?' · ':'')+(fee===0?'Free delivery':money(fee)+' delivery')+'</p></div></article>'}
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenStoreKind(kind) {
     const label=kind==="grocery"?"Groceries":"Dairy", address=currentAddress(), active=activeOrders()[0];
-    const stores=restaurantsFiltered().filter(r=>storeKind(r)===kind);
-    return '<main class="screen '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()
+    const stores=restaurantsFiltered().filter(r=>storeKind(r)===kind),w=KIND_WORDS[kind],recommended=stores.filter(r=>r.open!==false).slice(0,3);
+    return '<main class="screen '+(dockSlides().length?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()
       +'<section class="home-lead"><p class="eyebrow">'+label+'</p><h1 class="display">'+(kind==="grocery"?"Daily essentials, <em>delivered</em>.":"Fresh milk, curd <em>and more</em>.")+'</h1><p class="supporting">'+(kind==="grocery"?"Grocery stores":"Dairies")+' in '+h(address&&address.city||"your selected city")+'</p></section>'
-      +(active?activeOrderCard(active):'')
-      +(stores.length?'<div class="restaurant-list">'+stores.map(r=>restaurantCard(r,true)).join("")+'</div>'
-        :'<section class="card kind-soon"><span class="kind-soon-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+STORE_KINDS.find(k=>k[0]===kind)[2]+'</svg></span><div><h2 class="section-title">'+(kind==="grocery"?"Grocery stores":"Dairies")+' are coming soon</h2><p class="supporting">'+(kind==="grocery"?"Partner grocery stores":"Partner dairies")+' near you will appear here as they join Scraveit.</p></div></section>')
-      +'</div>'+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
+      +(stores.length?nearbyRestaurantsMarkup(kind)
+        +(categoryChipsHtml()?'<section class="stack"><div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div>'+categoryChipsHtml()+'</section>':'')
+        +(recommended.length?'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div></div><div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div></section>':'')
+        +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All '+w.many+'</h2><p class="supporting">'+stores.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
+        +'<div class="restaurant-list">'+stores.map(r=>restaurantCard(r,true)).join("")+'</div></section>'
+        :(state.cuisine!=="All"?emptyState("search","No "+w.many+" in this category","Clear the category to see every "+w.one+" here.","cuisine-all","Show all")
+        :'<section class="card kind-soon"><span class="kind-soon-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+STORE_KINDS.find(k=>k[0]===kind)[2]+'</svg></span><div><h2 class="section-title">'+(kind==="grocery"?"Grocery stores":"Dairies")+' are coming soon</h2><p class="supporting">'+(kind==="grocery"?"Partner grocery stores":"Partner dairies")+' near you will appear here as they join Scraveit.</p></div></section>'))
+      +'</div>'+bottomDock()+nav()+'</main>';
   }
   // =========================================================================
   // Home 2.0: a living sky (time of day, festivals, rain), a daily 3D rider
@@ -2998,8 +3156,7 @@
       +'<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
       +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
       +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
-      +(cart?'<button class="hh2-icon" data-action="go" data-route="cart" aria-label="Open cart with '+cart+' items">'+icon("cart")+badge(cart)+'</button>':'')
-      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+h(initials())+'</button></div></div>'
+      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></div>'
       +'<div class="hero2-body"><div class="hero2-copy"><p class="hero2-greet">'+h(theme.greet+(name?", "+name:""))+'</p><h1 class="hero2-head">'+h(theme.head)+'</h1>'
       +(theme.sub?'<p class="hero2-sub">'+h(theme.sub)+'</p>':'')
       +'</div>'
@@ -3052,7 +3209,7 @@
       +FOOD_BADGES.map(b=>'<div class="badge-tile'+(earned.has(b[0])?' got':'')+'"><span class="badge-emoji" aria-hidden="true">'+b[1]+'</span><strong>'+h(b[2])+'</strong><small>'+h(earned.has(b[0])?"Unlocked":b[3])+'</small></div>').join("")+'</div>'
       +(riders.length?'<h3 class="section-title">Rider sticker book · '+riders.filter(p=>got[p.id]).length+' of '+riders.length+'</h3><p class="caption">Collect a rider when they deliver to you, or tap today’s rider on the home screen.</p><div class="sticker-grid">'
         +riders.map(p=>'<div class="sticker'+(got[p.id]?' got':'')+'">'+(thumbs[p.id]?'<img src="'+thumbs[p.id]+'" alt="">':'<span class="sticker-wait"></span>')+'<small>'+h(got[p.id]?p.rider:"???")+'</small></div>').join("")+'</div>':'')
-      +(s.orders?'<button class="button primary full" data-action="open-wrapped">✨ Make my month-in-food card</button>':'')
+      +(s.orders?'<button class="button primary full" data-action="open-wrapped">✨ Make my month-in-food card</button>':'')+(weekStats().orders?'<button class="button tonal full" data-action="week-open">🗓 Make my week-in-food card</button>':'')
       +'<button class="button secondary full" data-action="close-sheet">Close</button></section></div>';
   }
   // New badges and stickers are celebrated once, the moment they appear.
@@ -3085,19 +3242,6 @@
     return open.map(r=>{const seen=new Set();const items=discoveryItems(r).filter(i=>{const k=String(i&&i.name||"").trim().toLowerCase();if(!k||i.available===false||seen.has(k))return false;seen.add(k);return true;});return{r,items};});
   }
   function wheelSlots(pool){return pool.reduce((n,p)=>n+(p.items.length||1),0);}
-  function wheelPicks(){
-    const pool=wheelPool().map(p=>({r:p.r,items:p.items.slice().sort(()=>Math.random()-0.5).sort((a,b)=>(b.popular?1:0)-(a.popular?1:0))}));
-    const picks=[],cut=t=>t.length>13?t.slice(0,12)+"…":t;
-    for(let round=0;picks.length<8;round++){
-      let added=false;
-      pool.forEach(p=>{if(picks.length>=8)return;
-        if(!p.items.length){if(round===0){picks.push({restaurantId:p.r.id,label:cut(String((p.r.cuisines||[])[0]||p.r.name)),dish:"",name:p.r.name});added=true;}return;}
-        const item=p.items[round];if(!item)return;
-        picks.push({restaurantId:p.r.id,label:cut(String(item.name).split(/\s+/).slice(0,2).join(" ")),dish:item.name,name:p.r.name});added=true;});
-      if(!added)break;
-    }
-    return picks.sort(()=>Math.random()-0.5);
-  }
   function wheelCard(){
     // Home only holds a short preview of each menu. While a restaurant's full
     // menu isn't loaded we can't count its dishes yet, so the card stays and
@@ -3105,44 +3249,117 @@
     const pool=wheelPool();if(!pool.length||(wheelSlots(pool)<3&&!pool.some(p=>!p.r.menuLoaded)))return"";
     return'<button class="wheel-card" data-action="open-wheel"><span class="wheel-mini" aria-hidden="true"></span><span class="grow"><strong>Can’t decide?</strong><span>Spin the Craving Wheel</span></span><span class="wheel-spin-pill">Spin</span></button>';
   }
+  // ---- Spin wheel: the home Craving Wheel and Spin the plate in a chat -----
+  // The customer chooses what goes on it: a surprise mix (different places, one
+  // dish each), places they pick, or dishes they pick from one place. 8 slices
+  // is the most that stays readable, 2 the fewest worth spinning.
+  const SPIN_MAX=8,SPIN_MIN=2;
+  function spinShuffle(list){const a=list.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+  function spinCut(t){t=String(t||"");return t.length>13?t.slice(0,12)+"…":t}
+  /** Restaurants that deliver here. Closed ones only join when fewer than 2 are open (the result then says so). */
+  function spinPlaces(){const all=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant");const open=all.filter(r=>r.open!==false);return open.length>=SPIN_MIN?open:all}
+  function spinDishes(r){const seen=new Set();return discoveryItems(r).filter(i=>{const k=String(i&&i.name||"").trim().toLowerCase();if(!k||i.available===false||i.archived===true||seen.has(k))return false;seen.add(k);return true})}
+  function spinPlaceSlice(r){return{restaurantId:r.id,itemId:"",label:spinCut(r.name),dish:"",name:String(r.name||""),price:0,image:r.imageThumb||r.image||"",open:r.open!==false}}
+  function spinDishSlice(r,i){return{restaurantId:r.id,itemId:String(i.id||""),label:spinCut(i.name),dish:String(i.name),name:String(r.name||""),price:Number(i.price||0),image:i.image||"",open:r.open!==false}}
+  /** Surprise: up to 8 different places picked at random, one dish each (a popular one first); with fewer places, more dishes from each. */
+  function spinSurprise(){const places=spinShuffle(spinPlaces()).slice(0,SPIN_MAX).map(r=>({r,items:spinShuffle(spinDishes(r)).sort((a,b)=>(b.popular?1:0)-(a.popular?1:0))})),out=[];
+    for(let round=0;out.length<SPIN_MAX;round++){let added=false;places.forEach(p=>{if(out.length>=SPIN_MAX)return;const i=p.items[round];if(i){out.push(spinDishSlice(p.r,i));added=true}else if(round===0){out.push(spinPlaceSlice(p.r));added=true}});if(!added)break}
+    return spinShuffle(out)}
+  function spinPlace(id){return id?restaurant(id):null}
+  function spinSetup(){return state.wheelSetup||(state.wheelSetup={mode:"surprise",places:[],placeId:"",dishes:[],findPlaces:"",findDishes:""})}
+  /** What the wheel shows right now, from the customer's choices. */
+  function spinSlices(w){const s=spinSetup();
+    if(s.mode==="places")return s.places.map(id=>restaurant(id)).filter(Boolean).map(spinPlaceSlice);
+    if(s.mode==="dishes"){const r=spinPlace(s.placeId);if(!r)return[];const all=spinDishes(r);return s.dishes.map(id=>all.find(i=>String(i.id)===id)).filter(Boolean).map(i=>spinDishSlice(r,i))}
+    return w.surprise||(w.surprise=spinSurprise())}
   function wheelSvg(items){
     const n=items.length,R=140,parts=[];
+    if(n<SPIN_MIN)return'<svg viewBox="-150 -150 300 300" aria-hidden="true"><circle r="148" fill="#FFFFFF"/><circle r="'+R+'" style="fill:var(--surface-raised);stroke:var(--border)" stroke-width="2" stroke-dasharray="7 9"/></svg>';
     items.forEach((item,i)=>{const a0=(i/n)*Math.PI*2-Math.PI/2,a1=((i+1)/n)*Math.PI*2-Math.PI/2,large=a1-a0>Math.PI?1:0;
       parts.push('<path d="M0 0 L'+(R*Math.cos(a0)).toFixed(2)+' '+(R*Math.sin(a0)).toFixed(2)+' A'+R+' '+R+' 0 '+large+' 1 '+(R*Math.cos(a1)).toFixed(2)+' '+(R*Math.sin(a1)).toFixed(2)+' Z" fill="'+WHEEL_COLORS[i%WHEEL_COLORS.length]+'"/>');
       const mid=((i+0.5)/n)*360-90;
-      parts.push('<text transform="rotate('+mid.toFixed(1)+') translate('+(R*0.58).toFixed(1)+' 0)'+(mid>90&&mid<270?' rotate(180)':'')+'" text-anchor="middle" dominant-baseline="middle" fill="'+([0,4].includes(i%8)?'#FFFFFF':'#0E1B3D')+'" font-size="12.5" font-weight="700">'+h(item.label)+'</text>');});
+      parts.push('<text transform="rotate('+mid.toFixed(1)+') translate('+(R*0.6).toFixed(1)+' 0)'+(mid>90&&mid<270?' rotate(180)':'')+'" text-anchor="middle" dominant-baseline="middle" fill="'+([0,4].includes(i%8)?'#FFFFFF':'#0E1B3D')+'" font-size="12.5" font-weight="700">'+h(item.label)+'</text>');});
     return'<svg viewBox="-150 -150 300 300" aria-hidden="true"><circle r="148" fill="#FFFFFF"/>'+parts.join("")+'<circle r="'+R+'" fill="none" stroke="#FFFFFF" stroke-width="5"/></svg>';
   }
+  function spinMatches(name,q){return!q||String(name||"").toLowerCase().includes(q)}
+  function spinFind(id,value,label){return'<input class="input wheel-find" id="'+id+'" type="search" value="'+h(value||"")+'" placeholder="'+h(label)+'" autocomplete="off" aria-label="'+h(label)+'">'}
+  function spinHead(title,n){return'<div class="wheel-pick-head"><strong>'+h(title)+'</strong><span><b>'+n+'</b> of '+SPIN_MAX+(n?' · <button class="text-button" data-action="wheel-clear">Clear</button>':' · <button class="text-button" data-action="wheel-fill">Pick for me</button>')+'</span></div>'}
+  function spinPlaceChip(r,on,action,q){return'<button type="button" class="wheel-chip'+(on?' on':'')+'" data-action="'+action+'" data-id="'+h(r.id)+'" data-name="'+h(String(r.name||"").toLowerCase())+'" aria-pressed="'+on+'"'+(spinMatches(r.name,q)?'':' hidden')+'><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="">'+h(r.name)+(r.open===false?' <small>closed</small>':'')+'</button>'}
+  function spinPicker(w){const s=spinSetup(),places=spinPlaces();
+    if(s.mode==="surprise")return'<p class="caption wheel-note">'+(places.length>1?"Different places near you, one dish each.":"Dishes from the place near you.")+'</p><button class="button secondary full" data-action="wheel-shuffle">🔀 New mix</button>';
+    if(s.mode==="places"){const q=s.findPlaces.trim().toLowerCase();
+      return spinHead("Pick places",s.places.length)+(places.length>10?spinFind("wheel-find-places",s.findPlaces,"Search places"):'')
+        +'<div class="wheel-chips" data-list="places">'+places.map(r=>spinPlaceChip(r,s.places.includes(r.id),"wheel-place",q)).join("")+'</div>'
+        +(s.places.length<SPIN_MIN?'<p class="caption wheel-note">Pick at least 2 to spin.</p>':'')}
+    const r=spinPlace(s.placeId);
+    let out='<div class="wheel-pick-head"><strong>Choose a place</strong></div><div class="wheel-chips row">'+(r?[r].concat(places.filter(x=>x.id!==r.id)):places).map(x=>spinPlaceChip(x,x.id===s.placeId,"wheel-dish-place","")).join("")+'</div>';
+    if(!r)return out+'<p class="caption wheel-note">Then pick up to 8 of its dishes.</p>';
+    if(w.loadingMenu===r.id)return out+loadingRow("Getting the menu…");
+    const dishes=spinDishes(r),q=s.findDishes.trim().toLowerCase();
+    if(dishes.length<SPIN_MIN)return out+'<p class="caption wheel-note">'+h(r.name)+' has fewer than 2 dishes on today’s menu. Choose another place.</p>';
+    return out+spinHead("Pick dishes",s.dishes.length)+(dishes.length>12?spinFind("wheel-find-dishes",s.findDishes,"Search dishes"):'')
+      +'<div class="wheel-chips" data-list="dishes">'+dishes.map(i=>{const on=s.dishes.includes(String(i.id));return'<button type="button" class="wheel-chip text-only'+(on?' on':'')+'" data-action="wheel-dish" data-id="'+h(i.id)+'" data-name="'+h(String(i.name).toLowerCase())+'" aria-pressed="'+on+'"'+(spinMatches(i.name,q)?'':' hidden')+'>'+h(i.name)+(i.price?' <small>'+money(i.price)+'</small>':'')+'</button>'}).join("")+'</div>'
+      +(s.dishes.length<SPIN_MIN?'<p class="caption wheel-note">Pick at least 2 to spin.</p>':'')}
+  function spinFriend(w){const p=w.pairId?chatState().pairs.find(x=>x.id===w.pairId):null;return p?(nameOf(p,otherOf(p)).split(" ")[0]||"friend"):""}
+  function spinResult(w,pick){const r=restaurant(pick.restaurantId),slot=daySlot(),friend=spinFriend(w);
+    const word=w.pairId?"The plate says":(slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night")+" pick";
+    const facts=[pick.dish?pick.name:"",pick.price?money(pick.price):"",r&&!pick.dish?(ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New"):"",r?(r.etaMin||25)+"–"+(r.etaMax||35)+" min":"",pick.open?"":"closed right now"].filter(Boolean).join(" · ");
+    const open=pick.itemId?'<button class="button '+(friend?'tonal':'primary')+' grow" data-action="dm-card-add" data-restaurant-id="'+h(pick.restaurantId)+'" data-item-id="'+h(pick.itemId)+'">Add to cart</button>'
+      :'<button class="button '+(friend?'tonal':'primary')+' grow" data-action="open-restaurant" data-restaurant-id="'+h(pick.restaurantId)+'">Open the menu</button>';
+    return'<div class="wheel-result"><img src="'+h(safeUrl(pick.image||(r&&(r.imageThumb||r.image)),"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><small>'+h(word)+'</small><strong>'+h(pick.dish||pick.name)+'</strong><span>'+h(facts)+'</span></div></div>'
+      +(friend?'<button class="button primary full" data-action="wheel-send">Send to '+h(friend)+'</button>':'')
+      +'<div class="cluster wheel-actions">'+open+'<button class="button secondary" data-action="spin-wheel">Spin again</button></div>'}
   function wheelSheet(){
-    const w=state.wheel||{items:[]},pick=w.result!=null?w.items[w.result]:null,r=pick?restaurant(pick.restaurantId):null,slot=daySlot();
-    if(w.loading)return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div><h2 class="title" style="text-align:center">Craving Wheel</h2>'+loadingRow("Getting today’s dishes…")+'</section></div>';
-    const word=slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night";
-    return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Craving Wheel"><div class="sheet-handle"></div>'
-      +'<h2 class="title" style="text-align:center">Craving Wheel</h2><p class="supporting" style="text-align:center">Spin and let the wheel decide</p>'
-      +'<div class="wheel-wrap"><span class="wheel-pointer" aria-hidden="true"></span><div class="wheel-dial" id="wheel-dial" style="transform:rotate('+Number(w.rotation||0).toFixed(1)+'deg)">'+wheelSvg(w.items)+'</div>'
-      +'<button class="wheel-hub" data-action="spin-wheel" aria-label="Spin the wheel"'+(w.spinning?' disabled':'')+'>'+(w.spinning?'…':pick?'🎉':'SPIN')+'</button></div>'
-      +(pick&&r?'<div class="wheel-result"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><small>'+h(word)+' pick</small><strong>'+h(pick.dish?pick.dish+" at "+r.name:r.name)+'</strong><span>'+h([ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New",(r.etaMin||25)+"–"+(r.etaMax||35)+" min"].join(" · "))+'</span></div></div>'
-        +'<div class="cluster" style="gap:10px"><button class="button primary grow" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">Open the menu</button><button class="button secondary" data-action="spin-wheel">Spin again</button></div>'
-        :'<p class="caption" style="text-align:center">'+(w.spinning?'Spinning…':'Tap SPIN in the middle')+'</p>')
-      +'</section></div>';
+    const w=state.wheel||{},s=spinSetup(),title=w.pairId?"Spin the plate":"Craving Wheel";
+    const shell=body=>'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet wheel-sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="'+h(title)+'"><div class="sheet-handle"></div><h2 class="title" style="text-align:center">'+h(title)+'</h2>'+body+'</section></div>';
+    if(w.loading)return shell(loadingRow("Getting today’s dishes…"));
+    const settled=w.spinning||w.result!=null,items=settled?w.items:spinSlices(w),pick=w.result!=null?w.items[w.result]:null,ready=items.length>=SPIN_MIN;
+    const tabs=[["surprise","🎲 Surprise"],["places","Pick places"],["dishes","Pick dishes"]];
+    return shell('<div class="seg3" role="tablist" aria-label="What goes on the wheel">'+tabs.map(([k,l])=>'<button type="button" role="tab" aria-selected="'+(s.mode===k)+'" class="seg2-btn'+(s.mode===k?' on':'')+'" data-action="wheel-mode" data-value="'+k+'"'+(w.spinning?' disabled':'')+'>'+h(l)+'</button>').join("")+'</div>'
+      +'<div class="wheel-wrap"><span class="wheel-pointer" aria-hidden="true"></span><div class="wheel-dial" id="wheel-dial" style="transform:rotate('+Number(w.rotation||0).toFixed(1)+'deg)">'+wheelSvg(items)+'</div>'
+      +'<button class="wheel-hub" data-action="spin-wheel" aria-label="Spin the wheel"'+(w.spinning||!ready?' disabled':'')+'>'+(w.spinning?'…':pick?'🎉':ready?'SPIN':items.length+'/2')+'</button></div>'
+      +(pick?spinResult(w,pick):w.spinning?'<p class="caption" style="text-align:center">Spinning…</p>':spinPicker(w)));
   }
-  async function openWheel(){
-    let items=wheelPicks();
-    const unloaded=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false&&!r.menuLoaded);
-    if(items.length<3&&unloaded.length){
-      state.wheel={items:[],rotation:0,spinning:false,result:null,loading:true};setSheet({type:"wheel"});
-      await Promise.allSettled(unloaded.slice(0,8).map(r=>ensureRestaurantMenu(r.id)));
-      if(!state.sheet||state.sheet.type!=="wheel")return;
-      items=wheelPicks();
-    }
-    if(items.length<3){if(state.sheet&&state.sheet.type==="wheel")closeSheet();toast("Not enough dishes are on the menus right now to spin.","danger");render({preserveScroll:true});return;}
-    state.wheel={items,rotation:0,spinning:false,result:null};
-    if(state.sheet&&state.sheet.type==="wheel")renderSheet();else setSheet({type:"wheel"});
+  /** Menus load when a restaurant is opened; the wheel fetches the ones it needs. */
+  async function spinLoadMenu(id){const w=state.wheel,r=restaurant(id);if(!w||!r||r.menuLoaded)return;w.loadingMenu=id;renderSheet();await ensureRestaurantMenu(id).catch(()=>[]);if(state.wheel!==w)return;w.loadingMenu="";renderSheet()}
+  async function openWheel(pairId){
+    const s=spinSetup(),places=spinPlaces(),ids=new Set(places.map(r=>r.id));
+    if(!places.length){toast(Object.keys(state.catalog||{}).length?"No restaurants are open near you right now.":"No restaurants deliver to this address yet.","danger");return}
+    // Keep the last choices, minus places that no longer deliver here.
+    s.places=s.places.filter(id=>ids.has(id));if(!ids.has(s.placeId)){s.placeId="";s.dishes=[]}
+    const w=state.wheel={pairId:pairId||"",items:[],rotation:0,spinning:false,result:null,surprise:null,loadingMenu:""};
+    // Home holds only a short preview of each menu: fill a thin surprise mix with a few full menus first.
+    const thin=s.mode==="surprise"&&spinSurprise().length<SPIN_MAX,unloaded=places.filter(r=>!r.menuLoaded).slice(0,SPIN_MAX);
+    if(thin&&unloaded.length){w.loading=true;setSheet({type:"wheel"});await Promise.allSettled(unloaded.map(r=>ensureRestaurantMenu(r.id)));if(state.wheel!==w)return;w.loading=false;w.surprise=null;renderSheet()}
+    else setSheet({type:"wheel"});
+    if(s.mode==="dishes"&&s.placeId)spinLoadMenu(s.placeId);
   }
+  function spinEdit(change){const w=state.wheel;if(!w||w.spinning)return;w.result=null;change(spinSetup(),w);renderSheet()}
+  function spinToggle(list,id){const i=list.indexOf(id);if(i>=0){list.splice(i,1);return}if(list.length>=SPIN_MAX){toast("8 is the most the wheel holds. Take one off first.");haptic(20);return}list.push(id);haptic(6)}
+  function handleWheelClick(action,control){const id=String(control.dataset.id||"");
+    if(action==="wheel-mode"){spinEdit((s,w)=>{s.mode=control.dataset.value||"surprise";if(s.mode==="surprise")w.surprise=null});const s=spinSetup();if(s.mode==="dishes"&&!s.placeId&&spinPlaces().length===1)s.placeId=spinPlaces()[0].id;if(s.mode==="dishes"&&s.placeId)spinLoadMenu(s.placeId);return true}
+    if(action==="wheel-shuffle"){spinEdit((s,w)=>{w.surprise=null});return true}
+    if(action==="wheel-place"){spinEdit(s=>spinToggle(s.places,id));return true}
+    if(action==="wheel-dish"){spinEdit(s=>spinToggle(s.dishes,id));return true}
+    if(action==="wheel-dish-place"){spinEdit(s=>{if(s.placeId!==id){s.placeId=id;s.dishes=[];s.findDishes=""}});spinLoadMenu(id);return true}
+    if(action==="wheel-clear"){spinEdit(s=>{if(s.mode==="places")s.places=[];else s.dishes=[]});return true}
+    if(action==="wheel-fill"){spinEdit(s=>{if(s.mode==="places")s.places=spinShuffle(spinPlaces()).slice(0,SPIN_MAX).map(r=>r.id);else{const r=spinPlace(s.placeId);if(r)s.dishes=spinShuffle(spinDishes(r)).slice(0,SPIN_MAX).map(i=>String(i.id))}});return true}
+    if(action==="wheel-send"){const w=state.wheel,res=w&&w.result!=null?w.items[w.result]:null;if(!res||!w.pairId)return true;closeSheet();
+      sendDm(w.pairId,"🎡 The plate picked this!",res.itemId?{type:"dish",restaurantId:res.restaurantId,itemId:res.itemId,name:res.dish.slice(0,80),restaurantName:res.name.slice(0,80),price:res.price,image:String(res.image||"").slice(0,400)}
+        :{type:"restaurant",restaurantId:res.restaurantId,restaurantName:res.name.slice(0,80),image:String(res.image||"").slice(0,400),name:res.name.slice(0,80)});return true}
+    return false}
+  // Searching the chips filters them in place, so the keyboard stays up while typing.
+  document.addEventListener("input",e=>{const t=e.target;if(!t||(t.id!=="wheel-find-places"&&t.id!=="wheel-find-dishes"))return;const s=spinSetup(),q=t.value.trim().toLowerCase(),list=t.id==="wheel-find-places"?"places":"dishes";
+    if(list==="places")s.findPlaces=t.value;else s.findDishes=t.value;
+    document.querySelectorAll('.wheel-chips[data-list="'+list+'"] .wheel-chip').forEach(c=>{c.hidden=!spinMatches(c.dataset.name,q)});
+    // A background refresh now draws the same sheet, so it isn't rebuilt under the keyboard.
+    lastSheetHtml=wheelSheet()});
   function spinWheel(){
-    const w=state.wheel;if(!w||w.spinning||!w.items.length)return;
-    const n=w.items.length,idx=(Math.random()*n)|0,seg=360/n,landing=-(idx+0.5)*seg,current=Number(w.rotation||0);
-    const offset=((landing-current)%360+360)%360,target=current+360*(prefersCalm()?1:5)+offset;w.spinning=true;w.result=null;
+    const w=state.wheel;if(!w||w.spinning)return;
+    w.result=null;const items=spinSlices(w);if(items.length<SPIN_MIN){toast("Pick at least 2 to spin.");return}
+    w.items=items;
+    const n=items.length,idx=(Math.random()*n)|0,seg=360/n,landing=-(idx+0.5)*seg,current=Number(w.rotation||0);
+    const offset=((landing-current)%360+360)%360,target=current+360*(prefersCalm()?1:5)+offset;w.spinning=true;
     // Draw the spinning state with the wheel where it stands now, then turn
     // it: a dial drawn already at its final angle has nothing to animate,
     // which is why the wheel used to just jump.
@@ -3445,18 +3662,25 @@
     try{await mealCall("updateMealSubscription",Object.assign({subscriptionId:subId,action},date?{date}:{}));toast(action==="skip"?"Skipped "+dayLabel(date)+".":action==="unskip"?dayLabel(date)+" is back on.":action==="pause"?"Plan paused.":action==="resume"?"Plan resumed.":"Plan stopped.","success");await loadMealPlans(true)}catch(e){Object.assign(s,JSON.parse(before));render({preserveScroll:true});toast(mealError(e),"danger")}}
   // ===== Friends & chat: friend codes, one-to-one chat, dish cards, report and block =====
   const CHAT_REASONS=[["harassment","Harassment or bullying"],["sexual","Sexual or abusive content"],["spam","Spam or scam"],["self-harm","Talk of self-harm"],["other","Something else"]];
-  function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
+  function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],payAsks:[],payInbox:[],payBusy:"",children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
   function myUid(){return String(state.session&&state.session.uid||"")}
   function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;
+    const pc=readPeopleCache(uid);if(pc){if(pc.me)c.avatars[uid]=pc.me;pc.people.forEach(x=>{if(x.img&&!c.avatars[x.uid])c.avatars[x.uid]=x.img})}
     try{
+      loadAvatars();
       c.unsubs.push(fs.collection("accountAges").doc(uid).onSnapshot(s=>{c.account=s.exists?s.data():null;c.accountLoaded=true;chatRerender()},()=>{c.accountLoaded=true}));
       c.unsubs.push(fs.collection("chatProfiles").doc(uid).onSnapshot(s=>{c.profile=s.exists?s.data():null;c.profileLoaded=true;chatRerender()},()=>{c.profileLoaded=true;chatRerender()}));
-      c.unsubs.push(fs.collection("friendships").where("members","array-contains",uid).onSnapshot(s=>{c.pairs=s.docs.map(d=>Object.assign({id:d.id},d.data()));loadAvatars();chatRerender()},()=>{}));
+      c.unsubs.push(fs.collection("friendships").where("members","array-contains",uid).onSnapshot(s=>{c.pairs=s.docs.map(d=>Object.assign({id:d.id},d.data()));c.pairsLoaded=true;loadAvatars();chatRerender();checkCraveMatches()},()=>{c.pairsLoaded=true;chatRerender()}));
+      c.unsubs.push(fs.collection("feeds").doc(uid).collection("feedItems").orderBy("createdAt","desc").limit(80).onSnapshot(s=>{c.feed=s.docs.map(d=>d.data());c.feedLoaded=true;chatRerender();if(state.sheet&&state.sheet.type==="friendStory")renderSheet()},()=>{c.feedLoaded=true;chatRerender()}));
       c.unsubs.push(fs.collection("parentRequests").where("parentUid","==",uid).onSnapshot(s=>{c.parentInbox=s.docs.map(d=>d.data());chatRerender()},()=>{}));
+      c.unsubs.push(fs.collection("parentPayRequests").where("childUid","==",uid).onSnapshot(s=>{c.payAsks=s.docs.map(d=>d.data());watchParentPayAnswer();chatRerender()},()=>{}));
+      c.unsubs.push(fs.collection("parentPayRequests").where("parentUid","==",uid).onSnapshot(s=>{c.payInbox=s.docs.map(d=>d.data());chatRerender()},()=>{}));
     }catch(_){}
   }
-  function stopChatSync(){const c=chatState();c.unsubs.forEach(u=>{try{u()}catch(_){}});c.unsubs=[];Object.values(c.avatarUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.avatarUnsubs={};c.avatars={};closeThread();c.uid="";c.profile=null;c.profileLoaded=false;c.pairs=[]}
-  function chatRerender(){if(["chats","dm","friends","home"].includes(state.route))render({preserveScroll:true})}
+  function stopChatSync(){const c=chatState();c.unsubs.forEach(u=>{try{u()}catch(_){}});c.unsubs=[];Object.values(c.avatarUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.avatarUnsubs={};c.avatars={};closeThread();c.uid="";c.profile=null;c.profileLoaded=false;c.pairs=[];c.pairsLoaded=false}
+  function chatRerender(){if(["chats","feed","dm","friends","home","checkout","account"].includes(state.route))render({preserveScroll:true})}
+  /** Your profile photo for the header and account page, or your initials if you haven't added one. */
+  function myAvatarFace(){const a=state.social&&state.social.avatars,uid=myUid(),img=a&&typeof a[uid]==="string"?a[uid]:(state.session&&uid&&(readPeopleCache(uid)||{}).me)||"";return img?'<img class="hh2-photo" src="'+h(img)+'" alt="">':h(initials())}
   async function socialCall(fn,data){if(!nativeAvailable("invokeSocial"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to use chat."});await ensureSession();return nativeInvoke("invokeSocial",{fn,data:data||{}},{idToken:state.session.idToken,timeoutMs:25000})}
   const chatError=e=>(e&&e.userMessage)||friendlyError(e)||"That didn’t work. Check your connection and try again.";
   function otherOf(p){return(p.members||[]).find(m=>m!==myUid())||""}
@@ -3478,7 +3702,7 @@
     if(p.status==="banned")return'<div class="notice danger">'+icon("warning","small")+'<span>Chat is turned off on your account because messages broke Scraveit’s chat rules. Ordering still works.</span></div>';
     if(p.status==="suspended"&&Number(p.suspendedUntil||0)>Date.now())return'<div class="notice warning">'+icon("warning","small")+'<span>Chat is paused on your account until '+h(new Date(p.suspendedUntil).toLocaleDateString("en-IN"))+'.</span></div>';
     const acct=c.account;if(acct&&acct.minor===true&&acct.parentStatus!=="approved")return parentCard();
-    if(!p.username)return'<section class="card stack"><div><p class="eyebrow">New</p><h2 class="section-title">Pick your username</h2><p class="supporting">Friends can now add you with your username, like on Instagram.</p></div><form id="chat-username-form" class="form-grid"><div class="field"><label for="chat-new-username">Username</label><input class="input" id="chat-new-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" value="'+h(String(p.name||"").toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14))+'"></div><button class="button primary full" type="submit">Save username</button></form></section>';
+    if(!p.username)return'<section class="card stack"><div><p class="eyebrow">New</p><h2 class="section-title">Pick your username</h2><p class="supporting">Friends can now add you with your username.</p></div><form id="chat-username-form" class="form-grid"><div class="field"><label for="chat-new-username">Username</label><input class="input" id="chat-new-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" value="'+h(String(p.name||"").toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14))+'"></div><button class="button primary full" type="submit">Save username</button></form></section>';
     return"";
   }
   function chatSetupCard(){const name=String(state.profile&&state.profile.name||"").split(" ")[0];
@@ -3500,27 +3724,669 @@
   function accountHomeCards(){if(!state.session)return"";ensureChatSync();const c=chatState();if(!c.accountLoaded)return"";
     const inbox=(c.parentInbox||[]).filter(r=>r.status==="pending"),parentCards=inbox.map(r=>'<section class="card stack account-parent"><div><p class="eyebrow">Parent approval</p><h2 class="section-title">Approve '+h(r.childName||"your child")+'’s account</h2><p class="supporting">'+h(r.childName||"Your child")+(r.childAge?' ('+h(r.childAge)+')':'')+' asked you to approve Scraveit, so they can order food and chat with friends. You can turn it off any time.</p></div><div class="cluster"><button class="button primary grow" data-action="parent-approve" data-child-uid="'+h(r.childUid)+'">Approve</button><button class="button tonal grow" data-action="parent-decline" data-child-uid="'+h(r.childUid)+'">Don’t approve</button></div></section>').join("");
     if(!c.account)return parentCards+'<section class="card stack account-parent"><div><p class="eyebrow">One quick step</p><h2 class="section-title">Add your date of birth</h2><p class="supporting">We ask everyone once. Scraveit is for 13 and over.</p></div><form id="account-dob-form" class="form-grid">'+dobInput("")+'<button class="button primary full" type="submit">Save</button></form></section>';
-    return parentCards+accountParentCard()}
+    return parentCards+parentPayCards()+accountParentCard()}
+  // ===== Ask a parent to pay: the child sends the cart, the parent places and pays from their phone =====
+  function payParentName(){const a=chatState().account;return String(a&&a.parentName||"").trim().split(" ")[0]||"your parent"}
+  function canAskParentPay(){const a=chatState().account;return!!(a&&a.minor===true&&a.parentStatus==="approved"&&a.parentUid)}
+  function payOpen(r){return!!r&&r.status==="pending"&&Number(r.expiresAt||0)>Date.now()}
+  function payMinsLeft(r){return Math.max(1,Math.ceil((Number(r.expiresAt||0)-Date.now())/60000))}
+  function myPayAsk(){const id=state.checkout.parentPayId;return id?(chatState().payAsks||[]).find(r=>r.id===id)||null:null}
+  function askParentCard(){if(!state.session)return"";ensureChatSync();if(!canAskParentPay()||!state.cart.length)return"";const r=myPayAsk(),n=payParentName();
+    if(payOpen(r))return'<section class="card stack parent-pay waiting"><div class="cluster"><span class="spinner"></span><div class="grow"><strong>Waiting for '+h(n)+'</strong><p class="supporting">They’ll see '+money(r.estimate)+' on their Scraveit home screen. Expires in '+payMinsLeft(r)+' min.</p></div></div><button class="text-button" data-action="parent-pay-cancel" data-request-id="'+h(r.id)+'">Cancel request</button></section>';
+    return'<section class="card stack parent-pay"><div><strong>Ask '+h(n)+' to pay</strong><p class="supporting">Send this cart to '+h(n)+'. They pay from their phone and the food comes to you.</p></div><button class="button tonal full" data-action="parent-pay-ask"'+(state.online&&currentAddress()&&!state.loading?'':' disabled')+'>Ask '+h(n)+' to pay · '+money(orderTotal())+'</button></section>'}
+  function parentPayOnline(){const c=checkoutConfig();return!!(c&&c.onlineGatewayConfigured===true&&onlinePaymentReady()&&paymentMethodEnabled("upi"))}
+  function parentPayCards(){const list=(chatState().payInbox||[]).filter(payOpen).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0)),online=parentPayOnline();
+    return list.map(r=>{const name=h(r.childName||"Your child"),busy=chatState().payBusy===r.id,id=h(r.id),off=busy?' disabled':'';
+      return'<section class="card stack parent-pay incoming"><div><p class="eyebrow">Pay for '+name+'</p><h2 class="section-title">'+name+' wants food from '+h(r.restaurantName||"a restaurant")+'</h2></div>'
+        +'<div class="stack" style="gap:4px">'+(r.lines||[]).map(l=>'<div class="price-row"><span>'+h(l.quantity)+' × '+h(l.name)+(l.variant?' · '+h(l.variant):'')+'</span><span>'+money(l.amount)+'</span></div>').join("")+'<div class="price-row total"><strong>About</strong><strong>'+money(r.estimate)+'</strong></div></div>'
+        +'<p class="caption">To '+h(r.addressLabel||"their address")+(r.addressLine?' · '+h(r.addressLine):'')+'. Includes delivery and taxes; the final bill is worked out when you place it. Expires in '+payMinsLeft(r)+' min.</p>'
+        +'<div class="stack" style="gap:8px">'+(online?'<button class="button primary full" data-action="parent-pay-approve" data-method="upi" data-request-id="'+id+'"'+off+'>Pay with UPI</button>':'')
+        +'<button class="button '+(online?'tonal':'primary')+' full" data-action="parent-pay-approve" data-method="cod" data-request-id="'+id+'"'+off+'>'+(busy?'<span class="spinner"></span> Placing…':'Place order · cash on delivery')+'</button>'
+        +'<button class="text-button" data-action="parent-pay-decline" data-request-id="'+id+'"'+off+'>Decline</button></div>'
+        +(online?'':'<p class="caption">Cash is paid to the rider at the door. Paying by UPI from your phone comes once online payments are switched on.</p>')+'</section>'}).join("")+parentTrackCards()}
+  // After paying: the parent follows the order (status only, no address or delivery code).
+  const PARENT_STEPS=[["Placed",["Order placed"]],["Cooking",["Accepted","Preparing","Ready for pickup","Assigned"]],["On the way",["Handed to rider","Out for delivery","Near you","Arrived"]],["Delivered",["Delivered"]]];
+  function parentTrackCards(){const now=Date.now(),list=(chatState().payInbox||[]).filter(r=>r.status==="approved"&&r.orderId&&(!["Delivered","Cancelled"].includes(r.orderStatus)?now-Number(r.respondedAt||0)<12*3600000:now-Number(r.orderStatusAt||0)<3*3600000)).sort((a,b)=>Number(b.respondedAt||0)-Number(a.respondedAt||0));
+    return list.map(r=>{const name=h(r.childName||"Your child"),st=r.orderStatus||"Order placed",cancelled=st==="Cancelled",at=PARENT_STEPS.findIndex(x=>x[1].includes(st));
+      const line=cancelled?"This order was cancelled.":st==="Delivered"?"Delivered "+timeAgo(r.deliveredAt||r.orderStatusAt)+".":at===2?(r.riderName?h(r.riderName)+" is bringing it.":"It’s on the way."):at===1?"The restaurant is making it.":"Waiting for the restaurant to accept.";
+      return'<section class="card stack parent-pay tracking'+(cancelled?' cancelled':'')+'"><div class="cluster between"><div><p class="eyebrow">'+name+'’s order</p><h2 class="section-title">'+h(r.restaurantName||"Restaurant")+'</h2></div><strong>'+money(r.total||r.estimate)+'</strong></div>'
+        +(cancelled?'':'<ol class="pp-steps">'+PARENT_STEPS.map((x,i)=>'<li class="'+(i<at?'done':i===at?'now':'')+'"><span class="pp-dot" aria-hidden="true"></span><span>'+h(x[0])+'</span></li>').join("")+'</ol>')
+        +'<p class="supporting">'+line+'</p><p class="caption">'+(r.paymentMethod==="cod"?(r.orderPaymentState==="paid"?"Cash paid to the rider.":"Cash on delivery · "+money(r.total||r.estimate)+" to the rider."):(r.orderPaymentState==="paid"?"Paid by UPI.":"UPI payment pending."))+'</p></section>'}).join("")}
+  async function askParentToPay(){const address=currentAddress(),r=cartRestaurant();if(!address||!r){toast("Choose a delivery address first.","danger");return}
+    if(!r.open){toast("This restaurant is not accepting orders right now.","danger");return}
+    state.checkout.instructions=(document.getElementById("checkout-instructions")||{}).value||state.checkout.instructions;
+    state.loading=true;render({preserveScroll:true});
+    try{const res=await socialCall("parentPayRequest",{restaurantId:r.id,addressId:address.id,items:callableCartItems(),instructions:String(state.checkout.instructions||"").slice(0,500),contactless:state.checkout.contactless===true,tip:Number(state.tip||0),shownTotal:Number(orderTotal())});
+      state.checkout.parentPayId=String(res&&res.requestId||"");persistCheckout();haptic(15);toast("Sent to "+payParentName()+".","success")}
+    catch(e){toast(chatError(e),"danger")}finally{state.loading=false;render({preserveScroll:true})}}
+  // The child's app: when the parent answers, move on (order screen) or say so.
+  function watchParentPayAnswer(){const r=myPayAsk();if(!r||r.status==="pending")return;state.checkout.parentPayId="";persistCheckout();
+    if(r.status==="approved"&&r.orderId){finishOrderPlacement({id:r.orderId,restaurantId:r.restaurantId,restaurant:r.restaurantName,total:Number(r.total||r.estimate||0),paymentMethod:r.paymentMethod||"cod",status:"Order placed",createdAt:Number(r.respondedAt||Date.now()),items:(r.lines||[]).map(l=>({name:l.name,quantity:l.quantity,price:Number(l.amount||0)/Math.max(1,Number(l.quantity||1)),variant:l.variant||""}))},String(r.orderId),"",false);setTimeout(()=>syncOrders(true),400);return}
+    if(r.status==="declined")toast(payParentName()+" didn’t pay for this one. Your cart is still here.","danger")}
+  async function parentPayAnswer(requestId,approve,method){const c=chatState();if(c.payBusy)return;c.payBusy=requestId;render({preserveScroll:true});
+    try{const res=await socialCall("parentPayRespond",{requestId,approve,paymentMethod:method==="upi"?"upi":"cod"});
+      if(!approve){toast("Declined. They’ve been told.","success");return}
+      haptic(25);toast(method==="upi"?"Order placed. Finish the payment in your UPI app.":"Order placed. Cash is paid to the rider at the door.","success");
+      if(method==="upi"&&res&&res.order){c.payBusy="";await startOnlinePayment(res.order)}}
+    catch(e){toast(chatError(e),"danger")}finally{c.payBusy="";render({preserveScroll:true})}}
   function chatHeaderButton(){if(!state.session)return"";ensureChatSync();const n=chatUnread();return'<button class="hh2-icon" data-action="go" data-route="chats" aria-label="Chats'+(n?', '+n+' new':'')+'">'+icon("chat")+(n?'<span class="hh2-badge">'+h(n)+'</span>':'')+'</button>'}
-  // Instagram-style inbox: search, a row of friends, then conversations with the last message and time.
+  // Inbox: search, a row of friends, then conversations with the last message and time.
   function agoShort(ms){if(!ms)return"";const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"now";if(s<3600)return Math.floor(s/60)+"m";if(s<86400)return Math.floor(s/3600)+"h";if(s<604800)return Math.floor(s/86400)+"d";return new Date(ms).toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
   function convoLine(p,uid){const other=otherOf(p),n=Number(p.unread&&p.unread[uid]||0),t=agoShort(p.lastAt);
     if(n>=4)return{bold:true,text:"4+ new messages · "+t};
     if(n>1)return{bold:true,text:n+" new messages · "+t};
     if(n===1)return{bold:true,text:(/^Reacted /.test(p.lastText||"")&&p.lastFrom!==uid?p.lastText:"1 new message")+" · "+t};
+    const eat=eatingOf(p);if(eat)return{bold:true,text:"🍽 Eating "+eat.dish+" · "+agoShort(eat.at)};
+    const cr=friendCrave(p),ci=cr&&craveInfo(cr.dish);if(ci)return{bold:true,text:"Craving "+ci[1]+" "+ci[2].toLowerCase()+" · "+agoShort(cr.at)};
     if(!p.lastAt)return{bold:false,text:"Say hi 👋"};
     if(p.lastFrom===uid&&/^Reacted /.test(p.lastText||""))return{bold:false,text:"You r"+String(p.lastText).slice(1).replace(" to your message","")+" · "+t};
     if(p.lastFrom===uid)return{bold:false,text:(Number(p.readAt&&p.readAt[other]||0)>=Number(p.lastAt)?"Seen ":"Sent ")+t+" ago"};
     return{bold:false,text:(p.lastText||"")+" · "+t}}
-  function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0));
+  function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,groups=storyGroups(),seen=storySeenSet(),requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0));
     return'<main class="screen no-nav"><div class="screen-content page-stack">'+topbar(me&&me.name?me.name:"Chats","",'<button class="icon-button flat" data-action="go" data-route="friends" aria-label="Add friends">'+icon("plus")+'</button>')+networkBanner()
-      +(gate||((convos.length?'<label class="ig-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
-        +'<div class="ig-friends" aria-label="Friends">'+convos.map((p,i)=>'<button class="ig-friend" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+avatar(nameOf(p,otherOf(p)),i,otherOf(p)).replace('class="chat-avatar','class="chat-avatar big')+'<span>'+h(nameOf(p,otherOf(p)).split(" ")[0])+'</span></button>').join("")+'<button class="ig-friend" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add</span></button></div>':'')
-        +'<div class="ig-head"><h2 class="section-title">Messages</h2><button class="text-button" data-action="go" data-route="friends">Requests'+(requests.length?' ('+requests.length+')':'')+'</button></div>'
-        +(convos.length?'<div class="chat-list">'+convos.map((p,i)=>{const other=otherOf(p),line=convoLine(p,uid),n=Number(p.unread&&p.unread[uid]||0);return'<button class="chat-row ig-row" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,other).toLowerCase())+'">'+avatar(nameOf(p,other),i,other).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong'+(n?'':' class="soft"')+'>'+h(nameOf(p,other))+'</strong><span class="chat-preview'+(line.bold?' bold':'')+'">'+h(line.text)+'</span></span>'+(n?'<span class="ig-dot" aria-label="Unread"></span>':'')+'</button>'}).join("")+'</div>'
+      +(gate||((convos.length?'<label class="inbox-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
+        +weekBanner()+craveBar()+'<div class="pals" aria-label="Friends and stories">'+myStoryBubble(groups,seen)+convos.slice().sort((a,b)=>(storyUnseen(groups,otherOf(b),seen)?3:eatingOf(b)?2:friendCrave(b)?1:0)-(storyUnseen(groups,otherOf(a),seen)?3:eatingOf(a)?2:friendCrave(a)?1:0)).map((p,i)=>groups.has(otherOf(p))?'<button class="pal" data-action="story-open" data-uid="'+h(otherOf(p))+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+storyFace(otherOf(p),groups,seen,nameOf(p,otherOf(p)).split(" ")[0])+'</button>':'<button class="pal" data-action="'+(eatingOf(p)?'eating-view':'open-dm')+'" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+ringed(avatar(nameOf(p,otherOf(p)),i,otherOf(p)).replace('class="chat-avatar','class="chat-avatar big'),p)+'<span>'+h(eatingOf(p)?"eating":nameOf(p,otherOf(p)).split(" ")[0])+'</span></button>').join("")+'<button class="pal" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add</span></button></div>':'')
+        +'<div class="inbox-head"><h2 class="section-title">Messages</h2><button class="text-button" data-action="go" data-route="friends">Requests'+(requests.length?' ('+requests.length+')':'')+'</button></div>'
+        +(convos.length?'<div class="chat-list">'+convos.map((p,i)=>{const other=otherOf(p),line=convoLine(p,uid),n=Number(p.unread&&p.unread[uid]||0);return'<button class="chat-row inbox-row" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,other).toLowerCase())+'">'+ringed(avatar(nameOf(p,other),i,other).replace('class="chat-avatar','class="chat-avatar big'),p)+'<span class="grow"><strong'+(n?'':' class="soft"')+'>'+h(nameOf(p,other))+streakChip(p)+'</strong><span class="chat-preview'+(line.bold?' bold':'')+'">'+h(line.text)+'</span></span>'+(n?'<span class="pal-dot" aria-label="Unread"></span>':'')+'</button>'}).join("")+'</div>'
           :emptyState("chat","No chats yet","Tap + to share your friend code, or add a friend with theirs."))))
-      +'</div></main>'}
-  document.addEventListener("input",e=>{if(!e.target||e.target.id!=="chat-search")return;const q=e.target.value.trim().toLowerCase();document.querySelectorAll(".ig-row,.ig-friend[data-name]").forEach(el=>{el.hidden=!!q&&!String(el.dataset.name||"").includes(q)})});
+      +'</div>'+(gate?'':socialNav("chats"))+'</main>'}
+  document.addEventListener("input",e=>{if(!e.target||e.target.id!=="chat-search")return;const q=e.target.value.trim().toLowerCase();document.querySelectorAll(".inbox-row,.pal[data-name]").forEach(el=>{el.hidden=!!q&&!String(el.dataset.name||"").includes(q)})});
+  // ---- Friends' feed: food photos and 24-hour stories, seen only by friends ----
+  // The server puts a card for each post in the poster's and every friend's feed;
+  // photos are fetched once and kept in memory, like chat photos.
+  const postPhotos=new Map(),postPhotoLoading=new Set(),postMeta=new Map(),storyViewsSent=new Set();
+  const STORY_SEEN_KEY="savrivo.customer.storiesSeen",STORY_MS=5000;
+  function storySeenSet(){try{return new Set(JSON.parse(localStorage.getItem(STORY_SEEN_KEY)||"[]"))}catch(_){return new Set()}}
+  function markStorySeen(id){try{const s=storySeenSet();if(s.has(id))return;s.add(id);localStorage.setItem(STORY_SEEN_KEY,JSON.stringify([...s].slice(-300)))}catch(_){}}
+  function feedRerender(){if(["feed","chats"].includes(state.route))render({preserveScroll:true});else if(state.sheet&&state.sheet.type==="friendStory")renderSheet()}
+  function keepPostPhoto(id,entry){postPhotos.set(id,entry);while(postPhotos.size>DM_PHOTO_KEEP){const [old,e]=postPhotos.entries().next().value;if(e&&e.url)URL.revokeObjectURL(e.url);postPhotos.delete(old)}}
+  async function loadPostPhoto(id){if(!id||postPhotos.has(id)||postPhotoLoading.has(id))return;postPhotoLoading.add(id);
+    try{const d=await fs.collection("postMedia").doc(id).get(),img=d.exists?String(d.data().image||""):"";keepPostPhoto(id,img.startsWith("data:image/jpeg;base64,")?{url:photoBlobUrl(img)}:{missing:true})}
+    catch(_){keepPostPhoto(id,{missing:true})}
+    finally{postPhotoLoading.delete(id);feedRerender()}}
+  async function loadPostMeta(id,force){if(!id||(!force&&postMeta.has(id)))return;if(!postMeta.has(id))postMeta.set(id,{likes:{},views:{}});
+    try{const d=await fs.collection("posts").doc(id).get();if(d.exists){const x=d.data();postMeta.set(id,{likes:x.likes||{},views:x.views||{}})}}catch(_){}
+    feedRerender()}
+  /** Posts from you and your current friends; stories only for their 24 hours. */
+  function liveFeed(){const c=chatState(),uid=myUid(),now=Date.now(),people=new Set(c.pairs.filter(p=>p.status==="accepted").map(otherOf).concat([uid]));
+    return(c.feed||[]).filter(x=>x&&people.has(x.from)&&(x.kind!=="story"||Number(x.expiresAt)>now))}
+  /** Each person's live stories, oldest first. */
+  function storyGroups(){const groups=new Map();liveFeed().filter(x=>x.kind==="story").sort((a,b)=>a.createdAt-b.createdAt).forEach(x=>{if(!groups.has(x.from))groups.set(x.from,[]);groups.get(x.from).push(x)});return groups}
+  function storyUnseen(groups,uid,seen){return(groups.get(uid)||[]).some(x=>!seen.has(x.postId))}
+  /** You first, then friends with stories you haven't seen, newest first, then the rest. */
+  function storyOrder(groups){const uid=myUid(),seen=storySeenSet(),latest=u=>Math.max(0,...(groups.get(u)||[]).map(x=>x.createdAt));
+    return[...groups.keys()].sort((a,b)=>(b===uid)-(a===uid)||storyUnseen(groups,b,seen)-storyUnseen(groups,a,seen)||latest(b)-latest(a))}
+  function feedName(uid,card){if(uid===myUid())return(chatState().profile&&chatState().profile.name)||"You";const p=chatState().pairs.find(x=>otherOf(x)===uid);return(p&&nameOf(p,uid))||(card&&card.fromName)||"Friend"}
+  function pairWith(uid){return chatState().pairs.find(x=>x.status==="accepted"&&otherOf(x)===uid)||null}
+  /** Under-18 accounts see a friend's photo blurred until they tap it (as in chats). */
+  function postVeiled(x){const a=chatState().account;return x.from!==myUid()&&!!(a&&a.minor===true)&&!dmPhotoSeen.has("p:"+x.postId)}
+  function storyRing(uid,groups,seen){const has=groups.has(uid),mine=uid===myUid();
+    return'<span class="story-ring'+(has?(!mine&&storyUnseen(groups,uid,seen)?' new':' seen'):'')+'">'+avatar(feedName(uid),0,uid).replace('class="chat-avatar','class="chat-avatar big')+(mine?'<span class="story-plus"'+(has?' data-action="feed-compose" data-kind="story" role="button" aria-label="Add another story"':' aria-hidden="true"')+'>+</span>':'')+'</span>'}
+  function storyFace(uid,groups,seen,label){return storyRing(uid,groups,seen)+'<span>'+h(label)+'</span>'}
+  function myStoryBubble(groups,seen){const uid=myUid(),has=groups.has(uid);
+    return'<button class="pal" data-action="'+(has?'story-open':'feed-compose')+'" data-uid="'+h(uid)+'" data-kind="story" aria-label="'+(has?'Your story':'Add to your story')+'">'+storyFace(uid,groups,seen,"Your story")+'</button>'}
+  const SOCIAL_ICONS={feed:'<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>',post:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.5v7M8.5 12h7"/>',chats:'<path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/>'};
+  /** Feed / Post / Chats, at the bottom of the friends screens. */
+  function socialNav(active){const b=(key,label)=>'<button class="nav-button'+(active===key?' active':'')+'" '+(key==="post"?'data-action="feed-compose" data-kind="post"':'data-action="social-tab" data-route="'+key+'"')+(active===key?' aria-current="page"':'')+'><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+SOCIAL_ICONS[key]+'</svg><span>'+label+'</span></button>';
+    return'<nav class="bottom-nav kind-nav social-nav" aria-label="Friends">'+b("feed","Feed")+b("post","Post")+b("chats","Chats")+'</nav>'}
+  function screenFeed(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),groups=storyGroups(),seen=storySeenSet(),posts=liveFeed().filter(x=>x.kind==="post");
+    return'<main class="screen no-nav feed-screen"><div class="screen-content page-stack">'+topbar("Feed","Only your friends see this",'<button class="icon-button flat" data-action="feed-compose" data-kind="post" aria-label="Share a photo">'+icon("plus")+'</button>')+networkBanner()
+      +(gate||('<div class="pals story-row" aria-label="Stories">'+myStoryBubble(groups,seen)+storyOrder(groups).filter(u=>u!==uid).map(u=>'<button class="pal" data-action="story-open" data-uid="'+h(u)+'">'+storyFace(u,groups,seen,String(feedName(u)).split(" ")[0])+'</button>').join("")+'</div>'
+        +(!c.feedLoaded?loadingRow("Loading your feed…"):posts.length?'<div class="feed-list">'+posts.map(feedPost).join("")+'</div>'
+          :emptyState("chat","Nothing here yet","Share what you’re eating. Only your friends see it.")+'<button class="button primary full" data-action="feed-compose" data-kind="post">📷 Share a photo</button>')))
+      +'</div>'+(gate?'':socialNav("feed"))+'</main>'}
+  function feedPost(x){const uid=myUid(),mine=x.from===uid,meta=postMeta.get(x.postId),ph=postPhotos.get(x.postId);if(!ph)loadPostPhoto(x.postId);if(!meta)loadPostMeta(x.postId);
+    const likes=Object.keys(meta&&meta.likes||{}),liked=likes.includes(uid),veiled=postVeiled(x),name=feedName(x.from,x);
+    return'<article class="feed-post"><header class="feed-head">'+avatar(name,0,x.from)+'<span class="grow"><strong>'+h(mine?"You":name)+'</strong><small>'+h(timeAgo(x.createdAt))+'</small></span><button class="icon-button flat" data-action="feed-menu" data-post-id="'+h(x.postId)+'" data-uid="'+h(x.from)+'" aria-label="'+(mine?'Delete post':'Report')+'">⋯</button></header>'
+      +'<button type="button" class="feed-photo'+(veiled?' veiled':'')+'" style="aspect-ratio:'+Math.max(1,Number(x.w)||1)+' / '+Math.max(1,Number(x.h)||1)+'" data-action="feed-photo" data-post-id="'+h(x.postId)+'" aria-label="'+(veiled?'Tap to view photo':'Open photo')+'">'
+        +(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':ph&&ph.missing?'<span class="feed-missing">Photo unavailable</span>':'<span class="dm-photo-wait" aria-hidden="true"></span>')+(veiled?'<span class="dm-veil">Tap to view</span>':'')+'</button>'
+      +'<div class="feed-actions"><button class="feed-like'+(liked?' on':'')+'" data-action="feed-like" data-post-id="'+h(x.postId)+'" aria-pressed="'+liked+'" aria-label="Like"'+(mine?' disabled':'')+'>'+(liked?'❤️':'🤍')+'</button>'
+        +'<span class="feed-count">'+(likes.length?likes.length+(likes.length===1?' like':' likes'):mine?'No likes yet':'')+'</span>'+(mine?'':'<button class="text-button" data-action="feed-reply" data-post-id="'+h(x.postId)+'" data-uid="'+h(x.from)+'">Reply</button>')+'</div>'
+      +(x.caption?'<p class="feed-caption"><strong>'+h(mine?"You":String(name).split(" ")[0])+'</strong> '+h(x.caption)+'</p>':'')+'</article>'}
+  // Sharing: pick a photo, then choose story or post and add a caption.
+  async function feedCompose(kind){if(chatGate()){go("chats");return}
+    if(!nativeAvailable("pickChatPhoto")){toast("Update Scraveit to share photos.","danger");return}
+    let res;try{res=await nativeInvoke("pickChatPhoto",{},{timeoutMs:180000})}catch(e){if(!/CANCELLED|No photo/i.test(String(e&&e.message||"")))toast("Not shared. "+chatError(e),"danger");return}
+    const d=res&&(res.image?res:res.data&&res.data.image?res.data:res.result)||{},img=String(d.image||""),w=Math.round(Number(d.w)||0),hh=Math.round(Number(d.h)||0);
+    if(!img.startsWith("data:image/jpeg;base64,")||!w||!hh){toast("That photo couldn’t be used. Try another.","danger");return}
+    const old=chatState().compose;if(old&&old.url)URL.revokeObjectURL(old.url);seReset();
+    chatState().compose={img,url:photoBlobUrl(img),w,h:hh,kind:kind==="post"?"post":"story",caption:"",busy:false};setSheet({type:"compose"})}
+  // ===== Photo editor for stories and posts =====
+  // Filters, adjustments, effects, text, stickers and drawing. The preview and
+  // the photo that gets shared are drawn by the same code, so friends see
+  // exactly what was on screen.
+  const SE_UNIT=.075;
+  const SE_FILTERS=[
+    {id:"none",name:"Original",ops:[]},
+    {id:"fresh",name:"Fresh",ops:[["brightness",1.06],["contrast",1.08],["saturate",1.25]]},
+    {id:"spicy",name:"Spicy",ops:[["contrast",1.16],["saturate",1.45],["hue",-6]],tint:["#ff3b1f","soft-light",.2]},
+    {id:"golden",name:"Golden",ops:[["brightness",1.05],["saturate",1.2],["sepia",.15]],tint:["#ffb347","soft-light",.32]},
+    {id:"masala",name:"Masala",ops:[["contrast",1.12],["saturate",1.3],["sepia",.12]],tint:["#c2410c","overlay",.14],vig:.25},
+    {id:"mango",name:"Mango",ops:[["brightness",1.07],["saturate",1.35]],tint:["#ffd166","soft-light",.35]},
+    {id:"chai",name:"Chai",ops:[["sepia",.35],["contrast",1.05],["brightness",1.03],["saturate",1.1]],tint:["#a16207","soft-light",.2]},
+    {id:"kaapi",name:"Kaapi",ops:[["contrast",1.2],["brightness",.96],["sepia",.25],["saturate",.92]],vig:.35},
+    {id:"biryani",name:"Biryani",ops:[["saturate",1.4],["contrast",1.1],["sepia",.18],["hue",-8]],tint:["#f59e0b","soft-light",.24]},
+    {id:"lassi",name:"Lassi",ops:[["brightness",1.1],["contrast",.92],["saturate",.92]],tint:["#fff7ed","screen",.16]},
+    {id:"monsoon",name:"Monsoon",ops:[["saturate",.86],["contrast",1.05],["hue",8]],tint:["#2563eb","soft-light",.26]},
+    {id:"bazaar",name:"Night Bazaar",ops:[["contrast",1.24],["saturate",1.5],["brightness",.93]],tint:["#7c3aed","soft-light",.22],vig:.4},
+    {id:"sunset",name:"Sunset",ops:[["saturate",1.3],["contrast",1.05]],tint:["#fb7185","soft-light",.32]},
+    {id:"mint",name:"Mint",ops:[["saturate",1.1],["brightness",1.05],["hue",-12]],tint:["#34d399","soft-light",.2]},
+    {id:"berry",name:"Berry",ops:[["saturate",1.25],["contrast",1.08],["hue",-14]],tint:["#db2777","soft-light",.2]},
+    {id:"butter",name:"Butter",ops:[["brightness",1.1],["saturate",1.15],["contrast",.95]],tint:["#ffe4b5","screen",.14]},
+    {id:"pop",name:"Pop",ops:[["saturate",1.8],["contrast",1.15]]},
+    {id:"cool",name:"Cool",ops:[["saturate",1.05],["warm",-.6]],tint:["#60a5fa","soft-light",.22]},
+    {id:"warm",name:"Warm",ops:[["saturate",1.1],["warm",.6]],tint:["#fb923c","soft-light",.24]},
+    {id:"matte",name:"Matte",ops:[["fade",.7],["saturate",.85]]},
+    {id:"vintage",name:"Vintage",ops:[["sepia",.42],["contrast",1.1],["saturate",1.15],["brightness",.96]],tint:["#fbbf24","overlay",.1],vig:.45},
+    {id:"film",name:"Film",ops:[["contrast",1.12],["saturate",.9],["sepia",.1],["fade",.25]],tint:["#0f766e","soft-light",.14],grain:.35},
+    {id:"mono",name:"Mono",ops:[["gray",1],["contrast",1.1]]},
+    {id:"noir",name:"Noir",ops:[["gray",1],["contrast",1.45],["brightness",.93]],vig:.5}
+  ];
+  const SE_ADJUST=[
+    {k:"bright",name:"Brightness",icon:"☀️",min:-100},{k:"contrast",name:"Contrast",icon:"◐",min:-100},
+    {k:"sat",name:"Saturation",icon:"🎨",min:-100},{k:"warm",name:"Warmth",icon:"🌡️",min:-100},
+    {k:"sharp",name:"Sharpen",icon:"🔍",min:0},{k:"fade",name:"Fade",icon:"🌫️",min:0},
+    {k:"vignette",name:"Vignette",icon:"⭕",min:0},{k:"grain",name:"Grain",icon:"🎞️",min:0},{k:"soft",name:"Soften",icon:"💧",min:0}
+  ];
+  const SE_EFFECTS=[
+    {id:"none",name:"None"},{id:"glow",name:"Glow"},{id:"dreamy",name:"Dreamy",ops:[["brightness",1.04],["contrast",.92]]},
+    {id:"sparkle",name:"Sparkle"},{id:"bokeh",name:"Bokeh"},{id:"steam",name:"Steam"},{id:"fire",name:"Fire"},
+    {id:"hearts",name:"Hearts"},{id:"confetti",name:"Confetti"},{id:"leak",name:"Light leak"},{id:"rainbow",name:"Rainbow"},
+    {id:"rays",name:"Sun rays"},{id:"rain",name:"Rain",ops:[["saturate",.9],["warm",-.4],["brightness",.96]]},
+    {id:"spotlight",name:"Spotlight"},{id:"duotone",name:"Duotone",ops:[["duo","#3b0764","#fdba74"]]},
+    {id:"retro",name:"Retro TV",ops:[["saturate",1.2],["contrast",1.1]]},{id:"strip",name:"Film strip",ops:[["contrast",1.1],["sepia",.1]]},
+    {id:"polaroid",name:"Polaroid",ops:[["sepia",.12],["fade",.2]]}
+  ];
+  const SE_FONTS=[
+    {id:"classic",name:"Classic",css:fs=>"700 "+fs+"px sans-serif"},
+    {id:"strong",name:"Strong",css:fs=>"italic 900 "+fs*1.06+"px sans-serif-black, sans-serif",upper:true},
+    {id:"neon",name:"Neon",css:fs=>"500 "+fs*1.1+"px cursive, sans-serif",neon:true},
+    {id:"type",name:"Typewriter",css:fs=>"500 "+fs*.92+"px serif-monospace, \"Courier New\", monospace"},
+    {id:"script",name:"Script",css:fs=>"700 "+fs*1.18+"px cursive, serif"},
+    {id:"casual",name:"Casual",css:fs=>"700 "+fs+"px casual, \"Comic Sans MS\", sans-serif"},
+    {id:"modern",name:"Modern",css:fs=>"600 "+fs*.95+"px sans-serif-condensed, sans-serif",upper:true,spacing:.08},
+    {id:"elegant",name:"Elegant",css:fs=>"italic 600 "+fs*1.05+"px serif"}
+  ];
+  const SE_COLORS=["#ffffff","#000000","#ff3b30","#ff9500","#ffcc00","#34c759","#00c7be","#32ade6","#007aff","#5856d6","#af52de","#ff2d55","#ffb3c7","#a2845e"];
+  const SE_LOOKS={sun:["#ffd60a","#ff9f0a","#1c1917"],pink:["#ff5fa2","#a855f7","#ffffff"],white:["#ffffff","#f3f4f6","#111827"],glass:["rgba(255,255,255,.3)","rgba(255,255,255,.18)","#ffffff"],dark:["#111827","#1f2937","#ffffff"],fire:["#ff3b30","#ff9500","#ffffff"],mint:["#2dd4bf","#22c55e","#ffffff"],brand:["#1f5bff","#7c3aed","#ffffff"]};
+  const SE_LOOK_ORDER=Object.keys(SE_LOOKS);
+  const SE_EMOJI=["😋","🤤","🔥","😍","🥰","😂","🤩","😎","🥳","👌","👏","💯","❤️","💛","✨","⭐","🎉","🍕","🍔","🍟","🌭","🌮","🌯","🥙","🥗","🍝","🍜","🍲","🍛","🍚","🥘","🍣","🍱","🥟","🍤","🍗","🍖","🥩","🍳","🥞","🥐","🥯","🍞","🧀","🥪","🍦","🍨","🍧","🍰","🎂","🧁","🍩","🍪","🍫","🍬","🍭","🍿","☕","🍵","🥤","🧃","🍹","🥛","🍉","🍓","🥭","🍌","🍇","🍍","🥥","🌶️","🌽","🥕","🍋","🍒","🍑","🥑","🧊","🍴","🥄","🎈","🎁","🙌","🤗","😇","🤭","🥺","😴","💪","🙏"];
+  const SE_BRUSHES=[{id:"pen",name:"Pen",icon:"🖊️"},{id:"marker",name:"Marker",icon:"🖍️"},{id:"neon",name:"Neon",icon:"✨"},{id:"eraser",name:"Eraser",icon:"🧽"}];
+  const SE_ICONS={pen:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+    "align-center":'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M5 18h14"/></svg>',
+    "align-left":'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h14"/></svg>',
+    "align-right":'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M10 12h10M6 18h14"/></svg>'};
+  const seCache={base:null,baseUrl:"",baseC:null,photo:null,photoSig:"",ink:null,live:null,items:new Map(),thumbs:{},thumbFor:"",P:0,fw:0,fh:0,scroll:{},paintQueued:false,focusThumb:false};
+  function seFilter(id){return SE_FILTERS.find(f=>f.id===id)||SE_FILTERS[0]}
+  function seEffect(id){return SE_EFFECTS.find(f=>f.id===id)||SE_EFFECTS[0]}
+  function seFont(id){return SE_FONTS.find(f=>f.id===id)||SE_FONTS[0]}
+  function seId(){return"i"+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36)}
+  function seStamp(){const n=new Date();return{time:n.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\s*(am|pm)$/i,(m,p)=>" "+p.toUpperCase()),date:n.toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}}
+  function seDefaults(d){if(d.adj)return;Object.assign(d,{filter:"none",amount:100,fx:"none",adj:{bright:0,contrast:0,sat:0,warm:0,sharp:0,fade:0,vignette:0,grain:0,soft:0},items:[],strokes:[],mode:"",tab:"filters",adjKey:"bright",draft:null,brush:{tool:"pen",color:"#ffffff",size:4},seed:Math.floor(Math.random()*1e9),stamp:seStamp()})}
+  function seAdjusted(d){return Object.keys(d.adj||{}).some(k=>d.adj[k])}
+  function seEdited(d){return!!(d&&d.adj&&(d.filter!=="none"||d.fx!=="none"||seAdjusted(d)||d.items.length||d.strokes.length))}
+  function seReset(){Object.values(seCache.thumbs).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});
+    Object.assign(seCache,{base:null,baseUrl:"",baseC:null,photo:null,photoSig:"",ink:null,live:null,thumbs:{},thumbFor:"",P:0,fw:0,fh:0,scroll:{},focusThumb:false});seCache.items.clear()}
+  // ---- colour maths: every filter step is an affine colour matrix, so a whole look is one pass over the pixels
+  function seRgb(hex){const m=/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)||[0,"ff","ff","ff"];return[parseInt(m[1],16)/255,parseInt(m[2],16)/255,parseInt(m[3],16)/255]}
+  function seMul(b,a){const r=[];for(let i=0;i<3;i++){for(let j=0;j<3;j++)r.push(b[i*4]*a[j]+b[i*4+1]*a[4+j]+b[i*4+2]*a[8+j]);r.push(b[i*4]*a[3]+b[i*4+1]*a[7]+b[i*4+2]*a[11]+b[i*4+3])}return r}
+  const SE_I=[1,0,0,0,0,1,0,0,0,0,1,0];
+  function seMat(ops){let m=SE_I.slice();(ops||[]).forEach(o=>{const k=o[0],v=o[1];let n=null;
+      if(k==="brightness")n=[v,0,0,0,0,v,0,0,0,0,v,0];
+      else if(k==="contrast"){const t=.5-.5*v;n=[v,0,0,t,0,v,0,t,0,0,v,t]}
+      else if(k==="saturate"||k==="gray"){const s=k==="gray"?1-v:v;n=[.213+.787*s,.715-.715*s,.072-.072*s,0,.213-.213*s,.715+.285*s,.072-.072*s,0,.213-.213*s,.715-.715*s,.072+.928*s,0]}
+      else if(k==="sepia"){const p=1-v;n=[.393+.607*p,.769-.769*p,.189-.189*p,0,.349-.349*p,.686+.314*p,.168-.168*p,0,.272-.272*p,.534-.534*p,.131+.869*p,0]}
+      else if(k==="hue"){const a=Math.cos(v*Math.PI/180),b=Math.sin(v*Math.PI/180);n=[.213+a*.787-b*.213,.715-a*.715-b*.715,.072-a*.072+b*.928,0,.213-a*.213+b*.143,.715+a*.285+b*.14,.072-a*.072-b*.283,0,.213-a*.213-b*.787,.715-a*.715+b*.715,.072+a*.928+b*.072,0]}
+      else if(k==="warm")n=[1+.12*v,0,0,.03*v,0,1+.03*v,0,0,0,0,1-.14*v,-.02*v];
+      else if(k==="fade"){const g=1-.24*v,t=.11*v;n=[g,0,0,t,0,g,0,t,0,0,g,t]}
+      else if(k==="duo"){const A=seRgb(o[1]),B=seRgb(o[2]);n=[];for(let i=0;i<3;i++){const dd=B[i]-A[i];n.push(dd*.2126,dd*.7152,dd*.0722,A[i])}}
+      if(n)m=seMul(n,m)});return m}
+  function seLerpI(m,t){return m.map((v,i)=>SE_I[i]+(v-SE_I[i])*t)}
+  function seIsI(m){return m.every((v,i)=>Math.abs(v-SE_I[i])<1e-4)}
+  function sePixels(x,W,H,m,sharp){const img=x.getImageData(0,0,W,H),p=img.data,src=sharp>0?new Uint8ClampedArray(p):p,a=sharp*.5,row=W*4,k=m.map((v,i)=>i%4===3?v*255:v);
+    for(let y=0;y<H;y++){const up=y>0?-row:0,dn=y<H-1?row:0;
+      for(let xx=0;xx<W;xx++){const i=(y*W+xx)*4,lf=xx>0?-4:0,rt=xx<W-1?4:0;let r=src[i],g=src[i+1],b=src[i+2];
+        if(a>0){r+=a*(4*r-src[i+up]-src[i+dn]-src[i+lf]-src[i+rt]);g+=a*(4*g-src[i+1+up]-src[i+1+dn]-src[i+1+lf]-src[i+1+rt]);b+=a*(4*b-src[i+2+up]-src[i+2+dn]-src[i+2+lf]-src[i+2+rt])}
+        p[i]=k[0]*r+k[1]*g+k[2]*b+k[3];p[i+1]=k[4]*r+k[5]*g+k[6]*b+k[7];p[i+2]=k[8]*r+k[9]*g+k[10]*b+k[11]}}
+    x.putImageData(img,0,0)}
+  function seRng(seed){let s=seed>>>0;return()=>{s=s+0x6D2B79F5>>>0;let t=s;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+  let seNoiseTile=null;
+  function seNoise(){if(seNoiseTile)return seNoiseTile;const c=document.createElement("canvas");c.width=c.height=128;const x=c.getContext("2d"),img=x.createImageData(128,128),R=seRng(7);
+    for(let i=0;i<img.data.length;i+=4){const v=Math.round(128+(R()-.5)*190);img.data[i]=img.data[i+1]=img.data[i+2]=v;img.data[i+3]=255}x.putImageData(img,0,0);seNoiseTile=c;return c}
+  function seFill(x,W,H,color,mode,alpha){x.save();x.globalCompositeOperation=mode;x.globalAlpha=Math.max(0,Math.min(1,alpha));x.fillStyle=color;x.fillRect(0,0,W,H);x.restore()}
+  function seVignette(x,W,H,v){const g=x.createRadialGradient(W/2,H/2,Math.min(W,H)*.28,W/2,H/2,Math.hypot(W,H)/2);g.addColorStop(0,"rgba(0,0,0,0)");g.addColorStop(.55,"rgba(0,0,0,"+(v*.3).toFixed(3)+")");g.addColorStop(1,"rgba(0,0,0,"+Math.min(.92,v).toFixed(3)+")");x.save();x.fillStyle=g;x.fillRect(0,0,W,H);x.restore()}
+  function seGrain(x,W,H,g){const k=Math.max(W,H)/600;x.save();x.globalCompositeOperation="overlay";x.globalAlpha=Math.min(1,g);x.scale(k,k);x.fillStyle=x.createPattern(seNoise(),"repeat");x.fillRect(0,0,W/k+1,H/k+1);x.restore()}
+  function seBlurCopy(c,W,H,div){const a=document.createElement("canvas");a.width=Math.max(2,Math.round(W/4));a.height=Math.max(2,Math.round(H/4));const ax=a.getContext("2d");ax.imageSmoothingQuality="high";ax.drawImage(c,0,0,a.width,a.height);
+    const b=document.createElement("canvas");b.width=Math.max(2,Math.round(W/div));b.height=Math.max(2,Math.round(H/div));const bx=b.getContext("2d");bx.imageSmoothingQuality="high";bx.drawImage(a,0,0,b.width,b.height);return b}
+  function seRoundPath(x,X,Y,w,h,r){r=Math.max(0,Math.min(r,w/2,h/2));x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath()}
+  function seRound(x,X,Y,w,h,r){x.beginPath();seRoundPath(x,X,Y,w,h,r)}
+  function seGlint(x,cx,cy,r,t){const g=x.createRadialGradient(cx,cy,0,cx,cy,r*1.5);g.addColorStop(0,"rgba(255,255,255,.95)");g.addColorStop(.25,"rgba(255,250,220,.5)");g.addColorStop(1,"rgba(255,250,220,0)");x.fillStyle=g;x.beginPath();x.arc(cx,cy,r*1.5,0,7);x.fill();
+    x.save();x.translate(cx,cy);x.rotate(t);x.fillStyle="rgba(255,255,255,.95)";x.beginPath();x.moveTo(0,-r*2);x.quadraticCurveTo(r*.12,-r*.12,r*2,0);x.quadraticCurveTo(r*.12,r*.12,0,r*2);x.quadraticCurveTo(-r*.12,r*.12,-r*2,0);x.quadraticCurveTo(-r*.12,-r*.12,0,-r*2);x.fill();x.restore()}
+  function seHeart(x,cx,cy,s,rot){x.save();x.translate(cx,cy);x.rotate(rot);x.beginPath();x.moveTo(0,-.35*s);x.bezierCurveTo(-.5*s,-1.05*s,-1.35*s,-.2*s,0,.78*s);x.bezierCurveTo(1.35*s,-.2*s,.5*s,-1.05*s,0,-.35*s);x.fill();x.restore()}
+  function seEffectDraw(x,c,W,H,id,seed,stamp){const R=seRng(seed),M=Math.min(W,H);x.save();
+    if(id==="glow"){const b=seBlurCopy(c,W,H,18);x.globalCompositeOperation="screen";x.globalAlpha=.5;x.drawImage(b,0,0,W,H);x.globalCompositeOperation="soft-light";x.globalAlpha=.35;x.drawImage(b,0,0,W,H)}
+    else if(id==="dreamy"){const b=seBlurCopy(c,W,H,10);x.globalCompositeOperation="screen";x.globalAlpha=.42;x.drawImage(b,0,0,W,H);const g=x.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.hypot(W,H)/2);g.addColorStop(0,"rgba(255,240,250,.22)");g.addColorStop(1,"rgba(255,255,255,0)");x.globalAlpha=1;x.fillStyle=g;x.fillRect(0,0,W,H)}
+    else if(id==="sparkle"){x.globalCompositeOperation="screen";for(let i=0;i<16;i++)seGlint(x,R()*W,R()*H,M*(.018+R()*.04),R()*.8)}
+    else if(id==="bokeh"){x.globalCompositeOperation="screen";const cols=["255,214,140","255,170,90","255,140,170","255,255,255","170,210,255"];
+      for(let i=0;i<26;i++){const r=M*(.03+R()*.1),cx=R()*W,cy=R()*H,cl=cols[Math.floor(R()*cols.length)],g=x.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,"rgba("+cl+",.34)");g.addColorStop(.75,"rgba("+cl+",.22)");g.addColorStop(1,"rgba("+cl+",0)");x.fillStyle=g;x.beginPath();x.arc(cx,cy,r,0,7);x.fill()}}
+    else if(id==="steam"){x.lineCap="round";x.strokeStyle="rgba(255,255,255,.3)";x.shadowColor="rgba(255,255,255,.9)";x.shadowBlur=M*.05;x.lineWidth=M*.03;
+      for(let i=0;i<4;i++){const sx=W*(.3+i*.13+R()*.05),sy=H*(.6+R()*.06),top=H*(.16+R()*.1),sw=W*(.04+R()*.04);x.beginPath();x.moveTo(sx,sy);x.bezierCurveTo(sx-sw,sy-(sy-top)*.33,sx+sw,sy-(sy-top)*.66,sx-sw*.3,top);x.stroke();x.stroke()}}
+    else if(id==="fire"){x.globalCompositeOperation="screen";const g=x.createLinearGradient(0,H,0,H*.45);g.addColorStop(0,"rgba(255,70,0,.8)");g.addColorStop(.45,"rgba(255,160,0,.35)");g.addColorStop(1,"rgba(255,200,0,0)");x.fillStyle=g;x.fillRect(0,0,W,H);
+      for(let i=0;i<46;i++){const er=M*(.004+R()*.01);x.fillStyle="rgba(255,"+Math.round(120+R()*100)+",40,"+(.5+R()*.5).toFixed(2)+")";x.shadowColor="rgba(255,120,0,.9)";x.shadowBlur=er*4;x.beginPath();x.arc(R()*W,H*(.45+R()*.55),er,0,7);x.fill()}}
+    else if(id==="hearts"){const cols=["#ff2d55","#ff6b81","#ff9ff3","#ffffff","#ff375f"];for(let i=0;i<16;i++){x.globalAlpha=.75+R()*.25;x.fillStyle=cols[Math.floor(R()*cols.length)];seHeart(x,R()*W,R()*H,M*(.03+R()*.06),(R()-.5)*.6)}}
+    else if(id==="confetti"){const cols=["#ff3b30","#ffcc00","#34c759","#007aff","#af52de","#ff9500","#ff2d55","#ffffff"];
+      for(let i=0;i<90;i++){const w=M*(.012+R()*.012);x.save();x.translate(R()*W,R()*H*.92);x.rotate(R()*Math.PI);x.fillStyle=cols[Math.floor(R()*cols.length)];x.fillRect(-w/2,-w*.35,w,w*(.5+R()*.6));x.restore()}}
+    else if(id==="leak"){x.globalCompositeOperation="screen";let g=x.createRadialGradient(W,H*.12,0,W,H*.12,Math.max(W,H)*.8);g.addColorStop(0,"rgba(255,130,40,.7)");g.addColorStop(.45,"rgba(255,60,120,.28)");g.addColorStop(1,"rgba(255,60,120,0)");x.fillStyle=g;x.fillRect(0,0,W,H);
+      g=x.createRadialGradient(0,H,0,0,H,Math.max(W,H)*.6);g.addColorStop(0,"rgba(255,210,90,.45)");g.addColorStop(1,"rgba(255,210,90,0)");x.fillStyle=g;x.fillRect(0,0,W,H)}
+    else if(id==="rainbow"){const g=x.createLinearGradient(0,0,W,H);["#ff3b30","#ff9500","#ffcc00","#34c759","#00c7be","#007aff","#af52de"].forEach((cl,i)=>g.addColorStop(i/6,cl));x.fillStyle=g;x.globalCompositeOperation="soft-light";x.globalAlpha=.6;x.fillRect(0,0,W,H);x.globalCompositeOperation="screen";x.globalAlpha=.14;x.fillRect(0,0,W,H)}
+    else if(id==="rays"){x.globalCompositeOperation="screen";const ox=-W*.05,oy=-H*.05,L=Math.hypot(W,H)*1.2;
+      for(let i=0;i<10;i++){const a0=i*.16+.02,a1=a0+.06+R()*.04;x.fillStyle="rgba(255,244,214,"+(.08+R()*.1).toFixed(2)+")";x.beginPath();x.moveTo(ox,oy);x.lineTo(ox+Math.cos(a0)*L,oy+Math.sin(a0)*L);x.lineTo(ox+Math.cos(a1)*L,oy+Math.sin(a1)*L);x.closePath();x.fill()}
+      const g=x.createRadialGradient(0,0,0,0,0,M*.7);g.addColorStop(0,"rgba(255,230,170,.55)");g.addColorStop(1,"rgba(255,230,170,0)");x.fillStyle=g;x.fillRect(0,0,W,H)}
+    else if(id==="rain"){x.fillStyle="rgba(15,23,42,.18)";x.fillRect(0,0,W,H);x.strokeStyle="#ffffff";x.lineCap="round";x.lineWidth=Math.max(1,M*.0028);
+      for(let i=0;i<170;i++){const rx=R()*W,ry=R()*H,l=H*(.03+R()*.05);x.globalAlpha=.3+R()*.45;x.beginPath();x.moveTo(rx,ry);x.lineTo(rx-l*.18,ry+l);x.stroke()}}
+    else if(id==="spotlight"){const g=x.createRadialGradient(W/2,H*.48,M*.12,W/2,H*.48,Math.hypot(W,H)*.5);g.addColorStop(0,"rgba(0,0,0,0)");g.addColorStop(.55,"rgba(0,0,0,.35)");g.addColorStop(1,"rgba(0,0,0,.82)");x.fillStyle=g;x.fillRect(0,0,W,H);
+      const s=x.createRadialGradient(W/2,H*.48,0,W/2,H*.48,M*.42);s.addColorStop(0,"rgba(255,250,235,.45)");s.addColorStop(1,"rgba(255,250,235,0)");x.globalCompositeOperation="soft-light";x.fillStyle=s;x.fillRect(0,0,W,H)}
+    else if(id==="retro"){const step=Math.max(2,H/240);x.fillStyle="rgba(0,0,0,.22)";for(let y=0;y<H;y+=step)x.fillRect(0,y,W,step*.45);
+      const fs=Math.max(8,Math.round(M*.055));x.font="700 "+fs+"px monospace";x.fillStyle="rgba(255,255,240,.92)";x.shadowColor="rgba(0,0,0,.6)";x.shadowBlur=fs*.2;x.textBaseline="top";x.fillText("▶ PLAY",W*.05,H*.05);
+      x.textAlign="right";x.textBaseline="bottom";x.fillText(String(stamp&&stamp.time||"").toUpperCase(),W*.95,H*.95)}
+    else if(id==="strip"){const bh=H*.075;x.fillStyle="#0b0b0b";x.fillRect(0,0,W,bh);x.fillRect(0,H-bh,W,bh);const hw=bh*.42,hh=bh*.48,gap=hw*1.9;x.fillStyle="#e7e2d6";
+      for(let px=gap*.5;px<W;px+=gap){seRound(x,px,bh*.26,hw,hh,hh*.22);x.fill();seRound(x,px,H-bh+bh*.26,hw,hh,hh*.22);x.fill()}x.restore();x.save();seGrain(x,W,H,.3)}
+    else if(id==="polaroid"){const sp=W*.05,bp=Math.min(H*.22,W*.2);x.fillStyle="#fbfaf6";x.fillRect(0,0,W,sp);x.fillRect(0,0,sp,H);x.fillRect(W-sp,0,sp,H);x.fillRect(0,H-bp,W,bp);x.strokeStyle="rgba(0,0,0,.12)";x.lineWidth=Math.max(1,W*.002);x.strokeRect(sp,sp,W-2*sp,H-sp-bp)}
+    x.restore()}
+  // The photo with its filter, adjustments and effect. `base` is the photo already drawn at the target size.
+  function sePaintPhoto(c,d,base){const W=c.width,H=c.height,x=c.getContext("2d"),f=seFilter(d.filter),fx=seEffect(d.fx),t=Math.max(0,Math.min(1,(+d.amount||0)/100)),a=d.adj;
+    x.save();x.setTransform(1,0,0,1,0,0);x.globalCompositeOperation="source-over";x.globalAlpha=1;x.clearRect(0,0,W,H);x.drawImage(base,0,0,W,H);
+    const adj=seMat([["brightness",1+a.bright/100*.35],["contrast",1+a.contrast/100*.4],["saturate",1+a.sat/100],["warm",a.warm/100*.8],["fade",a.fade/100]]);
+    let m=seMul(adj,seLerpI(seMat(f.ops),t));if(fx.ops)m=seMul(seMat(fx.ops),m);
+    if(!seIsI(m)||a.sharp>0)sePixels(x,W,H,m,a.sharp/100);
+    if(f.tint&&t>0)seFill(x,W,H,f.tint[0],f.tint[1],f.tint[2]*t);
+    const vig=(f.vig||0)*t+a.vignette/100*.9;if(vig>0)seVignette(x,W,H,vig);
+    const grain=(f.grain||0)*t+a.grain/100*.6;if(grain>0)seGrain(x,W,H,grain);
+    if(a.soft>0){const b=seBlurCopy(c,W,H,22);x.globalAlpha=a.soft/100*.75;x.drawImage(b,0,0,W,H);x.globalAlpha=1}
+    if(fx.id!=="none")seEffectDraw(x,c,W,H,fx.id,d.seed,d.stamp);
+    x.restore()}
+  // ---- text, stickers and drawing
+  function seLight(color){const c=seRgb(color);return .2126*c[0]+.7152*c[1]+.0722*c[2]>.62}
+  function seMix(a,b,t){const A=seRgb(a),B=seRgb(b);return"rgb("+A.map((v,i)=>Math.round((v+(B[i]-v)*t)*255)).join(",")+")"}
+  function seSpacing(x,f,fs){if(f.spacing&&"letterSpacing" in x)x.letterSpacing=(fs*f.spacing).toFixed(1)+"px"}
+  function seTextCanvas(c,x,it,unit){const f=seFont(it.font),fs=Math.max(6,unit),font=f.css(fs),lines=String(it.text||"").split("\n").map(l=>f.upper?l.toUpperCase():l),lh=fs*1.26,px=fs*.34,py=fs*.14,glow=f.neon?fs*.7:fs*.25;
+    x.font=font;seSpacing(x,f,fs);const ws=lines.map(l=>x.measureText(l||" ").width),mw=Math.max(fs*.5,...ws);
+    const W=Math.ceil(mw+px*2+glow*2),H=Math.ceil(lines.length*lh+py*2+glow*2);c.width=W;c.height=H;
+    x.font=font;seSpacing(x,f,fs);x.textBaseline="middle";x.textAlign="center";
+    const bg=+it.bg||0,col=it.color||"#ffffff",txt=bg===1?(seLight(col)?"#111111":"#ffffff"):col,al=it.align||"center",cxOf=w=>al==="left"?glow+px+w/2:al==="right"?W-glow-px-w/2:W/2;
+    if(bg){x.beginPath();lines.forEach((l,i)=>{const w=ws[i]+px*2;seRoundPath(x,cxOf(ws[i])-w/2,glow+i*lh,w,lh+py*2,fs*.28)});x.fillStyle=bg===1?col:"rgba(0,0,0,.55)";x.fill()}
+    lines.forEach((l,i)=>{const X=cxOf(ws[i]),Y=glow+py+i*lh+lh/2;
+      if(f.neon&&bg!==1){x.shadowColor=col;x.fillStyle=col;[fs*.9,fs*.45,fs*.2].forEach(b=>{x.shadowBlur=b;x.fillText(l,X,Y)});x.shadowBlur=fs*.08;x.shadowColor="rgba(255,255,255,.8)";x.fillStyle=seMix(col,"#ffffff",.65);x.fillText(l,X,Y)}
+      else{if(!bg){x.shadowColor="rgba(0,0,0,.38)";x.shadowBlur=fs*.14;x.shadowOffsetY=fs*.03}x.fillStyle=txt;x.fillText(l,X,Y)}
+      x.shadowColor="transparent";x.shadowBlur=0;x.shadowOffsetY=0});
+    return c}
+  function seTagText(it){return it.kind==="rating"?"★★★★★":String(it.text||"")}
+  function seTagCanvas(c,x,it,unit){const fs=Math.max(6,unit*.8),font="800 "+fs+"px sans-serif",L=SE_LOOKS[it.look]||SE_LOOKS.white,px=fs*.72,ph=fs*1.9,sh=fs*.35,text=seTagText(it);
+    x.font=font;const tw=x.measureText(text).width,W=Math.ceil(tw+px*2+sh*2),H=Math.ceil(ph+sh*2);c.width=W;c.height=H;
+    const g=x.createLinearGradient(sh,0,W-sh,0);g.addColorStop(0,L[0]);g.addColorStop(1,L[1]);
+    x.shadowColor="rgba(0,0,0,.28)";x.shadowBlur=sh*.8;x.shadowOffsetY=sh*.25;seRound(x,sh,sh,W-sh*2,ph,ph*.32);x.fillStyle=g;x.fill();
+    x.shadowColor="transparent";x.shadowBlur=0;x.shadowOffsetY=0;
+    if(it.look==="glass"){x.lineWidth=Math.max(1,fs*.06);x.strokeStyle="rgba(255,255,255,.55)";x.stroke()}
+    x.font=font;x.textAlign="center";x.textBaseline="middle";
+    if(it.kind==="rating"){const sw=x.measureText("★").width,n=Math.max(1,Math.min(5,+it.stars||5));for(let i=0;i<5;i++){x.fillStyle=i<n?"#f59e0b":(seLight(L[0])?"rgba(0,0,0,.16)":"rgba(255,255,255,.3)");x.fillText("★",W/2-tw/2+sw*(i+.5),H/2+fs*.04)}}
+    else{x.fillStyle=L[2];x.fillText(text,W/2,H/2+fs*.04)}
+    return c}
+  function seItemCanvas(it,unit){const c=document.createElement("canvas"),x=c.getContext("2d");
+    if(it.type==="emoji"){const fs=Math.max(8,unit*2.2);x.font=fs+"px sans-serif";const w=Math.ceil(x.measureText(it.text).width+fs*.3),hh=Math.ceil(fs*1.3);c.width=w;c.height=hh;x.font=fs+"px sans-serif";x.textAlign="center";x.textBaseline="middle";x.fillText(it.text,w/2,hh/2+fs*.04);return c}
+    return it.type==="tag"?seTagCanvas(c,x,it,unit):seTextCanvas(c,x,it,unit)}
+  function sePath(x,pts,W,H){x.beginPath();if(!pts.length)return;const p=pts.map(q=>[q[0]*W,q[1]*H]);x.moveTo(p[0][0],p[0][1]);if(p.length===1){x.lineTo(p[0][0]+.01,p[0][1]);return}
+    for(let i=1;i<p.length-1;i++)x.quadraticCurveTo(p[i][0],p[i][1],(p[i][0]+p[i+1][0])/2,(p[i][1]+p[i+1][1])/2);const l=p[p.length-1];x.lineTo(l[0],l[1])}
+  function seDrawStrokes(x,W,H,strokes){strokes.forEach(s=>{const lw=Math.max(1,s.size*W*.006*(s.tool==="marker"?2.6:s.tool==="eraser"?2.4:1));x.save();x.lineCap="round";x.lineJoin="round";x.lineWidth=lw;
+      if(s.tool==="eraser")x.globalCompositeOperation="destination-out";x.strokeStyle=s.tool==="eraser"?"#000":s.color;if(s.tool==="marker")x.globalAlpha=.5;
+      if(s.tool==="neon"){x.shadowColor=s.color;x.shadowBlur=lw*2.2}sePath(x,s.pts,W,H);x.stroke();
+      if(s.tool==="neon"){x.shadowBlur=0;x.strokeStyle="rgba(255,255,255,.9)";x.lineWidth=lw*.38;sePath(x,s.pts,W,H);x.stroke()}x.restore()})}
+  // ---- the shared photo
+  function seLoadBase(d){if(seCache.base&&seCache.baseUrl===d.url)return Promise.resolve(seCache.base);
+    return new Promise((ok,fail)=>{const img=new Image();img.onload=()=>{seCache.base=img;seCache.baseUrl=d.url;seCache.baseC=null;ok(img)};img.onerror=()=>fail(new Error("photo"));img.src=d.url})}
+  async function seExport(d){const img=await seLoadBase(d),W=d.w,H=d.h,c=document.createElement("canvas"),base=document.createElement("canvas");c.width=base.width=W;c.height=base.height=H;
+    base.getContext("2d").drawImage(img,0,0,W,H);sePaintPhoto(c,d,base);const x=c.getContext("2d");
+    if(d.strokes.length){const ink=document.createElement("canvas");ink.width=W;ink.height=H;seDrawStrokes(ink.getContext("2d"),W,H,d.strokes);x.drawImage(ink,0,0)}
+    d.items.forEach(it=>{const b=seItemCanvas(it,W*SE_UNIT*it.s);x.save();x.translate(it.x*W,it.y*H);x.rotate(+it.r||0);x.drawImage(b,-b.width/2,-b.height/2);x.restore()});
+    for(const q of [.88,.8,.72,.64]){const out=c.toDataURL("image/jpeg",q);if(out.length<=700000)return{img:out,w:W,h:H}}
+    for(const k of [.85,.7,.56]){const s=document.createElement("canvas");s.width=Math.round(W*k);s.height=Math.round(H*k);s.getContext("2d").drawImage(c,0,0,s.width,s.height);const out=s.toDataURL("image/jpeg",.72);if(out.length<=700000)return{img:out,w:s.width,h:s.height}}
+    throw new Error("That photo is too big. Try another.")}
+  // ---- screen
+  function seThumb(kind,f,on){const src=seCache.thumbs[kind+":"+f.id];return'<button type="button" class="se-thumb'+(on?' on':'')+'" data-action="'+(kind==="f"?'se-filter':'se-effect')+'" data-id="'+f.id+'" aria-pressed="'+on+'"><span class="se-thumb-img">'+(src?'<img src="'+h(src)+'" alt="">':'')+'</span><span class="se-thumb-name">'+h(f.name)+'</span></button>'}
+  function seRange(k,v,min,max,label){return'<div class="se-range-row"><input type="range" class="se-range" id="se-range-'+k+'" data-k="'+k+'" min="'+min+'" max="'+max+'" step="1" value="'+v+'" aria-label="'+h(label)+'"><output class="se-range-val" id="se-range-val">'+v+'</output></div>'}
+  function seColors(action,current){return'<div class="se-strip se-colors" data-strip="colors">'+SE_COLORS.map(c=>'<button type="button" class="se-color'+(c===current?' on':'')+'" data-action="'+action+'" data-color="'+c+'" style="background:'+c+'" aria-label="Colour" aria-pressed="'+(c===current)+'"></button>').join("")+'</div>'}
+  function seEditPanel(d){const tab=d.tab||"filters";let body="";
+    const tabs='<div class="se-tabs" role="tablist">'+[["filters","Filters"],["adjust","Adjust"],["effects","Effects"]].map(([k,l])=>'<button type="button" role="tab" class="se-tab'+(tab===k?' on':'')+'" aria-selected="'+(tab===k)+'" data-action="se-tab" data-tab="'+k+'">'+l+'</button>').join("")+'</div>';
+    if(tab==="filters")body='<div class="se-strip" data-strip="filters">'+SE_FILTERS.map(f=>seThumb("f",f,d.filter===f.id)).join("")+'</div>'+(d.filter!=="none"?seRange("amount",d.amount,0,100,"Strength"):'<p class="se-hint">Swipe the photo to try filters. Hold it to see the original.</p>');
+    else if(tab==="effects")body='<div class="se-strip" data-strip="effects">'+SE_EFFECTS.map(f=>seThumb("e",f,d.fx===f.id)).join("")+'</div>';
+    else{const k=d.adjKey||"bright",a=SE_ADJUST.find(x=>x.k===k)||SE_ADJUST[0];
+      body='<div class="se-strip" data-strip="adjust">'+SE_ADJUST.map(x=>'<button type="button" class="se-chip'+(x.k===k?' on':'')+(d.adj[x.k]?' set':'')+'" data-action="se-adj" data-k="'+x.k+'"><span aria-hidden="true">'+x.icon+'</span>'+h(x.name)+'</button>').join("")+(seAdjusted(d)?'<button type="button" class="se-chip" data-action="se-adj-reset">↺ Reset</button>':'')+'</div>'+seRange("adj",d.adj[k],a.min,100,a.name)}
+    return tabs+body}
+  function seFoot(d){return'<form id="compose-form" class="se-foot"><input class="input se-caption" id="compose-caption" name="caption" maxlength="200" placeholder="Add a caption…" autocomplete="off" value="'+h(d.caption||"")+'">'
+    +'<div class="se-foot-row"><div class="se-kind" role="radiogroup" aria-label="Share as"><button type="button" class="'+(d.kind==="story"?'on':'')+'" data-action="compose-kind" data-value="story" role="radio" aria-checked="'+(d.kind==="story")+'">Your story</button><button type="button" class="'+(d.kind==="post"?'on':'')+'" data-action="compose-kind" data-value="post" role="radio" aria-checked="'+(d.kind==="post")+'">Post</button></div>'
+    +'<button class="se-share" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Sharing…':'Share')+'<span aria-hidden="true">➤</span></button></div><p class="se-hint">Only your friends can see it.</p></form>'}
+  function seDrawPanel(d){const b=d.brush;
+    return'<div class="se-draw"><div class="se-strip" data-strip="brushes">'+SE_BRUSHES.map(x=>'<button type="button" class="se-chip'+(b.tool===x.id?' on':'')+'" data-action="se-brush" data-tool="'+x.id+'"><span aria-hidden="true">'+x.icon+'</span>'+h(x.name)+'</button>').join("")+'</div>'
+      +'<div class="se-range-row"><span class="se-dot-sm" aria-hidden="true"></span><input type="range" class="se-range" id="se-range-size" data-k="size" min="1" max="10" step="1" value="'+b.size+'" aria-label="Brush size"><span class="se-dot-lg" aria-hidden="true"></span></div>'
+      +(b.tool==="eraser"?'<p class="se-hint">Rub out any part of your drawing.</p>':seColors("se-brush-color",b.color))+'</div>'}
+  function seTaColor(t){const c=t.color||"#ffffff";return(+t.bg||0)===1?(seLight(c)?"#111111":"#ffffff"):c}
+  function seTaBg(t){const b=+t.bg||0;return b===1?(t.color||"#ffffff"):b===2?"rgba(0,0,0,.55)":"transparent"}
+  function seTextPanel(d){const t=d.draft||{},f=seFont(t.font);
+    return'<div class="se-text" role="dialog" aria-label="Add text"><div class="se-text-top"><button type="button" class="se-btn" id="se-text-align" data-action="se-text-align" aria-label="Line up text">'+SE_ICONS["align-"+(t.align||"center")]+'</button><button type="button" class="se-btn'+(t.bg?' on':'')+'" id="se-text-bg" data-action="se-text-bg" aria-label="Text background"><b class="se-aa boxed">A</b></button><span class="se-grow"></span><button type="button" class="se-pill solid" data-action="se-text-done">Done</button></div>'
+      +'<div class="se-text-mid"><textarea id="se-text-input" class="se-ta se-f-'+f.id+'" rows="1" maxlength="160" placeholder="Type something…" aria-label="Your text" style="color:'+seTaColor(t)+';background:'+seTaBg(t)+';text-align:'+(t.align||"center")+'">'+h(t.text||"")+'</textarea></div>'
+      +'<div class="se-text-bottom">'+seColors("se-text-color",t.color||"#ffffff")+'<div class="se-strip" data-strip="fonts">'+SE_FONTS.map(x=>'<button type="button" class="se-font se-f-'+x.id+(x.id===f.id?' on':'')+'" data-action="se-text-font" data-font="'+x.id+'">'+h(x.name)+'</button>').join("")+'</div></div></div>'}
+  function seTagChoices(){const d=chatState().compose,st=d&&d.stamp||seStamp(),a=currentAddress(),place=String(a&&(a.area||a.city)||"Nellore").split(",")[0].trim().slice(0,22)||"Nellore";
+    return[{kind:"time",text:st.time,look:"dark"},{kind:"date",text:st.date,look:"white"},{kind:"place",text:"📍 "+place,look:"white"},{kind:"rating",stars:5,look:"white"},
+      {text:"Must try 🔥",look:"fire"},{text:"Yum! 😋",look:"sun"},{text:"Hungry? 🤤",look:"pink"},{text:"Treat day 🎉",look:"mint"},{text:"Chef’s kiss 😘",look:"pink"},{text:"Foodie mode",look:"dark"},
+      {text:"Spice level 🌶️🌶️🌶️",look:"fire"},{text:"Homemade ❤️",look:"white"},{text:"Worth it 💯",look:"sun"},{text:"Coffee first ☕",look:"glass"},{text:"Dessert time 🍨",look:"pink"},
+      {text:"Biryani mood",look:"sun"},{text:"Weekend vibes",look:"mint"},{text:"Party time 🥳",look:"brand"},{text:"Ordered on Scraveit",look:"brand"}]}
+  function seStickerPanel(){return'<div class="se-stickers" role="dialog" aria-label="Stickers"><div class="se-stickers-head"><strong>Stickers</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div>'
+    +'<div class="se-stickers-body"><div class="se-tag-grid">'+seTagChoices().map((t,i)=>'<button type="button" class="se-tag-pick se-look-'+t.look+'" data-action="se-add-tag" data-i="'+i+'">'+h(seTagText(t))+'</button>').join("")+'</div>'
+    +'<div class="se-emoji-grid">'+SE_EMOJI.map(e=>'<button type="button" data-action="se-add-emoji" data-emoji="'+e+'" aria-label="'+e+'">'+e+'</button>').join("")+'</div></div></div>'}
+  function composeSheet(){const d=chatState().compose;if(!d)return"";seDefaults(d);requestAnimationFrame(seMount);
+    const tool=(m,label,ic)=>'<button type="button" class="se-btn'+(d.mode===m?' on':'')+'" data-action="se-mode" data-mode="'+m+'" aria-label="'+label+'" aria-pressed="'+(d.mode===m)+'">'+ic+'</button>';
+    const top=d.mode==="draw"
+      ?'<div class="se-top"><button type="button" class="se-pill" data-action="se-undo"'+(d.strokes.length?'':' disabled')+'>Undo</button><span class="se-grow"></span><button type="button" class="se-pill solid" data-action="se-mode" data-mode="">Done</button></div>'
+      :'<div class="se-top"><button type="button" class="se-btn" data-action="se-close" aria-label="Close">×</button><span class="se-grow"></span>'+tool("text","Add text",'<b class="se-aa">Aa</b>')+tool("stickers","Add a sticker","😊")+tool("draw","Draw",SE_ICONS.pen)+'</div>';
+    const items=d.items.map(it=>'<div class="se-item'+(d.draft&&d.draft.editing===it.id?' editing':'')+'" data-item="'+h(it.id)+'" style="left:'+(it.x*100).toFixed(2)+'%;top:'+(it.y*100).toFixed(2)+'%;transform:translate(-50%,-50%) rotate('+(+it.r||0).toFixed(4)+'rad)"></div>').join("");
+    return'<div class="se-view" role="dialog" aria-modal="true" aria-label="Edit your photo">'+top
+      +'<div class="se-stage'+(d.mode==="draw"?' drawing':'')+'"><div class="se-frame"><div class="se-photo-slot"></div><div class="se-ink-slot"></div><div class="se-items">'+items+'</div><img class="se-orig" src="'+h(d.url)+'" alt=""></div><div class="se-trash" aria-hidden="true">🗑</div></div>'
+      +'<div class="se-bottom">'+(d.mode==="draw"?seDrawPanel(d):seEditPanel(d)+seFoot(d))+'</div>'
+      +(d.mode==="text"?seTextPanel(d):d.mode==="stickers"?seStickerPanel():'')+'</div>'}
+  function seLayout(d,stage,frame){const aw=stage.clientWidth,ah=stage.clientHeight;if(!aw||!ah)return false;const r=d.w/d.h;let fw=Math.min(aw,ah*r);const fh=Math.floor(fw/r);fw=Math.floor(fw);
+    frame.style.width=fw+"px";frame.style.height=fh+"px";seCache.fw=fw;seCache.fh=fh;
+    if(!seCache.P)seCache.P=Math.max(240,Math.round(Math.min(d.w,fw*Math.min(3,window.devicePixelRatio||1),960)));
+    frame.querySelectorAll(".se-item").forEach(el=>seSizeItem(el));return true}
+  function seSizeItem(el){const e=seCache.items.get(el.dataset.item);if(e&&seCache.P)el.style.width=(e.c.width*seCache.fw/seCache.P).toFixed(1)+"px"}
+  function seEnsurePhoto(d,frame){const img=seCache.base;if(!img||!frame)return;const P=seCache.P,PH=Math.max(1,Math.round(P*d.h/d.w)),sig=[P,d.filter,d.amount,d.fx,JSON.stringify(d.adj)].join("|");
+    if(!seCache.baseC||seCache.baseC.width!==P){const b=document.createElement("canvas");b.width=P;b.height=PH;const bx=b.getContext("2d");bx.imageSmoothingQuality="high";bx.drawImage(img,0,0,P,PH);seCache.baseC=b}
+    let c=seCache.photo;if(!c){c=document.createElement("canvas");seCache.photo=c}
+    if(c.width!==P||c.height!==PH){c.width=P;c.height=PH;seCache.photoSig=""}
+    if(seCache.photoSig!==sig){sePaintPhoto(c,d,seCache.baseC);seCache.photoSig=sig}
+    const slot=frame.querySelector(".se-photo-slot");if(slot&&c.parentNode!==slot){slot.textContent="";slot.appendChild(c)}}
+  function seInkRedraw(d){const c=seCache.ink;if(!c)return;const x=c.getContext("2d");x.clearRect(0,0,c.width,c.height);seDrawStrokes(x,c.width,c.height,seCache.live?d.strokes.concat([seCache.live]):d.strokes)}
+  function seEnsureInk(d,frame){const P=seCache.P,PH=Math.max(1,Math.round(P*d.h/d.w));let c=seCache.ink;
+    if(!c||c.width!==P||c.height!==PH){c=document.createElement("canvas");c.width=P;c.height=PH;seCache.ink=c;seInkRedraw(d)}
+    const slot=frame.querySelector(".se-ink-slot");if(slot&&c.parentNode!==slot){slot.textContent="";slot.appendChild(c)}}
+  function seItemSig(it){return[seCache.P,it.type,it.text,it.font,it.color,it.bg,it.align,it.look,it.stars,Math.round(it.s*100)].join("|")}
+  function seEnsureItems(d,frame){frame.querySelectorAll(".se-item").forEach(el=>{const it=d.items.find(i=>i.id===el.dataset.item);if(!it)return;
+      const sig=seItemSig(it);let e=seCache.items.get(it.id);if(!e||e.sig!==sig){e={sig,c:seItemCanvas(it,seCache.P*SE_UNIT*it.s),s:it.s};seCache.items.set(it.id,e)}
+      if(e.c.parentNode!==el){el.textContent="";el.appendChild(e.c)}seSizeItem(el)});
+    [...seCache.items.keys()].forEach(k=>{if(!d.items.some(i=>i.id===k))seCache.items.delete(k)})}
+  function seEnsureThumbs(d){if(seCache.thumbFor===d.url||!seCache.base)return;seCache.thumbFor=d.url;const img=seCache.base,TW=120,TH=152,s=Math.max(TW/img.naturalWidth,TH/img.naturalHeight),b=document.createElement("canvas");b.width=TW;b.height=TH;
+    b.getContext("2d").drawImage(img,(TW-img.naturalWidth*s)/2,(TH-img.naturalHeight*s)/2,img.naturalWidth*s,img.naturalHeight*s);
+    const look={amount:100,adj:{bright:0,contrast:0,sat:0,warm:0,sharp:0,fade:0,vignette:0,grain:0,soft:0},seed:d.seed,stamp:d.stamp},jobs=SE_FILTERS.map(f=>["f",f.id,{filter:f.id,fx:"none"}]).concat(SE_EFFECTS.map(f=>["e",f.id,{filter:"none",fx:f.id}]));let left=jobs.length;
+    const done=()=>{if(--left>0)return;if(chatState().compose===d&&state.sheet&&state.sheet.type==="compose")renderSheet()};
+    jobs.forEach(([kind,id,o])=>{const c=document.createElement("canvas");c.width=TW;c.height=TH;try{sePaintPhoto(c,Object.assign({},look,o),b)}catch(_){}
+      c.toBlob(bl=>{if(bl&&seCache.thumbFor===d.url)seCache.thumbs[kind+":"+id]=URL.createObjectURL(bl);done()},"image/jpeg",.8)})}
+  function seMount(){const d=chatState().compose,view=document.querySelector(".se-view");if(!d||!view||!d.adj)return;const stage=view.querySelector(".se-stage"),frame=view.querySelector(".se-frame");if(!stage||!frame)return;
+    if(!seLayout(d,stage,frame))return;
+    if(!stage.dataset.bound){stage.dataset.bound="1";seBindStage(stage)}
+    view.querySelectorAll(".se-strip[data-strip]").forEach(el=>{if(el.dataset.bound)return;el.dataset.bound="1";const k=el.dataset.strip;el.scrollLeft=seCache.scroll[k]||0;el.addEventListener("scroll",()=>{seCache.scroll[k]=el.scrollLeft},{passive:true})});
+    if(seCache.focusThumb){seCache.focusThumb=false;const on=view.querySelector('.se-strip[data-strip="filters"] .se-thumb.on');if(on){const s=on.parentNode;s.scrollLeft=Math.max(0,on.offsetLeft-s.clientWidth/2+on.offsetWidth/2);seCache.scroll.filters=s.scrollLeft}}
+    seLoadBase(d).then(()=>{if(chatState().compose!==d||!frame.isConnected)return;seEnsurePhoto(d,frame);seEnsureInk(d,frame);seEnsureItems(d,frame);seEnsureThumbs(d)}).catch(()=>{});
+    if(d.mode==="text"){const t=document.getElementById("se-text-input");if(t){seAutoSize(t);if(document.activeElement!==t){t.focus({preventScroll:true});const n=t.value.length;try{t.setSelectionRange(n,n)}catch(_){}}}}}
+  function seAutoSize(t){t.style.height="auto";t.style.height=Math.min(t.scrollHeight,t.parentNode?t.parentNode.clientHeight:9999)+"px"}
+  function seQueuePaint(){if(seCache.paintQueued)return;seCache.paintQueued=true;requestAnimationFrame(()=>{seCache.paintQueued=false;const d=chatState().compose;if(d)seEnsurePhoto(d,document.querySelector(".se-view .se-frame"))})}
+  function seFlash(text){const st=document.querySelector(".se-view .se-stage");if(!st)return;const old=st.querySelector(".se-flash");if(old)old.remove();const el=document.createElement("div");el.className="se-flash";el.textContent=text;st.appendChild(el);setTimeout(()=>el.remove(),950)}
+  function seSwipe(dir){const d=chatState().compose;if(!d)return;const i=SE_FILTERS.findIndex(f=>f.id===d.filter),n=SE_FILTERS.length,f=SE_FILTERS[((i+dir)%n+n)%n];d.filter=f.id;d.amount=100;if(d.tab!=="filters")d.tab="filters";seCache.focusThumb=true;haptic(6);renderSheet();seFlash(f.name)}
+  function seBindStage(stage){const pts=new Map();let g=null;const view=stage.closest(".se-view");
+    const rel=e=>{const fr=stage.querySelector(".se-frame").getBoundingClientRect();return[(e.clientX-fr.left)/fr.width,(e.clientY-fr.top)/fr.height,fr]};
+    const overTrash=e=>{const t=stage.querySelector(".se-trash");if(!t)return false;const r=t.getBoundingClientRect();return e.clientX>r.left-24&&e.clientX<r.right+24&&e.clientY>r.top-24&&e.clientY<r.bottom+24};
+    stage.addEventListener("pointerdown",e=>{const d=chatState().compose;if(!d||d.mode==="text"||d.mode==="stickers")return;try{stage.setPointerCapture(e.pointerId)}catch(_){}pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      if(d.mode==="draw"){if(pts.size>1||g)return;const p=rel(e);g={kind:"draw",stroke:{tool:d.brush.tool,color:d.brush.color,size:d.brush.size,pts:[[p[0],p[1]]]},lx:e.clientX,ly:e.clientY};seCache.live=g.stroke;seInkRedraw(d);return}
+      if(g&&g.kind==="item"&&pts.size===2){const [a,b]=[...pts.values()];g.pinch={d0:Math.hypot(b.x-a.x,b.y-a.y)||1,a0:Math.atan2(b.y-a.y,b.x-a.x),s0:g.it.s,r0:+g.it.r||0};g.moved=true;return}
+      if(g)return;const el=e.target&&e.target.closest&&e.target.closest(".se-item");
+      if(el){const it=d.items.find(i=>i.id===el.dataset.item);if(!it)return;const c=seCache.items.get(it.id);g={kind:"item",el,it,x0:e.clientX,y0:e.clientY,ix:it.x,iy:it.y,t0:Date.now(),moved:false,bs:c?c.s:it.s};return}
+      g={kind:"stage",x0:e.clientX,y0:e.clientY,moved:false,held:false};g.hold=setTimeout(()=>{if(g&&g.kind==="stage"&&!g.moved){g.held=true;stage.classList.add("orig")}},280)});
+    stage.addEventListener("pointermove",e=>{if(!pts.has(e.pointerId)||!g)return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});const d=chatState().compose;if(!d)return;
+      if(g.kind==="draw"){if(Math.abs(e.clientX-g.lx)+Math.abs(e.clientY-g.ly)<2||g.stroke.pts.length>1500)return;g.lx=e.clientX;g.ly=e.clientY;const p=rel(e);g.stroke.pts.push([p[0],p[1]]);seInkRedraw(d);return}
+      if(g.kind==="item"){const fr=rel(e)[2];
+        if(g.pinch){if(pts.size<2)return;const [a,b]=[...pts.values()];g.it.s=Math.max(.3,Math.min(6,g.pinch.s0*Math.hypot(b.x-a.x,b.y-a.y)/g.pinch.d0));g.it.r=g.pinch.r0+Math.atan2(b.y-a.y,b.x-a.x)-g.pinch.a0}
+        else{const dx=e.clientX-g.x0,dy=e.clientY-g.y0;if(Math.abs(dx)+Math.abs(dy)>6)g.moved=true;g.it.x=g.ix+dx/fr.width;g.it.y=g.iy+dy/fr.height}
+        g.el.style.left=(g.it.x*100)+"%";g.el.style.top=(g.it.y*100)+"%";g.el.style.transform="translate(-50%,-50%) rotate("+g.it.r+"rad) scale("+(g.it.s/g.bs)+")";
+        if(g.moved){view.classList.add("dragging");const t=stage.querySelector(".se-trash"),o=!g.pinch&&overTrash(e);if(t&&o!==!!g.overTrash){t.classList.toggle("over",o);if(o)haptic(10)}g.overTrash=o}return}
+      if(Math.abs(e.clientX-g.x0)>10||Math.abs(e.clientY-g.y0)>10){g.moved=true;clearTimeout(g.hold)}});
+    const end=e=>{if(!pts.has(e.pointerId))return;pts.delete(e.pointerId);const d=chatState().compose;if(!g)return;if(!d){if(!pts.size)g=null;return}
+      if(g.kind==="draw"){if(pts.size)return;const s=g.stroke;g=null;seCache.live=null;d.strokes.push(s);seInkRedraw(d);renderSheet();return}
+      if(g.kind==="item"){if(pts.size)return;const it=g.it,was=g;g=null;view.classList.remove("dragging");
+        if(was.overTrash){d.items=d.items.filter(i=>i!==it);seCache.items.delete(it.id);haptic(18);renderSheet();return}
+        if(!was.moved&&Date.now()-was.t0<350){
+          if(it.type==="text"){d.mode="text";d.draft={editing:it.id,text:it.text,font:it.font,color:it.color,bg:it.bg,align:it.align};renderSheet();return}
+          if(it.type==="tag"){if(it.kind==="rating")it.stars=(+it.stars||5)>1?(+it.stars||5)-1:5;else it.look=SE_LOOK_ORDER[(SE_LOOK_ORDER.indexOf(it.look)+1)%SE_LOOK_ORDER.length];haptic(6)}}
+        it.x=Math.max(-.05,Math.min(1.05,it.x));it.y=Math.max(-.05,Math.min(1.05,it.y));d.items=d.items.filter(i=>i!==it).concat([it]);renderSheet();return}
+      if(g.kind==="stage"){if(pts.size)return;const was=g;g=null;clearTimeout(was.hold);
+        if(was.held){stage.classList.remove("orig");return}
+        const dx=e.clientX-was.x0,dy=e.clientY-was.y0;if(Math.abs(dx)>45&&Math.abs(dx)>Math.abs(dy)*1.3)seSwipe(dx<0?1:-1)}};
+    stage.addEventListener("pointerup",end);stage.addEventListener("pointercancel",end)}
+  function seTextSync(){const d=chatState().compose,t=d&&d.draft;if(!t)return;const ta=document.getElementById("se-text-input");
+    if(ta){ta.className="se-ta se-f-"+seFont(t.font).id;ta.style.color=seTaColor(t);ta.style.background=seTaBg(t);ta.style.textAlign=t.align||"center";seAutoSize(ta);ta.focus({preventScroll:true})}
+    document.querySelectorAll(".se-text .se-color").forEach(b=>{const on=b.dataset.color===(t.color||"#ffffff");b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on))});
+    document.querySelectorAll(".se-text .se-font").forEach(b=>b.classList.toggle("on",b.dataset.font===seFont(t.font).id));
+    const bg=document.getElementById("se-text-bg");if(bg)bg.classList.toggle("on",!!t.bg);const al=document.getElementById("se-text-align");if(al)al.innerHTML=SE_ICONS["align-"+(t.align||"center")]}
+  function seTextDone(){const d=chatState().compose;if(!d)return;const t=d.draft||{},ta=document.getElementById("se-text-input"),text=String(ta?ta.value:t.text||"").replace(/\s+$/,"").replace(/^\s*\n/,"").slice(0,160);
+    if(t.editing){const it=d.items.find(i=>i.id===t.editing);if(it){if(text.trim())Object.assign(it,{text,font:t.font,color:t.color,bg:t.bg,align:t.align});else{d.items=d.items.filter(i=>i!==it);seCache.items.delete(it.id)}}}
+    else if(text.trim())d.items.push({id:seId(),type:"text",text,font:t.font||"classic",color:t.color||"#ffffff",bg:+t.bg||0,align:t.align||"center",x:.5,y:.42,s:1,r:0});
+    d.draft=null;d.mode="";if(ta)ta.blur();renderSheet()}
+  function seAddItem(d,it){const n=d.items.length;d.items.push(Object.assign({id:seId(),x:.5+((n%3)-1)*.08,y:.46+((n%4)-1.5)*.05,s:1,r:0},it));d.mode="";haptic(8);renderSheet()}
+  async function seCloseAsk(){const d=chatState().compose;if(!d){closeSheet();return}
+    if(d.mode==="text"){seTextDone();return}if(d.mode){d.mode="";renderSheet();return}
+    if(seEdited(d)&&!await askConfirm("Discard your edits?","Your filters, text, stickers and drawing will be lost.","Discard","Keep editing"))return;
+    chatState().compose=null;seReset();closeSheet()}
+  function seClick(action,control){const d=chatState().compose;if(!d||!d.adj)return true;
+    if(action==="se-close"){seCloseAsk();return true}
+    if(action==="se-mode"){const m=control.dataset.mode||"";if(d.mode==="text"){seTextDone();if(!m||m==="text")return true}
+      d.mode=d.mode===m?"":m;if(d.mode==="text")d.draft={font:d.lastFont||"classic",color:d.lastColor||"#ffffff",bg:0,align:"center",text:""};renderSheet();return true}
+    if(action==="se-tab"){d.tab=control.dataset.tab||"filters";renderSheet();return true}
+    if(action==="se-filter"){const f=seFilter(control.dataset.id);d.filter=f.id;d.amount=100;renderSheet();if(f.id!=="none")seFlash(f.name);return true}
+    if(action==="se-effect"){d.fx=seEffect(control.dataset.id).id;renderSheet();return true}
+    if(action==="se-adj"){d.adjKey=control.dataset.k;renderSheet();return true}
+    if(action==="se-adj-reset"){Object.keys(d.adj).forEach(k=>{d.adj[k]=0});renderSheet();return true}
+    if(action==="se-undo"){d.strokes.pop();seInkRedraw(d);renderSheet();return true}
+    if(action==="se-brush"){d.brush.tool=control.dataset.tool||"pen";renderSheet();return true}
+    if(action==="se-brush-color"){d.brush.color=control.dataset.color;if(d.brush.tool==="eraser")d.brush.tool="pen";renderSheet();return true}
+    if(action==="se-text-done"){seTextDone();return true}
+    if(!d.draft&&action.startsWith("se-text-"))return true;
+    if(action==="se-text-color"){d.draft.color=d.lastColor=control.dataset.color;seTextSync();return true}
+    if(action==="se-text-font"){d.draft.font=d.lastFont=control.dataset.font;seTextSync();return true}
+    if(action==="se-text-bg"){d.draft.bg=((+d.draft.bg||0)+1)%3;seTextSync();return true}
+    if(action==="se-text-align"){const o=["center","left","right"];d.draft.align=o[(o.indexOf(d.draft.align||"center")+1)%3];seTextSync();return true}
+    if(action==="se-add-emoji"){seAddItem(d,{type:"emoji",text:control.dataset.emoji});return true}
+    if(action==="se-add-tag"){const t=seTagChoices()[Number(control.dataset.i)];if(t)seAddItem(d,Object.assign({type:"tag"},t));return true}
+    return true}
+  document.addEventListener("input",e=>{const t=e.target;if(!t||!t.classList)return;const d=chatState().compose;if(!d||!d.adj)return;
+    if(t.classList.contains("se-range")){const v=Number(t.value)||0,k=t.dataset.k;if(k==="size"){d.brush.size=v;return}
+      if(k==="amount")d.amount=v;else if(k==="adj")d.adj[d.adjKey||"bright"]=v;const o=document.getElementById("se-range-val");if(o)o.textContent=v;seQueuePaint();return}
+    if(t.id==="se-text-input"){if(d.draft)d.draft.text=t.value;seAutoSize(t)}});
+  document.addEventListener("change",e=>{if(e.target&&e.target.classList&&e.target.classList.contains("se-range")&&state.sheet&&state.sheet.type==="compose")renderSheet()});
+  // Buttons in the text editor keep the keyboard open.
+  document.addEventListener("mousedown",e=>{if(e.target&&e.target.closest&&e.target.closest(".se-text button"))e.preventDefault()});
+  window.addEventListener("resize",()=>{if(!state.sheet||state.sheet.type!=="compose")return;const d=chatState().compose,v=document.querySelector(".se-view");if(!d||!v)return;const st=v.querySelector(".se-stage"),fr=v.querySelector(".se-frame");if(st&&fr)seLayout(d,st,fr);const ta=document.getElementById("se-text-input");if(ta)seAutoSize(ta)});
+  document.addEventListener("input",e=>{if(e.target&&e.target.id==="compose-caption"&&chatState().compose)chatState().compose.caption=e.target.value});
+  async function shareCompose(){const c=chatState(),d=c.compose;if(!d||d.busy)return;d.busy=true;renderSheet();
+    try{const out=seEdited(d)?await seExport(d):{img:d.img,w:d.w,h:d.h},ref=fs.collection("posts").doc(),uid=myUid(),at=firebase.firestore.FieldValue.serverTimestamp();
+      await fs.collection("postMedia").doc(ref.id).set({from:uid,image:out.img,at});
+      await ref.set({from:uid,kind:d.kind,caption:String(d.caption||"").trim().slice(0,200),w:out.w,h:out.h,createdAt:at});
+      if(out.img!==d.img){URL.revokeObjectURL(d.url);keepPostPhoto(ref.id,{url:photoBlobUrl(out.img)})}else keepPostPhoto(ref.id,{url:d.url});c.compose=null;seReset();closeSheet();toast(d.kind==="story"?"Added to your story.":"Posted for your friends.","success");
+      if(state.route!=="feed"&&d.kind==="post")go("feed")}
+    catch(e){d.busy=false;renderSheet();toast("Not shared. "+chatError(e),"danger")}}
+  // Stories: full screen, one after another, each for 5 seconds.
+  function openStory(uid){const groups=storyGroups(),list=groups.get(uid);if(!list||!list.length)return;const seen=storySeenSet(),first=list.findIndex(x=>!seen.has(x.postId));setSheet({type:"friendStory",uid,index:first<0?0:first})}
+  function noteStoryView(x){if(storyViewsSent.has(x.postId))return;storyViewsSent.add(x.postId);markStorySeen(x.postId);
+    if(x.from!==myUid())fs.collection("posts").doc(x.postId).update({["views."+myUid()]:Date.now()}).catch(()=>{})}
+  function storySheet(sheet){const groups=storyGroups(),list=groups.get(sheet.uid)||[],x=list[sheet.index];if(!x)return"";
+    const mine=x.from===myUid(),ph=postPhotos.get(x.postId),veiled=postVeiled(x),ready=!!(ph&&ph.url)&&!veiled,name=feedName(x.from,x),first=String(name).split(" ")[0];
+    if(!ph)loadPostPhoto(x.postId);const next=list[sheet.index+1];if(next)loadPostPhoto(next.postId);
+    if(ready)noteStoryView(x);
+    const meta=postMeta.get(x.postId);if(!meta)loadPostMeta(x.postId);const viewers=mine?Object.keys(meta&&meta.views||{}).length:0,face=storyReaction(meta);
+    watchStoryComments(x.postId);const said=storyComments.get(x.postId)||[];
+    const talk='<button type="button" class="story-icon" data-action="story-comments" aria-label="Comments">'+STORY_ICONS.comment+'</button>';
+    const heart='<button type="button" class="story-heart'+(face?' on':'')+'" data-action="story-heart" data-uid="'+h(x.from)+'" data-post-id="'+h(x.postId)+'" aria-pressed="'+!!face+'" aria-label="'+(face?'Remove your reaction':'Like')+'">'+(face&&face!=="❤️"?'<span class="story-heart-emoji">'+h(face)+'</span>':STORY_ICONS.heart)+'</button>';
+    const reacts=mine?'':'<div class="story-reacts" role="group" aria-label="React">'+STORY_REACTS.map(e=>'<button type="button" class="'+(e===face?'on':'')+'" data-action="story-react" data-emoji="'+e+'" data-uid="'+h(x.from)+'" data-post-id="'+h(x.postId)+'" aria-label="React '+e+'">'+e+'</button>').join("")+'</div>';
+    return'<div class="story-view'+(storyPanelOpen(sheet)?' held':'')+'" role="dialog" aria-modal="true" aria-label="'+h(mine?"Your story":name+"’s story")+'">'
+      +'<div class="story-media">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt=""'+(veiled?' class="veiled"':'')+'>':ph&&ph.missing?'<p class="story-gone">This story isn’t available.</p>':'<span class="dm-photo-wait" aria-hidden="true"></span>')+'</div>'
+      +'<div class="story-top"><div class="story-bars" aria-hidden="true">'+list.map((s,i)=>'<span class="'+(i<sheet.index?'done':i===sheet.index&&ready?'run':'')+'"><b></b></span>').join("")+'</div>'
+      +'<header class="story-head">'+avatar(name,0,x.from)+'<strong>'+h(mine?"Your story":name)+'</strong><small>'+h(timeAgo(x.createdAt))+'</small>'
+        +(mine?'<button class="story-close story-tool story-first" data-action="feed-compose" data-kind="story" aria-label="Add to your story">＋</button><button class="story-close story-tool" data-action="story-delete" data-post-id="'+h(x.postId)+'" aria-label="Delete story">🗑</button>':'')+'<button class="story-close" data-action="close-sheet" aria-label="Close">×</button></header></div>'
+      +'<button class="story-tap prev" data-action="story-prev" aria-label="Previous"></button><button class="story-tap next" data-action="story-next" aria-label="Next"></button>'
+      +(veiled?'<button class="dm-veil story-unveil" data-action="story-unveil" data-post-id="'+h(x.postId)+'">Tap to view</button>':'')
+      +'<div class="story-bottom">'+(x.caption?'<p class="story-caption">'+h(x.caption)+'</p>':'')+storyFloats(sheet,said)+reacts
+      +(mine?'<form class="story-foot" id="story-send-form" data-post-id="'+h(x.postId)+'"><button type="button" class="story-action" data-action="story-viewers" data-post-id="'+h(x.postId)+'" aria-label="Seen by '+viewers+'">👀 '+viewers+'</button><input class="input" name="text" maxlength="300" placeholder="Send a message…" autocomplete="off" aria-label="Send your story with a message">'+talk+'<button class="story-send" type="submit" aria-label="Choose who to send it to">➤</button></form>'
+        :'<form class="story-foot" id="story-reply-form" data-uid="'+h(x.from)+'"><input class="input" name="text" maxlength="300" placeholder="Message '+h(first)+'…" autocomplete="off" aria-label="Message '+h(first)+'">'+talk+heart+'<button class="story-send" type="submit" aria-label="Send">➤</button></form>')+'</div>'
+      +(sheet.comments?storyCommentsPanel(x,said,mine):sheet.send?storySendPanel(x,sheet.send):sheet.viewers?storyViewersPanel(meta):'')
+      +'</div>'}
+  function storyPanelOpen(sheet){return!!(sheet&&(sheet.comments||sheet.send||sheet.viewers))}
+  function closeStoryPanel(){const sh=state.sheet;if(!sh)return;sh.comments=false;sh.send=null;sh.viewers=false;renderSheet()}
+  const STORY_ICONS={
+    heart:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3s-7.4-4.5-9.2-9C1.5 8 3.7 4.6 7.1 4.6c2 0 3.6 1.1 4.9 3 1.3-1.9 2.9-3 4.9-3 3.4 0 5.6 3.4 4.3 6.7-1.8 4.5-9.2 9-9.2 9Z"/></svg>',
+    comment:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/></svg>'};
+  const STORY_REACTS=["❤️","😋","🤤","🔥","😍","😂","👏"];
+  /** Your reaction to a story ("❤️" for a like), or "". */
+  function storyReaction(meta,uid){const r=meta&&meta.likes&&meta.likes[uid||myUid()];return r===true?"❤️":typeof r==="string"?r:""}
+  // The three newest comments float up over the story, one after another.
+  function storyFloats(sheet,said){const show=said.slice(-3);if(!show.length)return"";const done=sheet.floated||(sheet.floated={}),fresh=show.filter(c=>!done[c.id]),uid=myUid();
+    if(fresh.length)setTimeout(()=>{if(state.sheet===sheet)fresh.forEach(c=>{done[c.id]=true})},fresh.length*450+700);
+    return'<div class="story-floats" aria-label="Latest comments">'+show.map(c=>{const k=fresh.indexOf(c),who=c.from===uid?"You":(c.fromName||feedName(c.from));
+      return'<button type="button" class="story-float'+(k>=0?' pop':'')+'" data-action="story-comments"'+(k>=0?' style="animation-delay:'+(k*450)+'ms"':'')+'>'+avatar(who,0,c.from)+'<span><b>'+h(who)+'</b> '+h(c.text)+'</span></button>'}).join("")+'</div>'}
+  // Who saw your story, and how they reacted (on their photo).
+  function storyViewersPanel(meta){const views=meta&&meta.views||{},react=u=>storyReaction(meta,u),list=Object.entries(views).sort((a,b)=>(react(b[0])?1:0)-(react(a[0])?1:0)||b[1]-a[1]),liked=list.filter(([u])=>react(u)).length;
+    return'<section class="story-comments story-viewers-panel" aria-label="Seen by"><header class="story-comments-head"><strong>Seen by '+list.length+(liked?' · '+liked+' reacted':'')+'</strong><button class="story-close" data-action="story-panel-close" aria-label="Close">×</button></header>'
+      +'<div class="story-comments-list">'+(list.length?list.map(([u,at],i)=>{const r=react(u),name=feedName(u);
+        return'<div class="story-comment story-send-row"><span class="story-viewer-face">'+avatar(name,i,u)+(r?'<span class="story-viewer-react" aria-hidden="true">'+h(r)+'</span>':'')+'</span><p><strong>'+h(name)+'</strong><small>'+(r?(r==="❤️"?'Liked':'Reacted '+h(r))+' · ':'')+h(timeAgo(at))+'</small></p>'
+          +(pairWith(u)?'<button class="story-action" data-action="story-message" data-uid="'+h(u)+'">Message</button>':'')+'</div>'}).join("")
+        :'<p class="story-comments-empty">No one has seen it yet.</p>')+'</div></section>'}
+  // A like or emoji on a friend's story. The same one again takes it back; a new one tells them in your chat.
+  async function reactToStory(postId,uid,emoji){const me=myUid(),m=Object.assign({likes:{},views:{}},postMeta.get(postId)),now=storyReaction(m),next=emoji&&emoji!==now?emoji:"";
+    m.likes=Object.assign({},m.likes);if(next)m.likes[me]=next==="❤️"?true:next;else delete m.likes[me];postMeta.set(postId,m);haptic(next?14:6);
+    const a=document.activeElement;if(a&&a.closest&&a.closest("#story-reply-form"))a.blur();
+    renderSheet();if(next)storyBurst(next);
+    try{await fs.collection("posts").doc(postId).update({["likes."+me]:next?(next==="❤️"?true:next):firebase.firestore.FieldValue.delete()})}
+    catch(e){loadPostMeta(postId,true);toast("Couldn’t react. "+chatError(e),"danger");return}
+    const p=next&&pairWith(uid);if(p)sendDm(p.id,next==="❤️"?"❤️ Liked your story":next+" Reacted "+next+" to your story")}
+  function storyBurst(emoji){const v=document.querySelector(".story-view");if(!v)return;const b=document.createElement("span");b.className="story-burst";b.setAttribute("aria-hidden","true");b.textContent=emoji;v.appendChild(b);setTimeout(()=>b.remove(),1000)}
+  // Your story to a friend's chat, with your message if you wrote one. The story stays open.
+  function storySendPanel(x,send){const friends=chatState().pairs.filter(p=>p.status==="accepted"),sent=send.sent||{};
+    return'<section class="story-comments story-send-panel" aria-label="Send your story"><header class="story-comments-head"><strong>Send to</strong><button class="story-close" data-action="story-panel-close" aria-label="Close">×</button></header>'
+      +(send.text?'<p class="story-send-note">“'+h(send.text)+'”</p>':'')
+      +'<div class="story-comments-list">'+(friends.length?friends.map((p,i)=>{const o=otherOf(p),done=!!sent[p.id];
+        return'<div class="story-comment story-send-row">'+avatar(nameOf(p,o),i,o)+'<p><strong>'+h(nameOf(p,o))+'</strong></p><button class="story-action'+(done?' sent':'')+'" data-action="story-send-to" data-pair-id="'+h(p.id)+'" data-post-id="'+h(x.postId)+'"'+(done?' disabled':'')+'>'+(done?'Sent ✓':'Send')+'</button></div>'}).join("")
+        :'<p class="story-comments-empty">Add friends first from Chats › Friends.</p>')+'</div></section>'}
+  // ---- Comments on a story: everyone the story is shown to sees them ----
+  const storyComments=new Map();let storyCommentWatch=null;
+  function watchStoryComments(id){if(!fs||(storyCommentWatch&&storyCommentWatch.id===id))return;stopStoryComments();
+    try{const unsub=fs.collection("posts").doc(id).collection("comments").orderBy("at").limit(100).onSnapshot(snap=>{
+        storyComments.set(id,snap.docs.map(d=>{const v=d.data();return{id:d.id,from:String(v.from||""),fromName:String(v.fromName||""),text:String(v.text||""),at:v.at&&v.at.toMillis?v.at.toMillis():Date.now()}}));
+        if(state.sheet&&state.sheet.type==="friendStory")storyRerender()},()=>{});
+      storyCommentWatch={id,unsub}}catch(_){}}
+  function stopStoryComments(){if(!storyCommentWatch)return;try{storyCommentWatch.unsub()}catch(_){}storyCommentWatch=null}
+  // Redraw the story without losing what is being typed.
+  function storyRerender(){const a=document.activeElement,form=a&&a.form&&a.form.id,val=a&&a.value,pos=a&&a.selectionStart;renderSheet();
+    const list=state.sheet&&state.sheet.comments&&document.querySelector(".story-comments-list");if(list)list.scrollTop=list.scrollHeight;
+    if(form){const f=document.getElementById(form),i=f&&f.elements.text;if(i){i.value=val||"";i.focus();try{i.setSelectionRange(pos,pos)}catch(_){}}}}
+  function storyCommentsPanel(x,said,mine){const uid=myUid();
+    return'<section class="story-comments" aria-label="Comments"><header class="story-comments-head"><strong>Comments'+(said.length?' · '+said.length:'')+'</strong><button class="story-close" data-action="story-comments-close" aria-label="Close comments">×</button></header>'
+      +'<div class="story-comments-list">'+(said.length?said.map(c=>{const who=c.from===uid?"You":(c.fromName||feedName(c.from));
+        return'<div class="story-comment">'+avatar(who,0,c.from)+'<p><strong>'+h(who)+'</strong> '+h(c.text)+'<small>'+h(timeAgo(c.at))+'</small></p>'
+          +(c.from===uid||mine?'<button class="story-comment-del" data-action="story-comment-delete" data-post-id="'+h(x.postId)+'" data-comment-id="'+h(c.id)+'" aria-label="Delete comment">×</button>':'')+'</div>'}).join("")
+        :'<p class="story-comments-empty">No comments yet. Be the first.</p>')+'</div>'
+      +'<form class="story-comment-form" id="story-comment-form" data-post-id="'+h(x.postId)+'"><input class="input" name="text" maxlength="300" placeholder="Add a comment…" autocomplete="off" aria-label="Add a comment"><button class="story-send" type="submit" aria-label="Post comment">➤</button></form></section>'}
+  async function postStoryComment(form){const input=form.elements.text,text=String(input.value||"").trim(),id=form.dataset.postId;if(!text||!id)return;input.value="";
+    try{await fs.collection("posts").doc(id).collection("comments").add({from:myUid(),text:text.slice(0,300),at:firebase.firestore.FieldValue.serverTimestamp()});haptic(10)}
+    catch(e){input.value=text;toast("Comment not posted. "+chatError(e),"danger")}}
+  async function deleteStoryComment(postId,commentId){try{await fs.collection("posts").doc(postId).collection("comments").doc(commentId).delete()}catch(e){toast("Not deleted. "+chatError(e),"danger")}}
+  // Touch and hold a story: it pauses and only the photo stays on screen.
+  let storyHoldTimer=0,storyHoldUsed=false;
+  document.addEventListener("pointerdown",e=>{const t=e.target&&e.target.closest&&e.target.closest(".story-tap,.story-media");const v=t&&t.closest(".story-view");storyHoldUsed=false;if(!v||storyPanelOpen(state.sheet))return;
+    clearTimeout(storyHoldTimer);storyHoldTimer=setTimeout(()=>{storyHoldUsed=true;v.classList.add("held","bare")},220)},{passive:true});
+  const storyRelease=()=>{clearTimeout(storyHoldTimer);const v=document.querySelector(".story-view.bare");if(v)v.classList.remove("held","bare")};
+  document.addEventListener("pointerup",storyRelease);document.addEventListener("pointercancel",storyRelease);
+  document.addEventListener("contextmenu",e=>{if(e.target&&e.target.closest&&e.target.closest(".story-view"))e.preventDefault()});
+  function storyStep(dir){const sh=state.sheet;if(!sh||sh.type!=="friendStory")return;const groups=storyGroups(),list=groups.get(sh.uid)||[],i=sh.index+dir;
+    if(i>=0&&i<list.length){sh.index=i;renderSheet();return}
+    const order=storyOrder(groups),at=order.indexOf(sh.uid),nextUid=order[at+(dir>0?1:-1)];
+    if(at>=0&&nextUid){const nl=groups.get(nextUid)||[];sh.uid=nextUid;sh.index=dir>0?0:Math.max(0,nl.length-1);renderSheet();return}
+    if(dir>0)closeSheet()}
+  // A story moves on when its bar fills; typing a reply holds it.
+  document.addEventListener("animationend",e=>{if(e.target&&e.target.matches&&e.target.matches(".story-bars span.run b"))storyStep(1)});
+  document.addEventListener("focusin",e=>{if(e.target&&e.target.closest&&e.target.closest("#story-reply-form,#story-send-form")){const v=document.querySelector(".story-view");if(v)v.classList.add("held","replying")}});
+  document.addEventListener("focusout",e=>{if(e.target&&e.target.closest&&e.target.closest("#story-reply-form,#story-send-form"))setTimeout(()=>{const a=document.activeElement,v=document.querySelector(".story-view");
+    if(!v||(a&&a.closest&&a.closest("#story-reply-form,#story-send-form")))return;v.classList.remove("replying");if(!storyPanelOpen(state.sheet))v.classList.remove("held")},250)});
+  function feedReplySheet(sheet){const name=String(feedName(sheet.uid)).split(" ")[0];
+    return sheetShell("Reply to "+name,"It goes to your chat with "+name+".",'<form id="feed-reply-form" class="form-grid" data-uid="'+h(sheet.uid)+'"><input class="input" name="text" maxlength="300" placeholder="Looks so good! Where’s this from?" autocomplete="off" aria-label="Reply"><button class="button primary full" type="submit">Send</button></form>')}
+  async function toggleLike(id){const uid=myUid(),m=Object.assign({likes:{},views:{}},postMeta.get(id)),liked=!!m.likes[uid];m.likes=Object.assign({},m.likes);if(liked)delete m.likes[uid];else m.likes[uid]=true;postMeta.set(id,m);haptic(liked?6:14);render({preserveScroll:true});
+    try{await fs.collection("posts").doc(id).update({["likes."+uid]:liked?firebase.firestore.FieldValue.delete():true})}catch(e){loadPostMeta(id,true);toast("Couldn’t like that. "+chatError(e),"danger")}}
+  async function deletePost(id,isStory){const yes=await askConfirm(isStory?"Delete this story?":"Delete this post?","Your friends won’t see it any more.","Delete","Keep");if(!yes)return;
+    try{await fs.collection("posts").doc(id).delete();if(state.sheet&&state.sheet.type==="friendStory")closeSheet();toast("Deleted.","success")}catch(e){toast("Not deleted. "+chatError(e),"danger")}}
+  function handleFeedClick(action,control){const id=String(control.dataset.postId||""),u=String(control.dataset.uid||"");
+    if(action==="social-tab"){const r=control.dataset.route;if(state.route!==r)go(r,{},["feed","chats"].includes(state.route));return true}
+    if(action==="feed-compose"){feedCompose(control.dataset.kind||"story");return true}
+    if(action.startsWith("se-"))return seClick(action,control);
+    if(action==="compose-kind"){const d=chatState().compose;if(d){d.kind=control.dataset.value==="post"?"post":"story";renderSheet()}return true}
+    if(action==="story-open"){openStory(u);return true}
+    if(action==="story-next"||action==="story-prev"){if(storyHoldUsed){storyHoldUsed=false;return true}
+      if(storyPanelOpen(state.sheet)){closeStoryPanel();return true}storyStep(action==="story-next"?1:-1);return true}
+    if(action==="story-comments"){if(state.sheet&&state.sheet.type==="friendStory"){state.sheet.send=null;state.sheet.viewers=false;state.sheet.comments=true;storyRerender()}return true}
+    if(action==="story-comments-close"||action==="story-panel-close"){closeStoryPanel();return true}
+    if(action==="story-send-to"){const sh=state.sheet,pid=String(control.dataset.pairId||"");if(!sh||!sh.send||!pid||sh.send.sent[pid])return true;sh.send.sent[pid]=true;renderSheet();
+      sendDm(pid,sh.send.text||"",{type:"story",postId:id,uid:myUid()}).then(()=>haptic(10)).catch(()=>{if(sh.send)delete sh.send.sent[pid];renderSheet()});return true}
+    if(action==="story-comment-delete"){deleteStoryComment(id,String(control.dataset.commentId||""));return true}
+    if(action==="story-message"){const p=pairWith(u);if(!p){toast("You can message friends only.","danger");return true}state.sheet=null;renderSheet();go("dm",{pairId:p.id});scrollThreadToEnd();return true}
+    if(action==="story-unveil"||action==="feed-photo"){const x=liveFeed().find(p=>p.postId===id);if(x&&postVeiled(x)){dmPhotoSeen.add("p:"+id);if(action==="story-unveil")renderSheet();else render({preserveScroll:true});return true}
+      const ph=postPhotos.get(id);if(action==="feed-photo"&&ph&&ph.url)setSheet({type:"photo",photoId:id,src:"post"});return true}
+    if(action==="story-viewers"){const sh=state.sheet;if(sh&&sh.type==="friendStory"){loadPostMeta(id,true);sh.comments=false;sh.send=null;sh.viewers=true;renderSheet()}return true}
+    if(action==="story-delete"){deletePost(id,true);return true}
+    if(action==="story-heart"){reactToStory(id,u,storyReaction(postMeta.get(id))?"":"❤️");return true}
+    if(action==="story-react"){reactToStory(id,u,String(control.dataset.emoji||""));return true}
+    if(action==="feed-like"){toggleLike(id);return true}
+    if(action==="feed-reply"){setSheet({type:"feedReply",uid:u,postId:id});return true}
+    if(action==="feed-menu"){if(u===myUid()){deletePost(id,false);return true}const p=pairWith(u);if(p)setSheet({type:"chatReport",pairId:p.id});return true}
+    return false}
+  async function handleFeedSubmit(form){
+    if(form.id==="compose-form"){shareCompose();return true}
+    if(form.id==="story-comment-form"){postStoryComment(form);return true}
+    if(form.id==="story-send-form"){const sh=state.sheet,input=form.elements.text;if(!sh)return true;sh.comments=false;sh.viewers=false;sh.send={text:String(input.value||"").trim().slice(0,300),sent:{}};input.value="";input.blur();renderSheet();return true}
+    if(form.id==="story-reply-form"||form.id==="feed-reply-form"){const input=form.elements.text,text=String(input.value||"").trim(),p=pairWith(form.dataset.uid);if(!text||!p)return true;input.value="";
+      await sendDm(p.id,(form.id==="story-reply-form"?"💬 Replied to your story: ":"💬 About your post: ")+text);toast("Sent to your chat.","success");if(form.id==="feed-reply-form")closeSheet();else input.blur();return true}
+    return false}
+  // ---- Home: your people ----
+  // Friends right on the food home: story rings, who's eating, what they're craving
+  // and who has written to you, as a short line under their name. One tap jumps in.
+  function friendStatus(p){const uid=myUid(),n=Number(p.unread&&p.unread[uid]||0),e=eatingOf(p),c=friendCrave(p),ci=c&&craveInfo(c.dish);
+    if(n&&p.lastFrom&&p.lastFrom!==uid)return{kind:"msg",html:n>1?h(n+" new"):/^📷/.test(String(p.lastText||""))?"sent a photo":"new message"};
+    if(e)return{kind:"eat",html:"eating now"};
+    if(ci)return{kind:"crave",html:'craving<i aria-hidden="true"> '+h(ci[1])+'</i>',text:"craving "+ci[2]};
+    return null}
+  // "Your people" is remembered on this phone, so the row is there the moment the
+  // app opens instead of appearing a second later and pushing the page down.
+  const PEOPLE_CACHE="scraveit.people.v1.";let peopleCacheSaved="";
+  function peopleImg(v){return typeof v==="string"&&v.startsWith("data:image/")&&v.length<=120000?v:""}
+  function readPeopleCache(uid){if(!uid)return null;const c=chatState();if(c.peopleCacheUid===uid)return c.peopleCache;let v=null;try{v=JSON.parse(localStorage.getItem(PEOPLE_CACHE+uid)||"null")}catch(_){v=null}
+    c.peopleCacheUid=uid;c.peopleCache=v&&Array.isArray(v.people)?{me:peopleImg(v.me),add:v.add===true,people:v.people.slice(0,12).filter(x=>x&&x.uid).map(x=>({uid:String(x.uid),name:String(x.name||"").slice(0,40),img:peopleImg(x.img),story:x.story===true,status:x.status===true}))}:null;return c.peopleCache}
+  function savePeopleCache(uid,v){const key=uid+"|"+v.add+"|"+v.me.length+"|"+JSON.stringify(v.people.map(x=>[x.uid,x.name,x.story,x.status,x.img.length]));if(key===peopleCacheSaved)return;peopleCacheSaved=key;
+    const c=chatState();c.peopleCacheUid=uid;c.peopleCache=v;
+    try{localStorage.setItem(PEOPLE_CACHE+uid,JSON.stringify(v))}catch(_){try{localStorage.setItem(PEOPLE_CACHE+uid,JSON.stringify({me:"",add:v.add,people:v.people.map(x=>Object.assign({},x,{img:""}))}))}catch(__){}}}
+  function dropPeopleCache(uid){if(!uid)return;peopleCacheSaved="";const c=chatState();if(c.peopleCacheUid===uid)c.peopleCache=null;try{localStorage.removeItem(PEOPLE_CACHE+uid)}catch(_){}}
+  function homePeopleWaiting(pc){const uid=myUid(),c=chatState();if(pc.me&&!c.avatars[uid])c.avatars[uid]=pc.me;
+    const head='<div class="home-people-head"><strong>Your people</strong><button class="text-button" data-action="go" data-route="chats">Chats ›</button></div>';
+    if(pc.add)return'<section class="home-people" aria-label="Your people">'+head+'<div class="pals home-people-row"><button class="pal" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add friends</span></button></div></section>';
+    return'<section class="home-people" aria-label="Your people" aria-busy="true">'+head+'<div class="pals home-people-row">'+myStoryBubble(storyGroups(),storySeenSet())+pc.people.map((x,i)=>{
+      const av=x.img?'<img class="chat-avatar big photo" src="'+h(x.img)+'" alt="">':'<span class="chat-avatar big tone'+(i%3)+'" aria-hidden="true">'+h(x.name.trim().charAt(0).toUpperCase()||"?")+'</span>';
+      return'<button class="pal people-bubble" data-action="go" data-route="chats" aria-label="'+h(x.name)+'">'+(x.story?'<span class="story-ring seen">'+av+'</span>':'<span class="avatar-wrap">'+av+'</span>')+'<span class="people-name"><b>'+h(x.name)+'</b>'+(x.status?'<small class="people-status">&nbsp;</small>':'')+'</span></button>'}).join("")+'</div></section>'}
+  function homePeople(){if(!state.session)return"";const c=chatState(),uid=myUid();
+    if(!c.profileLoaded||(c.profile&&!c.pairsLoaded)){const pc=readPeopleCache(uid);return pc?homePeopleWaiting(pc):""}
+    if(!c.profile||chatGate()){if(readPeopleCache(uid))dropPeopleCache(uid);return""}
+    const groups=storyGroups(),seen=storySeenSet(),friends=c.pairs.filter(p=>p.status==="accepted"),unread=chatUnread();
+    const head=hot=>'<div class="home-people-head"><strong>Your people'+(hot?' <span class="home-people-hot">· '+hot+' new</span>':'')+'</strong><button class="text-button" data-action="go" data-route="chats">Chats'+(unread?' <span class="home-people-count">'+(unread>9?'9+':unread)+'</span>':'')+' ›</button></div>';
+    if(!friends.length){savePeopleCache(uid,{me:peopleImg(c.avatars[uid]),add:true,people:[]});return'<section class="home-people" aria-label="Your people">'+head(0)+'<div class="pals home-people-row"><button class="pal" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add friends</span></button></div></section>'}
+    const unseen=o=>storyUnseen(groups,o,seen),unreadOf=p=>Number(p.unread&&p.unread[uid]||0);
+    const score=p=>{const o=otherOf(p);return(unseen(o)?8:0)+(unreadOf(p)?6:0)+(eatingOf(p)?4:0)+(friendCrave(p)?2:0)+(groups.has(o)?1:0)};
+    const list=friends.slice().sort((a,b)=>score(b)-score(a)||Number(b.lastAt||0)-Number(a.lastAt||0)).slice(0,12);
+    const snap=[],html='<section class="home-people" aria-label="Your people">'+head(list.filter(p=>score(p)>=2).length)
+      +'<div class="pals home-people-row">'+myStoryBubble(groups,seen)+list.map((p,i)=>{const o=otherOf(p),name=nameOf(p,o).split(" ")[0],status=friendStatus(p),n=unreadOf(p);snap.push({uid:o,name,img:i<8?peopleImg(c.avatars[o]):"",story:groups.has(o),status:!!status});
+        const action=unseen(o)?'story-open':n?'open-dm':eatingOf(p)?'eating-view':groups.has(o)?'story-open':'open-dm';
+        const face=groups.has(o)?storyRing(o,groups,seen):ringed(avatar(nameOf(p,o),i,o).replace('class="chat-avatar','class="chat-avatar big'),p);
+        return'<button class="pal people-bubble'+(n?' unread':'')+'" data-action="'+action+'" data-pair-id="'+h(p.id)+'" data-uid="'+h(o)+'" aria-label="'+h(nameOf(p,o)+(n?", "+n+" new message"+(n>1?"s":""):"")+(status&&status.kind!=="msg"?", "+(status.text||status.html):""))+'">'
+          +face+'<span class="people-name"><b>'+h(name)+'</b>'+(status?'<small class="people-status '+status.kind+'">'+status.html+'</small>':'')+'</span></button>'}).join("")+'</div></section>';
+    savePeopleCache(uid,{me:peopleImg(c.avatars[uid]),add:false,people:snap});return html}
   function screenFriends(){ensureChatSync();const c=chatState(),uid=myUid(),p=c.profile,gate=chatGate();
     const incoming=c.pairs.filter(x=>x.status==="pending"&&x.requestedBy!==uid),sent=c.pairs.filter(x=>x.status==="pending"&&x.requestedBy===uid),friends=c.pairs.filter(x=>x.status==="accepted"),blocked=c.pairs.filter(x=>x.status==="blocked"&&x.blockedBy===uid),inbox=(c.parentInbox||[]).filter(r=>r.status==="pending"),kids=(c.parentInbox||[]).filter(r=>r.status==="approved");
     const row=(x,actions,i)=>'<div class="chat-row static">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x))+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong>'+(usernameOf(x,otherOf(x))?'<span class="chat-preview">@'+h(usernameOf(x,otherOf(x)))+'</span>':'')+'</span><span class="cluster">'+actions+'</span></div>';
@@ -3530,28 +4396,70 @@
       +(gate||'<section class="card chat-me"><button class="chat-me-photo" data-action="chat-photo" aria-label="Change profile photo">'+avatar(p.name,0,uid).replace('class="chat-avatar','class="chat-avatar huge')+'<span class="chat-me-cam" aria-hidden="true">'+icon("plus","small")+'</span></button><div class="stack" style="gap:2px;min-width:0"><strong class="section-title">'+h(p.name||"")+'</strong><span class="chat-preview">@'+h(p.username||"")+'</span><div class="cluster wrap" style="margin-top:6px"><button class="button tonal small" data-action="chat-photo">'+(chatState().avatars[uid]?"Change photo":"Add photo")+'</button>'+(chatState().avatars[uid]?'<button class="button tonal small" data-action="chat-photo-remove">Remove</button>':'')+'<button class="button tonal small" data-action="chat-username-edit">Change username</button></div></div></section>'+(state.social.editUsername?'<form id="chat-username-form" class="card form-grid"><div class="field"><label for="chat-new-username">New username</label><input class="input" id="chat-new-username" name="username" required minlength="3" maxlength="21" autocapitalize="none" autocomplete="off" spellcheck="false" value="'+h(p.username||"")+'"><p class="caption">You can change it once every 14 days. Friends you have stay.</p></div><button class="button primary full" type="submit">Save username</button></form>':'')+'<section class="card stack chat-code-card"><p class="eyebrow">Your friend code</p><p class="chat-code">'+h(p.code)+'</p><div class="cluster wrap"><button class="button primary small" data-action="share-friend-code">Share</button><button class="button tonal small" data-action="new-friend-code">Get a new code</button></div><p class="caption">A new code stops anyone else using the old one. Friends you already have stay.</p></section>'
         +'<form id="add-friend-form" class="card form-grid"><div class="field"><label for="friend-code">Add a friend</label><input class="input" id="friend-code" name="code" required maxlength="25" placeholder="@username or code like ANA-4K7P" autocapitalize="none" autocomplete="off" spellcheck="false"></div><button class="button primary full" type="submit">Send friend request</button></form>'
         +(incoming.length?'<section class="stack"><h2 class="section-title">Requests</h2>'+incoming.map((x,i)=>row(x,btn("Accept","friend-accept",x.id,"primary")+btn("Ignore","friend-ignore",x.id)+btn("Block","friend-block",x.id,"danger"),i)).join("")+'</section>':'')
-        +'<section class="stack"><h2 class="section-title">Friends · '+friends.length+'</h2>'+(friends.length?friends.map((x,i)=>'<div class="chat-row ig-row"><button class="ig-open" data-action="open-dm" data-pair-id="'+h(x.id)+'">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x)).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong><span class="chat-preview">'+(usernameOf(x,otherOf(x))?'@'+h(usernameOf(x,otherOf(x))):'Tap to chat')+'</span></span></button><button class="icon-button flat" data-action="friend-menu" data-pair-id="'+h(x.id)+'" aria-label="More for '+h(nameOf(x,otherOf(x)))+'">⋮</button></div>').join(""):'<p class="supporting">No friends yet. Share your code to start.</p>')+'</section>'
+        +'<section class="stack"><h2 class="section-title">Friends · '+friends.length+'</h2>'+(friends.length?friends.map((x,i)=>'<div class="chat-row inbox-row"><button class="inbox-open" data-action="open-dm" data-pair-id="'+h(x.id)+'">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x)).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong><span class="chat-preview">'+(usernameOf(x,otherOf(x))?'@'+h(usernameOf(x,otherOf(x))):'Tap to chat')+'</span></span></button><button class="icon-button flat" data-action="friend-menu" data-pair-id="'+h(x.id)+'" aria-label="More for '+h(nameOf(x,otherOf(x)))+'">⋮</button></div>').join(""):'<p class="supporting">No friends yet. Share your code to start.</p>')+'</section>'
         +(sent.length?'<section class="stack"><h2 class="section-title">Sent</h2>'+sent.map((x,i)=>row(x,'<small class="caption">Waiting</small>',i)).join("")+'</section>':'')
         +(blocked.length?'<section class="stack"><h2 class="section-title">Blocked</h2>'+blocked.map((x,i)=>row(x,btn("Unblock","friend-unblock",x.id),i)).join("")+'</section>':'')
         +'<section class="card stack"><h2 class="section-title">Who can send you requests</h2><div class="stack" role="radiogroup" aria-label="Who can send you requests">'+(p.minor?[["code","People with my code"],["nobody","Nobody"]]:[["everyone","Anyone with my username or code"],["code","Only people with my code"],["nobody","Nobody"]]).map(o=>{const cur=p.requests||(p.minor?"code":"everyone");return'<button class="settings-row chat-radio '+(cur===o[0]?'on':'')+'" role="radio" aria-checked="'+(cur===o[0])+'" data-action="chat-privacy" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>'}).join("")+'</div>'+(p.minor?'<p class="caption">Under 18, people can add you only with the code you share.</p>':'')+'</section>'
+        +(()=>{const on=typeof p.shareEating==="boolean"?p.shareEating:!p.minor;return'<section class="card stack"><button class="settings-row" data-action="chat-eating-share" data-value="'+(on?'off':'on')+'"><span class="grow"><strong>Show friends when I’m eating</strong><span class="supporting">When your food arrives, friends see the dish and restaurant on your photo for 30 minutes. Never your address.</span></span><span class="switch '+(on?'on':'')+'" aria-hidden="true"></span></button></section>'})()
         +(kids.length?'<section class="card stack"><h2 class="section-title">Your children</h2>'+kids.map(r=>'<div class="cluster between"><span>'+h(r.childName||"Child")+'</span><button class="button tonal small" data-action="parent-revoke" data-child-uid="'+h(r.childUid)+'">Turn chat off</button></div>').join("")+'</section>':''))
       +'</div></main>'}
   function openThread(pairId){const c=chatState();if(c.threadId===pairId&&c.threadUnsub)return;closeThread();c.threadId=pairId;
-    try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{c.threads[pairId]=s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse();if(state.route==="dm"){render({preserveScroll:true});scrollThreadToEnd()}markThreadRead(pairId)},()=>{})}catch(_){}
+    try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{const prev=c.threads[pairId],next=s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse(),fx=reactionFx(prev,next);c.threads[pairId]=next;if(state.route==="dm"){const stick=!prev||dmNearBottom()||(next.length&&next[next.length-1].from===myUid()&&!(prev||[]).some(m=>m.id===next[next.length-1].id));render({preserveScroll:true});if(!fx.length&&stick)scrollThreadToEnd();playReactionFx(fx)}markThreadRead(pairId)},()=>{})}catch(_){}
   }
   function closeThread(){const c=chatState();if(c.threadUnsub){try{c.threadUnsub()}catch(_){}}c.threadUnsub=null;c.threadId=""}
   let readTimer=null;function markThreadRead(pairId){clearTimeout(readTimer);readTimer=setTimeout(()=>{const p=chatState().pairs.find(x=>x.id===pairId);if(p&&Number(p.unread&&p.unread[myUid()]||0)>0)socialCall("chatMarkRead",{pairId}).catch(()=>{})},600)}
-  function scrollThreadToEnd(){requestAnimationFrame(()=>{const el=document.getElementById("dm-messages");if(el)el.scrollTop=el.scrollHeight})}
+  // Screens scroll inside "#app > main", not the page.
+  function dmScroller(){return document.querySelector("#app > main")}
+  function dmNearBottom(){const sc=dmScroller();return !sc||sc.scrollHeight-sc.scrollTop-sc.clientHeight<160}
+  function scrollThreadToEnd(){const toEnd=()=>{if(state.route!=="dm")return;const sc=dmScroller();if(sc)sc.scrollTop=sc.scrollHeight;const el=document.getElementById("dm-messages");if(el)el.scrollTop=el.scrollHeight};
+    requestAnimationFrame(toEnd);[120,350,800,1500].forEach(ms=>setTimeout(toEnd,ms));
+    setTimeout(()=>{document.querySelectorAll("#dm-messages img").forEach(img=>{if(!img.complete)img.addEventListener("load",toEnd,{once:true})})},0)}
+  /** A story shared into a chat: opens it while it lasts. */
+  function storyCardBubble(card){const x=(chatState().feed||[]).find(f=>f.postId===card.postId),live=!!x&&Number(x.expiresAt)>Date.now(),ph=live?postPhotos.get(card.postId):null;if(live&&!ph)loadPostPhoto(card.postId);
+    const who=card.uid===myUid()?"Your story":String(feedName(card.uid,x)).split(" ")[0]+"’s story";
+    return live?'<button type="button" class="dm-card dm-story-card" data-action="story-open" data-uid="'+h(card.uid)+'">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt=""'+(postVeiled(x)?' class="veiled"':'')+'>':'<span class="dm-photo-wait" aria-hidden="true"></span>')+'<span class="stack"><strong>📸 '+h(who)+'</strong><small>Tap to view</small></span></button>'
+      :'<div class="dm-card dm-story-card ended"><span class="stack"><strong>📸 '+h(who)+'</strong><small>This story has ended</small></span></div>'}
   function dishCard(card){const r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null,live=item&&item.available!==false,price=item?item.price:card.price;
     return'<div class="dm-card"><img src="'+h(safeUrl(card.image||(item&&item.image),r&&r.image))+'" alt=""><div class="stack"><strong>'+h(card.name||(item&&item.name)||(r&&r.name)||"A dish")+'</strong><small>'+h(card.restaurantName||(r&&r.name)||"")+(price?' · '+money(price):'')+'</small>'+(card.type==="dish"?'<button class="button primary small" data-action="dm-card-add" data-restaurant-id="'+h(card.restaurantId)+'" data-item-id="'+h(card.itemId||"")+'"'+(r&&item&&!live?' disabled':'')+'>'+(r&&item&&!live?'Not available now':'Add to my cart')+'</button>':'<button class="button primary small" data-action="go-restaurant" data-restaurant-id="'+h(card.restaurantId)+'">See menu</button>')+'</div></div>'}
   function screenDm(){ensureChatSync();const c=chatState(),uid=myUid(),pairId=String(state.routeData.pairId||""),p=c.pairs.find(x=>x.id===pairId);openThread(pairId);
     if(!p)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Chat","")+emptyState("chat","Chat not available","This person may have removed you or been blocked.")+'</div>'+nav()+'</main>';
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
-    return'<main class="screen dm-screen"><div class="screen-content dm-wrap">'+topbar(nameOf(p,other),blocked?"Blocked":(usernameOf(p,other)?"@"+usernameOf(p,other):""),'<button class="icon-button flat" data-action="dm-menu" data-pair-id="'+h(pairId)+'" aria-label="Report or block">⋮</button>')
-      +'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);return'<div class="dm-msg '+(mine?'mine':'theirs')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?dishCard(m.card):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+    const st=streakOf(p);
+    return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+topbar(nameOf(p,other),blocked?"Blocked":[usernameOf(p,other)?"@"+usernameOf(p,other):"",st?st.emoji+" "+st.count+"-day streak":""].filter(Boolean).join(" · "),'<button class="icon-button flat" data-action="dm-menu" data-pair-id="'+h(pairId)+'" aria-label="Report or block">⋮</button>')
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
-        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food" type="button" data-action="dm-share-place" data-pair-id="'+h(pairId)+'" aria-label="Send a restaurant">🍽</button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small" type="submit">Send</button></form>')
+        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small" type="submit">Send</button></form>')
       +'</div></main>'}
+  // Photos in chats: each photo is its own document beside the messages (only the two friends can read it);
+  // the message carries a small card pointing to it. Photos are fetched once and shown from memory.
+  const dmPhotos=new Map(),dmPhotoLoading=new Set(),dmPhotoSeen=new Set(),DM_PHOTO_KEEP=60;
+  function photoBlobUrl(dataUrl){const b=atob(dataUrl.slice(dataUrl.indexOf(",")+1)),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);return URL.createObjectURL(new Blob([bytes],{type:"image/jpeg"}))}
+  function keepDmPhoto(id,entry){dmPhotos.set(id,entry);while(dmPhotos.size>DM_PHOTO_KEEP){const [old,e]=dmPhotos.entries().next().value;if(e&&e.url)URL.revokeObjectURL(e.url);dmPhotos.delete(old)}}
+  async function loadDmPhoto(pairId,id){if(!id||dmPhotos.has(id)||dmPhotoLoading.has(id))return;dmPhotoLoading.add(id);
+    try{const d=await fs.collection("chats").doc(pairId).collection("photos").doc(id).get(),img=d.exists?String(d.data().image||""):"";keepDmPhoto(id,img.startsWith("data:image/jpeg;base64,")?{url:photoBlobUrl(img)}:{missing:true})}
+    catch(_){keepDmPhoto(id,{missing:true})}
+    finally{dmPhotoLoading.delete(id);if(state.route==="dm"){const near=dmNearBottom();render({preserveScroll:true});if(near)scrollThreadToEnd()}}}
+  /** Under-18 accounts see a friend's photo blurred until they tap it. */
+  function photoVeiled(mine,id){const a=chatState().account;return!mine&&!!(a&&a.minor===true)&&!dmPhotoSeen.has(id)}
+  function photoBubble(card,pairId,mine){const id=String(card.photoId||""),w=Math.max(1,Math.round(Number(card.w)||4)),hh=Math.max(1,Math.round(Number(card.h)||3)),ph=dmPhotos.get(id);
+    if(!ph)loadDmPhoto(pairId,id);
+    const shape=' style="aspect-ratio:'+w+' / '+hh+'"';
+    if(ph&&ph.missing)return'<div class="dm-photo missing"'+shape+'><span>Photo unavailable</span></div>';
+    const veiled=photoVeiled(mine,id);
+    return'<button type="button" class="dm-photo'+(veiled?' veiled':'')+'"'+shape+' data-action="dm-photo-open" data-photo-id="'+h(id)+'" aria-label="'+(veiled?'Tap to view photo':'Open photo')+'">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':'<span class="dm-photo-wait" aria-hidden="true"></span>')+(veiled?'<span class="dm-veil">Tap to view</span>':'')+'</button>'}
+  function photoViewer(sheet){const ph=(sheet.src==="post"?postPhotos:dmPhotos).get(String(sheet.photoId||""));
+    return'<div class="sheet-backdrop dm-photo-viewer" data-action="close-sheet" role="dialog" aria-modal="true" aria-label="Photo">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':'')+'<button class="dm-photo-viewer-close" data-action="close-sheet" aria-label="Close">×</button></div>'}
+  async function sendDmPhoto(pairId){
+    if(!nativeAvailable("pickChatPhoto")){toast("Update Scraveit to send photos.","danger");return}
+    let res;try{res=await nativeInvoke("pickChatPhoto",{},{timeoutMs:180000})}catch(e){if(!/CANCELLED|No photo/i.test(String(e&&e.message||"")))toast("Photo not sent. "+chatError(e),"danger");return}
+    const d=res&&(res.image?res:res.data&&res.data.image?res.data:res.result)||{},img=String(d.image||""),w=Math.round(Number(d.w)||0),hh=Math.round(Number(d.h)||0);
+    if(!img.startsWith("data:image/jpeg;base64,")||!w||!hh){toast("That photo couldn’t be used. Try another.","danger");return}
+    toast("Sending photo…");
+    try{const ref=fs.collection("chats").doc(pairId).collection("photos").doc();
+      await ref.set({from:myUid(),image:img,w,h:hh,at:firebase.firestore.FieldValue.serverTimestamp()});
+      keepDmPhoto(ref.id,{url:photoBlobUrl(img)});
+      await sendDm(pairId,"",{type:"photo",photoId:ref.id,w,h:hh});scrollThreadToEnd()}
+    catch(e){toast("Photo not sent. "+chatError(e),"danger")}}
   async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const body={from:uid,text:String(text||"").slice(0,1000),at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
     try{await fs.collection("chats").doc(pairId).collection("messages").add(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
   function shareFriendSheet(sheet){const friends=chatState().pairs.filter(p=>p.status==="accepted");
@@ -3561,11 +4469,107 @@
   function friendMenuSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"Friend";
     return sheetShell(name,"",'<div class="stack"><button class="button primary full" data-action="open-dm" data-pair-id="'+h(sheet.pairId)+'">'+icon("chat","small")+' Message</button><button class="button tonal full" data-action="friend-unfriend" data-pair-id="'+h(sheet.pairId)+'">Remove friend</button><button class="button tonal full" data-action="friend-block" data-pair-id="'+h(sheet.pairId)+'">Block</button><button class="button danger full" data-action="dm-menu" data-pair-id="'+h(sheet.pairId)+'">Report</button></div>')}
   // Reactions: double-tap a message for ❤️, press and hold to choose an emoji.
-  const REACTIONS=["❤️","😂","😮","😢","🔥","👍"];
+  const REACTIONS=["❤️","😂","🤤","🌶️","🔥","🍦","😮","😢"];
   async function setReaction(pairId,msgId,emoji){const uid=myUid();if(!uid||!pairId||!msgId)return;const ref=fs.collection("chats").doc(pairId).collection("messages").doc(msgId);
     try{await ref.update(emoji?{["reactions."+uid]:emoji}:{["reactions."+uid]:firebase.firestore.FieldValue.delete()})}catch(e){toast("Couldn’t react. "+chatError(e),"danger")}}
   function myReaction(pairId,msgId){const m=(chatState().threads[pairId]||[]).find(x=>x.id===msgId);return m&&m.reactions&&m.reactions[myUid()]||""}
   function reactSheet(sheet){const mine=myReaction(sheet.pairId,sheet.msgId);return sheetShell("React","",'<div class="react-row">'+REACTIONS.map(e=>'<button class="react-pick'+(mine===e?' on':'')+'" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="'+h(e)+'" aria-label="React '+h(e)+'">'+e+'</button>').join("")+'</div>'+(mine?'<button class="button tonal full" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="">Remove my reaction</button>':''))}
+  // ===== Scraveit-only chat: food reactions that do things, streaks, cravings, eating now =====
+  const REACT_FX={"🌶️":"fx-chilli","🔥":"fx-fire","🍦":"fx-melt","🤤":"fx-drool","❤️":"fx-love","😂":"fx-pop","😮":"fx-pop","😢":"fx-pop"};
+  function reactionFx(prev,next){if(!prev)return[];const old={};prev.forEach(m=>{old[m.id]=m.reactions||{}});const out=[];next.forEach(m=>{const o=old[m.id];if(!o)return;Object.entries(m.reactions||{}).forEach(([u,e])=>{if(e&&o[u]!==e)out.push({id:m.id,emoji:e})})});return out}
+  function playReactionFx(list){if(!list.length)return;requestAnimationFrame(()=>list.forEach(({id,emoji})=>{const el=document.querySelector('.dm-msg[data-msg-id="'+String(id).replace(/["\\]/g,"")+'"]');if(!el)return;const cls=REACT_FX[emoji]||"fx-pop";el.classList.remove(cls);void el.offsetWidth;el.classList.add(cls);
+    const burst=document.createElement("span");burst.className="fx-burst";burst.setAttribute("aria-hidden","true");for(let i=0;i<(cls==="fx-pop"?3:7);i++){const b=document.createElement("i");b.textContent=emoji;b.style.setProperty("--dx",(Math.random()*120-60).toFixed(0)+"px");b.style.setProperty("--dy",(-50-Math.random()*90).toFixed(0)+"px");b.style.animationDelay=(i*45)+"ms";burst.appendChild(b)}el.appendChild(burst);
+    try{navigator.vibrate&&navigator.vibrate(cls==="fx-chilli"?[30,40,30,40,60]:cls==="fx-fire"?[15,30,15,30,15]:cls==="fx-melt"?[60]:[18])}catch(_){}
+    setTimeout(()=>{el.classList.remove(cls);burst.remove()},1600)}))}
+  // Streaks: both friends message on the same India day; the dish levels up. No "about to end" pressure, ever.
+  const STREAK_LEVELS=[[100,"👑","Royal thali"],[30,"🎂","Feast"],[14,"🍛","Biryani"],[7,"🍕","Pizza"],[3,"🥟","Momo"],[1,"🍞","Toast"]];
+  function istDayOf(ms){return new Date(ms+19800000).toISOString().slice(0,10)}
+  function dayNum(d){return Math.round(Date.parse(d+"T00:00:00Z")/86400000)}
+  function streakOf(p){const s=p&&p.streak;if(!s||!s.count||!s.lastDay)return null;const today=istDayOf(Date.now()),gap=dayNum(today)-dayNum(s.lastDay),week=Math.floor((dayNum(today)+3)/7);
+    if(gap>2||(gap===2&&s.freezeWeek===week))return null;const l=STREAK_LEVELS.find(x=>s.count>=x[0])||STREAK_LEVELS[5];return{count:s.count,emoji:l[1],name:l[2]}}
+  function streakChip(p){const s=streakOf(p);return s?'<span class="streak-chip" title="'+h(s.count)+'-day streak · '+h(s.name)+'">'+s.emoji+' '+h(s.count)+'</span>':''}
+  // Cravings
+  const CRAVINGS=[["biryani","🍛","Biryani"],["pizza","🍕","Pizza"],["burger","🍔","Burger"],["chicken","🍗","Chicken 65"],["waffles","🧇","Waffles"],["icecream","🍦","Ice cream"],["shawarma","🌯","Shawarma"],["momos","🥟","Momos"],["noodles","🍜","Noodles"],["dosa","🫓","Dosa"],["cake","🍰","Cake"],["shake","🥤","Shakes"],["chai","☕","Chai"],["sweets","🍬","Sweets"]];
+  function craveInfo(id){return CRAVINGS.find(x=>x[0]===id)||null}
+  function liveCrave(c){return c&&c.dish&&Date.now()-Number(c.at||0)<1800000?c:null}
+  function friendCrave(p){return liveCrave(p&&p.crave&&p.crave[otherOf(p)])}
+  function craveBar(){const me=chatState().profile,mine=liveCrave(me&&me.craving),info=mine&&craveInfo(mine.dish);
+    if(info)return'<div class="crave-bar on"><span class="crave-now">'+info[1]+'</span><div class="grow"><strong>You’re craving '+h(info[2].toLowerCase())+'</strong><small>Friends see it for '+Math.max(1,Math.ceil((1800000-(Date.now()-mine.at))/60000))+' more min. Same craving = match.</small></div><button class="icon-button flat" data-action="crave" data-dish="" aria-label="Stop craving">✕</button></div>';
+    return'<div class="crave-bar"><p class="crave-title">What are you craving?</p><div class="crave-chips">'+CRAVINGS.map(x=>'<button class="crave-chip" data-action="crave" data-dish="'+x[0]+'"><span>'+x[1]+'</span>'+h(x[2])+'</button>').join("")+'</div></div>'}
+  async function setCraving(dish){const c=chatState();if(c.craveBusy)return;c.craveBusy=true;haptic(15);
+    try{const res=await socialCall("chatCrave",{dish});if(dish&&res&&res.matches&&res.matches.length){const p=c.pairs.find(x=>x.id===res.matches[0]);if(p)showCraveMatch(Object.assign({},p,{match:{dish,at:Date.now()}}))}else if(dish)toast("Craving shared. If a friend wants it too, you’ll match.","success")}
+    catch(e){toast(chatError(e),"danger")}finally{c.craveBusy=false}}
+  function matchSeenAt(){try{return Number(localStorage.getItem("scraveit.craveMatchSeen")||0)}catch(_){return 0}}
+  function checkCraveMatches(){const seen=matchSeenAt(),now=Date.now(),p=chatState().pairs.find(x=>x.status==="accepted"&&x.match&&Number(x.match.at)>seen&&now-Number(x.match.at)<1800000);if(p)showCraveMatch(p)}
+  function showCraveMatch(p){const m=p.match,info=craveInfo(m&&m.dish);if(!info||document.querySelector(".crave-match"))return;try{localStorage.setItem("scraveit.craveMatchSeen",String(m.at))}catch(_){}
+    const name=nameOf(p,otherOf(p)).split(" ")[0],el=document.createElement("div");el.className="crave-match";el.setAttribute("role","dialog");el.setAttribute("aria-label","Craving match");
+    el.innerHTML='<div class="cm-plates" aria-hidden="true"><span class="cm-plate left">'+info[1]+'</span><span class="cm-plate right">'+info[1]+'</span></div><p class="cm-kicker">IT’S A</p><h2 class="cm-title">Craving match</h2><p class="cm-sub">You and '+h(name)+' both want <strong>'+h(info[2].toLowerCase())+'</strong> right now.</p><div class="cm-actions"><button class="button primary full" data-cm="find">Find '+h(info[2].toLowerCase())+' near you</button><button class="button tonal full" data-cm="chat">Message '+h(name)+'</button><button class="text-button" data-cm="close">Later</button></div>';
+    document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("in"));try{navigator.vibrate&&navigator.vibrate([30,60,30,60,120])}catch(_){}setTimeout(()=>{try{confetti({count:110,y:window.innerHeight*0.35})}catch(_){}},420);
+    el.addEventListener("click",e=>{const b=e.target.closest("[data-cm]");if(!b)return;const k=b.dataset.cm;el.remove();if(k==="find"){state.query=info[2];go("search")}else if(k==="chat")go("dm",{pairId:p.id})})}
+  // Eating now: a ring on a friend's photo for 30 minutes after their food arrives.
+  function eatingOf(p){const e=p&&p.eating&&p.eating[otherOf(p)];return e&&Number(e.until||0)>Date.now()?e:null}
+  function eatingBanner(p){const e=eatingOf(p);if(!e)return"";const name=nameOf(p,otherOf(p)).split(" ")[0];
+    return'<button class="eating-banner" data-action="eating-view" data-pair-id="'+h(p.id)+'"><span class="eating-plate" aria-hidden="true">🍽</span><span class="grow"><strong>'+h(name)+' is eating '+h(e.dish)+(e.more?' +'+h(e.more):'')+'</strong><small>from '+h(e.restaurantName||"a restaurant")+' · '+h(agoShort(e.at))+' ago</small></span><span class="eating-cta">Order same</span></button>'}
+  function eatingSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),e=eatingOf(p);if(!p||!e)return sheetShell("Eating now","",'<p class="supporting">They’ve finished eating.</p>');const name=nameOf(p,otherOf(p)).split(" ")[0];
+    return sheetShell(name+" is eating","",'<div class="eating-hero"><span class="eating-hero-plate" aria-hidden="true">🍽</span><h3>'+h(e.dish)+(e.more?' <small>+'+h(e.more)+' more</small>':'')+'</h3><p class="supporting">from '+h(e.restaurantName||"a restaurant")+' · arrived '+h(agoShort(e.at))+' ago</p></div><div class="stack">'
+      +(e.itemId?'<button class="button primary full" data-action="dm-card-add" data-restaurant-id="'+h(e.restaurantId)+'" data-item-id="'+h(e.itemId)+'">Order the same</button>':'')+'<button class="button '+(e.itemId?'tonal':'primary')+' full" data-action="go-restaurant" data-restaurant-id="'+h(e.restaurantId)+'">See the menu</button><button class="button tonal full" data-action="eating-drool" data-pair-id="'+h(p.id)+'">Send 🤤 “That looks so good”</button></div>')}
+  function ringed(html,p){const e=eatingOf(p),c=friendCrave(p),ci=c&&craveInfo(c.dish);return'<span class="avatar-wrap'+(e?' eating':'')+'">'+html+(ci&&!e?'<span class="crave-badge" aria-label="Craving '+h(ci[2])+'">'+ci[1]+'</span>':'')+(e?'<span class="eating-badge" aria-hidden="true">🍽</span>':'')+'</span>'}
+  // ===== More food fun: spin the plate, IOUs, taste match, weekly card =====
+  function dmFunStrip(p){const uid=myUid(),other=otherOf(p),open=Object.entries(p.ious||{}).filter(([,x])=>x&&x.status==="open"),theyOwe=open.filter(([,x])=>x.owedBy===other),iOwe=open.filter(([,x])=>x.owedBy===uid),t=p.taste;
+    const em=list=>list.map(([,x])=>(TREATS[x.treat]||["🎁"])[0]).join("");
+    const bits=[];if(t&&t.percent)bits.push('<button class="fun-chip taste" data-action="dm-taste" data-pair-id="'+h(p.id)+'">'+h(t.emoji||"💞")+' '+h(t.percent)+'% '+h(t.title||"")+'</button>');
+    if(theyOwe.length)bits.push('<span class="fun-chip owe-me">'+h(nameOf(p,other).split(" ")[0])+' owes you '+em(theyOwe)+'</span>');
+    if(iOwe.length)bits.push('<span class="fun-chip owe-them">You owe '+em(iOwe)+'</span>');
+    return bits.length?'<div class="fun-strip">'+bits.join("")+'</div>':''}
+  function funSheet(sheet){const pid=h(sheet.pairId),opt=(action,emoji,title,sub)=>'<button class="fun-opt" data-action="'+action+'" data-pair-id="'+pid+'"><span class="fun-opt-emoji">'+emoji+'</span><strong>'+title+'</strong><small>'+sub+'</small></button>';
+    return sheetShell("Send something","",'<div class="fun-grid">'+opt("dm-spin","🎡","Spin the plate","Can’t decide? Let the wheel pick")+opt("dm-iou","🧾","You owe me…","A waffle, a biryani, a chai")+opt("dm-taste","💞","Taste match","How alike do you eat?")+opt("dm-share-place","🍽","A restaurant","Share a place you love")+'</div>')}
+  // IOUs
+  const TREATS={waffles:["🧇","Waffle"],biryani:["🍛","Biryani"],icecream:["🍦","Ice cream"],pizza:["🍕","Pizza"],chai:["☕","Chai"],shake:["🥤","Shake"],burger:["🍔","Burger"],cake:["🍰","Cake"]};
+  function iouSheet(sheet){const c=chatState(),p=c.pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)).split(" ")[0]:"them",f=c.iouDraft||(c.iouDraft={treat:"waffles",owedBy:"them"});
+    return sheetShell("You owe me…","Keep score of treats. Pay them off for real once Treat a friend is live.",'<form id="iou-form" class="form-grid" data-pair-id="'+h(sheet.pairId)+'"><div class="seg2" role="radiogroup" aria-label="Who owes"><button type="button" class="seg2-btn'+(f.owedBy==="them"?' on':'')+'" data-action="iou-who" data-value="them">'+h(name)+' owes me</button><button type="button" class="seg2-btn'+(f.owedBy==="me"?' on':'')+'" data-action="iou-who" data-value="me">I owe '+h(name)+'</button></div>'
+      +'<div class="treat-grid">'+Object.entries(TREATS).map(([k,v])=>'<button type="button" class="treat-pick'+(f.treat===k?' on':'')+'" data-action="iou-treat" data-value="'+k+'"><span>'+v[0]+'</span>'+v[1]+'</button>').join("")+'</div>'
+      +'<div class="field"><label for="iou-note">For what? (optional)</label><input class="input" id="iou-note" name="note" maxlength="60" placeholder="the cricket bet" autocomplete="off"></div><button class="button primary full" type="submit">Add IOU</button></form>')}
+  function iouMessage(m,p){const uid=myUid(),x=(p.ious||{})[m.iou&&m.iou.id]||null,isOpening=/^🧾/.test(m.text||""),t=x&&TREATS[x.treat]||["🎁","Treat"];
+    if(!isOpening||!x){const t=String(m.text||"").replace(/^✅ (\S+) paid off the (.+)$/,"🎉 $1 came through with the $2");return'<p class="dm-event'+(/^👀/.test(t)?' nudge':/^🎉/.test(t)?' treated':'')+'">'+h(t)+'</p>'}
+    const status=x.status==="open"?"":x.status==="paid"?'<span class="iou-stamp paid">TREATED!</span>':x.status==="forgiven"?'<span class="iou-stamp soft">ON THE HOUSE</span>':'<span class="iou-stamp">UNDONE</span>';
+    const actions=x.status!=="open"?'':x.owedTo===uid?'<div class="cluster wrap iou-actions"><button class="button primary small iou-nudge" data-action="iou-act" data-act="nudge" data-iou-id="'+h(m.iou.id)+'" data-pair-id="'+h(p.id)+'">👀 You owe me!</button><button class="button tonal small" data-action="iou-act" data-act="settle" data-iou-id="'+h(m.iou.id)+'" data-pair-id="'+h(p.id)+'">They treated me ✓</button><button class="text-button" data-action="iou-act" data-act="forgive" data-iou-id="'+h(m.iou.id)+'" data-pair-id="'+h(p.id)+'">Let it go</button></div>'
+      :x.by===uid?'<button class="text-button" data-action="iou-act" data-act="cancel" data-iou-id="'+h(m.iou.id)+'" data-pair-id="'+h(p.id)+'">Take it back</button>':'<small class="caption">Pay it off with a real treat once Treat a friend is live.</small>';
+    return'<div class="iou-card'+(x.status!=="open"?' closed':'')+'"><span class="iou-emoji">'+t[0]+'</span><div class="grow"><p class="eyebrow">IOU</p><strong>'+h(String(m.text).replace(/^🧾\s*/,""))+'</strong>'+actions+'</div>'+status+'</div>'}
+  async function iouAct(pairId,data,ok){try{await socialCall("chatIou",Object.assign({pairId},data));haptic(20);if(ok)toast(ok,"success")}catch(e){toast(chatError(e),"danger")}}
+  // Taste match
+  async function openTaste(pairId){const c=chatState();c.taste={pairId,loading:true};setSheet({type:"taste",pairId});
+    try{const r=await socialCall("chatTasteMatch",{pairId});c.taste=Object.assign({pairId},r);if(!r.locked){haptic(30);setTimeout(()=>{try{confetti({count:80,y:window.innerHeight*0.4})}catch(_){}},900)}}catch(e){c.taste={pairId,error:chatError(e)}}
+    if(state.sheet&&state.sheet.type==="taste")render({preserveScroll:true});countUpTaste()}
+  function countUpTaste(){const el=document.querySelector(".taste-big[data-to]");if(!el)return;const to=Number(el.dataset.to),start=performance.now(),step=t=>{const k=Math.min(1,(t-start)/1100),v=Math.round(to*(1-Math.pow(1-k,3)));el.textContent=v+"%";if(k<1)requestAnimationFrame(step)};requestAnimationFrame(step)}
+  function tasteSheet(sheet){const c=chatState(),t=c.taste||{},p=c.pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)).split(" ")[0]:"your friend";
+    if(t.loading)return sheetShell("Taste match","",'<div class="taste-hero"><span class="spinner"></span><p class="supporting">Comparing plates…</p></div>');
+    if(t.error)return sheetShell("Taste match","",'<p class="supporting">'+h(t.error)+'</p>');
+    if(t.locked)return sheetShell("Taste match","",'<div class="taste-hero"><span class="taste-emoji">🔒</span><p class="supporting">'+(t.needMe&&t.needThem?'You both need':t.needMe?'You need':h(name)+' needs')+' at least one delivered order to unlock your taste match.</p></div>');
+    return sheetShell("Taste match","",'<div class="taste-hero"><span class="taste-emoji">'+h(t.emoji||"💞")+'</span><p class="taste-big" data-to="'+h(t.percent)+'">0%</p><h3>'+h(t.title||"")+'</h3><p class="supporting">You and '+h(name)+'</p>'+(t.shared&&t.shared.length?'<p class="caption">You’ve both ordered: '+t.shared.map(x=>h(x.replace(/\b\w/g,ch=>ch.toUpperCase()))).join(", ")+'</p>':'')+'</div><div class="stack"><button class="button primary full" data-action="taste-share" data-pair-id="'+h(sheet.pairId)+'">Share on your story</button></div>')}
+  // Story-sized share card (1080×1920) for taste match and the weekly card.
+  function storyCard(o){const W=1080,H=1920,cv=document.createElement("canvas");cv.width=W;cv.height=H;const g=cv.getContext("2d");
+    const gr=g.createLinearGradient(0,0,W,H);o.colors.forEach((c,i)=>gr.addColorStop(i/(o.colors.length-1),c));g.fillStyle=gr;g.fillRect(0,0,W,H);
+    for(let i=0;i<70;i++){g.fillStyle="rgba(255,255,255,"+(0.06+(i%5)*0.03)+")";g.beginPath();g.arc((i*197)%W,(i*131)%H,(i%4)+2,0,7);g.fill()}
+    const text=(t,x,y,size,weight,color,align)=>{g.font=weight+" "+size+"px 'DM Sans', Arial, sans-serif";g.fillStyle=color;g.textAlign=align||"center";g.fillText(t,x,y)};
+    const box=(x,y,w,hh,r)=>{g.beginPath();if(g.roundRect)g.roundRect(x,y,w,hh,r);else g.rect(x,y,w,hh);g.fill()};
+    text(o.kicker,W/2,210,40,"800","rgba(255,255,255,.9)");text(o.sub||"",W/2,280,40,"600","rgba(255,255,255,.85)");
+    text(o.emoji,W/2,560,230,"400","#fff");text(o.big,W/2,800,o.big.length>6?140:220,"900","#fff");text(o.title,W/2,900,68,"800","#FFF3C4");
+    let y=1010;(o.rows||[]).forEach(([k,v])=>{g.fillStyle="rgba(255,255,255,.16)";box(90,y,900,150,40);text(k,140,y+60,32,"600","rgba(255,255,255,.85)","left");text(String(v).slice(0,30),140,y+118,46,"800","#fff","left");y+=176});
+    text("Scraveit",W/2,1800,76,"900","#fff");text("scraveit.in",W/2,1856,32,"600","rgba(255,255,255,.85)");return cv.toDataURL("image/png")}
+  function shareStory(img,text){try{if(window.FeastlyNative&&FeastlyNative.shareImage){FeastlyNative.shareImage(img,text);return}}catch(_){}toast("Sharing is available in the latest app.","danger")}
+  function shareTaste(pairId){const c=chatState(),t=c.taste||{},p=c.pairs.find(x=>x.id===pairId);if(!t.percent||!p)return;const me=(c.profile&&c.profile.name||"Me").split(" ")[0],them=nameOf(p,otherOf(p)).split(" ")[0];
+    shareStory(storyCard({kicker:"TASTE MATCH",sub:me+" × "+them,emoji:t.emoji||"💞",big:t.percent+"%",title:t.title||"",rows:(t.shared||[]).slice(0,3).map((d,i)=>[i?"Also both love":"We both love",d.replace(/\b\w/g,ch=>ch.toUpperCase())]),colors:["#ff3d77","#a855f7","#2f6bff"]}),me+" and "+them+" are "+t.percent+"% "+(t.title||"taste match")+" on Scraveit "+(t.emoji||""))}
+  // Weekly food card
+  function weekStats(){const since=Date.now()-7*86400000,list=(state.orders||[]).filter(o=>o.status==="Delivered"&&Number(o.createdAt)>=since),byRest={},byDish={},slots={morning:0,day:0,evening:0,night:0};
+    list.forEach(o=>{const r=o.restaurant||"Somewhere tasty";byRest[r]=(byRest[r]||0)+1;(o.items||[]).forEach(it=>{byDish[it.name]=(byDish[it.name]||0)+Number(it.quantity||1)});slots[daySlot(new Date(Number(o.createdAt)||0))]++});
+    const top=obj=>Object.keys(obj).sort((a,b)=>obj[b]-obj[a])[0]||"",dish=top(byDish),places=Object.keys(byRest).length,slot=top(slots);
+    const persona=!list.length?["🌱","Fresh start"]:byDish[dish]>=3?["🏆",dish.split(" ").slice(-1)[0]+" loyalist"]:places>=3?["🧭","Explorer"]:{night:["🦉","Night owl"],morning:["🌅","Early bird"],day:["☀️","Lunch lover"],evening:["🌆","Dinner devotee"]}[slot]||["🍽","Foodie"];
+    const buddies=chatState().pairs.filter(x=>x.status==="accepted").map(x=>({name:nameOf(x,otherOf(x)).split(" ")[0],streak:(streakOf(x)||{}).count||0,at:Number(x.lastAt||0)})).filter(b=>b.at>=since).sort((a,b)=>b.streak-a.streak||b.at-a.at);
+    const fmt=d=>d.toLocaleDateString("en-IN",{day:"numeric",month:"short"});return{orders:list.length,dish,place:top(byRest),places,persona,buddy:buddies[0]||null,range:fmt(new Date(since))+" – "+fmt(new Date())}}
+  function openWeekCard(){const s=weekStats();try{state.weekImage=storyCard({kicker:"MY FOOD WEEK",sub:s.range,emoji:s.persona[0],big:String(s.orders),title:(s.orders===1?"order · ":"orders · ")+s.persona[1],rows:[["Most ordered",s.dish||"—"],["Favourite place",s.place||"—"],["Top food buddy",s.buddy?s.buddy.name+(s.buddy.streak?" · "+s.buddy.streak+"-day streak":""):"—"]],colors:["#ff7a3d","#ff3d77","#6d28d9"]});setSheet({type:"week"});haptic(20)}catch(_){toast("Could not make your card right now.","danger")}}
+  function weekSheet(){return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Your food week"><div class="sheet-handle"></div><h2 class="title">Your food week</h2><p class="supporting">Made for your story. Tag your food buddy.</p>'
+    +(state.weekImage?'<img class="wrapped-preview story" src="'+state.weekImage+'" alt="Your food week card">':'')+'<button class="button primary full" data-action="week-share">Share on your story</button><button class="button secondary full" data-action="close-sheet">Close</button></section></div>'}
+  function weekBanner(){const d=new Date().getDay();if(d!==0&&d!==1)return"";const s=weekStats();if(!s.orders)return"";return'<button class="week-banner" data-action="week-open"><span>✨</span><span class="grow"><strong>Your food week is ready</strong><small>'+h(s.orders)+(s.orders===1?' order':' orders')+' · '+h(s.persona[1])+'. Share it on your story.</small></span>'+icon("chevron","small")+'</button>'}
   (function bindReactionGestures(){let pressTimer=null,lastTap={id:"",at:0},longPressed=false;
     document.addEventListener("pointerdown",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;longPressed=false;clearTimeout(pressTimer);pressTimer=setTimeout(()=>{longPressed=true;try{navigator.vibrate&&navigator.vibrate(15)}catch(_){}setSheet({type:"react",pairId:el.dataset.pairId,msgId:el.dataset.msgId})},450)});
     ["pointerup","pointercancel","pointerleave","scroll"].forEach(t=>document.addEventListener(t,()=>clearTimeout(pressTimer),true));
@@ -3574,12 +4578,15 @@
   })();
   function reportSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"this person";
     return sheetShell("Report or block",name,'<form id="chat-report-form" class="form-grid" data-pair-id="'+h(sheet.pairId)+'"><fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">What’s wrong?</legend>'+CHAT_REASONS.map((r,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="reason" value="'+r[0]+'" '+(i===0?'checked':'')+'><span class="grow">'+r[1]+'</span></label>').join("")+'</fieldset><div class="field"><label for="report-note">Anything else (optional)</label><textarea class="textarea" id="report-note" name="note" maxlength="500"></textarea></div><label class="settings-row"><input type="checkbox" name="block" checked><span class="grow">Also block '+h(name)+'</span></label><p class="caption">Your last 20 messages in this chat go with the report so our team can check it.</p><button class="button danger full" type="submit"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Sending…':'Send report')+'</button><button class="button tonal full" type="button" data-action="dm-block-only" data-pair-id="'+h(sheet.pairId)+'">Just block, no report</button></form>')}
-  async function chatAction(fn,data,ok){try{await socialCall(fn,data);if(ok)toast(ok,"success")}catch(e){toast(chatError(e),"danger")}}
+  async function chatAction(fn,data,ok){try{await socialCall(fn,data);if(ok)toast(ok,"success");return true}catch(e){toast(chatError(e),"danger");return false}}
+  // Show a friend request's answer at once; the server can take a few seconds to wake up.
+  // If it then refuses, the request comes back as it was.
+  function optimisticPair(pid,change){const c=chatState(),i=c.pairs.findIndex(p=>p.id===pid);if(i<0)return null;const before=Object.assign({},c.pairs[i]);if(change)c.pairs[i]=Object.assign({},c.pairs[i],change);else c.pairs.splice(i,1);chatRerender();return()=>{const j=c.pairs.findIndex(p=>p.id===pid);if(j>=0)c.pairs[j]=before;else c.pairs.push(before);chatRerender()}}
   function handleChatClick(action,control){
     const pid=control.dataset.pairId,cid=control.dataset.childUid;
     if(action==="open-dm"){go("dm",{pairId:pid});scrollThreadToEnd();return true}
-    if(action==="friend-accept"){chatAction("chatRespond",{pairId:pid,action:"accept"},"You’re now friends.");return true}
-    if(action==="friend-ignore"){chatAction("chatRespond",{pairId:pid,action:"ignore"});return true}
+    if(action==="friend-accept"){const undo=optimisticPair(pid,{status:"accepted",acceptedAt:Date.now()});toast("You’re now friends.","success");chatAction("chatRespond",{pairId:pid,action:"accept"}).then(done=>{if(!done&&undo)undo()});return true}
+    if(action==="friend-ignore"){const undo=optimisticPair(pid,null);chatAction("chatRespond",{pairId:pid,action:"ignore"}).then(done=>{if(!done&&undo)undo()});return true}
     if(action==="friend-block"||action==="dm-block-only"){askConfirm("Block this person?","They can’t message you or send requests again. They aren’t told.","Block","Cancel").then(y=>{if(y){closeSheet();chatAction("chatRespond",{pairId:pid,action:"block"},"Blocked.");if(state.route==="dm")go("chats",{},true)}});return true}
     if(action==="friend-unblock"){chatAction("chatRespond",{pairId:pid,action:"unblock"},"Unblocked.");return true}
     if(action==="friend-unfriend"){askConfirm("Remove this friend?","Your chat with them is closed. You can add each other again with a code.","Remove","Keep").then(y=>{if(y)chatAction("chatRespond",{pairId:pid,action:"unfriend"},"Removed.")});return true}
@@ -3587,6 +4594,25 @@
     if(action==="share-friend-code"){const code=chatState().profile&&chatState().profile.code;const text="Add me on Scraveit: open Chats › Friends and enter "+code;try{if(window.FeastlyNative&&FeastlyNative.shareText)FeastlyNative.shareText(text);else if(navigator.clipboard){navigator.clipboard.writeText(text);toast("Copied. Paste it in any chat.","success")}}catch(_){}return true}
     if(action==="chat-privacy"){chatAction("chatSetPrivacy",{requests:control.dataset.value},"Saved.");return true}
     if(action==="parent-approve"||action==="parent-decline"){chatAction("accountParentRespond",{childUid:cid,approve:action==="parent-approve"},action==="parent-approve"?"Approved. They can order and chat now.":"Not approved.");return true}
+    if(action==="crave"){setCraving(control.dataset.dish||"");return true}
+    if(action==="dm-fun"){setSheet({type:"fun",pairId:pid});return true}
+    if(action==="dm-photo"){sendDmPhoto(pid);return true}
+    if(action==="dm-photo-open"){const id=String(control.dataset.photoId||""),ph=dmPhotos.get(id);if(!ph||!ph.url)return true;const mine=!!control.closest(".dm-msg.mine");if(photoVeiled(mine,id)){dmPhotoSeen.add(id);render({preserveScroll:true});return true}setSheet({type:"photo",photoId:id});return true}
+    if(action==="dm-spin"){openWheel(pid);return true}
+    if(action==="dm-iou"){chatState().iouDraft={treat:"waffles",owedBy:"them"};setSheet({type:"iou",pairId:pid});return true}
+    if(action==="iou-who"||action==="iou-treat"){const d=chatState().iouDraft||{};const note=(document.getElementById("iou-note")||{}).value||"";if(action==="iou-who")d.owedBy=control.dataset.value;else d.treat=control.dataset.value;d.note=note;render({preserveScroll:true});const n=document.getElementById("iou-note");if(n)n.value=note;return true}
+    if(action==="iou-act"){const act=control.dataset.act;iouAct(pid,{action:act,iouId:control.dataset.iouId},act==="nudge"?"Reminder sent 👀":act==="settle"?"Treat received! 🎉":act==="forgive"?"Let it go. Kind!":"Taken back.");return true}
+    if(action==="dm-taste"){openTaste(pid);return true}
+    if(action==="taste-share"){shareTaste(pid);return true}
+    if(action==="week-open"){openWeekCard();return true}
+    if(action==="week-share"){const s=weekStats();if(state.weekImage)shareStory(state.weekImage,"My food week on Scraveit: "+s.orders+" orders, "+s.persona[1]+" "+s.persona[0]);return true}
+    if(action==="eating-view"){setSheet({type:"eating",pairId:pid});return true}
+    if(action==="eating-drool"){closeSheet();sendDm(pid,"🤤 That looks so good!");go("dm",{pairId:pid});return true}
+    if(action==="chat-eating-share"){chatAction("chatSetEatingShare",{share:control.dataset.value==="on"},control.dataset.value==="on"?"Friends will see when you’re eating.":"Turned off.");return true}
+    if(action==="parent-pay-ask"){askParentToPay();return true}
+    if(action==="parent-pay-cancel"){const id=control.dataset.requestId;state.checkout.parentPayId="";persistCheckout();render({preserveScroll:true});chatAction("parentPayCancel",{requestId:id},"Request cancelled.");return true}
+    if(action==="parent-pay-approve"){parentPayAnswer(control.dataset.requestId,true,control.dataset.method);return true}
+    if(action==="parent-pay-decline"){askConfirm("Decline this order?","They’ll be told you didn’t pay for it.","Decline","Cancel").then(y=>{if(y)parentPayAnswer(control.dataset.requestId,false,"cod")});return true}
     if(action==="parent-revoke"){askConfirm("Turn chat off for your child?","They won’t be able to send messages until you approve again.","Turn off","Cancel").then(y=>{if(y)chatAction("accountParentRevoke",{childUid:cid},"Approval turned off.")});return true}
     if(action==="friend-menu"){setSheet({type:"friendMenu",pairId:pid});return true}
     if(action==="edit-dob"){setSheet({type:"dob"});return true}
@@ -3598,6 +4624,8 @@
     if(action==="dm-share-place"){setSheet({type:"sharePlace",pairId:pid});return true}
     if(action==="send-place"){const r=restaurant(control.dataset.restaurantId);closeSheet();if(r)sendDm(pid,"",{type:"restaurant",restaurantId:r.id,restaurantName:String(r.name||"").slice(0,80),image:String(r.image||"").slice(0,400),name:String(r.name||"").slice(0,80)});return true}
     if(action==="share-dish"){setSheet({type:"shareFriend",title:control.dataset.title||"",card:{type:"dish",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId}});return true}
+    if(action==="share-to-friend"&&state.sheet&&state.sheet.card&&state.sheet.card.type==="story"){const card=state.sheet.card;closeSheet();
+      sendDm(pid,"",{type:"story",postId:String(card.postId),uid:String(card.uid)}).then(()=>toast("Story sent.","success"));return true}
     if(action==="share-to-friend"){const s=state.sheet||{},card=s.card||{},r=restaurant(card.restaurantId),item=card.itemId?menuItem(card.restaurantId,card.itemId):null;closeSheet();
       sendDm(pid,"",Object.assign({},card,{name:String(item&&item.name||r&&r.name||"").slice(0,80),restaurantName:String(r&&r.name||"").slice(0,80),price:Number(item&&item.price||0),image:String(item&&item.image||r&&r.image||"").slice(0,400)})).then(()=>toast("Sent.","success"));return true}
     if(action==="dm-card-add"){const rid=control.dataset.restaurantId,iid=control.dataset.itemId;if(menuItem(rid,iid))setSheet({type:"item",restaurantId:rid,itemId:iid});else go("restaurant",{restaurantId:rid});return true}
@@ -3610,6 +4638,7 @@
     if(form.id==="account-parent-form"){const b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;try{const r=await socialCall("accountParentRequest",{email:form.elements.email.value.trim()});toast("Sent to "+(r&&r.parentName||"your parent")+".","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
     if(form.id==="account-dob-form"){const v=form.elements.birthDate.value,b=form.querySelector('button[type="submit"]');if(!v){toast("Enter your date of birth.","danger");return true}if(b)b.disabled=true;try{const r=await socialCall("accountSetBirthDate",{birthDate:v});closeSheet();toast(r&&r.minor&&r.parentStatus!=="approved"?"Saved. You’re under 18, so a parent needs to approve your account.":"Date of birth saved.","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
     if(form.id==="add-friend-form"){try{const r=await socialCall("chatAddFriend",{handle:form.elements.code.value});form.reset();const who=r&&(r.name||(r.username?"@"+r.username:""));toast(r&&r.status==="accepted"?"You’re now friends"+(who?" with "+who:"")+".":"Request sent"+(who?" to "+who:"")+".","success")}catch(e){toast(chatError(e),"danger")}return true}
+    if(form.id==="iou-form"){const d=chatState().iouDraft||{},b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;await iouAct(form.dataset.pairId,{action:"create",treat:d.treat||"waffles",owedBy:d.owedBy||"them",note:String(form.elements.note.value||"").trim()});closeSheet();return true}
     if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";await sendDm(form.dataset.pairId,text);input.focus();return true}
     if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
     return false;
@@ -3857,10 +4886,10 @@
     const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),recommended=restaurants.slice(0,3),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
     if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
-    return '<main class="screen home2 '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
+    return '<main class="screen home2 '+(dockSlides().length?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+homePeople()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
       +homeModeSwitch()
-      +(homeMode()==="dinein"?dineInHome():''      +(active?activeOrderCard(active):'')
+      +(homeMode()==="dinein"?dineInHome():''
       +foodStoryStrip()+activeTableCard()+eatOutShelf()
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
       +'<div class="play-row">'+wheelCard()+squadHomeCard()+mealPlanHomeCard()+'</div>'
@@ -3884,7 +4913,7 @@
         :'<button class="button secondary full" data-action="load-more-restaurants">Show more restaurants</button>'):"")+'</section>'
       )
       +(state.catalogMode==="packaged"?'<div class="notice warning">'+icon("info","small")+'<div><strong>Live menu unavailable</strong><div class="caption">Ordering is paused until the latest restaurant catalogue is available.</div></div></div>':'')
-      +'</div>'+(!cartCount()&&!active&&homeMode()!=="dinein"?homeCapsule():'')+(cartCount()?'<div class="floating-cart home-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>':'')+nav()+'</main>';
+      +'</div>'+(!dockSlides().length&&homeMode()!=="dinein"?homeCapsule():'')+bottomDock()+nav()+'</main>';
   }
 
   function persistRecentSearches(){
@@ -3964,10 +4993,11 @@
     try{await supportDoc(id).set(ticket);closeSheet();toast("Thanks, the Scraveit team will check it.","success");}
     catch(e){toast("Report could not be sent. "+friendlyError(e),"danger");if(button)button.disabled=false;}
   }
-  /** All the store's cover photos, swiping left to right on their own and looping (see refreshAdRails). */
+  /** All the store's cover photos, swiping left to right on their own and looping (see refreshAdRails).
+   *  All fetched at once (not lazily), so each slide's photo is already there when it slides in. */
   function restaurantCoverMarkup(r){
     const photos=(r.coverImages&&r.coverImages.length?r.coverImages:[r.image]).slice(0,10);
-    const img=(url,i)=>'<img class="cover-slide" src="'+h(safeUrl(url,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+(photos.length>1?' photo '+(i+1):' restaurant')+'"'+(i?' loading="lazy"':'')+' decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">';
+    const img=(url,i)=>'<img class="cover-slide" src="'+h(safeUrl(url,"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+(photos.length>1?' photo '+(i+1):' restaurant')+'"'+' decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">';
     if(photos.length<2)return img(photos[0],0);
     return '<div class="ad-rail-track cover-track" id="cover-track-'+h(r.id)+'">'+photos.map(img).join("")+'</div>'
       +'<div class="ad-rail-dots cover-dots" data-dots-for="cover-track-'+h(r.id)+'">'+photos.map((_,i)=>'<span class="ad-dot'+(i===0?' active':'')+'"></span>').join("")+'</div>';
@@ -4099,8 +5129,10 @@
     const store=order.restaurantId&&state.catalog?state.catalog[order.restaurantId]:null;
     const no=String(order.restaurantFssai||(store&&store.fssaiNumber)||"");
     const fssai=/^[12]\d{13}$/.test(no)?'<img class="fssai-logo" src="fssai-logo.png" alt="FSSAI" width="41" height="20" style="width:41px;height:20px"><span>'+(no[0]==="2"?"Reg.":"Lic.")+' No. '+h(no)+'</span>':'';
-    return '<div class="menu-fssai bill-seller"><span>Sold and prepared by '+h(order.restaurant||(store&&store.name)||"the store")+'</span>'+fssai+'<span>Platform: SCRAVEIT PRIVATE LIMITED · GSTIN 37ABVCS0396N1ZA</span></div>';
+    return '<div class="menu-fssai bill-seller"><span>Sold and prepared by '+h(order.restaurant||(store&&store.name)||"the store")+'</span>'+fssai+'<span>Platform: SCRAVEIT PRIVATE LIMITED · GSTIN 37ABVCS0396N1ZA'+platformFssaiText()+'</span></div>';
   }
+  // SCRAVEIT's own FSSAI licence, from settings/customer.scraveitFssai, so it shows on every bill once issued.
+  function platformFssaiText(){const no=String(state.settings&&state.settings.scraveitFssai||"").replace(/\D/g,"");return/^[12]\d{13}$/.test(no)?' · FSSAI '+(no[0]==="2"?"Reg.":"Lic.")+' No. '+h(no):''}
   function orderBillSheet(sheet){
     const order=(state.orders||[]).find(o=>o.id===sheet.orderId);if(!order)return sheetShell("Bill summary","","<p class=\"supporting\">This bill is not available on this device.</p>");
     const p=order.pricing||{},line=(label,value,cls)=>Number(value)>0?'<div class="price-row'+(cls?' '+cls:'')+'"><span>'+h(label)+'</span><span>'+(cls==="success-text"?'−':'')+money(value)+'</span></div>':'';
@@ -4119,7 +5151,7 @@
     const address=currentAddress(),r=cartRestaurant();
     reconcileCheckoutPaymentSelection();
     const paymentAvailable=paymentMethodEnabled(state.checkout.payment),paymentWarning=!enabledCheckoutMethods().length?'<div class="notice warning">'+icon("warning","small")+'<span>No checkout payment method is available right now. Please try again in a moment.</span></div>':"";
-    const canPlace=!(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable);
+    const canPlace=!(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable||payOpen(myPayAsk()));
     return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r?r.name:"Checkout",r?((r.etaMin||25)+'–'+(r.etaMax||35)+' min to '+(address?(address.label||address.area||"you"):"you")):"Review your order")+networkBanner()
       +(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')
       +adRailMarkup("checkout-ad-track")
@@ -4133,7 +5165,7 @@
         +'<div class="checkout-divider"></div>'
         +billSummaryRow()
       +'</section>'
-      +walletToggle()+paymentWarning
+      +walletToggle()+paymentWarning+askParentCard()
       +'</div>'
       +'<div class="floating-cart pay-dock"><button type="button" class="pay-using" data-action="open-pay-sheet"><span class="caption">PAY USING ▲</span><strong>'+h(paymentMethodTitle(state.checkout.payment||"cod"))+'</strong></button>'
       +'<button class="button primary pay-cta" data-action="place-order" '+(canPlace?'':'disabled')+'>'+(state.loading?'<span class="spinner"></span> Placing…':'<span class="pay-cta-total"><strong>'+money(orderTotal())+'</strong><small>TOTAL</small></span><span>Place order</span>')+'</button></div>'
@@ -5494,11 +6526,11 @@
     return '<button class="settings-row" '+(route?'data-action="go" data-route="'+h(route)+'"':'data-action="'+h(action||"")+'"')+'><span class="settings-icon">'+icon(ic)+'</span><span class="grow"><strong>'+h(title)+'</strong>'+(copy?'<span class="supporting">'+h(copy)+'</span>':'')+'</span>'+(tail||icon("chevron","small"))+'</button>';
   }
   function screenAccount() {
-    return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></header>'
-      +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18)">'+h(initials())+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
+    return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header class="account-head"><div><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></div>'+accountLangSwitch()+'</header>'
+      +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18);overflow:hidden;padding:0">'+myAvatarFace()+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
       +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("chat","Friends & chats",chatUnread()?chatUnread()+" new":"Chat with friends, share dishes","chats")+settingsRow("orders","My meal plans",(state.mealSubs||[]).length?(state.mealSubs.length+" active · skip or pause any day"):"Daily lunch or dinner, skip any day","mealPlans")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("account","Date of birth",chatState().account?dobLabel(chatState().account.birthDate)+(chatState().account.minor?" · parent approval "+(chatState().account.parentStatus==="approved"?"done":"needed"):""):"Add it once · you can edit it any time",null,"edit-dob")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
       +'<section class="card settings-list">'+settingsRow("settings","Preferences","Theme, dietary and notifications","preferences")+settingsRow("help","Help and support","Order issues and account help","support")+settingsRow("shield","Privacy and terms","Data use, rights and service terms","legal")+'</section>'
-      +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account request","Request permanent account and data deletion",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
+      +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account","Withdraw consent and erase your data",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
       +'<p class="caption" style="text-align:center">Scraveit Customer<br>Your account and orders sync securely across sessions.</p></div>'+nav()+'</main>';
   }
 
@@ -5524,13 +6556,15 @@
     return '<button class="settings-row" data-action="toggle-preference" data-key="'+h(key)+'"><span class="grow"><strong>'+h(title)+'</strong><span class="supporting">'+h(copy)+'</span></span><span class="switch '+(enabled?'on':'')+'" aria-hidden="true"></span></button>';
   }
   // English or Telugu (te.js does the translating). Labels stay in their own language.
+  // Quick English / Telugu switch at the top of Account.
+  function accountLangSwitch(){const now=window.ScraveitLanguage?ScraveitLanguage.get():"en";return'<div class="account-lang" role="group" aria-label="Language · భాష" translate="no">'+[["en","EN"],["te","తెలుగు"]].map(x=>'<button type="button" class="'+(now===x[0]?'on':'')+'" data-action="set-language" data-value="'+x[0]+'" aria-pressed="'+(now===x[0])+'">'+x[1]+'</button>').join("")+'</div>'}
   function languagePicker(){const now=window.ScraveitLanguage?ScraveitLanguage.get():"en";return'<section class="card stack" translate="no"><h2 class="section-title">Language · భాష</h2><div class="segmented" role="group" aria-label="Language">'+[["en","English"],["te","తెలుగు"]].map(x=>'<button class="segment '+(now===x[0]?'active':'')+'" data-action="set-language" data-value="'+x[0]+'" aria-pressed="'+(now===x[0])+'">'+x[1]+'</button>').join("")+'</div></section>'}
   function screenPreferences() {
     const prefs=state.profile.preferences||{};
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Preferences","Make Scraveit comfortable and relevant for you.")+networkBanner()
       +'<section class="card stack"><h2 class="section-title">Appearance</h2><div class="segmented">'+["light","dark"].map(value=>'<button class="segment '+(themeValue()===value?'active':'')+'" data-action="theme" data-value="'+value+'">'+(value==="light"?'Light':'Dark')+'</button>').join("")+'</div><button class="button tonal full" data-action="theme" data-value="system">Use phone setting</button></section>'
       +languagePicker()
-      +'<section class="card settings-list">'+preferenceSwitch("vegetarian","Vegetarian mode","Prioritise vegetarian restaurants and menu items.",prefs.vegetarian===true)+preferenceSwitch("notifications","Order notifications","Show local alerts when a live order status changes.",prefs.notifications!==false)+'</section>'
+      +'<section class="card settings-list">'+preferenceSwitch("vegetarian","Vegetarian mode","Prioritise vegetarian restaurants and menu items.",prefs.vegetarian===true)+preferenceSwitch("notifications","Order notifications","Show local alerts when a live order status changes.",prefs.notifications!==false)+preferenceSwitch("cartReminders","Cart reminders","A reminder just after you leave items in your cart, at most once a day. Never between 10 pm and 8 am.",prefs.cartReminders!==false)+preferenceSwitch("mealSuggestions","Meal-time suggestions","A food idea at breakfast, lunch and dinner when stores near you are open.",prefs.mealSuggestions!==false)+'</section>'
       +'<section class="notice info">'+icon("info","small")+'<span>Allow notifications in phone settings to receive restaurant, rider and delivery updates even when Scraveit is closed.</span></section></div>'+nav()+'</main>';
   }
 
@@ -5549,12 +6583,17 @@
   }
 
   function screenLegal() {
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Privacy and terms","A clear summary of how Scraveit works")+'<section class="card stack"><h2 class="section-title">Data used to provide delivery</h2><p class="supporting">Scraveit uses your account details, selected delivery address, order records, support requests and preferences to provide the service. During an active delivery, your assigned rider’s latest location may be shown for that order.</p></section><section class="card stack"><h2 class="section-title">Your controls</h2><p class="supporting">You can edit profile details, manage addresses and favourites, control notifications, sign out, or submit an account-deletion request from this app.</p></section><section class="card stack"><h2 class="section-title">Payments and refunds</h2><p class="supporting">Cash on delivery is currently available. Online payment or refund status is shown only after verification by the connected payment service.</p></section><section class="notice info">'+icon("shield","small")+'<span>Scraveit protects account access with Firebase Authentication and limits order data to the people responsible for fulfilling it.</span></section></div>'+nav()+'</main>';
+    const consent=state.privacyConsent&&ScraveitPrivacy.isCurrent(state.privacyConsent)?state.privacyConsent:null;
+    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Privacy and terms","How Scraveit uses your data, and your rights")
+      +(consent?'<section class="notice success">'+icon("check","small")+'<span>You agreed to this notice on '+h(new Date(consent.acceptedAt).toLocaleDateString("en-IN",{day:"numeric",month:"long",year:"numeric"}))+'.</span></section>':'')
+      +'<section class="card stack">'+(window.ScraveitPrivacy?ScraveitPrivacy.noticeHtml("customer",ScraveitPrivacy.lang()):'')+'</section>'
+      +'<section class="card stack"><h2 class="section-title">Withdraw consent</h2><p class="supporting">Withdrawing consent deletes your Scraveit account. We stop using your data and erase it as the notice above explains.</p><button class="button danger full" data-action="request-deletion">Withdraw consent and delete my account</button></section>'
+      +'</div>'+nav()+'</main>';
   }
 
   function screenReview() {
     const order=orderById();if(!order)return screenOrders();
-    const saved=state.reviews[order.id]||null,restaurantRating=Number(saved&&saved.rating||!saved&&state.routeData&&state.routeData.rating||0),riderRating=Number(saved&&saved.riderRating||0);
+    const saved=state.reviews[order.id]||null,restaurantRating=Number(saved&&saved.rating||!saved&&state.routeData&&state.routeData.rating||0),riderRating=Number(saved&&saved.riderRating||!saved&&state.routeData&&state.routeData.riderRating||0);
     if(!saved&&!reviewStateReady())return '<main class="screen"><div class="screen-content page-stack">'+topbar("Rate your delivery",order.restaurant||order.id)+loadingRow("Checking whether feedback was already submitted…")+'</div>'+nav()+'</main>';
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Rate your delivery",order.restaurant||order.id)
       +'<form id="review-form" class="card form-grid">'
@@ -5642,7 +6681,7 @@
     return sheetShell("Request cancellation","The restaurant must review this request. It is not shown as cancelled until the server confirms it.",'<form id="cancel-form" class="form-grid" data-order-id="'+h(sheet.orderId)+'"><div class="field"><label for="cancel-reason">Reason</label><select id="cancel-reason" name="reason" class="select"><option>Ordered by mistake</option><option>Wrong delivery address</option><option>Need to change items</option><option>Delivery is taking too long</option><option>Other</option></select></div><button class="button danger full" type="submit">Submit cancellation request</button><button class="button tonal full" type="button" data-action="close-sheet">Keep my order</button></form>');
   }
   function deletionSheet() {
-    return sheetShell("Request account deletion","This creates a verified privacy request. A production service must complete authentication deletion and data retention checks.",'<form id="deletion-form" class="form-grid"><div class="notice danger">'+icon("warning","small")+'<span>Deletion can affect saved addresses, favourites, support history and access to past orders. Legally required transaction records may need limited retention.</span></div><label class="field"><span>Type DELETE to confirm</span><input class="input" name="confirmation" autocomplete="off" required></label><button class="button danger full" type="submit">Submit deletion request</button></form>');
+    return sheetShell("Withdraw consent and delete account","We stop using your data and erase your account. You'll be signed out.",'<form id="deletion-form" class="form-grid"><div class="notice danger">'+icon("warning","small")+'<span>You lose your saved addresses, favourites, friends, chats, stories, order history and any unused cashback. Bills that tax law makes us keep are kept with your contact details removed.</span></div><label class="field"><span>Type DELETE to confirm</span><input class="input" name="confirmation" autocomplete="off" required></label><button class="button danger full" type="submit">Delete my account</button></form>');
   }
   function signoutSheet() {
     return sheetShell("Sign out of Scraveit?","Cached account details will be removed from this device.",'<div class="stack"><button class="button danger full" data-action="signout">Sign out</button><button class="button tonal full" data-action="close-sheet">Stay signed in</button></div>');
@@ -5652,6 +6691,7 @@
   }
   let lastSheetHtml="", lastSheetShown=null;
   function renderSheet() {
+    if(!state.sheet||state.sheet.type!=="friendStory")stopStoryComments();
     if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";lastSheetShown=null;return;}
     const sheet=state.sheet;let html="";
     if(sheet.type==="confirm")html=confirmSheet(sheet);
@@ -5683,6 +6723,16 @@
     else if(sheet.type==="friendMenu")html=friendMenuSheet(sheet);
     else if(sheet.type==="dob")html=dobSheet();
     else if(sheet.type==="react")html=reactSheet(sheet);
+    else if(sheet.type==="eating")html=eatingSheet(sheet);
+    else if(sheet.type==="dock")html=dockSheet();
+    else if(sheet.type==="fun")html=funSheet(sheet);
+    else if(sheet.type==="photo")html=photoViewer(sheet);
+    else if(sheet.type==="compose")html=composeSheet();
+    else if(sheet.type==="friendStory")html=storySheet(sheet);
+    else if(sheet.type==="feedReply")html=feedReplySheet(sheet);
+    else if(sheet.type==="iou")html=iouSheet(sheet);
+    else if(sheet.type==="taste")html=tasteSheet(sheet);
+    else if(sheet.type==="week")html=weekSheet();
     else if(sheet.type==="squadJoin")html=squadJoinSheet();
     else if(sheet.type==="squadStart")html=squadStartSheet();
     else if(sheet.type==="mealSubscribe")html=mealSubscribeSheet(sheet);
@@ -5747,7 +6797,7 @@
     try{
       await ensureSession();
       const intent=await nativeInvoke(paymentOperation,{
-        customerId:String(state.session.uid||""),
+        customerId:String(order.customerId||state.session.uid||""),
         orderId:String(order.id||""),
         provider:String(order.paymentProvider||"phonepe")
       },{idToken:state.session.idToken,timeoutMs:30000});
@@ -5926,7 +6976,7 @@
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
-    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, friends:screenFriends, dm:screenDm
+    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, feed:screenFeed, friends:screenFriends, dm:screenDm
   });
 
   async function refreshAll() {
@@ -5966,6 +7016,8 @@
     const action=control.dataset.action;
     if(action==="open-ad"&&Date.now()<adSwipeSuppressUntil)return;
     if(handleChatClick(action,control))return;
+    if(handleWheelClick(action,control))return;
+    if(handleFeedClick(action,control))return;
     if(action==="confirm-yes"){settleConfirm(true);return;}
     if(action==="menu-cat-toggle"){const rid=control.dataset.restaurantId;state.menuOpen=state.menuOpen||{};const open=state.menuOpen[rid]||(state.menuOpen[rid]={});open[control.dataset.value]=control.getAttribute("aria-expanded")!=="true";render({preserveScroll:true});return;}
     if(action==="report-menu"){setSheet({type:"menuReport",restaurantId:control.dataset.restaurantId});return;}
@@ -6006,7 +7058,7 @@
     if(action==="leave-squad"){leaveSquad(false);return;}
     if(action==="open-pay-sheet"){setSheet({type:"pay"});return;}
     if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}if(action==="open-packed-photo"){const img=control.querySelector("img");if(img)showPhotoViewer(img.src,img.alt);return;}
-    if(action==="home-kind"){state.homeKind=control.dataset.value||"restaurant";if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
+    if(action==="home-kind"){const nextKind=control.dataset.value||"restaurant";if(nextKind!==(state.homeKind||"restaurant"))state.cuisine="All";state.homeKind=nextKind;if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
     if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
     if(action==="capsule-dismiss"){slideCapsuleAway(control.closest(".home-capsule"),1);return;}
@@ -6043,7 +7095,7 @@
     }
     if(action==="welcome-signup"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("signup");return;}
     if(action==="welcome-login"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("login");return;}
-    if(action==="google-signin"){openGoogleSignIn();return;}
+    if(action==="google-signin"){if(state.route==="signup"){const box=document.getElementById("signup-consent");if(!box||!box.checked){toast(window.ScraveitPrivacy?ScraveitPrivacy.tickFirstMessage():"Accept the Terms and Privacy Notice to continue.","danger");return;}state.pendingPrivacyConsent=true;}else state.pendingPrivacyConsent=false;openGoogleSignIn();return;}
     if(action==="forgot-password"){setSheet({type:"forgot"});return;}
     if(action==="check-verification"){
       state.loading=true;render({preserveScroll:true});
@@ -6065,6 +7117,7 @@
     if(action==="open-restaurant"){const restaurantId=control.dataset.restaurantId;if(state.route==="search")recordRecentSearch(state.query);state.selectedMenuCategory="All";state.menuPrice="all";state.menuSort="recommended";state.diet="all";go("restaurant",{restaurantId});ensureRestaurantMenu(restaurantId);return;}
     if(action==="retry-menu"){ensureRestaurantMenu(state.selectedRestaurantId);return;}
     if(action==="toggle-favourite"){event.preventDefault();event.stopPropagation();toggleFavourite(control.dataset.restaurantId);return;}
+    if(action==="cuisine-all"){state.cuisine="All";render({preserveScroll:true});return;}
     if(action==="cuisine"){state.cuisine=control.dataset.value||"All";if(state.route==="home")render({preserveScroll:true});else{document.querySelectorAll('[data-action="cuisine"]').forEach(x=>x.classList.toggle("active",x.dataset.value===state.cuisine));updateSearchResults();}return;}
     if(action==="clear-search"){clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";const input=document.getElementById("search-input");if(input){input.value="";input.focus();}updateSearchResults();return;}
     if(action==="recent-search"){applyRecentSearch(control.dataset.value);return;}
@@ -6082,6 +7135,12 @@
     if(action==="menu-category"){state.selectedMenuCategory=control.dataset.value||"All";render({preserveScroll:true});return;}
     if(action==="clear-menu-filter"){state.diet="all";state.menuPrice="all";state.menuSort="recommended";state.selectedMenuCategory="All";render({preserveScroll:true});return;}
     if(action==="open-item"){setSheet({type:"item",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId});return;}
+    if(action==="dock-cart"){activateCart(control.dataset.restaurantId);closeSheet();go("cart");return;}
+    if(action==="dock-menu"){closeSheet();go("restaurant",{restaurantId:control.dataset.restaurantId});return;}
+    if(action==="dock-all"){setSheet({type:"dock"});return;}
+    if(action==="dock-rate-rider"){go("review",{orderId:control.dataset.orderId,riderRating:Number(control.dataset.rating)||0});return;}
+    if(action==="dock-rate-skip"){dismissCapsule("rate:"+control.dataset.orderId);render({preserveScroll:true});return;}
+    if(action==="dock-remove"){removeCart(control.dataset.restaurantId);if(!dockSlides().length)closeSheet();return;}
     if(action==="confirm-replace-cart"){const pending=state.sheet;state.cart=[];persistCart();addCartItem(pending.restaurantId,pending.itemId,pending.custom||{});return;}
     if(action==="clear-unavailable-cart"){state.cart=[];state.coupon=null;state.tip=0;persistCart();toast("Unavailable cart removed.","success");go("home");return;}
     if(action==="cart-quantity"){updateCart(control.dataset.key,Number(control.dataset.delta||0));return;}
@@ -6166,7 +7225,7 @@
     if(action==="open-address-picker"){setSheet({type:"addressPicker"});return;}
     if(action==="select-address-and-close"){await selectAddress(control.dataset.addressId);closeSheet();return;}
     if(action==="toggle-preference"){
-      const key=control.dataset.key;state.profile.preferences[key]=!state.profile.preferences[key];persistProfile();applyTheme();render({preserveScroll:true});
+      const key=control.dataset.key,isOn=key==="vegetarian"?state.profile.preferences[key]===true:state.profile.preferences[key]!==false;state.profile.preferences[key]=!isOn;persistProfile();if(["notifications","cartReminders","mealSuggestions"].includes(key))syncNotificationPrefs();applyTheme();render({preserveScroll:true});
       if(key==="notifications"){
         if(state.profile.preferences.notifications===false)unregisterPushTokenBestEffort();
         else registerPushTokenIfAllowed().catch(()=>toast("Notifications could not be enabled yet.","danger"));
@@ -6233,11 +7292,24 @@
   // page itself moving, which holds the card photos still for a moment.
   // (Scrolling isn't counted as a touch: the slideshow's own smooth scroll
   // used to count, so the store cover skipped every other turn.)
-  app.addEventListener("scroll",event=>{const t=event.target;if(!t||!t.classList)return;if(t.classList.contains("ad-rail-track"))syncAdRailDots(t);else if(t.classList.contains("photo-track"))syncCardPhotoDots(t);else pageScrolledAt=Date.now();},true);
-  // A finger on a slideshow pauses it; the wait restarts when the finger lifts.
-  const holdSlideshow=event=>{const el=event.target.closest&&event.target.closest(".ad-rail-track,.photo-track");if(!el)return;if(el.classList.contains("photo-track"))cardPhotoTouched.set(el,Date.now());else adRailTouchedAt=Date.now();};
+  app.addEventListener("scroll",event=>{const t=event.target;if(!t||!t.classList)return;if(t.classList.contains("ad-rail-track"))syncAdRailDots(t);else if(t.classList.contains("photo-track"))syncCardPhotoDots(t);else if(t.id!=="dock-rail"&&(fingerOnPage||Date.now()-fingerLiftedAt<1500))pageScrolledAt=Date.now();},true);
+  // Only the customer's own scrolling (a finger, or the glide after it) holds the photos. The
+  // page also scrolls by itself while it opens and photos arrive, which held the first slide.
+  let fingerOnPage=false,fingerLiftedAt=0;
+  app.addEventListener("touchstart",()=>{fingerOnPage=true},{passive:true});
+  const fingerUp=()=>{fingerOnPage=false;fingerLiftedAt=Date.now()};
+  app.addEventListener("touchend",fingerUp,{passive:true});app.addEventListener("touchcancel",fingerUp,{passive:true});
+  // A finger on a slideshow pauses it; the wait restarts when the finger lifts. On a store card
+  // only a sideways swipe counts: scrolling the page up or down with a thumb on the photo (which is
+  // most of the card) used to pause that card's photos for 7 seconds, so the first slide was late.
+  const holdSlideshow=event=>{const el=event.target.closest&&event.target.closest(".ad-rail-track");if(el)adRailTouchedAt=Date.now();};
   app.addEventListener("touchstart",holdSlideshow,{passive:true});
   app.addEventListener("touchend",holdSlideshow,{passive:true});
+  let photoTouch=null;
+  app.addEventListener("touchstart",e=>{const el=e.target.closest&&e.target.closest(".photo-track"),t=e.touches&&e.touches[0];photoTouch=el&&t?{el,x:t.clientX,y:t.clientY}:null},{passive:true});
+  const photoSwipe=e=>{const t=e.changedTouches&&e.changedTouches[0];if(!photoTouch||!t)return;const dx=Math.abs(t.clientX-photoTouch.x),dy=Math.abs(t.clientY-photoTouch.y);if(dx>10&&dx>dy)cardPhotoTouched.set(photoTouch.el,Date.now())};
+  app.addEventListener("touchmove",photoSwipe,{passive:true});
+  app.addEventListener("touchend",e=>{photoSwipe(e);photoTouch=null},{passive:true});
   document.addEventListener("pointermove",trackingMapPointerMove,{passive:false});
   document.addEventListener("pointerup",trackingMapPointerUp);
   document.addEventListener("pointercancel",trackingMapPointerUp);
@@ -6276,10 +7348,11 @@
     const birthDate=form.elements["birthDate"]?form.elements["birthDate"].value:"",signupAge=(()=>{const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(birthDate);if(!m)return -1;const t=new Date();let a=t.getFullYear()-+m[1];if(t.getMonth()+1<+m[2]||(t.getMonth()+1===+m[2]&&t.getDate()<+m[3]))a--;return a})();setFieldError("signup-dob",signupAge<0?"Enter your date of birth.":signupAge<13?"Scraveit is for 13 and over. A parent can order for you from their account.":"");if(signupAge<13)return;
     setFieldError("signup-name",name.length>=2?"":"Enter your full name.");setFieldError("signup-email",validEmail(email)?"":"Enter a valid email.");setFieldError("signup-phone",validPhone(phone)?"":"Enter a valid mobile number.");
     const strong=password.length>=8&&/[A-Za-z]/.test(password)&&/\d/.test(password);setFieldError("signup-password",strong?"":"Use 8+ characters with letters and numbers.");setFieldError("signup-confirm",password===confirm?"":"Passwords do not match.");
-    if(name.length<2||!validEmail(email)||!validPhone(phone)||!strong||password!==confirm||!consent){if(!consent)toast("Accept the Terms and Privacy Notice to continue.","danger");return;}
+    if(name.length<2||!validEmail(email)||!validPhone(phone)||!strong||password!==confirm||!consent){if(!consent)toast(window.ScraveitPrivacy?ScraveitPrivacy.tickFirstMessage():"Accept the Terms and Privacy Notice to continue.","danger");return;}
     state.loading=true;render({preserveScroll:true});
     try{
       const cred=await fbAuth.createUserWithEmailAndPassword(email,password);applyAuthUser(cred.user);state.profile.name=name;state.profile.email=email;state.profile.phone=phone;state.profile.addresses=[];state.profile.favourites=[];state.profile.emailVerified=false;persistProfile();await saveProfile();
+      try{await savePrivacyConsent("signup")}catch(_){/* the notice is shown again on the next screen */}
       try{await socialCall("accountSetBirthDate",{birthDate})}catch(_){/* asked again on the home screen */}
       toast(signupAge<18?"Account created. Ask a parent to approve it from your home screen.":"Account created successfully.","success");await afterAuth();
     }catch(error){toast(friendlyError(error),"danger");state.loading=false;render({preserveScroll:true});}
@@ -6345,13 +7418,14 @@
   async function submitDeletion(form) {
     if(String(new FormData(form).get("confirmation")||"").trim().toUpperCase()!=="DELETE"){toast("Type DELETE exactly to confirm.","danger");return;}
     const id=uid("privacy_"),record={id:id,type:"account_deletion",uid:state.session.uid,email:state.profile.email||state.session.email,status:"requested",createdAt:Date.now()};
-    try{await privacyRequestDoc(id).set(record);closeSheet();toast("Deletion request submitted. Keep reference "+id.slice(-8).toUpperCase()+".","success");}
+    try{await privacyRequestDoc(id).set(record);closeSheet();toast("Your account is being deleted. If an order is still on its way, we finish deleting it after delivery.","success");setTimeout(()=>signOut(false),2500);}
     catch(error){toast("Deletion request could not be saved. "+friendlyError(error),"danger");}
   }
 
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
-    if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form"].includes(form.id)){handleChatSubmit(form);return;}
+    if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form"].includes(form.id)){handleFeedSubmit(form);return;}
+    if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form","iou-form"].includes(form.id)){handleChatSubmit(form);return;}
     if(form.id==="referral-form")applyReferral(form);
     else if(form.id==="meal-subscribe-form")submitMealSubscribe(form);
     else if(form.id==="login-form")submitLogin(form);
@@ -6413,5 +7487,12 @@
   document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"&&state.session&&state.online)syncOrders(false);if(document.visibilityState==="visible"&&state.route==="home")render({preserveScroll:true});});
   if(window.matchMedia){const media=matchMedia("(prefers-color-scheme: dark)");if(media.addEventListener)media.addEventListener("change",function(){if((state.profile.preferences||{}).theme==="system"){applyTheme();render({preserveScroll:true});}});}
 
+  if(window.ScraveitPrivacy)ScraveitPrivacy.bind({
+    onAgree:async function(lang){try{await savePrivacyConsent("gate",lang);toast("Thank you. Your consent is saved.","success")}catch(error){toast(friendlyError(error),"danger")}render()},
+    onSignOut:function(){signOut(true)},
+    onLang:function(){render({preserveScroll:true})},
+    toast:function(message){toast(message,"danger")},
+    lang:function(){return window.ScraveitLanguage?ScraveitLanguage.get():"en"}
+  });
   bootstrap();
 })();

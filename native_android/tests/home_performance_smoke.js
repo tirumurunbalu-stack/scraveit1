@@ -88,7 +88,7 @@ async function run() {
     "savrivo.customer.seenWelcome": "1",
     "savrivo.customer.session": JSON.stringify(session),
     "savrivo.customer.profile": JSON.stringify(profile),
-    "savrivo.customer.homeCache.v1": JSON.stringify({
+    "savrivo.customer.homeCache.v2": JSON.stringify({
       "service-naidupetacentral": { savedAt: now, catalog: { "cache-kitchen": cachedRestaurant } },
     }),
   };

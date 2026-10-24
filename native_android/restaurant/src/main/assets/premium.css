@@ -152,14 +152,14 @@ button.open-bar{cursor:pointer}
 .table-tile strong { font-size: 15px; }
 .table-tile span { font-size: 12px; opacity: .7; }
 .table-tile em { font-style: normal; font-size: 12px; font-weight: 800; margin-top: 4px; }
-.table-tile.seated { background: #E3EDFF; border-color: #1460F0; }
+.table-tile.seated { background: var(--brand-soft); border-color: var(--brand); }
 .table-tile.bill { background: #FFF3D6; border-color: #E0A100; }
 .tb-money { font-weight: 800; opacity: 1 !important; }
 .tb-flag { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11px !important; font-weight: 800; opacity: 1 !important; color: #fff; }
-.tb-flag.new { background: #1460F0; }
+.tb-flag.new { background: var(--brand); }
 .tb-flag.call { background: #E5484D; top: 30px; }
 .booking-row { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 18px; background: var(--surface, #fff); box-shadow: 0 8px 22px -18px rgba(14,27,61,.5); }
-.booking-row.requested { border: 2px solid #1460F0; }
+.booking-row.requested { border: 2px solid var(--brand); }
 .booking-time { flex: none; width: 70px; display: grid; justify-items: center; }
 .booking-time strong { font-size: 15px; }
 .booking-time span { font-size: 12px; opacity: .7; }
@@ -167,7 +167,7 @@ button.open-bar{cursor:pointer}
 .booking-row .grow span { display: block; font-size: 13px; opacity: .75; }
 .booking-buttons { display: grid; gap: 6px; }
 .round-row { padding: 12px; border-radius: 16px; background: var(--surface-raised, #EEF2F8); margin-bottom: 10px; }
-.round-row.sent { border-left: 5px solid #1460F0; }
+.round-row.sent { border-left: 5px solid var(--brand); }
 .round-row.cooking { border-left: 5px solid #E0A100; }
 .round-row.served { opacity: .7; }
 .round-items { margin: 8px 0; padding-left: 18px; font-size: 15px; line-height: 1.5; }
@@ -348,3 +348,83 @@ html{overscroll-behavior-y:none}
 .dine-qr-preview small{font-size:12px;color:var(--muted);line-height:1.35}
 .danger-text{color:var(--danger)}
 @media (prefers-reduced-motion:reduce){.dine-toggle i,.dine-toggle i::after{transition:none}}
+
+/* The opening spinner takes this app's icon colour (orange Restaurant, green Grocery, blue Dairy), matching the loading screen before it. */
+.launch-restaurant{--launch-tint:#EE6A2E}.launch-grocery{--launch-tint:#3F9A2A}.launch-dairy{--launch-tint:#1592B3}
+.launch .spinner{border-color:color-mix(in srgb,var(--launch-tint,var(--brand)),transparent 72%);border-top-color:var(--launch-tint,var(--brand))}
+
+/* Sign-in and approval screens in this app's own colours (orange Restaurant, green Grocery, blue Dairy), matching its icon and loading screen. */
+.tint-restaurant{--brand:#E4572E;--brand2:#C9431D;--brand-soft:#FFF1EA;--tint-shadow:rgba(196,64,20,.55)}
+.tint-grocery{--brand:#2F8A1F;--brand2:#2A7A1C;--brand-soft:#EEF7EA;--tint-shadow:rgba(47,138,31,.5)}
+.tint-dairy{--brand:#0E7490;--brand2:#0B6680;--brand-soft:#E6F6FA;--tint-shadow:rgba(14,116,144,.5)}
+.tint-restaurant .button.primary,.tint-grocery .button.primary,.tint-dairy .button.primary{background:var(--brand);box-shadow:0 12px 24px -14px var(--tint-shadow)}
+.store-logo.restaurant{background:linear-gradient(145deg,#E4572E,#FF9A3D);box-shadow:0 12px 30px rgba(228,87,46,.3)}
+.store-logo.grocery{background:linear-gradient(145deg,#2F8A1F,#7BC043);box-shadow:0 12px 30px rgba(47,138,31,.28)}
+.store-logo.dairy{background:linear-gradient(145deg,#0E7490,#2BB3D1);box-shadow:0 12px 30px rgba(14,116,144,.28)}
+/* The whole app in its own colour: the tint classes above are also set on <html> at start-up,
+   so every screen's buttons, links, tabs and highlights follow it. */
+.tint-restaurant .hero{background:linear-gradient(135deg,#9A2E10,#E4572E 60%,#FF9A3D)}
+.tint-grocery .hero{background:linear-gradient(135deg,#1B5512,#2F8A1F 60%,#7BC043)}
+.tint-dairy .hero{background:linear-gradient(135deg,#0A4A5C,#0E7490 60%,#2BB3D1)}
+
+/* ===== Easy entry: speak, tap, snap (all store apps) ===== */
+.lang-toggle{min-height:36px;padding:0 14px;border:1.5px solid var(--border);border-radius:999px;background:var(--surface);color:var(--ink);font:inherit;font-size:14px;font-weight:800;cursor:pointer}
+.ob-lang-row{display:flex;justify-content:flex-end}
+.ob-top-tools{display:flex;align-items:center;gap:8px}
+.ob-screen .input,.menu-form-easy .input{min-height:52px;font-size:17px}
+.ob-screen .field>label,.menu-form-easy .field>label{font-size:15px}
+/* Speak instead of typing: a mic inside the box. */
+.input-mic{position:relative;min-width:0}
+.input-mic>.input{width:100%;padding-right:54px}
+.mic-button{position:absolute;right:6px;top:50%;display:grid;place-items:center;width:42px;height:42px;padding:0;border:0;border-radius:50%;background:var(--brand-soft);color:var(--brand);transform:translateY(-50%);cursor:pointer}
+.mic-button svg,.ob-speak-tip svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.mic-button.listening{background:var(--brand);color:#fff;animation:mic-pulse 1s ease-in-out infinite}
+@keyframes mic-pulse{50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--brand) 22%,transparent)}}
+.ob-speak-tip{display:flex;align-items:center;gap:8px;margin:0}
+.ob-speak-tip svg{flex:0 0 auto;width:18px;height:18px;color:var(--brand)}
+/* Tap the usual items instead of writing them. */
+.quick-picks{display:grid;gap:6px;padding:14px;border-radius:16px;background:var(--brand-soft)}
+.quick-picks>strong{font-size:16px}
+.qp-list{display:flex;flex-wrap:wrap;gap:8px}
+.qp-chip{display:inline-flex;align-items:center;gap:4px;min-height:42px;padding:0 14px;border:1.5px solid var(--border);border-radius:999px;background:var(--surface);color:var(--ink);font:inherit;font-size:14.5px;font-weight:750;cursor:pointer}
+.qp-chip.on{border-color:var(--brand);background:var(--brand);color:#fff}
+.qp-chip .icon{width:16px;height:16px}
+.cat-chips{margin-top:8px}
+.cat-chips .qp-chip{min-height:36px;font-size:13.5px}
+/* The item form: photo first, then name and price. */
+.photo-tile{display:flex;align-items:center;gap:14px;min-height:96px;padding:12px;border:2px dashed var(--border);border-radius:18px;background:var(--surface);cursor:pointer}
+.photo-tile img{width:96px;height:72px;border-radius:12px;object-fit:cover}
+.photo-tile-icon{display:grid;place-items:center;width:72px;height:72px;border-radius:14px;background:var(--brand-soft);color:var(--brand)}
+.photo-tile.done{border-style:solid;border-color:var(--success)}
+.photo-tile strong{display:block;font-size:16px}
+.menu-price-big{font-size:22px !important;font-weight:850}
+.diet-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.diet-seg input{position:absolute;opacity:0;pointer-events:none}
+.diet-seg span{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;border:1.5px solid var(--border);border-radius:14px;background:var(--surface);font-weight:800;cursor:pointer}
+.diet-seg i{width:14px;height:14px;border:2px solid currentColor;border-radius:3px;background:radial-gradient(circle,currentColor 0 3px,transparent 3.5px)}
+.diet-veg span{color:#127a42}.diet-nonveg span{color:#a32c3b}.diet-egg span{color:#b7791f}
+.diet-seg input:checked+span{border-color:currentColor;background:color-mix(in srgb,currentColor 10%,var(--surface));box-shadow:inset 0 0 0 1px currentColor}
+.diet-seg input:focus-visible+span{outline:2px solid var(--brand);outline-offset:2px}
+.label-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.label-tools .button{position:relative}
+.label-busy{display:none;align-items:center;gap:6px}
+.label-tools.busy .label-busy{display:inline-flex}
+.more-details{border:1px solid var(--border);border-radius:14px;padding:0 14px;background:var(--surface)}
+.more-details>summary{display:flex;align-items:center;justify-content:space-between;min-height:50px;font-weight:800;cursor:pointer;list-style:none}
+.more-details>summary::-webkit-details-marker{display:none}
+.more-details>summary::after{content:"+";font-size:22px;font-weight:600;color:var(--muted)}
+.more-details[open]>summary::after{content:"−"}
+.more-details[open]{padding-bottom:14px}
+.ifsc-bank{display:flex;align-items:center;gap:6px;margin-top:6px;color:var(--success);font-size:13.5px;font-weight:750}
+.ifsc-bank.bad{color:var(--danger)}
+.ob-dish .input-mic .input{min-width:0}
+@media (prefers-reduced-motion:reduce){.mic-button.listening{animation:none}}
+.qp-chip>b{font-weight:900;color:var(--brand)}
+.qp-chip.on>b{color:#fff}
+.qp-chip small{font-size:12.5px;font-weight:700;opacity:.75}
+
+/* Dashboard: a live store that hasn't signed its partner agreement yet. */
+.live-agree-card{display:flex;align-items:center;gap:14px;width:100%;padding:16px 18px;border:1px solid var(--border2);border-radius:22px;background:var(--brand-soft);color:var(--ink);text-align:left;cursor:pointer}
+.live-agree-card .grow{display:grid;gap:2px}
+.live-agree-card strong{font-size:16px;font-weight:850}
+.live-agree-card .grow span{font-size:13.5px;color:var(--muted)}

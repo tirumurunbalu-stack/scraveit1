@@ -1,4 +1,4 @@
-import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_VERSION, refreshRiderIdentity, syncGigRegistry, verifyRiderAadhaarQr} from "./services/riderIdentity";
+import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_VERSION, PAN_REGISTRY_RESULTS, recordRiderPanCheck as recordRiderPanCheckService, refreshRiderIdentity, syncGigRegistry, verifyRiderAadhaarQr} from "./services/riderIdentity";
 import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
@@ -8,12 +8,18 @@ import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPh
 import * as mealPlans from "./services/mealPlans";
 import * as social from "./services/social";
 import * as accountAge from "./services/accountAge";
-import {alarmAdmins, alertAdmins, applicationAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
+import * as parentPay from "./services/parentPay";
+import * as chatFun from "./services/chatFun";
+import * as posts from "./services/posts";
+import {alarmAdmins, alertAdmins, applicationAlert, privacyRequestAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
+import * as accountDeletion from "./services/accountDeletion";
+import * as cartReminderService from "./services/cartReminders";
+import * as mealSuggestionService from "./services/mealSuggestions";
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
 import {setGlobalOptions} from "firebase-functions/v2";
 import {onValueWritten} from "firebase-functions/v2/database";
-import {onDocumentCreated, onDocumentUpdated, onDocumentWritten} from "firebase-functions/v2/firestore";
+import {onDocumentCreated, onDocumentDeleted, onDocumentUpdated, onDocumentWritten} from "firebase-functions/v2/firestore";
 import {onCall, onRequest} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
@@ -93,6 +99,13 @@ import {
   chatSetupSchema,
   accountBirthDateSchema,
   accountParentRequestSchema,
+  parentPayRequestSchema,
+  chatCraveSchema,
+  chatEatingShareSchema,
+  chatPairOnlySchema,
+  chatIouSchema,
+  parentPayIdSchema,
+  parentPayRespondSchema,
   chatEmptySchema,
   chatCodeSchema,
   chatUsernameSchema,
@@ -109,6 +122,8 @@ import {
   subscribeMealPlanSchema,
   updateMealSubscriptionSchema,
   signRestaurantAgreementSchema,
+  liveRestaurantAgreementSchema,
+  signLiveRestaurantAgreementSchema,
 } from "./schemas";
 import {
   exportPlatformDataWorkbook as buildPlatformDataExport,
@@ -432,7 +447,7 @@ export const declineRiderOrder = onCall({
 });
 
 export const submitRiderFaceCheckCall = onCall({
-  region: REGION,
+  region: REGION, maxInstances: 10,
   enforceAppCheck: true,
   timeoutSeconds: 45,
   memory: "256MiB",
@@ -449,7 +464,7 @@ export const submitRiderFaceCheckCall = onCall({
 });
 
 export const verifyRiderLoginFaceCall = onCall({
-  region: REGION,
+  region: REGION, maxInstances: 10,
   enforceAppCheck: true,
   timeoutSeconds: 45,
   memory: "256MiB",
@@ -470,7 +485,7 @@ export const verifyRiderLoginFaceCall = onCall({
 });
 
 export const resolveRiderFaceReviewCall = onCall({
-  region: REGION,
+  region: REGION, maxInstances: 5,
   enforceAppCheck: true,
   timeoutSeconds: 45,
   memory: "256MiB",
@@ -837,7 +852,7 @@ export const getFinanceStatement = onCall({
 // Tax pack for a CA: sales, Scraveit income and GST, seller GST and TCS,
 // TDS, settlements, rider payouts, cash, refunds, invoices and a bank match.
 export const exportTaxPack = onCall({
-  region: REGION,
+  region: REGION, maxInstances: 3,
   enforceAppCheck: true,
   timeoutSeconds: 300,
   memory: "1GiB",
@@ -881,7 +896,7 @@ export const resolveRefundTdsReversal = onCall({
 });
 
 export const exportPlatformDataWorkbook = onCall({
-  region: REGION,
+  region: REGION, maxInstances: 3,
   enforceAppCheck: true,
   timeoutSeconds: 180,
   memory: "512MiB",
@@ -1433,6 +1448,16 @@ export const onOrderUpdated = onDocumentUpdated({
   await reconcileRestaurantOrderProjection(order);
   await reconcileRestaurantWorkload(order);
   await reconcileOperationalOrderProjection(order);
+  // Delivered: friends see an "eating now" ring on the customer's photo for 30 minutes.
+  if (before.status !== "Delivered" && order.status === "Delivered") {
+    await chatFun.markEatingNow(order)
+      .catch((error) => logger.warn("EATING_NOW_FAILED", {orderId: order.id, error: String(error)}));
+  }
+  // A parent who paid for this order follows it on their own home screen.
+  if (order.payerUid && (before.status !== order.status || before.riderName !== order.riderName || before.paymentState !== order.paymentState)) {
+    await parentPay.mirrorOrderToParent(order, before)
+      .catch((error) => logger.warn("PARENT_PAY_MIRROR_FAILED", {orderId: order.id, error: String(error)}));
+  }
   if (["Accepted", "Preparing", "Ready for pickup"].includes(order.status) && !order.riderId) {
     const queueSnapshot = await dispatchQueueRef(firestoreDb, order.id).get();
     const queue = queueSnapshot.exists ? queueSnapshot.data() as {status?: string} : null;
@@ -1867,7 +1892,8 @@ function economicsCallable<S extends z.ZodTypeAny, R>(
   schema: S,
   handler: (uid: string, token: DecodedIdTokenLike, input: z.infer<S>) => Promise<R>,
 ) {
-  return onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+  // Admin and store set-up screens only: a few instances are plenty (and keep the project inside its CPU quota).
+  return onCall({region: REGION, maxInstances: 10, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
     if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
     try {
       return await handler(request.auth.uid, request.auth.token, parse(schema, request.data ?? {}));
@@ -2136,7 +2162,7 @@ export const dineInWatch = onSchedule({schedule: "every 10 minutes", region: REG
 const awsKeys = () => ({id: AWS_ACCESS_KEY_ID.value(), secret: AWS_SECRET_ACCESS_KEY.value()});
 
 export const verifyRiderAadhaarQrCall = onCall({
-  region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
+  region: REGION, maxInstances: 5, invoker: "public", enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
   secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to verify your identity."));
@@ -2150,7 +2176,7 @@ export const verifyRiderAadhaarQrCall = onCall({
 });
 
 export const getRiderIdentityReviewCall = onCall({
-  region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
+  region: REGION, maxInstances: 5, invoker: "public", enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
   secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in first."));
@@ -2163,26 +2189,41 @@ export const getRiderIdentityReviewCall = onCall({
   }
 });
 
+/** Admin recorded the Income Tax portal's answer for a rider's PAN. */
+export const recordRiderPanCheck = onCall({
+  region: REGION, invoker: "public", enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB",
+  secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in first."));
+  try {
+    const input = parse(z.object({riderUid: z.string().trim().min(10).max(128).regex(/^[A-Za-z0-9_-]+$/), result: z.enum(PAN_REGISTRY_RESULTS)}).strict(), request.data);
+    return await recordRiderPanCheckService(request.auth.uid, request.auth.token, input, awsKeys());
+  } catch (error) {
+    logger.warn("recordRiderPanCheck rejected", {uid: request.auth.uid, error: String(error)});
+    throw asHttpsError(error);
+  }
+});
+
 /** Recompute a rider's identity checks when their PAN, face scan or name changes. */
 export const onRiderIdentitySourceWritten = onDocumentWritten({
-  document: "riders/{riderId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "512MiB",
+  document: "riders/{riderId}", region: REGION, maxInstances: 5, retry: false, timeoutSeconds: 60, memory: "512MiB",
   secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
 }, async (event) => {
   const after = event.data?.after?.data() as Record<string, unknown> | undefined;
   if (!after) return;
   const before = (event.data?.before?.data() ?? {}) as Record<string, unknown>;
-  const keys = ["panNumber", "faceReferenceObjectPath", "faceMatchStatus", "fullName", "identityFallback", "status"];
+  const keys = ["panNumber", "faceReferenceObjectPath", "faceMatchStatus", "fullName", "identityFallback", "status", "vehicleType", "dlNumber", "dlValidTill"];
   if (keys.every((key) => JSON.stringify(before[key] ?? null) === JSON.stringify(after[key] ?? null))) return;
   await refreshRiderIdentity(event.params.riderId, awsKeys()).catch((error) => logger.warn("RIDER_IDENTITY_REFRESH_FAILED", {uid: event.params.riderId, error: String(error)}));
 });
 
 /** Daily: delete Aadhaar images 7 days after a rider is approved or rejected. */
-export const riderIdentityRetention = onSchedule({schedule: "every 24 hours", region: REGION, timeoutSeconds: 300, memory: "256MiB"}, async () => {
+export const riderIdentityRetention = onSchedule({schedule: "every 24 hours", region: REGION, maxInstances: 1, timeoutSeconds: 300, memory: "256MiB"}, async () => {
   await enforceRiderIdentityRetention();
 });
 
 /** Hourly: keep the gig-worker register (joiners and exits) current for Shram Suvidha. */
-export const gigRegistrySync = onSchedule({schedule: "every 60 minutes", region: REGION, timeoutSeconds: 300, memory: "256MiB"}, async () => {
+export const gigRegistrySync = onSchedule({schedule: "every 60 minutes", region: REGION, maxInstances: 1, timeoutSeconds: 300, memory: "256MiB"}, async () => {
   await syncGigRegistry();
 });
 
@@ -2192,8 +2233,25 @@ export const gigRegistrySync = onSchedule({schedule: "every 60 minutes", region:
 export const getRestaurantAgreement = economicsCallable("getRestaurantAgreement", restaurantApplicationIdSchema,
   (uid, token, input) => onboarding.getRestaurantAgreement(uid, token, input.appId));
 
+/** A store that went live before in-app signing: its owner reads and signs the same agreement. */
+export const getLiveRestaurantAgreement = economicsCallable("getLiveRestaurantAgreement", liveRestaurantAgreementSchema,
+  (uid, token, input) => onboarding.getLiveRestaurantAgreement(uid, token, {restaurantId: input.restaurantId, details: input.details}));
+
+export const signLiveRestaurantAgreement = onCall({region: REGION, maxInstances: 5, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+  try {
+    const raw = request.rawRequest;
+    const forwarded = String(raw?.headers?.["x-forwarded-for"] ?? "").split(",")[0]?.trim() ?? "";
+    return await onboarding.signLiveRestaurantAgreement(request.auth.uid, request.auth.token, parse(signLiveRestaurantAgreementSchema, request.data ?? {}),
+      {ip: forwarded || String(raw?.ip ?? ""), userAgent: String(raw?.headers?.["user-agent"] ?? "")});
+  } catch (error) {
+    logger.warn("signLiveRestaurantAgreement rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
 /** Signing records the IP and device, so it reads the raw request. */
-export const signRestaurantAgreement = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB"}, async (request) => {
+export const signRestaurantAgreement = onCall({region: REGION, maxInstances: 5, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB"}, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
   try {
     const raw = request.rawRequest;
@@ -2215,6 +2273,10 @@ export const accountSetBirthDate = economicsCallable("accountSetBirthDate", acco
 export const accountParentRequest = economicsCallable("accountParentRequest", accountParentRequestSchema, (uid, _t, input) => accountAge.accountParentRequest(uid, input));
 export const accountParentRespond = economicsCallable("accountParentRespond", chatParentRespondSchema, (uid, _t, input) => accountAge.accountParentRespond(uid, input));
 export const accountParentRevoke = economicsCallable("accountParentRevoke", chatChildSchema, (uid, _t, input) => accountAge.accountParentRevoke(uid, input));
+export const parentPayRequest = economicsCallable("parentPayRequest", parentPayRequestSchema, (uid, _t, input) => parentPay.parentPayRequest(uid, input));
+export const parentPayCancel = economicsCallable("parentPayCancel", parentPayIdSchema, (uid, _t, input) => parentPay.parentPayCancel(uid, input));
+export const parentPayRespond = economicsCallable("parentPayRespond", parentPayRespondSchema, (uid, _t, input) =>
+  parentPay.parentPayRespond(uid, input, {onlineAvailable: phonePeGateway.configured}));
 
 // ---- Friends & chat ----
 export const chatSetup = economicsCallable("chatSetup", chatSetupSchema, (uid, _t, input) => social.chatSetup(uid, input));
@@ -2227,6 +2289,13 @@ export const chatMarkRead = economicsCallable("chatMarkRead", chatPairSchema, (u
 export const chatParentRequest = economicsCallable("chatParentRequest", chatCodeSchema, (uid, _t, input) => social.chatParentRequest(uid, input));
 export const chatParentRespond = economicsCallable("chatParentRespond", chatParentRespondSchema, (uid, _t, input) => social.chatParentRespond(uid, input));
 export const chatParentRevoke = economicsCallable("chatParentRevoke", chatChildSchema, (uid, _t, input) => social.chatParentRevoke(uid, input));
+export const chatCrave = economicsCallable("chatCrave", chatCraveSchema, (uid, _t, input) => chatFun.chatCrave(uid, input));
+export const chatSetEatingShare = economicsCallable("chatSetEatingShare", chatEatingShareSchema, (uid, _t, input) => chatFun.chatSetEatingShare(uid, input));
+export const chatTasteMatch = economicsCallable("chatTasteMatch", chatPairOnlySchema, (uid, _t, input) => chatFun.chatTasteMatch(uid, input));
+export const chatIou = economicsCallable("chatIou", chatIouSchema, (uid, _t, input) => chatFun.chatIou(uid, input));
+/** Sunday 7 pm India time: "Your food week is ready". */
+export const weeklyFoodCardPush = onSchedule({schedule: "0 19 * * 0", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 300, memory: "256MiB"},
+  async () => { await chatFun.weeklyCardPush(); });
 export const chatReport = economicsCallable("chatReport", chatReportSchema, (uid, _t, input) => social.chatReport(uid, input));
 export const resolveChatReport = economicsCallable("resolveChatReport", resolveChatReportSchema,
   (uid, token, input) => social.resolveChatReport(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
@@ -2249,6 +2318,36 @@ export const onChatMessageReacted = onDocumentUpdated({
     await social.onChatReaction(event.params.pairId, before, after);
   }
 });
+
+// ---- Friends' feed: photos and 24-hour stories ----
+/** A new post or story: put its card in the poster's and each friend's feed. */
+export const onPostCreated = onDocumentCreated({
+  document: "posts/{postId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  const data = event.data?.data() as Record<string, unknown> | undefined;
+  if (data) await posts.onPostCreated(event.params.postId, data);
+});
+/** A post deleted (by its poster, or its story ended): its cards and photo go too. */
+export const onPostDeleted = onDocumentDeleted({
+  document: "posts/{postId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => { await posts.onPostDeleted(event.params.postId); });
+/** A comment on a post or story: the commenter's name goes on it and the poster is told. */
+export const onPostCommentCreated = onDocumentCreated({
+  document: "posts/{postId}/comments/{commentId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  const data = event.data?.data() as Record<string, unknown> | undefined;
+  if (data) await posts.onCommentCreated(event.params.postId, event.params.commentId, data);
+});
+/** No longer friends: each person's posts leave the other's feed. */
+export const onFriendshipChanged = onDocumentWritten({
+  document: "friendships/{pairId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => {
+  await posts.onFriendshipChanged(event.data?.before?.data() as Record<string, unknown> | undefined,
+    event.data?.after?.data() as Record<string, unknown> | undefined);
+});
+/** Every 30 minutes: delete stories older than 24 hours. */
+export const deleteEndedStories = onSchedule({schedule: "every 30 minutes", region: REGION, timeoutSeconds: 120, memory: "256MiB"},
+  async () => { await posts.deleteEndedStories(); });
 
 // ---- Daily meal plans (tiffin) ----
 type IdToken = import("firebase-admin/auth").DecodedIdToken;
@@ -2330,6 +2429,40 @@ export const onSupportTicketCreated = onDocumentCreated({
 }, async (event) => {
   const alert = supportTicketAlert(event.params.ticketId, (event.data?.data() ?? null) as Record<string, unknown> | null);
   if (alert) await alarmAdmins(alert);
+});
+
+/** Someone asked to delete their account: tell the owner, then delete it (accountDeletion.ts). */
+export const onPrivacyRequestCreated = onDocumentCreated({
+  document: "privacyRequests/{requestId}", region: REGION, retry: false, timeoutSeconds: 540, memory: "512MiB", maxInstances: 5,
+}, async (event) => {
+  if (!event.data) return;
+  const alert = privacyRequestAlert(event.params.requestId, (event.data.data() ?? null) as Record<string, unknown> | null);
+  if (alert) await alertAdmins(alert.key, alert.title, alert.body, alert.route);
+  await accountDeletion.processDeletionRequest(event.data);
+});
+
+/** Every 15 minutes, 8 am to 10 pm: the next-day follow-up about a cart left behind. */
+export const cartReminders = onSchedule({schedule: "*/15 8-21 * * *", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 300, memory: "256MiB", maxInstances: 1}, async () => {
+  const sent = await cartReminderService.runCartReminders();
+  if (sent) logger.info("CART_REMINDERS_SENT", {sent});
+});
+
+/** Breakfast, lunch and dinner ideas for customers (mealSuggestions.ts). */
+function mealSchedule(slot: mealSuggestionService.MealSlot, schedule: string) {
+  return onSchedule({schedule, timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 540, memory: "512MiB", maxInstances: 1}, async () => {
+    const sent = await mealSuggestionService.runMealSuggestions(slot);
+    logger.info("MEAL_SUGGESTIONS_SENT", {slot, sent});
+  });
+}
+export const mealSuggestionBreakfast = mealSchedule("breakfast", "0 8 * * *");
+export const mealSuggestionLunch = mealSchedule("lunch", "30 12 * * *");
+export const mealSuggestionDinner = mealSchedule("dinner", "30 19 * * *");
+
+/** Daily: deletions that were waiting for an order to finish, and old squads. */
+export const accountDeletionDaily = onSchedule({schedule: "every day 03:30", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 540, memory: "512MiB", maxInstances: 1}, async () => {
+  const done = await accountDeletion.retryWaitingDeletions();
+  const squads = await accountDeletion.deleteOldSquads();
+  if (done || squads) logger.info("ACCOUNT_DELETION_DAILY", {done, squads});
 });
 
 /** Every 5 minutes: orders not accepted, cooking too long, or waiting for a rider. */

@@ -92,6 +92,8 @@ public class MainActivity extends ComponentActivity {
   private volatile File preparedImageFile;
   private volatile File preparedThumbFile;
   private boolean awaitingRestaurantLocation;
+  private static final int VOICE_REQUEST = 7305;
+  private String pendingVoiceRequest = "";
 
   @Override public void onCreate(Bundle state) {
     super.onCreate(state);
@@ -149,12 +151,16 @@ public class MainActivity extends ComponentActivity {
         // capture="environment" (the sealed-packet photo) opens the camera, never the
         // gallery, so the photo is taken now and not picked from old ones.
         if (params != null && params.isCaptureEnabled() && openCameraForCapture()) return true;
-        Intent chooser = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        chooser.addCategory(Intent.CATEGORY_OPENABLE);
-        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        chooser.setType("image/*");
+        // Every other photo: one picker with the camera and the gallery.
+        Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("image/*");
+        Intent chooser = Intent.createChooser(pick, "Take a photo or choose one");
+        Intent camera = cameraIntentForChooser();
+        if (camera != null) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{camera});
         try { startActivityForResult(chooser, FILE_CHOOSER_REQUEST); }
         catch (Exception error) {
+          cameraCaptureFile = null;
           fileChooserCallback.onReceiveValue(null);
           fileChooserCallback = null;
           return false;
@@ -171,7 +177,9 @@ public class MainActivity extends ComponentActivity {
 
     FrameLayout splash = new FrameLayout(this);
     ImageView logo = new ImageView(this);
-    logo.setImageResource(com.feastly.restaurant.R.drawable.savrivo_icon);
+    // This app's own icon (orange cloche for Restaurant, green for Grocery, blue for Dairy),
+    // drawn in the phone's icon shape, so the loading screen matches the home-screen icon.
+    logo.setImageResource(com.feastly.restaurant.R.mipmap.ic_launcher);
     logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
     logo.setAlpha(0f);
     logo.setScaleX(.72f);
@@ -184,7 +192,7 @@ public class MainActivity extends ComponentActivity {
     // The logo spells out Scraveit; the line under it names this app (Restaurant, Grocery or Dairy).
     String storeKind = getString(R.string.app_name).replace("Scraveit", "").trim().toUpperCase(java.util.Locale.ROOT);
     title.setText(storeKind);
-    title.setTextColor(Color.rgb(161, 220, 255));
+    title.setTextColor(getColor(com.feastly.restaurant.R.color.splash_title));
     title.setTextSize(17);
     title.setGravity(Gravity.CENTER);
     title.setLetterSpacing(.13f);
@@ -195,7 +203,7 @@ public class MainActivity extends ComponentActivity {
 
     TextView tag = new TextView(this);
     tag.setText("DAIRY".equals(storeKind) ? "RUN YOUR DAIRY" : "GROCERY".equals(storeKind) ? "RUN YOUR STORE" : "RUN YOUR RESTAURANT");
-    tag.setTextColor(Color.rgb(104, 159, 205));
+    tag.setTextColor(getColor(com.feastly.restaurant.R.color.splash_tag));
     tag.setTextSize(9);
     tag.setGravity(Gravity.CENTER);
     tag.setLetterSpacing(.10f);
@@ -413,6 +421,17 @@ public class MainActivity extends ComponentActivity {
       String safeRequestId = requestId == null ? "" : requestId.trim();
       runOnUiThread(() -> recognizePreparedText(safeRequestId, preparedImageFile));
     }
+    /** Speak instead of type: the phone's speech-to-text for one form field. */
+    @JavascriptInterface public void startVoiceInput(String requestId, String language) {
+      String safeId = requestId == null ? "" : requestId.trim();
+      String lang = "te".equals(language) ? "te-IN" : "en-IN";
+      runOnUiThread(() -> startVoiceInputInternal(safeId, lang));
+    }
+    /** The street, area, town and PIN code at a map pin, so the owner doesn't type them. */
+    @JavascriptInterface public void lookUpAddress(String requestId, double lat, double lng) {
+      String safeId = requestId == null ? "" : requestId.trim();
+      runOnUiThread(() -> lookUpAddressInternal(safeId, lat, lng));
+    }
     @JavascriptInterface public void uploadPreparedThumb(String requestId, String idToken,
                                                           String objectPath) {
       String safeRequestId = requestId == null ? "" : requestId.trim();
@@ -591,6 +610,60 @@ public class MainActivity extends ComponentActivity {
     });
   }
 
+  private void startVoiceInputInternal(String requestId, String language) {
+    if (!isTrustedPageLoaded() || !requestId.matches("[A-Za-z0-9_-]{1,80}")) return;
+    Intent intent = new Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+    intent.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+        android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+    intent.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, language);
+    intent.putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+    intent.putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT,
+        "te-IN".equals(language) ? "మాట్లాడండి…" : "Speak now");
+    pendingVoiceRequest = requestId;
+    try { startActivityForResult(intent, VOICE_REQUEST); }
+    catch (Exception error) {
+      pendingVoiceRequest = "";
+      publishVoice(requestId, "", false);
+    }
+  }
+
+  private void publishVoice(String requestId, String text, boolean available) {
+    if (webView == null || !isTrustedPageLoaded()) return;
+    String safe = text == null ? "" : text.length() > 400 ? text.substring(0, 400) : text;
+    webView.evaluateJavascript("window.restaurantVoiceHeard&&window.restaurantVoiceHeard(" + JSONObject.quote(requestId)
+        + "," + JSONObject.quote(safe) + "," + available + ")", null);
+  }
+
+  @SuppressWarnings("deprecation")
+  private void lookUpAddressInternal(String requestId, double lat, double lng) {
+    if (!isTrustedPageLoaded() || !requestId.matches("[A-Za-z0-9_-]{1,80}")
+        || Double.isNaN(lat) || Double.isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
+    imageExecutor.execute(() -> {
+      JSONObject out = new JSONObject();
+      try {
+        if (android.location.Geocoder.isPresent()) {
+          java.util.List<android.location.Address> found =
+              new android.location.Geocoder(this, new Locale("en", "IN")).getFromLocation(lat, lng, 1);
+          if (found != null && !found.isEmpty()) {
+            android.location.Address a = found.get(0);
+            out.put("line", text(a.getAddressLine(0)));
+            out.put("street", (text(a.getSubThoroughfare()) + " " + text(a.getThoroughfare())).trim());
+            out.put("area", text(a.getSubLocality()));
+            out.put("city", text(a.getLocality()).isEmpty() ? text(a.getSubAdminArea()) : text(a.getLocality()));
+            out.put("pincode", text(a.getPostalCode()));
+            out.put("state", text(a.getAdminArea()));
+          }
+        }
+      } catch (Exception ignored) { }
+      runOnUiThread(() -> {
+        if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(
+            "window.restaurantAddressFound&&window.restaurantAddressFound(" + JSONObject.quote(requestId) + "," + out + ")", null);
+      });
+    });
+  }
+
+  private static String text(String value) { return value == null ? "" : value.trim(); }
+
   private void requestRestaurantLocationInternal() {
     awaitingRestaurantLocation = true;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
@@ -652,6 +725,25 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  /** The camera option inside the "take or choose" picker; the photo lands in cameraCaptureFile. */
+  private Intent cameraIntentForChooser() {
+    try {
+      File directory = new File(getCacheDir(), "savrivo-images");
+      if (!directory.exists() && !directory.mkdirs()) return null;
+      File target = new File(directory, "camera-" + System.currentTimeMillis() + ".jpg");
+      Uri output = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", target);
+      Intent camera = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+      camera.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, output);
+      camera.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      camera.setClipData(android.content.ClipData.newRawUri("", output));
+      cameraCaptureFile = target;
+      return camera;
+    } catch (Exception error) {
+      cameraCaptureFile = null;
+      return null;
+    }
+  }
+
   private boolean openCameraForCapture() {
     try {
       File directory = new File(getCacheDir(), "savrivo-images");
@@ -672,6 +764,17 @@ public class MainActivity extends ComponentActivity {
 
   @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode == VOICE_REQUEST) {
+      String id = pendingVoiceRequest;
+      pendingVoiceRequest = "";
+      String heard = "";
+      if (resultCode == RESULT_OK && data != null) {
+        java.util.ArrayList<String> results = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
+        if (results != null && !results.isEmpty() && results.get(0) != null) heard = results.get(0);
+      }
+      if (!id.isEmpty()) publishVoice(id, heard, true);
+      return;
+    }
     if (requestCode == CAMERA_CAPTURE_REQUEST && fileChooserCallback != null) {
       File captured = cameraCaptureFile;
       cameraCaptureFile = null;
@@ -684,7 +787,15 @@ public class MainActivity extends ComponentActivity {
       return;
     }
     if (requestCode != FILE_CHOOSER_REQUEST || fileChooserCallback == null) return;
+    File captured = cameraCaptureFile;
+    cameraCaptureFile = null;
     Uri selected = resultCode == RESULT_OK && data != null ? data.getData() : null;
+    // Taken with the camera from the picker: the photo is in our file, not in data.
+    if (selected == null && resultCode == RESULT_OK && captured != null && captured.isFile() && captured.length() > 0) {
+      selected = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", captured);
+    } else if (captured != null) {
+      captured.delete();
+    }
     if (!isTrustedPageLoaded() || selected == null) {
       completeFileChooser(null);
       return;

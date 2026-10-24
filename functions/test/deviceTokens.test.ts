@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {deviceTokenKey, type DeviceTokenRecord, upsertDeviceToken} from "../src/domain/deviceTokens";
+import {deviceTokenKey, type DeviceTokenRecord, isStaleDeviceToken, STALE_CUSTOMER_TOKEN_MS, upsertDeviceToken} from "../src/domain/deviceTokens";
 
 const base = {
   token: "fcm-registration-token-that-is-long-enough-1",
@@ -32,5 +32,12 @@ describe("device token registry", () => {
     const first = upsertDeviceToken(null, base, 100, 1);
     expect(() => upsertDeviceToken(first.tokens, {...base, token: `${base.token}-2`}, 200, 1))
       .toThrow("DEVICE_TOKEN_CAP_REACHED");
+  });
+
+  it("treats only long-unused customer phones as stale", () => {
+    const now = 10 * STALE_CUSTOMER_TOKEN_MS;
+    expect(isStaleDeviceToken({app: "customer", updatedAt: now - STALE_CUSTOMER_TOKEN_MS - 1}, now)).toBe(true);
+    expect(isStaleDeviceToken({app: "customer", updatedAt: now - 1000}, now)).toBe(false);
+    expect(isStaleDeviceToken({app: "restaurant", updatedAt: 0}, now)).toBe(false);
   });
 });

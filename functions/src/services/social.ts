@@ -8,6 +8,7 @@ import {DomainError} from "../errors";
 import {alarmAdmins, requestAlarmId} from "./adminAlerts";
 import {accountSetBirthDate, loadAccountAge} from "./accountAge";
 import {notifyUserChat} from "./notifications";
+import {celebrateStreak, streakUpdate} from "./chatFun";
 
 /**
  * Friends & chat (step 1): friend codes, friend requests, one-to-one chat,
@@ -120,7 +121,7 @@ async function loadProfile(uid: string): Promise<Rec | null> {
   return snap.exists ? snap.data() as Rec : null;
 }
 
-async function requireChatter(uid: string, now: number): Promise<Rec> {
+export async function requireChatter(uid: string, now: number): Promise<Rec> {
   const profile = await loadProfile(uid);
   const allowed = chatAllowed(profile, now);
   if (!allowed.ok) {
@@ -406,11 +407,16 @@ export async function resolveChatReport(adminUid: string, token: DecodedIdToken,
     // Hide the reported person's messages in that chat; kept 180 days for any investigation.
     const theirs = await messagesOf(String(report.pairId)).where("from", "==", reported).get();
     const batch = firestoreDb.batch();
-    theirs.docs.forEach((d) => batch.update(d.ref, {removed: true, removedAt: now, deleteAfter: now + REMOVED_KEEP_MS}));
-    if (!theirs.empty) await batch.commit();
+    // Their photos in that chat are hidden the same way (kept for the investigation, not readable by the pair).
+    const photos = await firestoreDb.collection("chats").doc(String(report.pairId)).collection("photos").where("from", "==", reported).get();
+    theirs.docs.concat(photos.docs).forEach((d) => batch.update(d.ref, {removed: true, removedAt: now, deleteAfter: now + REMOVED_KEEP_MS}));
+    if (!theirs.empty || !photos.empty) await batch.commit();
   }
   if (input.action === "remove" || input.action === "suspend" || input.action === "ban") {
     await firestoreDb.collection("chatAvatars").doc(reported).delete().catch(() => undefined);
+    // Their posts and stories come down too (photos kept hidden for the investigation).
+    const {takeDownPosts} = await import("./posts");
+    await takeDownPosts(reported, now).catch((error) => logger.warn("POST_TAKEDOWN_FAILED", {error: String(error)}));
   }
   if (input.action === "suspend") await profiles().doc(reported).set({status: "suspended", suspendedUntil: now + 7 * 24 * 60 * 60 * 1000, updatedAt: now}, {merge: true});
   if (input.action === "ban") await profiles().doc(reported).set({status: "banned", bannedAt: now, updatedAt: now}, {merge: true});
@@ -439,8 +445,12 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
   if (!pair || pair.status !== "accepted") return;
   const to = (pair.members as string[]).find((m) => m !== from);
   if (!to) return;
-  const preview = message.card ? `🍽 ${String((message.card as Rec).name ?? "A dish")}` : masked.slice(0, 120);
-  await friendships().doc(pairId).update({lastText: preview, lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), updatedAt: now});
+  const card = message.card as Rec | undefined;
+  const preview = card ? (card.type === "photo" ? (masked ? `📷 ${masked.slice(0, 110)}` : "📷 Photo")
+    : card.type === "story" ? "📸 Shared a story" : `🍽 ${String(card.name ?? "A dish")}`) : masked.slice(0, 120);
+  const {streak, milestone} = streakUpdate(pair, from, now);
+  await friendships().doc(pairId).update({lastText: preview, lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
+  if (milestone) await celebrateStreak({...pair, id: pairId}, milestone);
   const names = (pair.names ?? {}) as Record<string, string>;
   await notifyUserChat({uid: to, key: `chat:${pairId}:${messageId}`, title: names[from] || "New message", body: preview, data: {route: `dm:${pairId}`}})
     .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));

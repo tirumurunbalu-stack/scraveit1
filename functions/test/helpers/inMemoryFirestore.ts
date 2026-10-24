@@ -60,6 +60,18 @@ export class InMemoryFirestore implements FirestoreLike {
     return new InMemoryCollection(this.store, name);
   }
 
+  /** Every collection with this id, at any depth (posts/x/comments, squads/y/picks...). */
+  collectionGroup(name: string): QueryLike {
+    return new InMemoryGroupQuery(this.store, name);
+  }
+
+  /** Deletes a document and everything under it, like Firestore's recursiveDelete. */
+  async recursiveDelete(ref: DocumentReferenceLike): Promise<void> {
+    for (const path of [...this.store.keys()]) {
+      if (path === ref.path || path.startsWith(ref.path + "/")) this.store.delete(path);
+    }
+  }
+
   doc(path: string): DocumentReferenceLike {
     const segments = path.split("/").filter(Boolean);
     if (segments.length < 2 || segments.length % 2 !== 0) {
@@ -199,7 +211,9 @@ class InMemoryQuery implements QueryLike {
   constructor(protected readonly store: Map<string, unknown>, protected readonly collectionPath: string) {}
 
   private clone(): InMemoryQuery {
-    const next = new InMemoryQuery(this.store, this.collectionPath);
+    // Same kind of query as this one, so a collection-group query stays one after .where().
+    const Kind = this instanceof InMemoryGroupQuery ? InMemoryGroupQuery : InMemoryQuery;
+    const next = new Kind(this.store, this.collectionPath);
     next.wheres = [...this.wheres];
     next.orderByField = this.orderByField;
     next.orderDirection = this.orderDirection;
@@ -274,12 +288,16 @@ class InMemoryQuery implements QueryLike {
     });
   }
 
-  async get(): Promise<QuerySnapshotLike> {
+  /** The documents this query looks at, before filtering. */
+  protected candidates(): Array<{id: string; collectionPath: string; data: Record<string, unknown>}> {
     const prefix = `${this.collectionPath}/`;
-    let entries = [...this.store.entries()]
+    return [...this.store.entries()]
       .filter(([path]) => path.startsWith(prefix) && path.slice(prefix.length).split("/").length === 1)
-      .map(([path, value]) => ({id: path.slice(prefix.length), data: value as Record<string, unknown>}))
-      .filter((entry) => this.matches(entry.data));
+      .map(([path, value]) => ({id: path.slice(prefix.length), collectionPath: this.collectionPath, data: value as Record<string, unknown>}));
+  }
+
+  async get(): Promise<QuerySnapshotLike> {
+    let entries = this.candidates().filter((entry) => this.matches(entry.data));
 
     if (this.orderByField) {
       const field = this.orderByField;
@@ -299,11 +317,12 @@ class InMemoryQuery implements QueryLike {
     if (this.limitLastCount !== null) entries = entries.slice(-this.limitLastCount);
     else if (this.limitCount !== null) entries = entries.slice(0, this.limitCount);
 
-    const docs: DocumentSnapshotLike[] = entries.map((entry) => ({
+    const docs = entries.map((entry) => ({
       id: entry.id,
       exists: true,
+      ref: new InMemoryDocument(this.store, entry.collectionPath, entry.id),
       data: () => structuredClone(entry.data),
-    }));
+    })) as DocumentSnapshotLike[];
     return {
       empty: docs.length === 0,
       size: docs.length,
@@ -313,9 +332,28 @@ class InMemoryQuery implements QueryLike {
   }
 }
 
+class InMemoryGroupQuery extends InMemoryQuery {
+  protected candidates(): Array<{id: string; collectionPath: string; data: Record<string, unknown>}> {
+    const out: Array<{id: string; collectionPath: string; data: Record<string, unknown>}> = [];
+    for (const [path, value] of this.store.entries()) {
+      const segments = path.split("/");
+      if (segments.length % 2 !== 0 || segments[segments.length - 2] !== this.collectionPath) continue;
+      out.push({id: segments[segments.length - 1], collectionPath: segments.slice(0, -1).join("/"), data: value as Record<string, unknown>});
+    }
+    return out;
+  }
+}
+
 class InMemoryCollection extends InMemoryQuery implements CollectionReferenceLike {
   get id(): string {
     return this.collectionPath.split("/").pop() ?? this.collectionPath;
+  }
+
+  /** Every document id in this collection, including ones that only have subcollections. */
+  async listDocuments(): Promise<DocumentReferenceLike[]> {
+    const prefix = `${this.collectionPath}/`, ids = new Set<string>();
+    for (const path of this.store.keys()) if (path.startsWith(prefix)) ids.add(path.slice(prefix.length).split("/")[0]);
+    return [...ids].map((id) => new InMemoryDocument(this.store, this.collectionPath, id));
   }
 
   doc(id?: string): DocumentReferenceLike {

@@ -136,16 +136,22 @@ public final class SavrivoFirebase {
     }
 
     private static boolean installDebugVariantProvider(Context context, FirebaseApp firebaseApp) {
-        try {
-            Class<?> installer = Class.forName(context.getPackageName() + ".AppCheckProviderInstaller");
-            installer.getMethod("install", FirebaseApp.class).invoke(null, firebaseApp);
-            return true;
-        } catch (ClassNotFoundException missing) {
-            return false;
-        } catch (Exception error) {
-            Log.e(TAG, "Debug App Check identity initialization failed.", error);
-            return false;
+        // The grocery and dairy builds keep the restaurant app's code namespace under their own
+        // package name, so look there too.
+        String[] owners = {context.getPackageName(), "com.feastly.restaurant"};
+        for (String owner : owners) {
+            try {
+                Class<?> installer = Class.forName(owner + ".AppCheckProviderInstaller");
+                installer.getMethod("install", FirebaseApp.class).invoke(null, firebaseApp);
+                return true;
+            } catch (ClassNotFoundException missing) {
+                // Try the next owner.
+            } catch (Exception error) {
+                Log.e(TAG, "Debug App Check identity initialization failed.", error);
+                return false;
+            }
         }
+        return false;
     }
 
     private static Bundle metadata(Context context) {

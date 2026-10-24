@@ -1,23 +1,24 @@
 /**
- * Edge cache in front of Firebase Storage for one bucket only.
+ * Edge cache in front of Firebase Storage.
  *
- * Why this exists: savrivo-app's Realtime Database (and its Storage bucket,
- * provisioned alongside it) live in us-central1, while customers are in
- * India. Every image request pays a fixed cross-continent round trip no
- * matter how small the file is. This worker mirrors the exact Firebase
- * Storage REST URL shape (/v0/b/{bucket}/o/{path}) at a domain Cloudflare
- * fronts, and caches each object at the edge after the first request - so
- * every customer after the first one gets the image from a nearby edge
- * location instead of us-central1.
+ * Photos live in the Mumbai bucket (savrivo-app-mumbai, asia-south1) since
+ * 23 Oct 2026; the original US bucket is still allowed for links an older
+ * app build saved. This worker mirrors the Firebase Storage REST URL shape
+ * (/v0/b/{bucket}/o/{path}) and keeps each public photo at Cloudflare's
+ * nearest location (Chennai / Mumbai for India) after the first request, so
+ * customers get it in about 0.1 s.
  *
- * Object bytes never change once uploaded (every upload path in this repo
- * writes a fresh timestamped filename - see thumbPath()/prepareUploadFile()
- * in the native apps), so caching indefinitely at the edge is safe: there is
- * no staleness case to worry about.
+ * Only public media (store and menu photos, admin-uploaded artwork) is cached.
+ * Anything under private/ (identity documents, sealed-packet photos) is passed
+ * straight through and never stored at the edge.
+ *
+ * Object bytes never change once uploaded (every upload writes a fresh
+ * timestamped filename), so caching public photos for a year is safe.
  */
 
-const ALLOWED_BUCKET = "savrivo-app.firebasestorage.app";
-const ALLOWED_PATH = new RegExp(`^/v0/b/${ALLOWED_BUCKET.replace(/\./g, "\\.")}/o/.+$`);
+const ALLOWED_BUCKETS = ["savrivo-app-mumbai", "savrivo-app.firebasestorage.app"];
+const PATH = /^\/v0\/b\/([^/]+)\/o\/(.+)$/;
+const PUBLIC_PREFIXES = ["restaurants/", "admin-uploads/"];
 const ORIGIN = "https://firebasestorage.googleapis.com";
 const EDGE_TTL_SECONDS = 31536000; // 1 year - matches the immutable Cache-Control set at upload time.
 
@@ -27,8 +28,18 @@ export default {
       return new Response("Method not allowed", {status: 405});
     }
     const url = new URL(request.url);
-    if (!ALLOWED_PATH.test(url.pathname)) {
+    const match = PATH.exec(url.pathname);
+    if (!match || !ALLOWED_BUCKETS.includes(decodeURIComponent(match[1]))) {
       return new Response("Not found", {status: 404});
+    }
+    let objectName = "";
+    try { objectName = decodeURIComponent(match[2]); } catch { return new Response("Not found", {status: 404}); }
+    if (!PUBLIC_PREFIXES.some((prefix) => objectName.startsWith(prefix))) {
+      const passed = await fetch(ORIGIN + url.pathname + url.search, {cf: {cacheTtl: 0, cacheEverything: false}});
+      const headers = new Headers(passed.headers);
+      headers.set("Cache-Control", "private, no-store");
+      headers.delete("set-cookie");
+      return new Response(passed.body, {status: passed.status, headers});
     }
 
     const cache = caches.default;

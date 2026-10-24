@@ -322,11 +322,13 @@ export async function initiatePayment(
   database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
   now: () => number = Date.now,
 ): Promise<PaymentIntent> {
-  if (uid !== input.customerId) throw new DomainError("permission-denied", "Payment owner mismatch.");
   const orderSnapshot = await orderRef(database, input.orderId).get();
   const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
+  // The customer pays, or the parent recorded as payer on their child's order.
+  const payer = uid === input.customerId || (!!order?.payerUid && uid === order.payerUid);
+  if (!payer) throw new DomainError("permission-denied", "Payment owner mismatch.");
   if (!order) throw new DomainError("not-found", "Order not found.");
-  if (order.customerId !== uid || order.status !== "Order placed") {
+  if (order.customerId !== input.customerId || order.status !== "Order placed") {
     throw new DomainError("failed-precondition", "Order cannot start an online payment.");
   }
   if (order.paymentState === "paid" || order.paymentState === "refunded") {

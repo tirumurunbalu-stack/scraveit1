@@ -18,6 +18,8 @@ import type {
   RtdbObject,
 } from "../domain/outbox";
 import {deterministicOutboxEventId} from "../domain/outbox";
+import {isStaleDeviceToken} from "../domain/deviceTokens";
+import {deviceTokenOwnerRef} from "./deviceTokens";
 import type {OrderStatus, SavrivoOrder} from "../types";
 import {
   enqueueNotification,
@@ -29,6 +31,7 @@ interface DeviceTokenRecord {
   token?: string;
   enabled?: boolean;
   app?: "customer" | "restaurant" | "rider" | "admin";
+  updatedAt?: number;
 }
 
 function deviceTokensRef(database: FirestoreLike, uid: string): DocumentReferenceLike {
@@ -45,9 +48,29 @@ function tokenRecords(value: unknown): Array<{key: string; value: DeviceTokenRec
 async function tokensForUsers(uids: string[], app?: DeviceTokenRecord["app"]): Promise<Array<{uid: string; key: string; token: string}>> {
   const unique = [...new Set(uids.filter(Boolean))];
   const snapshots = await Promise.all(unique.map((uid) => deviceTokensRef(firestoreDb, uid).get()));
-  return snapshots.flatMap((snapshot, index) => tokenRecords(snapshot.exists ? snapshot.data() : null)
+  const now = Date.now();
+  const stale = new Map<string, string[]>();
+  const drop = (uid: string, key: string) => stale.set(uid, [...(stale.get(uid) ?? []), key]);
+  const records = snapshots.flatMap((snapshot, index) => tokenRecords(snapshot.exists ? snapshot.data() : null)
     .filter(({value}) => !app || value.app === app)
+    // A customer phone unused for a month is dropped (see isStaleDeviceToken).
+    .filter(({key, value}) => !isStaleDeviceToken({app: value.app ?? "customer", updatedAt: Number(value.updatedAt ?? 0)}, now) || (drop(unique[index] ?? "", key), false))
     .map(({key, value}) => ({uid: unique[index] ?? "", key, token: String(value.token)})));
+  // A phone now signed in to another account is skipped, and dropped from this account.
+  const owners = await Promise.all(records.map((record) => deviceTokenOwnerRef(firestoreDb, record.key).get().catch(() => null)));
+  const kept = records.filter((record, index) => {
+    const owner = owners[index];
+    const ownerUid = owner?.exists ? String((owner.data() as {uid?: string} | undefined)?.uid ?? "") : "";
+    if (!ownerUid || ownerUid === record.uid) return true;
+    drop(record.uid, record.key);
+    return false;
+  });
+  if (stale.size) {
+    await Promise.all([...stale.entries()].map(([uid, keys]) => deviceTokensRef(firestoreDb, uid)
+      .update(Object.fromEntries(keys.map((key) => [key, FieldValue.delete()])))))
+      .catch((error) => logger.warn("STALE_DEVICE_TOKEN_CLEANUP_FAILED", {count: stale.size, error: String(error)}));
+  }
+  return kept;
 }
 
 async function restaurantUserIds(restaurantId: string): Promise<string[]> {
@@ -626,6 +649,40 @@ export async function notifyUserChat(input: {uid: string; key: string; title: st
       data: {type: "CHAT", ...(input.data ?? {})},
       android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** A reminder about items left in the cart (cartReminders.ts). Offers channel, so it can be muted in phone settings. */
+export async function notifyCartReminder(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_CART_REMINDER",
+    aggregateType: "cart_reminder",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-cart:${input.key}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "CART_REMINDER", route: "cart"},
+      android: {priority: "normal", notification: {channelId: "customer_reminders", sound: "default"}},
+      apns: {headers: {"apns-priority": "5"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** A breakfast, lunch or dinner idea for one customer (mealSuggestions.ts). */
+export async function notifyMealSuggestion(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_MEAL_SUGGESTION",
+    aggregateType: "meal_suggestion",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-meal:${input.key}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "MEAL_SUGGESTION", route: "home"},
+      android: {priority: "normal", notification: {channelId: "customer_reminders", sound: "default"}},
+      apns: {headers: {"apns-priority": "5"}, payload: {aps: {sound: "default"}}},
     }),
   });
 }

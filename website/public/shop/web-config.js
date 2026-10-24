@@ -13,7 +13,7 @@ window.SCRAVEIT_WEB = {
     apiKey: "AIzaSyBV3xmCm7HiWJLygloPDNBg6qq6gkO-F6I",
     authDomain: "savrivo-app.firebaseapp.com",
     projectId: "savrivo-app",
-    storageBucket: "savrivo-app.firebasestorage.app",
+    storageBucket: "savrivo-app-mumbai",
     messagingSenderId: "458592242638",
     appId: "1:458592242638:web:f363ea81149d64dc44b99f",
   },
@@ -40,6 +40,6 @@ window.SCRAVEIT_WEB = {
     gstin: "37ABVCS0396N1ZA",
     address: "20-4-656, Macleans Road, Revenue Ward No 20-I, Vedayapalem, Nellore, Andhra Pradesh 524004, India",
     email: "balaji@scraveit.in",
-    fssaiStatus: "FSSAI licence application submitted (Reference No. 10260921109099066). The licence number will be displayed here once issued.",
+    fssaiStatus: "Licence No. 10126999000612 (Central Licence, e-commerce).",
   },
 };

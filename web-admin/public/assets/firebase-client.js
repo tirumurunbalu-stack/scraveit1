@@ -18,13 +18,16 @@ import {
 import {
   getDatabase, ref, get,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import {
+  getFirestore, collection, query, where, limit, getDocs, getDoc, doc, updateDoc, setDoc,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBV3xmCm7HiWJLygloPDNBg6qq6gkO-F6I",
   authDomain: "savrivo-app.firebaseapp.com",
   databaseURL: "https://savrivo-app-default-rtdb.firebaseio.com",
   projectId: "savrivo-app",
-  storageBucket: "savrivo-app.firebasestorage.app",
+  storageBucket: "savrivo-app-mumbai",
   messagingSenderId: "458592242638",
   appId: "1:458592242638:web:f363ea81149d64dc44b99f",
 };
@@ -47,6 +50,7 @@ initializeAppCheck(app, {
 const auth = getAuth(app);
 const functions = getFunctions(app, FUNCTIONS_REGION);
 const database = getDatabase(app);
+const firestore = getFirestore(app);
 
 let currentUser = null;
 let currentClaims = null;
@@ -241,5 +245,35 @@ export function onSessionChange(cb) {
     }
     currentUser = user;
     cb(session());
+  });
+}
+
+// ---- Firestore: the rider review queue reads and decides the same rider
+// records the Admin app does (rules: owner/ops_admin may read and update them).
+export async function listRiders(statuses, max) {
+  const q = query(collection(firestore, "riders"), where("status", "in", statuses), limit(max || 200));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => Object.assign({id: d.id}, d.data()));
+}
+
+export async function readRider(uid) {
+  const snap = await getDoc(doc(firestore, "riders", uid));
+  return snap.exists() ? Object.assign({id: snap.id}, snap.data()) : null;
+}
+
+export async function updateRider(uid, changes) {
+  await updateDoc(doc(firestore, "riders", uid), changes);
+}
+
+/** The same audit entry the Admin app writes for every decision (best effort, as in the app). */
+export async function writeAudit(action, target, detail) {
+  try { await writeAuditEntry(action, target, detail); } catch (_) { /* the audit collection is server-written only */ }
+}
+async function writeAuditEntry(action, target, detail) {
+  const s = session();
+  const id = "audit_" + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "").slice(0, 16) : Date.now().toString(36));
+  await setDoc(doc(firestore, "audit", id), {
+    id, action, target, detail: detail || "", actorId: s.user ? s.user.uid : "", actorEmail: s.user ? s.user.email : "",
+    actorRole: s.claims ? s.claims.savrivoRole : "", source: "web-admin", at: Date.now(),
   });
 }

@@ -512,11 +512,16 @@ test("Savrivo current issue batch contracts are present", () => {
   const orderAlarmService = read(path.join(nativeRoot, "shared", "firebase", "java", "com", "savrivo", "firebase", "OrderAlarmService.java"));
   check(orderAlarmService.includes("START_ORDER_ALARM") && orderAlarmService.includes("MediaPlayer") && orderAlarmService.includes("savrivo_action_alert") && orderAlarmService.includes("setLooping(true)"), "Restaurant and Partner must loop the supplied Savrivo action alert sound");
   check(!orderAlarmService.includes("ToneGenerator") && !orderAlarmService.includes("RingtoneManager"), "Operational alerts must not reuse a generated tone, phone ringtone, or device default alarm");
-  const alertHashes = ["restaurant", "rider", "admin"].map((module) => {
-    const audio = fs.readFileSync(path.join(nativeRoot, module, "src", "main", "res", "raw", "savrivo_action_alert.mp3"));
-    return crypto.createHash("sha256").update(audio).digest("hex");
+  const adminAudio = fs.readFileSync(path.join(nativeRoot, "admin", "src", "main", "res", "raw", "savrivo_action_alert.mp3"));
+  check(crypto.createHash("sha256").update(adminAudio).digest("hex") === "f492c4f7d56d76ecd735537da68c452db7d8024fdd27c745164c1297187050ef", "Admin must package the exact supplied alert audio");
+  // Restaurant, Grocery, Dairy and Partner share the marimba alert (twice, then a short pause), as the owner chose.
+  const ringHashes = ["restaurant", "rider"].map((module) => {
+    const raw = path.join(nativeRoot, module, "src", "main", "res", "raw");
+    const ring = fs.readFileSync(path.join(raw, "savrivo_action_alert.wav"));
+    check(!fs.existsSync(path.join(raw, "savrivo_action_alert.mp3")) && ring.slice(0, 4).toString() === "RIFF" && ring.slice(8, 12).toString() === "WAVE" && ring.length > 100000, module + " must package the marimba as its only order alert");
+    return crypto.createHash("sha256").update(ring).digest("hex");
   });
-  check(new Set(alertHashes).size === 1 && alertHashes[0] === "f492c4f7d56d76ecd735537da68c452db7d8024fdd27c745164c1297187050ef", "Restaurant, Partner, and Admin must package the exact supplied alert audio");
+  check(new Set(ringHashes).size === 1, "Store apps and Partner must ring with the same alert");
   check(!restaurantJava.includes("getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE"), "Restaurant screenshots must stay enabled in development build");
   check(rider.includes('id="job-search"') && rider.includes("jobMatches") && rider.includes("function searchMatches"), "Partner delivery search must use normalized live matching");
   check(rider.includes("STALE_RIDER_SYNC_IGNORED") && rider.includes("appliedSyncSequence"), "Partner must ignore out-of-order offer refreshes");

@@ -1,3 +1,5 @@
 <resources>
     <color name="scraveit_icon_background">#12805C</color>
+    <color name="splash_title">#4CA52F</color>
+    <color name="splash_tag">#3E7F2A</color>
 </resources>

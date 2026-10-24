@@ -3,6 +3,7 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {z} from "zod";
 import {firestoreDb, storage} from "../admin";
+import {mediaFile} from "./mediaBucket";
 import {
   inspectRasterImage,
   KYC_MEDIA_DAILY_LIMIT,
@@ -359,7 +360,7 @@ export async function createRiderKycReviewUrl(
   const record = (recordSnapshot.exists ? recordSnapshot.data() : null) as KycObjectRecord | null;
   const expectedPrefix = `private/rider-kyc/${input.riderUid}/${input.documentKind}`;
   if (!record?.objectPath || record.objectPath !== expectedPrefix) throw new DomainError("not-found", "Identity document not found.");
-  const file = storage.bucket().file(record.objectPath);
+  const file = await mediaFile(record.objectPath);
   const expiresAt = Date.now() + 5 * 60_000;
   const [url] = await file.getSignedUrl({version: "v4", action: "read", expires: expiresAt});
   await firestoreDb.collection("private").doc("kycAccessAudit").collection("entries").doc().set({
@@ -467,7 +468,7 @@ export async function verifyRiderLoginFace(
   }
   const image = inspect(input, "kyc");
   const profileMs = Date.now() - startedAt;
-  const [referenceBuffer] = await storage.bucket().file(rider.faceReferenceObjectPath).download();
+  const [referenceBuffer] = await (await mediaFile(rider.faceReferenceObjectPath)).download();
   const downloadMs = Date.now() - startedAt - profileMs;
   const result = await compareRiderLoginFace(awsAccessKeyId, awsSecretAccessKey, uid, referenceBuffer, image.buffer);
   logger.info("RIDER_LOGIN_FACE_TIMING", {
@@ -500,7 +501,7 @@ export async function resolveRiderFaceReview(
   if (!rider || rider.faceMatchStatus !== "needs_review" || !rider.faceReferenceObjectPath) {
     throw new DomainError("failed-precondition", "This rider has no pending face match to resolve.");
   }
-  const [referenceBuffer] = await storage.bucket().file(rider.faceReferenceObjectPath).download();
+  const [referenceBuffer] = await (await mediaFile(rider.faceReferenceObjectPath)).download();
   const result = await indexRiderFaceDirectly(awsAccessKeyId, awsSecretAccessKey, input.riderUid, referenceBuffer);
   const now = Date.now();
   await riderRef(firestoreDb, input.riderUid).set({

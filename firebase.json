@@ -22,9 +22,10 @@
     "rules": "firebase/firestore.rules",
     "indexes": "firebase/firestore.indexes.json"
   },
-  "storage": {
-    "rules": "firebase/storage.rules"
-  },
+  "storage": [
+    {"bucket": "savrivo-app-mumbai", "rules": "firebase/storage.rules"},
+    {"bucket": "savrivo-app.firebasestorage.app", "rules": "firebase/storage.rules"}
+  ],
   "hosting": {
     "public": "web-admin/public",
     "ignore": [

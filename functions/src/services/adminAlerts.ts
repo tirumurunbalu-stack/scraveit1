@@ -62,6 +62,18 @@ export function supportTicketAlert(ticketId: string, ticket: Rec | null, now = D
     body: `${who}: ${topic}${ticket.orderId ? ` · order #${String(ticket.orderId).slice(-5).toUpperCase()}` : ""}`};
 }
 
+/**
+ * Someone asking to delete their account (withdrawing consent, DPDP Act, 2023,
+ * s.6(4) and s.12). The privacy notice promises erasure within 30 days, so the
+ * owner is told at once.
+ */
+export function privacyRequestAlert(requestId: string, request: Rec | null): {key: string; title: string; body: string; route: string} | null {
+  if (!request || request.type !== "account_deletion" || request.status !== "requested") return null;
+  const who = String(request.email || request.uid || "A user").slice(0, 80);
+  return {key: `privacy:${requestId}`, route: "", title: "Account deletion request",
+    body: `${who} asked to delete their account and withdraw consent. Deleting it now; you'll hear only if something blocks it.`};
+}
+
 /** What a change to a store application is worth telling the owner about. */
 export function applicationAlert(appId: string, before: Rec | null, after: Rec | null, now = Date.now()): RequestAlert | null {
   if (!after) return null;

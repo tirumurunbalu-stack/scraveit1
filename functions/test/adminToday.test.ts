@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from "vitest";
 vi.mock("../src/admin", () => ({firestoreDb: {}, auth: {}, storage: {}}));
 
 const {istDayStart, summarize} = await import("../src/services/adminToday");
-const {applicationAlert, requestAlarmId, riderApplicationAlert, stuckReason, supportTicketAlert} = await import("../src/services/adminAlerts");
+const {applicationAlert, privacyRequestAlert, requestAlarmId, riderApplicationAlert, stuckReason, supportTicketAlert} = await import("../src/services/adminAlerts");
 
 describe("today at a glance", () => {
   it("starts the day at midnight in India", () => {
@@ -46,6 +46,13 @@ describe("urgent alerts", () => {
     expect(alert?.body).toContain("#12345");
     expect(supportTicketAlert("SUP-2", {uid: "c1", status: "closed"})).toBeNull();
     expect(supportTicketAlert("SUP-3", {status: "open"})).toBeNull();
+  });
+  it("tells the owner about an account deletion request", () => {
+    const alert = privacyRequestAlert("privacy_1", {type: "account_deletion", status: "requested", uid: "c1", email: "asha@example.com"});
+    expect(alert).toMatchObject({key: "privacy:privacy_1", title: "Account deletion request"});
+    expect(alert?.body).toContain("asha@example.com");
+    expect(privacyRequestAlert("privacy_2", {type: "account_deletion", status: "completed", uid: "c1"})).toBeNull();
+    expect(privacyRequestAlert("privacy_3", {type: "export", status: "requested", uid: "c1"})).toBeNull();
   });
   it("gives each request one alarm id the phone accepts", () => {
     expect(requestAlarmId("app", "a/b c")).toBe("req:app:a_b_c");

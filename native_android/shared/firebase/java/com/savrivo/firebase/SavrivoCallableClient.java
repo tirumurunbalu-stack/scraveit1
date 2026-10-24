@@ -59,10 +59,11 @@ public final class SavrivoCallableClient {
             "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
             "setRestaurantAgreementTerms", "getRestaurantApplicationReview",
             "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue", "getPayoutAutomationStatus", "previewWeeklyPayouts",
-            "getAdminAnalytics", "resolveChatReport"));
+            "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement",
+            "getLiveRestaurantAgreement", "signLiveRestaurantAgreement",
             "attachPackedPhoto", "saveMealPlan", "getRestaurantMealPlans"));
     // Every economics callable an app role may reach is also a callable this
     // client may send. Without this, functions added only to the role lists

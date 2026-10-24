@@ -1,5 +1,6 @@
 import type {DecodedIdToken} from "firebase-admin/auth";
-import {firestoreDb, storage} from "../admin";
+import {firestoreDb} from "../admin";
+import {mediaFile} from "./mediaBucket";
 import {DomainError} from "../errors";
 import {orderRef} from "../firestorePaths";
 import type {SavrivoOrder} from "../types";
@@ -35,7 +36,7 @@ export async function attachPackedPhoto(uid: string, token: DecodedIdToken, inpu
   if (!packedPhotoPathOk(input.path, String(order.restaurantId), uid, input.orderId)) {
     throw new DomainError("invalid-argument", "That photo can't be used for this order.");
   }
-  const file = storage.bucket().file(input.path);
+  const file = await mediaFile(input.path);
   const [exists] = await file.exists();
   if (!exists) throw new DomainError("failed-precondition", "The photo didn't finish uploading. Take it again.");
   const [meta] = await file.getMetadata();

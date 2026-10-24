@@ -21,4 +21,10 @@ export const db = getDatabaseWithUrl("https://savrivo-app-sg.asia-southeast1.fir
 export const firestoreDb = getFirestore();
 export const auth = getAuth();
 export const messaging = getMessaging();
-export const storage = getStorage();
+// Photos and documents live in Mumbai (asia-south1) since 23 Oct 2026; the
+// project's default bucket (US) holds the originals and anything an older app
+// build still uploads there (see services/mediaBucket.ts).
+export const MEDIA_BUCKET = "savrivo-app-mumbai";
+export const LEGACY_MEDIA_BUCKET = "savrivo-app.firebasestorage.app";
+const defaultStorage = getStorage();
+export const storage = {bucket: (name?: string) => defaultStorage.bucket(name ?? MEDIA_BUCKET)};

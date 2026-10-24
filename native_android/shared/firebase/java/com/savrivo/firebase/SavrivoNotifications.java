@@ -14,7 +14,9 @@ public final class SavrivoNotifications {
     public static final String RESTAURANT_ORDERS = "restaurant_new_orders";
     // A new channel is intentional: Android persists the old channel's sound settings across
     // upgrades, so correcting a muted/short-lived legacy channel requires a new stable ID.
-    public static final String RIDER_OFFERS = "rider_offers_v4";
+    // v5: the marimba alert. The sound is referred to by name, so later builds keep finding it.
+    public static final String RIDER_OFFERS = "rider_offers_v5";
+    private static final String[] RETIRED_RIDER_OFFERS = {"rider_offers_v4", "rider_offers_v3", "rider_offers_v2", "rider_offers"};
     public static final String ADMIN_SUPPORT = "savrivo_admin_support_v1";
     public static final String ORDER_STATUS = "savrivo_order_status";
 
@@ -41,7 +43,7 @@ public final class SavrivoNotifications {
                 "savrivo_action_alert", "raw", context.getPackageName());
         if (riderSound != 0) {
             Uri sound = Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://"
-                    + context.getPackageName() + "/" + riderSound);
+                    + context.getPackageName() + "/raw/savrivo_action_alert");
             AudioAttributes attributes = new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -49,6 +51,10 @@ public final class SavrivoNotifications {
             rider.setSound(sound, attributes);
         }
         manager.createNotificationChannel(rider);
+        // The old offer channels kept the old sound; remove them so only the new one shows in Settings.
+        for (String retired : RETIRED_RIDER_OFFERS) {
+            try { manager.deleteNotificationChannel(retired); } catch (Exception ignored) { }
+        }
 
         NotificationChannel status = new NotificationChannel(
                 ORDER_STATUS, "Order status", NotificationManager.IMPORTANCE_DEFAULT);

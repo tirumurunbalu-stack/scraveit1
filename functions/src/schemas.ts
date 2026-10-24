@@ -941,6 +941,37 @@ const pairIdSchema = z.string().regex(/^[A-Za-z0-9]{6,128}_[A-Za-z0-9]{6,128}$/)
 export const chatSetupSchema = z.object({name: z.string().trim().min(1).max(40), birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), username: z.string().trim().min(3).max(21)}).strict();
 export const accountBirthDateSchema = z.object({birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)}).strict();
 export const accountParentRequestSchema = z.object({email: z.string().trim().email().max(200)}).strict();
+
+// Food side of chat: cravings and "eating now".
+export const chatCraveSchema = z.object({dish: z.string().trim().max(20).regex(/^[a-z]*$/)}).strict();
+export const chatEatingShareSchema = z.object({share: z.boolean()}).strict();
+export const chatPairOnlySchema = z.object({pairId: z.string().trim().min(3).max(200).regex(/^[A-Za-z0-9_-]+$/)}).strict();
+export const chatIouSchema = z.object({
+  pairId: z.string().trim().min(3).max(200).regex(/^[A-Za-z0-9_-]+$/),
+  action: z.enum(["create", "settle", "forgive", "cancel", "nudge"]),
+  iouId: z.string().trim().regex(/^[a-f0-9]{12}$/).optional(),
+  treat: z.string().trim().max(20).regex(/^[a-z]*$/).optional(),
+  note: z.string().max(200).optional(),
+  owedBy: z.enum(["me", "them"]).optional(),
+}).strict();
+
+// Ask a parent to pay: the child sends the cart; the parent places and pays.
+export const parentPayRequestSchema = z.object({
+  restaurantId: identifier,
+  addressId: identifier,
+  items: z.array(cartLineSchema).min(1).max(MAX_CART_LINES),
+  instructions: z.string().trim().max(500).default(""),
+  contactless: z.boolean().default(false),
+  tip: z.number().finite().min(0).max(10_000).default(0),
+  shownTotal: z.number().finite().min(0).max(1_000_000).optional(),
+}).strict();
+const parentPayId = z.string().trim().regex(/^pp_[a-f0-9]{20}$/);
+export const parentPayIdSchema = z.object({requestId: parentPayId}).strict();
+export const parentPayRespondSchema = z.object({
+  requestId: parentPayId,
+  approve: z.boolean(),
+  paymentMethod: z.enum(["cod", "upi"]).default("cod"),
+}).strict();
 export const chatUsernameSchema = z.object({username: z.string().trim().min(3).max(21)}).strict();
 export const chatHandleSchema = z.object({handle: z.string().trim().min(3).max(25)}).strict();
 export const chatEmptySchema = z.object({}).strict();
@@ -957,6 +988,30 @@ export const attachPackedPhotoSchema = z.object({orderId: identifier, path: z.st
 
 export const signRestaurantAgreementSchema = z.object({
   appId: identifier,
+  hash: z.string().regex(/^[a-f0-9]{64}$/),
+  typedName: z.string().trim().min(2).max(120),
+  consent: z.boolean(),
+  method: z.enum(["in_app", "aadhaar_esign"]).default("in_app"),
+}).strict();
+
+/** Details a live store adds while signing, when Scraveit doesn't have them yet. */
+const liveAgreementDetailsSchema = z.object({
+  ownerName: z.string().trim().max(120).optional(),
+  pan: z.string().trim().max(10).optional(),
+  fssaiNumber: z.string().trim().max(14).optional(),
+  gstin: z.string().trim().max(15).optional(),
+  gstMode: z.enum(["enrolment", "exempt_only"]).optional(),
+  gstEnrolment: z.string().trim().max(20).optional(),
+}).strict();
+
+export const liveRestaurantAgreementSchema = z.object({
+  restaurantId: identifier,
+  details: liveAgreementDetailsSchema.default({}),
+}).strict();
+
+export const signLiveRestaurantAgreementSchema = z.object({
+  restaurantId: identifier,
+  details: liveAgreementDetailsSchema.default({}),
   hash: z.string().regex(/^[a-f0-9]{64}$/),
   typedName: z.string().trim().min(2).max(120),
   consent: z.boolean(),

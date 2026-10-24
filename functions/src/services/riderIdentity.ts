@@ -4,6 +4,7 @@ import {logger} from "firebase-functions";
 import {encode as encodeJpeg} from "jpeg-js";
 import {JpxImage} from "jpeg2000";
 import {firestoreDb, storage} from "../admin";
+import {deleteMediaEverywhere, mediaFile} from "./mediaBucket";
 import {aadhaarHolderKey, ageOn, assessPan, normalizeName, panKey, parseSecureQr, SecureQrError, uidaiSigner} from "../domain/aadhaarSecureQr";
 import {DomainError} from "../errors";
 import {faceSimilarity} from "./faceVerification";
@@ -19,7 +20,10 @@ import {faceSimilarity} from "./faceVerification";
  *    inside the QR, so the card belongs to the person signing up.
  *  - PAN: offline checks (format, individual PAN, surname letter against the
  *    Aadhaar name, not used by another rider) plus a PAN card photo for the
- *    admin. A paid PAN-registry check is added when TDS goes live.
+ *    admin. Admin then checks it on the Income Tax e-filing portal ("Verify
+ *    Your PAN": PAN, name and date of birth) and records what it said; the
+ *    rider isn't "verified" until that's done. A paid PAN-registry check
+ *    replaces this step when TDS goes live.
  *  - Retention: the Aadhaar photo and any old Aadhaar images are deleted 7 days
  *    after the rider is approved or rejected; the result stays.
  *
@@ -35,7 +39,10 @@ const FACE_MATCH_OK = 85;
 const FACE_MATCH_LOW = 60;
 const MAX_ATTEMPTS_PER_DAY = 12;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-export const IDENTITY_CONSENT_VERSION = "rider-identity-v3";
+export const IDENTITY_CONSENT_VERSION = "rider-identity-v4";
+/** What the Income Tax portal's "Verify Your PAN" said, as recorded by Admin. */
+export const PAN_REGISTRY_RESULTS = ["active_match", "mismatch", "inactive"] as const;
+export type PanRegistryResult = typeof PAN_REGISTRY_RESULTS[number];
 
 const riders = () => firestoreDb.collection("riders");
 const identityDoc = (uid: string) => firestoreDb.collection("private").doc("riderIdentity").collection("riders").doc(uid);
@@ -80,7 +87,7 @@ export async function aadhaarPhotoToJpeg(jp2: Buffer): Promise<Buffer> {
 
 async function readObject(path: string): Promise<Buffer | null> {
   try {
-    const [buffer] = await storage.bucket().file(path).download();
+    const [buffer] = await (await mediaFile(path)).download();
     return buffer;
   } catch {
     return null;
@@ -105,10 +112,29 @@ export interface RiderIdentitySummary {
   aadhaar: {verified: boolean; method: string; last4: string; name: string; gender: string; birthYear: number;
     district: string; state: string; keyId: string; issuedAt: number; verifiedAt: number} | null;
   face: {status: "match" | "low" | "mismatch" | "pending" | "unavailable"; similarity: number};
-  pan: {formatOk: boolean; individual: boolean; nameInitialMatch: boolean | null; duplicateOf: string} | null;
+  pan: {formatOk: boolean; individual: boolean; nameInitialMatch: boolean | null; duplicateOf: string;
+    registry: {result: PanRegistryResult; checkedAt: number} | null} | null;
   duplicateAadhaarOf: string;
+  /** Needed for every motor vehicle (Motor Vehicles Act 1988, s.3); a bicycle needs none. */
+  licence: {required: boolean; number: string; formatOk: boolean; validTill: string; expired: boolean};
   reasons: string[];
   updatedAt: number;
+}
+
+/** Indian driving licence: state code, RTO number, then the year and serial (old formats run longer). */
+export const DRIVING_LICENCE_PATTERN = /^[A-Z]{2}[0-9]{2}[0-9A-Z]{9,12}$/;
+
+function licenceOf(rider: Record<string, unknown>, now: number): RiderIdentitySummary["licence"] {
+  const number = String(rider.dlNumber || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const validTill = /^\d{4}-\d{2}-\d{2}$/.test(String(rider.dlValidTill || "")) ? String(rider.dlValidTill) : "";
+  const today = new Date(now + 5.5 * 3600_000).toISOString().slice(0, 10);
+  return {required: String(rider.vehicleType || "") !== "Bicycle", number, formatOk: DRIVING_LICENCE_PATTERN.test(number),
+    validTill, expired: Boolean(validTill) && validTill < today};
+}
+
+function shortDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
 }
 
 function faceStatus(similarity: number | undefined): RiderIdentitySummary["face"] {
@@ -125,7 +151,11 @@ export function summarizeIdentity(rider: Record<string, unknown>, identity: Reco
   const face = faceStatus(identity && typeof identity.faceSimilarity === "number" &&
     identity.faceComparedFor === rider.faceReferenceObjectPath ? identity.faceSimilarity as number : undefined);
   const panNumber = String(rider.panNumber || "");
-  const pan = panNumber ? {...assessPan(panNumber, aadhaar ? String(aadhaar.name) : undefined), duplicateOf: String(identity?.panDuplicateOf || "")} : null;
+  // A portal check counts only for the PAN that was checked; a changed PAN needs checking again.
+  const checked = identity?.panRegistry as Record<string, unknown> | undefined;
+  const registry = checked && String(checked.pan || "") === panNumber.toUpperCase() && (PAN_REGISTRY_RESULTS as readonly string[]).includes(String(checked.result))
+    ? {result: String(checked.result) as PanRegistryResult, checkedAt: Number(checked.checkedAt) || 0} : null;
+  const pan = panNumber ? {...assessPan(panNumber, aadhaar ? String(aadhaar.name) : undefined), duplicateOf: String(identity?.panDuplicateOf || ""), registry} : null;
   const duplicateAadhaarOf = String(identity?.aadhaarDuplicateOf || "");
   const reasons: string[] = [];
   if (!aadhaar) reasons.push(rider.identityFallback === "manual" ? "Aadhaar was uploaded for manual review (no QR)" : "Aadhaar not verified yet");
@@ -140,6 +170,20 @@ export function summarizeIdentity(rider: Record<string, unknown>, identity: Reco
     else if (!pan.individual) reasons.push("PAN isn’t an individual’s PAN (4th letter should be P)");
     if (pan.nameInitialMatch === false) reasons.push("PAN 5th letter doesn’t match any initial of the Aadhaar name");
     if (pan.duplicateOf) reasons.push("This PAN is already used by another rider account");
+    if (pan.formatOk && pan.individual) {
+      if (!pan.registry) reasons.push("PAN not checked on the Income Tax portal yet");
+      else if (pan.registry.result === "mismatch") reasons.push("PAN name or date of birth doesn’t match on the Income Tax portal");
+      else if (pan.registry.result === "inactive") reasons.push("PAN isn’t active on the Income Tax portal");
+    }
+  }
+  const licence = licenceOf(rider, now);
+  if (licence.required) {
+    if (!licence.number) reasons.push("Driving licence not given");
+    else {
+      if (!licence.formatOk) reasons.push("Driving licence number looks wrong");
+      if (!licence.validTill) reasons.push("Driving licence valid-till date not given");
+      else if (licence.expired) reasons.push(`Driving licence expired on ${shortDate(licence.validTill)}`);
+    }
   }
   const status = !aadhaar ? "pending" : reasons.length ? "review" : "verified";
   return {
@@ -148,7 +192,7 @@ export function summarizeIdentity(rider: Record<string, unknown>, identity: Reco
       gender: String(aadhaar.gender), birthYear: Number(String(aadhaar.dob).slice(0, 4)), district: String((aadhaar.address as Record<string, string>)?.district || ""),
       state: String((aadhaar.address as Record<string, string>)?.state || ""), keyId: String(aadhaar.keyId), issuedAt: Number(aadhaar.issuedAt) || 0,
       verifiedAt: Number(aadhaar.verifiedAt) || 0} : null,
-    face, pan, duplicateAadhaarOf, reasons, updatedAt: now,
+    face, pan, duplicateAadhaarOf, licence, reasons, updatedAt: now,
   };
 }
 
@@ -270,11 +314,14 @@ function objectPathFrom(value: unknown): string {
 async function signedUrl(path: string, expiresAt: number): Promise<string> {
   if (!path) return "";
   try {
-    const [exists] = await storage.bucket().file(path).exists();
+    const file = await mediaFile(path);
+    const [exists] = await file.exists();
     if (!exists) return "";
-    const [url] = await storage.bucket().file(path).getSignedUrl({version: "v4", action: "read", expires: expiresAt});
+    const [url] = await file.getSignedUrl({version: "v4", action: "read", expires: expiresAt});
     return url;
-  } catch {
+  } catch (error) {
+    // Usually the functions' service account lacks "Service Account Token Creator" on itself.
+    logger.warn("IDENTITY_PHOTO_LINK_FAILED", {error: String(error).slice(0, 300)});
     return "";
   }
 }
@@ -294,12 +341,14 @@ export async function getRiderIdentityReview(reviewerUid: string, token: Decoded
   const docs = (docsRaw.documents && typeof docsRaw.documents === "object" ? docsRaw.documents : docsRaw) as Record<string, unknown>;
   const rider = (riderSnap.data() ?? {}) as Record<string, unknown>;
   const expiresAt = Date.now() + 5 * 60_000;
-  const [aadhaarPhoto, face, panCopy, aadhaarFront, aadhaarBack] = await Promise.all([
+  const [aadhaarPhoto, face, panCopy, aadhaarFront, aadhaarBack, dlFront, dlBack] = await Promise.all([
     signedUrl(String(identity.photoPath || ""), expiresAt),
     signedUrl(String(rider.faceReferenceObjectPath || ""), expiresAt),
     signedUrl(objectPathFrom(docs.panCopy), expiresAt),
     signedUrl(objectPathFrom(docs.aadhaarFront), expiresAt),
     signedUrl(objectPathFrom(docs.aadhaarBack), expiresAt),
+    signedUrl(objectPathFrom(docs.dlFront), expiresAt),
+    signedUrl(objectPathFrom(docs.dlBack), expiresAt),
   ]);
   await firestoreDb.collection("private").doc("kycAccessAudit").collection("entries").doc().set({
     reviewerUid, riderUid: uid, documentKind: "identity-review",
@@ -312,9 +361,27 @@ export async function getRiderIdentityReview(reviewerUid: string, token: Decoded
       district: (aadhaar.address as Record<string, string>)?.district, state: (aadhaar.address as Record<string, string>)?.state,
       pincode: (aadhaar.address as Record<string, string>)?.pincode, issuedAt: aadhaar.issuedAt, keyId: aadhaar.keyId,
       nameMatchesApplication: normalizeName(String(aadhaar.name)) === normalizeName(String(rider.fullName || ""))} : null,
-    photos: {aadhaarPhoto, face, panCopy, aadhaarFront, aadhaarBack},
+    photos: {aadhaarPhoto, face, panCopy, aadhaarFront, aadhaarBack, dlFront, dlBack},
+    pan: {number: String(rider.panNumber || "").toUpperCase(), registry: summary?.pan?.registry ?? null},
+    licence: {...licenceOf(rider, Date.now()), vehicleType: String(rider.vehicleType || ""), vehicleNumber: String(rider.vehicleNumber || "")},
     expiresAt,
   };
+}
+
+/** Admin: record what the Income Tax portal's "Verify Your PAN" said about this rider's PAN. */
+export async function recordRiderPanCheck(reviewerUid: string, token: DecodedIdToken, input: {riderUid: string; result: PanRegistryResult},
+  aws: {id: string; secret: string}, now = Date.now()) {
+  if (!privileged(token)) throw new DomainError("permission-denied", "An owner or operations-admin role is required.");
+  const uid = input.riderUid;
+  const riderSnap = await riders().doc(uid).get();
+  if (!riderSnap.exists) throw new DomainError("not-found", "Rider not found.");
+  const pan = String((riderSnap.data() as Record<string, unknown>).panNumber || "").toUpperCase();
+  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) throw new DomainError("failed-precondition", "This rider hasn’t given a valid PAN yet.");
+  await identityDoc(uid).set({panRegistry: {pan, result: input.result, method: "incometax_verify_your_pan", checkedBy: reviewerUid, checkedAt: now}}, {merge: true});
+  await firestoreDb.collection("private").doc("kycAccessAudit").collection("entries").doc().set({
+    reviewerUid, riderUid: uid, documentKind: "pan-registry-check", result: input.result, accessedAt: now,
+  });
+  return {summary: await refreshRiderIdentity(uid, aws, now)};
 }
 
 /** Daily: remove Aadhaar images 7 days after a decision. The result stays. */
@@ -330,7 +397,7 @@ export async function enforceRiderIdentityRetention(now = Date.now()): Promise<{
     const docsRaw = ((await docsRef.get()).data() ?? {}) as Record<string, unknown>;
     const docs = (docsRaw.documents && typeof docsRaw.documents === "object" ? docsRaw.documents : docsRaw) as Record<string, unknown>;
     const paths = [aadhaarPhotoPath(doc.id), objectPathFrom(docs.aadhaarFront), objectPathFrom(docs.aadhaarBack)].filter(Boolean);
-    await Promise.all(paths.map((path) => storage.bucket().file(path).delete().catch(() => undefined)));
+    await Promise.all(paths.map((path) => deleteMediaEverywhere(path)));
     await docsRef.set({aadhaarFront: null, aadhaarBack: null, aadhaarImagesDeletedAt: now}, {merge: true}).catch(() => undefined);
     await identityDoc(doc.id).set({photoPath: "", aadhaarImagesDeletedAt: now}, {merge: true});
     await doc.ref.set({identity: {...(identity ?? {}), aadhaarImagesDeletedAt: now}}, {merge: true});

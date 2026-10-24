@@ -2,11 +2,13 @@ import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
 import {PDFDocument, StandardFonts, rgb} from "pdf-lib";
 import {firestoreDb, storage} from "../admin";
+import {mediaFile} from "./mediaBucket";
 import {DomainError} from "../errors";
 import type {FirestoreLike} from "../firestoreTypes";
 import {menuItemRef, restaurantMemberRef, restaurantRef} from "../firestorePaths";
 import {requirePlatformConfigAdminClaim} from "./authz";
 import {RESTAURANT_PAYOUT_PROFILES_COLLECTION} from "./restaurantPayoutProfiles";
+import {liveCommission} from "./economicsAdmin";
 import {
   AGREEMENT_VERSION,
   STANDARD_COMMISSION_BPS,
@@ -325,13 +327,15 @@ export async function requestRestaurantApplicationChanges(
   }, {merge: true});
 }
 
+const mediaBucket = () => storage.bucket();
+
 /** Short-lived links to the documents, for the admin review screen only. */
 export async function getRestaurantApplicationReview(
   uid: string,
   token: DecodedIdToken,
   appId: string,
   database: FirestoreLike = firestoreDb,
-  bucket = () => storage.bucket(),
+  bucket = mediaBucket,
 ): Promise<{links: Record<string, string>; issues: string[]; checks: Rec}> {
   requirePlatformConfigAdminClaim(token);
   const app = await loadApplication(database, appId);
@@ -348,7 +352,8 @@ export async function getRestaurantApplicationReview(
     const allowed = path.startsWith(`${DOC_PREFIX}${str(app.uid)}/`) || path.startsWith(`private/restaurant-agreements/${appId}/`);
     if (!allowed) continue;
     try {
-      const [url] = await bucket().file(path).getSignedUrl({version: "v4", action: "read", expires});
+      const file = bucket === mediaBucket ? await mediaFile(path) : bucket().file(path);
+      const [url] = await file.getSignedUrl({version: "v4", action: "read", expires});
       links[key] = url;
     } catch (error) {
       logger.warn("RESTAURANT_APPLICATION_LINK_FAILED", {appId, key, error: error instanceof Error ? error.message : "unknown"});
@@ -457,4 +462,200 @@ export async function approveRestaurantApplication(
   await batch.commit();
   logger.info("RESTAURANT_APPLICATION_APPROVED", {appId, restaurantId, commissionBps: listing.commissionBps});
   return {restaurantId};
+}
+
+// ---------------------------------------------------------------------------
+// Live stores. A store that went live before in-app signing existed has no
+// signed partner agreement. Its owner reads and signs the same agreement from
+// the store app; anything the agreement needs that Scraveit doesn't have yet
+// (the owner's full name, PAN, FSSAI number, GST status) is added while signing.
+
+export interface LiveAgreementDetails {
+  ownerName?: string;
+  pan?: string;
+  fssaiNumber?: string;
+  gstin?: string;
+  gstMode?: "enrolment" | "exempt_only";
+  gstEnrolment?: string;
+}
+
+export interface LiveAgreementView extends AgreementView {
+  restaurantId: string;
+  storeType: string;
+  issues: string[];
+  /** Which details Scraveit already holds, so the app only asks for the rest. */
+  known: {ownerName: boolean; pan: boolean; fssaiNumber: boolean; gstin: boolean};
+  rateSource: "plan" | "restaurant" | "default";
+}
+
+async function liveOwner(uid: string, token: DecodedIdToken, restaurantId: string, database: FirestoreLike, signing: boolean): Promise<Rec> {
+  const snapshot = await restaurantMemberRef(database, restaurantId, uid).get();
+  const member = rec(snapshot.exists ? snapshot.data() : null);
+  const owner = member.active !== false && str(member.role) === "restaurant_owner";
+  if (owner) return member;
+  if (!signing && isAdmin(token)) return {};
+  throw new DomainError("permission-denied", signing ? "Only the owner can sign the partner agreement." : "Only the owner can see the partner agreement.");
+}
+
+async function liveAgreementRecord(database: FirestoreLike, restaurantId: string, member: Rec, details: LiveAgreementDetails, now: number) {
+  const [restaurantSnap, payoutSnap, commission] = await Promise.all([
+    restaurantRef(database, restaurantId).get(),
+    database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).doc(restaurantId).get(),
+    liveCommission(restaurantId, database, now),
+  ]);
+  if (!restaurantSnap.exists) throw new DomainError("not-found", "Store not found.");
+  const restaurant = rec(restaurantSnap.data());
+  const payout = rec(payoutSnap.exists ? payoutSnap.data() : null);
+  const storeType = ["grocery", "dairy"].includes(str(restaurant.storeType)) ? str(restaurant.storeType) : "restaurant";
+  // What Scraveit holds always wins; details fill only the gaps.
+  const held = {
+    ownerName: str(member.name, 120),
+    pan: str(payout.panNumber, 10).toUpperCase(),
+    fssaiNumber: str(restaurant.fssaiNumber, 14),
+    gstin: str(payout.gstin, 15).toUpperCase(),
+  };
+  const ownerName = held.ownerName || str(details.ownerName, 120);
+  const pan = held.pan || str(details.pan, 10).toUpperCase();
+  const fssaiNumber = held.fssaiNumber || str(details.fssaiNumber, 14).replace(/\s+/g, "");
+  const gstin = held.gstin || str(details.gstin, 15).toUpperCase();
+  const app: Rec = {
+    restaurantName: str(restaurant.name, 120),
+    legalName: str(payout.legalBusinessName, 160),
+    ownerName,
+    location: {address: str(restaurant.address, 300), city: str(restaurant.city, 80)},
+    fssai: {number: fssaiNumber},
+    pan: {number: pan},
+    gstin,
+    storeType,
+    gstMode: str(restaurant.gstMode) || details.gstMode || "enrolment",
+    gstEnrolment: str(restaurant.gstEnrolment, 20) || str(details.gstEnrolment, 20).toUpperCase(),
+    terms: {commissionBps: commission.commissionBps, termMonths: Number(restaurant.commissionTermMonths ?? 12), setAt: now},
+  };
+  const issues: string[] = [];
+  if (!app.restaurantName) issues.push("Store name");
+  if (!str(rec(app.location).address)) issues.push("Store address");
+  if (normalizePersonName(ownerName).length < 3) issues.push("Owner's full name");
+  if (!validPan(pan)) issues.push("PAN");
+  if (!assessFssai(fssaiNumber).ok) issues.push("FSSAI number");
+  if (gstin && !assessGstin(gstin, pan).ok) issues.push("GSTIN");
+  if (sellsGoods(app) && !gstin && goodsGstMode(app) === "enrolment" && !validGstEnrolment(app.gstEnrolment)) {
+    issues.push("GST enrolment number (or a GSTIN)");
+  }
+  return {app, restaurant, payout, held, issues, commission, storeType};
+}
+
+const liveRecordId = (restaurantId: string) => `live_${restaurantId}`;
+
+export async function getLiveRestaurantAgreement(
+  uid: string,
+  token: DecodedIdToken,
+  input: {restaurantId: string; details: LiveAgreementDetails},
+  database: FirestoreLike = firestoreDb,
+  now = Date.now(),
+): Promise<LiveAgreementView> {
+  const member = await liveOwner(uid, token, input.restaurantId, database, false);
+  const [built, party, signedSnap] = await Promise.all([
+    liveAgreementRecord(database, input.restaurantId, member, input.details ?? {}, now),
+    loadAgreementParty(database),
+    database.collection(AGREEMENT_RECORDS).doc(liveRecordId(input.restaurantId)).get(),
+  ]);
+  const signed = rec(signedSnap.exists ? signedSnap.data() : null);
+  const isSigned = signed.status === "signed";
+  const view = isSigned ? {sections: (Array.isArray(signed.sections) ? signed.sections : []) as AgreementSection[], hash: str(signed.hash, 64)} :
+    party ? agreementSections(built.app, party) : {sections: [], hash: ""};
+  return {
+    version: isSigned ? str(signed.version) : AGREEMENT_VERSION,
+    status: isSigned ? "signed" : "ready",
+    standardBps: STANDARD_COMMISSION_BPS,
+    commissionBps: isSigned ? Number(signed.commissionBps) : built.commission.commissionBps,
+    termMonths: isSigned ? Number(signed.termMonths ?? 12) : Number(rec(built.app.terms).termMonths),
+    rateAgreed: true,
+    sections: view.sections,
+    hash: view.hash,
+    signedAt: Number(signed.signedAt ?? 0),
+    signedBy: str(signed.typedName),
+    method: str(signed.method),
+    esignAvailable: Boolean(ESIGN_PROVIDER),
+    partiesReady: Boolean(party),
+    restaurantId: input.restaurantId,
+    storeType: built.storeType,
+    issues: isSigned ? [] : built.issues,
+    known: {ownerName: Boolean(built.held.ownerName), pan: Boolean(built.held.pan), fssaiNumber: Boolean(built.held.fssaiNumber), gstin: Boolean(built.held.gstin)},
+    rateSource: built.commission.source,
+  };
+}
+
+export async function signLiveRestaurantAgreement(
+  uid: string,
+  token: DecodedIdToken,
+  input: {restaurantId: string; details: LiveAgreementDetails; hash: string; typedName: string; consent: boolean; method: "in_app" | "aadhaar_esign"},
+  meta: {ip: string; userAgent: string},
+  database: FirestoreLike = firestoreDb,
+  bucket = () => storage.bucket(),
+  now = Date.now(),
+): Promise<{signed: true; signedAt: number}> {
+  const member = await liveOwner(uid, token, input.restaurantId, database, true);
+  if (input.method === "aadhaar_esign" && !ESIGN_PROVIDER) {
+    throw new DomainError("failed-precondition", "Aadhaar eSign is not switched on yet. You can accept the agreement in the app for now.");
+  }
+  if (!input.consent) throw new DomainError("invalid-argument", "Tick the box to confirm you agree.");
+  const recordRef = database.collection(AGREEMENT_RECORDS).doc(liveRecordId(input.restaurantId));
+  const existing = await recordRef.get();
+  if (existing.exists && rec(existing.data()).status === "signed") throw new DomainError("already-exists", "This agreement is already signed.");
+  const details = input.details ?? {};
+  const built = await liveAgreementRecord(database, input.restaurantId, member, details, now);
+  if (built.issues.length) throw new DomainError("failed-precondition", `Add these first: ${built.issues.join(", ")}.`);
+  const party = await loadAgreementParty(database);
+  if (!party) throw new DomainError("failed-precondition", "Scraveit's business details aren't set up yet. Please try again later.");
+  const {sections, hash} = agreementSections(built.app, party);
+  if (hash !== input.hash) throw new DomainError("aborted", "The agreement changed while you were reading it. Please read it again.");
+  const ownerName = str(built.app.ownerName);
+  if (normalizePersonName(input.typedName) !== normalizePersonName(ownerName)) {
+    throw new DomainError("invalid-argument", `Type your full name exactly as shown in the agreement: ${ownerName}.`);
+  }
+  const commissionBps = built.commission.commissionBps, termMonths = Number(rec(built.app.terms).termMonths);
+  const certificate: Array<[string, string]> = [
+    ["Signed by", `${ownerName} (typed name: ${str(input.typedName, 120)})`],
+    ["Account", `${str(token.email) || uid} (signed in with ${token.firebase?.sign_in_provider ?? "email"})`],
+    ["Signed at", `${new Date(now + 5.5 * 3600_000).toISOString().replace("T", " ").slice(0, 19)} IST`],
+    ["Method", input.method === "aadhaar_esign" ? "Aadhaar eSign" : "Accepted in the Scraveit store app"],
+    ["IP address", meta.ip || "unknown"],
+    ["Device", meta.userAgent.slice(0, 120) || "unknown"],
+    ["Agreement version", AGREEMENT_VERSION],
+    ["Document fingerprint (SHA-256)", hash],
+  ];
+  const pdf = await buildAgreementPdf(`Scraveit Partner Agreement: ${str(built.app.restaurantName)}`, sections, certificate);
+  const pdfPath = `private/restaurant-agreements/live-${input.restaurantId}/${AGREEMENT_VERSION}-${hash.slice(0, 12)}.pdf`;
+  await bucket().file(pdfPath).save(Buffer.from(pdf), {contentType: "application/pdf", resumable: false});
+  const agreement = {
+    status: "signed", version: AGREEMENT_VERSION, hash, method: input.method, typedName: str(input.typedName, 120),
+    commissionBps, termMonths, signedAt: now, ip: meta.ip.slice(0, 64), userAgent: meta.userAgent.slice(0, 200), pdfPath,
+  };
+  const batch = database.batch();
+  batch.set(recordRef, {restaurantId: input.restaurantId, uid, restaurantName: str(built.app.restaurantName), sections, ...agreement});
+  // The signed rate is what the store is charged for the term: pin it unless a dated plan sets it.
+  const listing: Rec = {agreementVersion: AGREEMENT_VERSION, agreementSignedAt: now, agreementHash: hash, commissionTermMonths: termMonths, updatedAt: now};
+  if (built.commission.source === "default") listing.commissionBps = commissionBps;
+  if (!built.held.fssaiNumber) {
+    listing.fssaiNumber = str(rec(built.app.fssai).number);
+    listing.fssaiKind = assessFssai(listing.fssaiNumber).kind;
+  }
+  if (sellsGoods(built.app) && !built.held.gstin) {
+    listing.gstMode = goodsGstMode(built.app);
+    if (listing.gstMode === "enrolment") listing.gstEnrolment = str(built.app.gstEnrolment);
+  }
+  batch.set(restaurantRef(database, input.restaurantId), listing, {merge: true});
+  const payout: Rec = {};
+  if (!built.held.pan) payout.panNumber = str(rec(built.app.pan).number);
+  if (!built.held.gstin && built.app.gstin) payout.gstin = str(built.app.gstin);
+  if (Object.keys(payout).length) {
+    batch.set(database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).doc(input.restaurantId), {...payout, updatedAt: now}, {merge: true});
+  }
+  if (!built.held.ownerName) batch.set(restaurantMemberRef(database, input.restaurantId, uid), {name: ownerName}, {merge: true});
+  batch.set(database.collection("audit").doc(`agreement_live_${input.restaurantId}_${now}`), {
+    action: "restaurant_agreement.sign_live", target: input.restaurantId, actorId: uid, commissionBps, version: AGREEMENT_VERSION, at: now,
+  });
+  await batch.commit();
+  logger.info("LIVE_RESTAURANT_AGREEMENT_SIGNED", {restaurantId: input.restaurantId, method: input.method, commissionBps});
+  return {signed: true, signedAt: now};
 }

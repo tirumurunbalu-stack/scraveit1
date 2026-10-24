@@ -422,6 +422,27 @@ export async function upsertRestaurantOffer(
   };
 }
 
+/**
+ * The commission a live restaurant pays right now: an active dated plan, else
+ * the rate set on the restaurant, else the platform default.
+ */
+export async function liveCommission(
+  restaurantId: string,
+  database: FirestoreLike = firestoreDb,
+  now = Date.now(),
+): Promise<{commissionBps: number; source: "plan" | "restaurant" | "default"}> {
+  const [control, restaurant, finance] = await Promise.all([
+    loadEconomicsControl(now, database),
+    restaurantRef(database, restaurantId).get(),
+    loadFinancePolicy(now, database),
+  ]);
+  const plan = activeCommercialPlan(control.commercialPlans[restaurantId] ?? [], now);
+  const own = (restaurant.exists ? restaurant.data() : {}) as {commissionBps?: number};
+  if (plan) return {commissionBps: plan.commissionBps, source: "plan"};
+  const set = restaurantCommissionBps(own, -1);
+  return set >= 0 ? {commissionBps: set, source: "restaurant"} : {commissionBps: restaurantCommissionBps(own, finance.restaurantCommissionBps), source: "default"};
+}
+
 export async function listRestaurantOffers(
   uid: string,
   token: DecodedIdToken,

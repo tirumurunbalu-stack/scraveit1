@@ -203,6 +203,8 @@ export interface SavrivoOrder {
   riderPhone?: string;
   /** The rider's map avatar preset, copied from their profile at assignment. */
   riderAvatar?: string;
+  /** Set when a parent pays for their child's order; they may start its online payment. */
+  payerUid?: string;
   /** Squad orders: the squad's code and everyone who put picks in (host included). */
   squadCode?: string;
   squadMemberUids?: string[];

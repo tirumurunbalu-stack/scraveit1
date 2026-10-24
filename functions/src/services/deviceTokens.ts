@@ -15,6 +15,16 @@ function deviceTokensRef(database: FirestoreLike, uid: string): DocumentReferenc
   return database.collection("deviceTokens").doc(uid);
 }
 
+/**
+ * A phone's token belongs to one account at a time: the account last signed in on
+ * it. Without this, signing in with a second account on the same phone (or a
+ * sign-out whose unregister call failed) left the first account's notifications
+ * still arriving on that phone.
+ */
+export function deviceTokenOwnerRef(database: FirestoreLike, key: string): DocumentReferenceLike {
+  return database.collection("deviceTokenOwners").doc(key);
+}
+
 function isPrivileged(token: DecodedIdToken): boolean {
   return token.savrivoRole === "owner" || token.savrivoRole === "ops_admin";
 }
@@ -64,9 +74,11 @@ export async function registerDeviceToken(
 ): Promise<{tokenId: string; updatedAt: number}> {
   await authorizeDeviceApp(uid, authToken, input.app);
   const ref = deviceTokensRef(firestoreDb, uid);
+  const ownerRef = deviceTokenOwnerRef(firestoreDb, deviceTokenKey(input.token));
   const now = Date.now();
   const tokenId = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
-    const snapshot = await transaction.get(ref);
+    const [snapshot, ownerSnapshot] = await Promise.all([transaction.get(ref), transaction.get(ownerRef)]);
+    const previousOwner = ownerSnapshot.exists ? String((ownerSnapshot.data() as {uid?: string} | undefined)?.uid ?? "") : "";
     const current = (snapshot.exists ? snapshot.data() : null) as Record<string, DeviceTokenRecord> | null;
     let next: ReturnType<typeof upsertDeviceToken>;
     try {
@@ -85,6 +97,11 @@ export async function registerDeviceToken(
       throw new DomainError("aborted", "Device registration changed; try again.");
     }
     transaction.set(ref, next.tokens);
+    transaction.set(ownerRef, {uid, app: input.app, updatedAt: now});
+    // The phone moved to this account: the previous account stops getting pushes on it.
+    if (previousOwner && previousOwner !== uid) {
+      transaction.set(deviceTokensRef(firestoreDb, previousOwner), {[next.key]: FieldValue.delete()}, {merge: true});
+    }
     return next.key;
   });
   return {tokenId, updatedAt: now};
@@ -97,5 +114,8 @@ export async function unregisterDeviceToken(uid: string, input: UnregisterDevice
   const key = deviceTokenKey(input.token);
   const existed = Object.prototype.hasOwnProperty.call(tokens, key);
   if (existed) await ref.update({[key]: FieldValue.delete()});
+  const ownerRef = deviceTokenOwnerRef(firestoreDb, key);
+  const owner = await ownerRef.get();
+  if (owner.exists && String((owner.data() as {uid?: string} | undefined)?.uid ?? "") === uid) await ownerRef.delete();
   return {removed: existed};
 }

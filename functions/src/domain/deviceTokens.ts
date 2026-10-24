@@ -27,3 +27,17 @@ export function upsertDeviceToken(
   tokens[key] = {...record, createdAt: tokens[key]?.createdAt ?? now, updatedAt: now};
   return {tokens, key};
 }
+
+/**
+ * A customer phone that hasn't opened Scraveit for this long is treated as gone
+ * (sold, reset, or signed out on an old app version that never told the server)
+ * and stops getting notifications. Every app start refreshes the registration,
+ * so a phone in use is never affected. Firebase recommends pruning tokens
+ * unrefreshed for about a month. Restaurant, rider and admin phones are left
+ * out: a kitchen tablet can stay open for weeks and must not miss an order.
+ */
+export const STALE_CUSTOMER_TOKEN_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function isStaleDeviceToken(record: Pick<DeviceTokenRecord, "app" | "updatedAt">, now: number): boolean {
+  return record.app === "customer" && Number(record.updatedAt || 0) < now - STALE_CUSTOMER_TOKEN_MS;
+}

@@ -20,6 +20,14 @@
   const STATUS_FLOW = ["Order placed", "Accepted", "Preparing", "Ready for pickup", "Assigned", "Handed to rider", "Out for delivery", "Near you", "Arrived", "Delivered"];
 
   // ---------------------------------------------------------------- helpers
+  // Public photos load through the Cloudflare cache in front of the Mumbai bucket
+  // (cloudflare/image-cdn): about 0.1 s from Chennai or Mumbai. Private files never go there.
+  const IMAGE_CDN_HOST = "savrivo-image-cdn.tirumurunbalu.workers.dev";
+  const cdn = (value) => {
+    const x = String(value || "");
+    return /^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/[^/]+\/o\/(?:restaurants|admin-uploads)%2F/i.test(x)
+      ? x.replace(/^https:\/\/firebasestorage\.googleapis\.com\//i, "https://" + IMAGE_CDN_HOST + "/") : x;
+  };
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   const rs = (value) => "₹" + Number(value || 0).toLocaleString("en-IN", {maximumFractionDigits: 2, minimumFractionDigits: Number(value) % 1 ? 2 : 0});
   const num = (value, fallback = 0) => { const n = Number(value); return Number.isFinite(n) ? n : fallback; };
@@ -160,6 +168,7 @@
     setKindBar("");
     if (parts[1] !== "item") { state.openDish = null; document.body.classList.remove("modal-open"); }
     markNav("/" + parts.slice(0, 2).join("/"));
+    if (!(await privacyConsentOk())) return viewPrivacyGate();
     try {
       if (parts[1] === "store" && parts[2]) return await viewStore(decodeURIComponent(parts[2]));
       if (parts[1] === "item" && parts[2] && parts[3]) return await viewItem(decodeURIComponent(parts[2]), decodeURIComponent(parts[3]));
@@ -182,7 +191,7 @@
     const tags = (store.sample ? '<span class="pill sample">Sample listing</span>' : "") +
       (store.real && ORDERS_OPEN ? '<span class="pill ' + (store.open ? "open" : "closed") + '">' + (store.open ? "Open" : "Closed") + "</span>" : "");
     return '<a class="store-card" href="/shop/store/' + encodeURIComponent(store.id) + '">' +
-      '<div class="store-cover">' + (store.image ? '<img src="' + h(store.image) + '" alt="" loading="lazy">' : '<span class="glyph" aria-hidden="true">' + h(store.name.charAt(0)) + "</span>") +
+      '<div class="store-cover">' + (store.image ? '<img src="' + h(cdn(store.image)) + '" alt="" loading="lazy">' : '<span class="glyph" aria-hidden="true">' + h(store.name.charAt(0)) + "</span>") +
       '<div class="cover-tags"><span class="pill kind">' + h(KIND_LABEL[store.storeType]) + "</span>" + tags + "</div></div>" +
       '<div class="store-body"><h3>' + h(store.name) + "</h3>" +
       '<div class="store-meta"><span>' + h(((window.SCRAVEIT_RESTAURANT_INFO || {})[store.id] || {}).cuisines || store.tagline || "") + "</span></div>" +
@@ -250,14 +259,14 @@
       '<div class="dish-price">' + rs(item.price) + "</div>" +
       '<p class="dish-desc">' + h([item.servingSize, item.description].filter(Boolean).join(" | ")) + "</p>" +
       '<p class="dish-facts">' + [kcal, item.allergens && !/^none/i.test(item.allergens) ? item.allergens : ""].filter(Boolean).map(h).join(" · ") + "</p></div>" +
-      '<div class="dish-media">' + (item.imageUrl ? '<button type="button" class="dish-photo" data-open-dish="' + h(item.id) + '" aria-label="View details of ' + h(item.name) + '"><img src="' + h(item.imageUrl) + '" alt=""></button>' : "") +
+      '<div class="dish-media">' + (item.imageUrl ? '<button type="button" class="dish-photo" data-open-dish="' + h(item.id) + '" aria-label="View details of ' + h(item.name) + '"><img src="' + h(cdn(item.imageUrl)) + '" alt=""></button>' : "") +
       '<div class="dish-add">' + stepperFor(store, item) + "</div></div></article>";
   }
   function dishModal(store, item) {
     const row = (label, value) => value ? "<dt>" + h(label) + "</dt><dd>" + h(value) + "</dd>" : "";
     return '<div class="modal-backdrop" data-close-dish="1"><div class="dish-modal" role="dialog" aria-modal="true" aria-labelledby="dish-modal-title">' +
       '<button type="button" class="modal-close" data-close-dish="1" aria-label="Close">×</button>' +
-      (item.imageUrl ? '<img class="dish-modal-photo" src="' + h(item.imageUrl) + '" alt="' + h(item.name) + '">' : "") +
+      (item.imageUrl ? '<img class="dish-modal-photo" src="' + h(cdn(item.imageUrl)) + '" alt="' + h(item.name) + '">' : "") +
       '<div class="dish-modal-body"><div class="dish-modal-head"><div>' + dietMark(item.diet) + '<h2 id="dish-modal-title">' + h(item.name) + "</h2>" +
       '<div class="dish-price">' + rs(item.price) + "</div></div>" + stepperFor(store, item, true) + "</div>" +
       (item.description ? '<p class="dish-desc">' + h(item.description) + "</p>" : "") +
@@ -280,7 +289,7 @@
     app.innerHTML =
       '<div class="r-page"><nav class="crumbs" aria-label="Breadcrumb"><a href="/shop">Home</a><span>/</span><a href="/shop?type=restaurant">Restaurants</a><span>/</span><span>' + h(store.name) + "</span></nav>" +
       '<h1 class="r-title">' + h(store.name) + "</h1>" +
-      '<section class="r-card">' + (store.image ? '<img class="r-cover" src="' + h(store.image) + '" alt="">' : "") +
+      '<section class="r-card">' + (store.image ? '<img class="r-cover" src="' + h(cdn(store.image)) + '" alt="">' : "") +
       '<div class="r-card-body"><p class="r-line"><span class="r-new">New on SCRAVEIT</span>' + (info.priceForTwo ? " · " + rs(info.priceForTwo) + " for two" : "") + "</p>" +
       '<p class="r-cuisines">' + h(info.cuisines || store.tagline || "") + "</p>" +
       (info.opens ? '<p class="r-hours">Opens ' + h(info.opens) + " · Closes " + h(info.closes) + "</p>" : "") +
@@ -406,7 +415,7 @@
   function svgText(value) { return String(value == null ? "" : value).replace(/[&<>"]/g, (m) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[m])); }
   function packSvg(item) {
     const c = item.compliance || {};
-    if (c.pdpImageUrl) return '<img src="' + h(c.pdpImageUrl) + '" alt="Front of pack: ' + h(item.name) + '">';
+    if (c.pdpImageUrl) return '<img src="' + h(cdn(c.pdpImageUrl)) + '" alt="Front of pack: ' + h(item.name) + '">';
     const p = packShape(item, "f"), veg = String(item.diet || "veg") === "veg", mark = veg ? "#1b8a3a" : "#8a3a1b";
     const name = String(item.name), words = name.split(" "), mid = Math.ceil(words.length / 2);
     const lines = name.length > 14 ? [words.slice(0, mid).join(" "), words.slice(mid).join(" ")] : [name];
@@ -460,7 +469,7 @@
   // Back of pack: the full back label printed on the same packet.
   function packBackSvg(item) {
     const c = item.compliance || {};
-    if (c.backImageUrl) return '<img src="' + h(c.backImageUrl) + '" alt="Back of pack: ' + h(item.name) + '">';
+    if (c.backImageUrl) return '<img src="' + h(cdn(c.backImageUrl)) + '" alt="Back of pack: ' + h(item.name) + '">';
     const p = packShape(item, "b"), label = backPackSvg(item), m = label.match(/viewBox="0 0 600 ([\d.]+)"/), H = m ? Number(m[1]) : 465;
     const [ix, iy, iw, ih] = p.inner, scale = Math.min(iw / 600, ih / H), w = 600 * scale, hh = H * scale;
     const nested = label.replace("<svg ", '<svg x="' + (ix + (iw - w) / 2) + '" y="' + (iy + (ih - hh) / 2) + '" width="' + w + '" height="' + hh + '" ');
@@ -470,7 +479,7 @@
   // Last image: the nutrition panel and licence, zoomed so every value reads clearly.
   function nutritionCloseupSvg(item) {
     const c = item.compliance || {}, n = c.nutrition || {}, g = num(c.servingG);
-    if (c.nutritionImageUrl) return '<img src="' + h(c.nutritionImageUrl) + '" alt="Nutrition information: ' + h(item.name) + '">';
+    if (c.nutritionImageUrl) return '<img src="' + h(cdn(c.nutritionImageUrl)) + '" alt="Nutrition information: ' + h(item.name) + '">';
     const ing = wrapSvg("Ingredients: " + (c.ingredients || ""), 70, 52, 460, 20, 25, 3, 400);
     let y = 52 + ing.height + 20;
     const t0 = y;
@@ -533,7 +542,7 @@
   }
   function backPackSvg(item) {
     const c = item.compliance || {}, n = c.nutrition || {}, g = num(c.servingG), veg = String(item.diet || "veg") === "veg", mark = veg ? "#1b8a3a" : "#8a3a1b";
-    if (c.backImageUrl) return '<img src="' + h(c.backImageUrl) + '" alt="Back of pack: ' + h(item.name) + '">';
+    if (c.backImageUrl) return '<img src="' + h(cdn(c.backImageUrl)) + '" alt="Back of pack: ' + h(item.name) + '">';
     const per = String(n.per || "100 g"), rows = [["Energy (kcal)", "energyKcal"], ["Protein (g)", "proteinG"], ["Carbohydrate (g)", "carbohydrateG"],
       ["  Total sugars (g)", "totalSugarsG"], ["  Added sugars (g)", "addedSugarsG"], ["Total fat (g)", "fatG"], ["  Saturated fat (g)", "saturatedFatG"], ["  Trans fat (g)", "transFatG"], ["Sodium (mg)", "sodiumMg"]];
     const fmt = (v) => v == null ? "—" : String(Math.round(v * 10) / 10);
@@ -701,6 +710,35 @@
       (blocked === "sample" ? "" : '<a class="btn block" href="/shop/checkout"' + (blocked ? ' aria-disabled="true" style="pointer-events:none;opacity:.5"' : "") + ">Proceed to checkout</a>") + "</aside></div>";
   }
 
+  // ---------------------------------------------------------------- privacy consent
+  // DPDP Act, 2023: a signed-in account that has not agreed to the current privacy notice sees
+  // it (scraveit-privacy.js, the same notice as the app) before anything else.
+  function privacyConsentRef() { return db.collection("privacyConsents").doc(ScraveitPrivacy.consentDocId(state.user.uid, "customer")); }
+  async function privacyConsentOk() {
+    if (!state.user || !window.ScraveitPrivacy || state.consentPending) return true;
+    if (state.privacyChecked !== state.user.uid) {
+      try { const snap = await privacyConsentRef().get(); state.privacyConsent = snap.exists ? snap.data() : null; }
+      catch (_) { return true; } // offline: asked again on the next page
+      state.privacyChecked = state.user.uid;
+    }
+    return ScraveitPrivacy.isCurrent(state.privacyConsent);
+  }
+  async function savePrivacyConsent(method, lang) {
+    const record = ScraveitPrivacy.consentRecord(state.user.uid, "customer", lang || ScraveitPrivacy.lang(), method, "website");
+    await privacyConsentRef().set(record);
+    state.privacyConsent = record; state.privacyChecked = state.user.uid;
+  }
+  function viewPrivacyGate() {
+    setTitle("Privacy notice");
+    app.innerHTML = ScraveitPrivacy.gateHtml("customer", ScraveitPrivacy.lang(), false);
+  }
+  if (window.ScraveitPrivacy) ScraveitPrivacy.bind({
+    onAgree: (lang) => savePrivacyConsent("gate", lang).then(() => { toast("Thank you. Your consent is saved."); render(); }).catch((e) => { toast(friendly(e)); render(); }),
+    onSignOut: () => auth.signOut().then(() => go("/shop")),
+    onLang: () => render(),
+    toast: (message) => toast(message),
+  });
+
   // ---------------------------------------------------------------- auth
   function requireUser(next) {
     if (state.user) return true;
@@ -721,16 +759,26 @@
       '<button class="btn block ghost" type="button" id="google-sign-in">Continue with Google</button><div class="divider">or with email</div>' +
       '<form id="email-form" class="panel" style="padding:0;border:0;gap:12px"><div class="field"><label for="email">Email</label><input class="input" id="email" type="email" autocomplete="email" required></div>' +
       '<div class="field"><label for="password">Password</label><input class="input" id="password" type="password" autocomplete="current-password" minlength="8" required></div>' +
+      (window.ScraveitPrivacy ? ScraveitPrivacy.consentLabel("customer", ScraveitPrivacy.lang(), "web-signup-consent") : "") +
       '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit" data-mode="signin">Sign in</button><button class="btn ghost" type="submit" data-mode="signup">Create account</button></div></form>' +
-      '<p style="margin:0;font-size:12px;color:var(--muted)">By continuing you agree to the <a href="/terms">Terms of use</a> and <a href="/privacy">Privacy policy</a>.</p></div>';
-    document.getElementById("google-sign-in").onclick = () => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
-      .then(() => go(next, true)).catch((e) => toast(friendly(e)));
+      '<p style="margin:0;font-size:12px;color:var(--muted)">Creating an account needs your consent above. If you sign in with Google for the first time, we show you the notice before you continue.</p></div>';
+    const consentBox = () => document.getElementById("web-signup-consent");
+    document.getElementById("google-sign-in").onclick = () => {
+      const agreed = !!(consentBox() && consentBox().checked);
+      state.consentPending = agreed;
+      auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
+        .then(() => agreed ? savePrivacyConsent("signup").catch(() => {}) : null)
+        .then(() => { state.consentPending = false; go(next, true); }).catch((e) => { state.consentPending = false; toast(friendly(e)); });
+    };
     document.getElementById("email-form").onsubmit = (event) => {
       event.preventDefault();
       const mode = event.submitter && event.submitter.dataset.mode;
       const email = document.getElementById("email").value.trim(), password = document.getElementById("password").value;
+      if (mode === "signup" && window.ScraveitPrivacy && !(consentBox() && consentBox().checked)) { toast(ScraveitPrivacy.tickFirstMessage()); return; }
+      state.consentPending = mode === "signup";
       const action = mode === "signup" ? auth.createUserWithEmailAndPassword(email, password) : auth.signInWithEmailAndPassword(email, password);
-      action.then(() => go(next, true)).catch((e) => toast(friendly(e)));
+      action.then(() => mode === "signup" ? savePrivacyConsent("signup").catch(() => {}) : null)
+        .then(() => { state.consentPending = false; go(next, true); }).catch((e) => { state.consentPending = false; toast(friendly(e)); });
     };
   }
 
@@ -1028,7 +1076,7 @@
   persistCart();
   if (auth) {
     auth.onAuthStateChanged((user) => {
-      state.user = user; state.authReady = true; state.profile = null;
+      state.user = user; state.authReady = true; state.profile = null; state.privacyChecked = "";
       const link = document.getElementById("account-link");
       link.textContent = user ? "Account" : "Sign in";
       render();

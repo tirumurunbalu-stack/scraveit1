@@ -3,7 +3,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:fillColor="#0B5FE8" android:pathData="M24,8H84A16,16 0,0 1,100 24V84A16,16 0,0 1,84 100H24A16,16 0,0 1,8 84V24A16,16 0,0 1,24 8Z" />
+    <path android:fillColor="#0E9F6E" android:pathData="M24,8H84A16,16 0,0 1,100 24V84A16,16 0,0 1,84 100H24A16,16 0,0 1,8 84V24A16,16 0,0 1,24 8Z" />
     <!-- "Scraveit" wordmark: Manrope ExtraBold outlines (SIL OFL). -->
     <path
         android:fillColor="#FFFFFFFF"

@@ -396,7 +396,7 @@ async function promoteReadyOrderToAssigned(before: SavrivoOrder): Promise<Savriv
   }
 }
 
-export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput): Promise<{
+export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput, options: {payerUid?: string} = {}): Promise<{
   order: SavrivoOrder;
   deliveryOtp: string;
   recovered: boolean;
@@ -572,6 +572,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     customerId: uid,
     customerName: (String(profile.name ?? "").trim() || "Savrivo customer").slice(0, 120),
     customerPhone: address.phone,
+    // A parent paying for their child's order ("Ask a parent to pay").
+    ...(options.payerUid && options.payerUid !== uid ? {payerUid: options.payerUid} : {}),
     restaurantId: restaurant.id,
     restaurant: restaurant.name,
     restaurantLocation: {address: restaurant.address, lat: Number(restaurant.lat), lng: Number(restaurant.lng)},

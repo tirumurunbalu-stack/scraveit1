@@ -22,6 +22,8 @@ import java.util.Map;
 public final class CustomerMessagingService extends FirebaseMessagingService {
   static final String ORDER_CHANNEL = "customer_orders";
   static final String PROMOTIONS_CHANNEL = "customer_promotions";
+  // Its own channel so it pops up on screen like an order update (Offers is quieter).
+  static final String REMINDERS_CHANNEL = "customer_reminders";
   static final String PUSH_ACTION = "com.feastly.app.CUSTOMER_PUSH_EVENT";
   static final String EXTRA_PUSH_JSON = "savrivo_push_json";
   private static final String PREFS = "savrivo_customer_push_events_v1";
@@ -71,10 +73,14 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     NotificationChannel promotions = new NotificationChannel(
         PROMOTIONS_CHANNEL, "Offers and announcements", NotificationManager.IMPORTANCE_DEFAULT);
     promotions.setDescription("Scheduled offers and announcements from Scraveit");
+    NotificationChannel reminders = new NotificationChannel(
+        REMINDERS_CHANNEL, "Cart reminders and meal ideas", NotificationManager.IMPORTANCE_HIGH);
+    reminders.setDescription("A reminder about food left in your cart, and ideas at breakfast, lunch and dinner");
     NotificationManager manager = context.getSystemService(NotificationManager.class);
     if (manager != null) {
       manager.createNotificationChannel(channel);
       manager.createNotificationChannel(promotions);
+      manager.createNotificationChannel(reminders);
     }
   }
 

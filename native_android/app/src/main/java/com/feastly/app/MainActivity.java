@@ -401,25 +401,76 @@ public class MainActivity extends ComponentActivity {
 
   private String pendingTableLink = "";
   private static final int PROFILE_PHOTO_REQUEST = 7411;
+  private static final int CHAT_PHOTO_REQUEST = 7412;
   private String pendingPhotoRequestId;
 
   @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
-    if (requestCode != PROFILE_PHOTO_REQUEST) return;
+    if (requestCode != PROFILE_PHOTO_REQUEST && requestCode != CHAT_PHOTO_REQUEST) return;
+    final boolean chat = requestCode == CHAT_PHOTO_REQUEST;
+    final String operation = chat ? "pickChatPhoto" : "pickProfilePhoto";
     String id = pendingPhotoRequestId;
     pendingPhotoRequestId = null;
     if (id == null) return;
     android.net.Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
-    if (uri == null) { publishNativeFailure(id, "pickProfilePhoto", "CANCELLED", "No photo chosen."); return; }
+    if (uri == null) { publishNativeFailure(id, operation, "CANCELLED", "No photo chosen."); return; }
     new Thread(() -> {
       try {
-        JSONObject out = new JSONObject();
-        out.put("image", squareJpegDataUrl(uri, 320, 80));
-        runOnUiThread(() -> publishNativeSuccess(id, "pickProfilePhoto", out));
+        JSONObject out = chat ? chatJpeg(uri) : new JSONObject().put("image", squareJpegDataUrl(uri, 320, 80));
+        runOnUiThread(() -> publishNativeSuccess(id, operation, out));
       } catch (Throwable error) {
-        runOnUiThread(() -> publishNativeFailure(id, "pickProfilePhoto", "INVALID", "That photo couldn’t be used. Try another."));
+        runOnUiThread(() -> publishNativeFailure(id, operation, "INVALID", "That photo couldn’t be used. Try another."));
       }
-    }, "profile-photo").start();
+    }, chat ? "chat-photo" : "profile-photo").start();
+  }
+
+  /** Largest a chat photo may be as a data URL, so it fits one Firestore document with room to spare. */
+  private static final int CHAT_PHOTO_MAX_CHARS = 700_000;
+
+  /**
+   * A photo for a chat: keeps its shape, longest side at most 1280 px (smaller and
+   * lower quality until it fits CHAT_PHOTO_MAX_CHARS). Returns {image, w, h}.
+   * Re-encoding also drops the original's EXIF data, location included.
+   */
+  private JSONObject chatJpeg(android.net.Uri uri) throws Exception {
+    android.graphics.Bitmap source = decodeWithin(uri, 1280);
+    int[][] steps = {{1280, 78}, {1280, 66}, {1024, 66}, {880, 60}, {720, 58}};
+    for (int[] step : steps) {
+      float scale = Math.min(1f, (float) step[0] / Math.max(source.getWidth(), source.getHeight()));
+      int w = Math.max(1, Math.round(source.getWidth() * scale)), h = Math.max(1, Math.round(source.getHeight() * scale));
+      android.graphics.Bitmap scaled = scale < 1f ? android.graphics.Bitmap.createScaledBitmap(source, w, h, true) : source;
+      java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+      scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, step[1], bytes);
+      String url = "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP);
+      if (url.length() <= CHAT_PHOTO_MAX_CHARS) return new JSONObject().put("image", url).put("w", w).put("h", h);
+    }
+    throw new IllegalStateException("PHOTO_TOO_LARGE");
+  }
+
+  /** Decodes a photo upright (EXIF rotation applied on Android 9+), scaled down near `maxSide` while decoding. */
+  private android.graphics.Bitmap decodeWithin(android.net.Uri uri, int maxSide) throws Exception {
+    android.graphics.Bitmap source;
+    if (Build.VERSION.SDK_INT >= 28) {
+      source = android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(getContentResolver(), uri), (decoder, info, src) -> {
+        decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+        int w = info.getSize().getWidth(), h = info.getSize().getHeight(), max = Math.max(w, h);
+        if (max > maxSide) {
+          float scale = (float) maxSide / max;
+          decoder.setTargetSize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+        }
+      });
+    } else {
+      android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
+      bounds.inJustDecodeBounds = true;
+      try (java.io.InputStream in = getContentResolver().openInputStream(uri)) { android.graphics.BitmapFactory.decodeStream(in, null, bounds); }
+      android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+      int max = Math.max(bounds.outWidth, bounds.outHeight);
+      options.inSampleSize = 1;
+      while (max / (options.inSampleSize * 2) >= maxSide) options.inSampleSize *= 2;
+      try (java.io.InputStream in = getContentResolver().openInputStream(uri)) { source = android.graphics.BitmapFactory.decodeStream(in, null, options); }
+    }
+    if (source == null) throw new IllegalStateException("PHOTO_DECODE_FAILED");
+    return source;
   }
 
   /** Centre-crops a photo to a square, scales it to `size` px and returns it as a JPEG data URL. */
@@ -455,7 +506,8 @@ public class MainActivity extends ComponentActivity {
   static final java.util.Set<String> SOCIAL_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
       "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
       "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
-      "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke"));
+      "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
+      "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou"));
 
   private class NativeBridge {
     /** The table link the app was opened with (once), as "restaurantId/tableId". */
@@ -475,7 +527,12 @@ public class MainActivity extends ComponentActivity {
     }
 
     /** Chat profile photo: pick from the phone's photos; returned as a small square JPEG. */
-    @JavascriptInterface public void pickProfilePhoto(String requestId) {
+    @JavascriptInterface public void pickProfilePhoto(String requestId) { pickPhoto(requestId, PROFILE_PHOTO_REQUEST, "pickProfilePhoto"); }
+
+    /** A photo to send in a chat: pick from the phone's photos; returned as {image, w, h}. */
+    @JavascriptInterface public void pickChatPhoto(String requestId) { pickPhoto(requestId, CHAT_PHOTO_REQUEST, "pickChatPhoto"); }
+
+    private void pickPhoto(String requestId, int requestCode, String operation) {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
         pendingPhotoRequestId = requestId;
@@ -487,10 +544,10 @@ public class MainActivity extends ComponentActivity {
           intent.setType("image/*");
           intent.addCategory(Intent.CATEGORY_OPENABLE);
         }
-        try { startActivityForResult(intent, PROFILE_PHOTO_REQUEST); }
+        try { startActivityForResult(intent, requestCode); }
         catch (Exception error) {
           pendingPhotoRequestId = null;
-          publishNativeFailure(requestId, "pickProfilePhoto", "UNAVAILABLE", "Couldn’t open your photos.");
+          publishNativeFailure(requestId, operation, "UNAVAILABLE", "Couldn’t open your photos.");
         }
       });
     }
@@ -667,6 +724,23 @@ public class MainActivity extends ComponentActivity {
               publishNativeFailure(requestId, "registerPushToken", "PUSH_TOKEN_UNAVAILABLE",
                   "Notifications could not be enabled on this device.");
             });
+      });
+    }
+
+    /**
+     * Signed out (or no account on this phone): drop this installation's push token
+     * itself. FCM then refuses anything still addressed to it, so no account's
+     * notifications reach a signed-out phone, even when the server call to forget
+     * the token failed. Signing in again creates a fresh token.
+     */
+    @JavascriptInterface public void clearPushIdentity() {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded()) return;
+        PushTokenStore.clear(MainActivity.this, null);
+        FirebaseMessaging.getInstance().deleteToken()
+            .addOnFailureListener(error -> FirebaseCrashlytics.getInstance().recordException(error));
+        android.app.NotificationManager manager = getSystemService(android.app.NotificationManager.class);
+        if (manager != null) manager.cancelAll();
       });
     }
 
@@ -1081,7 +1155,30 @@ public class MainActivity extends ComponentActivity {
     pushReceiverRegistered = true;
   }
 
+  // Set while the app itself has opened something (payment app, photo picker, share
+  // sheet, maps) so going there never counts as leaving with a full cart.
+  private boolean openedOwnScreen = false;
+
+  @Override public void startActivityForResult(Intent intent, int requestCode, Bundle options) {
+    openedOwnScreen = true;
+    super.startActivityForResult(intent, requestCode, options);
+  }
+
+  /** Leaving the app with food in the cart: the page says whether a reminder is due (CartNudge). */
+  private void scheduleCartNudge() {
+    if (openedOwnScreen || isChangingConfigurations() || webView == null || !isTrustedPageLoaded()) return;
+    final Context app = getApplicationContext();
+    webView.evaluateJavascript("window.savrivoCartNudge ? window.savrivoCartNudge() : ''", value -> {
+      try {
+        if (value == null || value.length() < 4 || "null".equals(value)) return;
+        String json = new org.json.JSONArray("[" + value + "]").getString(0);
+        if (json.length() > 0) CartNudge.schedule(app, json);
+      } catch (Exception ignored) { }
+    });
+  }
+
   @Override protected void onStop() {
+    scheduleCartNudge();
     if (pushReceiverRegistered) {
       try { unregisterReceiver(pushReceiver); } catch (Exception ignored) { }
       pushReceiverRegistered = false;
@@ -1091,6 +1188,8 @@ public class MainActivity extends ComponentActivity {
 
   @Override protected void onResume() {
     super.onResume();
+    openedOwnScreen = false;
+    CartNudge.cancel(this);
     deliverPendingPushEvent();
     if (retryLocationOnResume) {
       retryLocationOnResume = false;

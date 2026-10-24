@@ -28,8 +28,15 @@ const referenced = [
   ...config.database.map((entry) => entry.rules),
   config.firestore?.rules,
   config.firestore?.indexes,
-  config.storage?.rules,
+  // Storage rules go to each bucket: the Mumbai one photos live in, and the
+  // original US one that older app builds still upload to.
+  ...(Array.isArray(config.storage) ? config.storage.map((entry) => entry.rules) : [config.storage?.rules]),
 ];
+if (Array.isArray(config.storage)) {
+  const buckets = config.storage.map((entry) => entry.bucket);
+  assert.ok(buckets.includes("savrivo-app-mumbai") && buckets.includes("savrivo-app.firebasestorage.app"),
+    "Storage rules must be deployed to both the Mumbai and the original bucket.");
+}
 for (const path of referenced) {
   assert.ok(path, "firebase.json has a rules/indexes entry with no path.");
   assert.ok(existsSync(pathFromRoot(path)), `firebase.json references a missing file: ${path}`);

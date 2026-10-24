@@ -278,6 +278,12 @@ public final class OrderAlarmService extends Service {
                 true);
         startForeground(FOREGROUND_ID, foreground);
 
+        // One alarm: the foreground notification is the only one. Posting a copy as well made
+        // the heads-up pop up twice in a row, which looked like a blink.
+        if (alarms.length() == 1) {
+            manager.cancel(SavrivoNotifications.stableId(notificationNamespace(this), firstId));
+            return;
+        }
         Iterator<String> each = alarms.keys();
         while (each.hasNext()) {
             String alarmId = each.next();
@@ -326,6 +332,14 @@ public final class OrderAlarmService extends Service {
                 open.put("route", route == null ? "" : route);
             } catch (Exception ignored) { }
             launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
+        } else if (!isRider() && !isAdmin() && route != null && !route.isEmpty()) {
+            // Tapping a store order alarm opens that order's accept/decline screen.
+            JSONObject open = new JSONObject();
+            try {
+                open.put("type", "RESTAURANT_ORDER_OPEN");
+                open.put("orderId", route);
+            } catch (Exception ignored) { }
+            launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
         }
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
@@ -344,6 +358,7 @@ public final class OrderAlarmService extends Service {
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setPriority(Notification.PRIORITY_MAX)
                 .setOngoing(ongoing)
+                .setOnlyAlertOnce(true)
                 .setAutoCancel(false)
                 .setContentIntent(pending);
         return builder.build();
