@@ -3875,47 +3875,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // the photo that gets shared are drawn by the same code, so friends see
   // exactly what was on screen.
   const SE_UNIT=.075;
-  const SE_FILTERS=[
-    {id:"none",name:"Original",ops:[]},
-    {id:"fresh",name:"Fresh",ops:[["brightness",1.06],["contrast",1.08],["saturate",1.25]]},
-    {id:"spicy",name:"Spicy",ops:[["contrast",1.16],["saturate",1.45],["hue",-6]],tint:["#ff3b1f","soft-light",.2]},
-    {id:"golden",name:"Golden",ops:[["brightness",1.05],["saturate",1.2],["sepia",.15]],tint:["#ffb347","soft-light",.32]},
-    {id:"masala",name:"Masala",ops:[["contrast",1.12],["saturate",1.3],["sepia",.12]],tint:["#c2410c","overlay",.14],vig:.25},
-    {id:"mango",name:"Mango",ops:[["brightness",1.07],["saturate",1.35]],tint:["#ffd166","soft-light",.35]},
-    {id:"chai",name:"Chai",ops:[["sepia",.35],["contrast",1.05],["brightness",1.03],["saturate",1.1]],tint:["#a16207","soft-light",.2]},
-    {id:"kaapi",name:"Kaapi",ops:[["contrast",1.2],["brightness",.96],["sepia",.25],["saturate",.92]],vig:.35},
-    {id:"biryani",name:"Biryani",ops:[["saturate",1.4],["contrast",1.1],["sepia",.18],["hue",-8]],tint:["#f59e0b","soft-light",.24]},
-    {id:"lassi",name:"Lassi",ops:[["brightness",1.1],["contrast",.92],["saturate",.92]],tint:["#fff7ed","screen",.16]},
-    {id:"monsoon",name:"Monsoon",ops:[["saturate",.86],["contrast",1.05],["hue",8]],tint:["#2563eb","soft-light",.26]},
-    {id:"bazaar",name:"Night Bazaar",ops:[["contrast",1.24],["saturate",1.5],["brightness",.93]],tint:["#7c3aed","soft-light",.22],vig:.4},
-    {id:"sunset",name:"Sunset",ops:[["saturate",1.3],["contrast",1.05]],tint:["#fb7185","soft-light",.32]},
-    {id:"mint",name:"Mint",ops:[["saturate",1.1],["brightness",1.05],["hue",-12]],tint:["#34d399","soft-light",.2]},
-    {id:"berry",name:"Berry",ops:[["saturate",1.25],["contrast",1.08],["hue",-14]],tint:["#db2777","soft-light",.2]},
-    {id:"butter",name:"Butter",ops:[["brightness",1.1],["saturate",1.15],["contrast",.95]],tint:["#ffe4b5","screen",.14]},
-    {id:"pop",name:"Pop",ops:[["saturate",1.8],["contrast",1.15]]},
-    {id:"cool",name:"Cool",ops:[["saturate",1.05],["warm",-.6]],tint:["#60a5fa","soft-light",.22]},
-    {id:"warm",name:"Warm",ops:[["saturate",1.1],["warm",.6]],tint:["#fb923c","soft-light",.24]},
-    {id:"matte",name:"Matte",ops:[["fade",.7],["saturate",.85]]},
-    {id:"vintage",name:"Vintage",ops:[["sepia",.42],["contrast",1.1],["saturate",1.15],["brightness",.96]],tint:["#fbbf24","overlay",.1],vig:.45},
-    {id:"film",name:"Film",ops:[["contrast",1.12],["saturate",.9],["sepia",.1],["fade",.25]],tint:["#0f766e","soft-light",.14],grain:.35},
-    {id:"mono",name:"Mono",ops:[["gray",1],["contrast",1.1]]},
-    {id:"noir",name:"Noir",ops:[["gray",1],["contrast",1.45],["brightness",.93]],vig:.5}
-  ];
-  const SE_ADJUST=[
-    {k:"bright",name:"Brightness",icon:"☀️",min:-100},{k:"contrast",name:"Contrast",icon:"◐",min:-100},
-    {k:"sat",name:"Saturation",icon:"🎨",min:-100},{k:"warm",name:"Warmth",icon:"🌡️",min:-100},
-    {k:"sharp",name:"Sharpen",icon:"🔍",min:0},{k:"fade",name:"Fade",icon:"🌫️",min:0},
-    {k:"vignette",name:"Vignette",icon:"⭕",min:0},{k:"grain",name:"Grain",icon:"🎞️",min:0},{k:"soft",name:"Soften",icon:"💧",min:0}
-  ];
-  const SE_EFFECTS=[
-    {id:"none",name:"None"},{id:"glow",name:"Glow"},{id:"dreamy",name:"Dreamy",ops:[["brightness",1.04],["contrast",.92]]},
-    {id:"sparkle",name:"Sparkle"},{id:"bokeh",name:"Bokeh"},{id:"steam",name:"Steam"},{id:"fire",name:"Fire"},
-    {id:"hearts",name:"Hearts"},{id:"confetti",name:"Confetti"},{id:"leak",name:"Light leak"},{id:"rainbow",name:"Rainbow"},
-    {id:"rays",name:"Sun rays"},{id:"rain",name:"Rain",ops:[["saturate",.9],["warm",-.4],["brightness",.96]]},
-    {id:"spotlight",name:"Spotlight"},{id:"duotone",name:"Duotone",ops:[["duo","#3b0764","#fdba74"]]},
-    {id:"retro",name:"Retro TV",ops:[["saturate",1.2],["contrast",1.1]]},{id:"strip",name:"Film strip",ops:[["contrast",1.1],["sepia",.1]]},
-    {id:"polaroid",name:"Polaroid",ops:[["sepia",.12],["fade",.2]]}
-  ];
+  // The looks themselves (filters, adjustments, effects) live in editor-fx.js.
+  // If editor-fx.js ever fails to load, the editor still opens and shares the photo as it is.
+  const SE_FX=window.ScraveitFx||{FILTERS:[{id:"none",name:"Original",use:""}],ADJUST:[],EFFECTS:[{id:"none",name:"None",use:""}],adjDefaults:()=>({}),paint:(c,d,base)=>{c.getContext("2d").drawImage(base,0,0,c.width,c.height)}};
+  const SE_FILTERS=SE_FX.FILTERS,SE_ADJUST=SE_FX.ADJUST,SE_EFFECTS=SE_FX.EFFECTS;
   const SE_FONTS=[
     {id:"classic",name:"Classic",css:fs=>"700 "+fs+"px sans-serif"},
     {id:"strong",name:"Strong",css:fs=>"italic 900 "+fs*1.06+"px sans-serif-black, sans-serif",upper:true},
@@ -3941,89 +3904,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function seFont(id){return SE_FONTS.find(f=>f.id===id)||SE_FONTS[0]}
   function seId(){return"i"+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36)}
   function seStamp(){const n=new Date();return{time:n.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\s*(am|pm)$/i,(m,p)=>" "+p.toUpperCase()),date:n.toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}}
-  function seDefaults(d){if(d.adj)return;Object.assign(d,{filter:"none",amount:100,fx:"none",adj:{bright:0,contrast:0,sat:0,warm:0,sharp:0,fade:0,vignette:0,grain:0,soft:0},items:[],strokes:[],mode:"",tab:"filters",adjKey:"bright",draft:null,brush:{tool:"pen",color:"#ffffff",size:4},seed:Math.floor(Math.random()*1e9),stamp:seStamp()})}
+  function seDefaults(d){if(d.adj)return;Object.assign(d,{filter:"none",amount:100,fx:"none",fxAmount:100,adj:SE_FX.adjDefaults(),items:[],strokes:[],mode:"",tab:"filters",adjKey:"exposure",draft:null,brush:{tool:"pen",color:"#ffffff",size:4},seed:Math.floor(Math.random()*1e9),stamp:seStamp()})}
   function seAdjusted(d){return Object.keys(d.adj||{}).some(k=>d.adj[k])}
   function seEdited(d){return!!(d&&d.adj&&(d.filter!=="none"||d.fx!=="none"||seAdjusted(d)||d.items.length||d.strokes.length))}
   function seReset(){Object.values(seCache.thumbs).forEach(u=>{try{URL.revokeObjectURL(u)}catch(_){}});
     Object.assign(seCache,{base:null,baseUrl:"",baseC:null,photo:null,photoSig:"",ink:null,live:null,thumbs:{},thumbFor:"",P:0,fw:0,fh:0,scroll:{},focusThumb:false});seCache.items.clear()}
-  // ---- colour maths: every filter step is an affine colour matrix, so a whole look is one pass over the pixels
+  // Text and sticker colours as 0..1 RGB.
   function seRgb(hex){const m=/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)||[0,"ff","ff","ff"];return[parseInt(m[1],16)/255,parseInt(m[2],16)/255,parseInt(m[3],16)/255]}
-  function seMul(b,a){const r=[];for(let i=0;i<3;i++){for(let j=0;j<3;j++)r.push(b[i*4]*a[j]+b[i*4+1]*a[4+j]+b[i*4+2]*a[8+j]);r.push(b[i*4]*a[3]+b[i*4+1]*a[7]+b[i*4+2]*a[11]+b[i*4+3])}return r}
-  const SE_I=[1,0,0,0,0,1,0,0,0,0,1,0];
-  function seMat(ops){let m=SE_I.slice();(ops||[]).forEach(o=>{const k=o[0],v=o[1];let n=null;
-      if(k==="brightness")n=[v,0,0,0,0,v,0,0,0,0,v,0];
-      else if(k==="contrast"){const t=.5-.5*v;n=[v,0,0,t,0,v,0,t,0,0,v,t]}
-      else if(k==="saturate"||k==="gray"){const s=k==="gray"?1-v:v;n=[.213+.787*s,.715-.715*s,.072-.072*s,0,.213-.213*s,.715+.285*s,.072-.072*s,0,.213-.213*s,.715-.715*s,.072+.928*s,0]}
-      else if(k==="sepia"){const p=1-v;n=[.393+.607*p,.769-.769*p,.189-.189*p,0,.349-.349*p,.686+.314*p,.168-.168*p,0,.272-.272*p,.534-.534*p,.131+.869*p,0]}
-      else if(k==="hue"){const a=Math.cos(v*Math.PI/180),b=Math.sin(v*Math.PI/180);n=[.213+a*.787-b*.213,.715-a*.715-b*.715,.072-a*.072+b*.928,0,.213-a*.213+b*.143,.715+a*.285+b*.14,.072-a*.072-b*.283,0,.213-a*.213-b*.787,.715-a*.715+b*.715,.072+a*.928+b*.072,0]}
-      else if(k==="warm")n=[1+.12*v,0,0,.03*v,0,1+.03*v,0,0,0,0,1-.14*v,-.02*v];
-      else if(k==="fade"){const g=1-.24*v,t=.11*v;n=[g,0,0,t,0,g,0,t,0,0,g,t]}
-      else if(k==="duo"){const A=seRgb(o[1]),B=seRgb(o[2]);n=[];for(let i=0;i<3;i++){const dd=B[i]-A[i];n.push(dd*.2126,dd*.7152,dd*.0722,A[i])}}
-      if(n)m=seMul(n,m)});return m}
-  function seLerpI(m,t){return m.map((v,i)=>SE_I[i]+(v-SE_I[i])*t)}
-  function seIsI(m){return m.every((v,i)=>Math.abs(v-SE_I[i])<1e-4)}
-  function sePixels(x,W,H,m,sharp){const img=x.getImageData(0,0,W,H),p=img.data,src=sharp>0?new Uint8ClampedArray(p):p,a=sharp*.5,row=W*4,k=m.map((v,i)=>i%4===3?v*255:v);
-    for(let y=0;y<H;y++){const up=y>0?-row:0,dn=y<H-1?row:0;
-      for(let xx=0;xx<W;xx++){const i=(y*W+xx)*4,lf=xx>0?-4:0,rt=xx<W-1?4:0;let r=src[i],g=src[i+1],b=src[i+2];
-        if(a>0){r+=a*(4*r-src[i+up]-src[i+dn]-src[i+lf]-src[i+rt]);g+=a*(4*g-src[i+1+up]-src[i+1+dn]-src[i+1+lf]-src[i+1+rt]);b+=a*(4*b-src[i+2+up]-src[i+2+dn]-src[i+2+lf]-src[i+2+rt])}
-        p[i]=k[0]*r+k[1]*g+k[2]*b+k[3];p[i+1]=k[4]*r+k[5]*g+k[6]*b+k[7];p[i+2]=k[8]*r+k[9]*g+k[10]*b+k[11]}}
-    x.putImageData(img,0,0)}
-  function seRng(seed){let s=seed>>>0;return()=>{s=s+0x6D2B79F5>>>0;let t=s;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
-  let seNoiseTile=null;
-  function seNoise(){if(seNoiseTile)return seNoiseTile;const c=document.createElement("canvas");c.width=c.height=128;const x=c.getContext("2d"),img=x.createImageData(128,128),R=seRng(7);
-    for(let i=0;i<img.data.length;i+=4){const v=Math.round(128+(R()-.5)*190);img.data[i]=img.data[i+1]=img.data[i+2]=v;img.data[i+3]=255}x.putImageData(img,0,0);seNoiseTile=c;return c}
-  function seFill(x,W,H,color,mode,alpha){x.save();x.globalCompositeOperation=mode;x.globalAlpha=Math.max(0,Math.min(1,alpha));x.fillStyle=color;x.fillRect(0,0,W,H);x.restore()}
-  function seVignette(x,W,H,v){const g=x.createRadialGradient(W/2,H/2,Math.min(W,H)*.28,W/2,H/2,Math.hypot(W,H)/2);g.addColorStop(0,"rgba(0,0,0,0)");g.addColorStop(.55,"rgba(0,0,0,"+(v*.3).toFixed(3)+")");g.addColorStop(1,"rgba(0,0,0,"+Math.min(.92,v).toFixed(3)+")");x.save();x.fillStyle=g;x.fillRect(0,0,W,H);x.restore()}
-  function seGrain(x,W,H,g){const k=Math.max(W,H)/600;x.save();x.globalCompositeOperation="overlay";x.globalAlpha=Math.min(1,g);x.scale(k,k);x.fillStyle=x.createPattern(seNoise(),"repeat");x.fillRect(0,0,W/k+1,H/k+1);x.restore()}
-  function seBlurCopy(c,W,H,div){const a=document.createElement("canvas");a.width=Math.max(2,Math.round(W/4));a.height=Math.max(2,Math.round(H/4));const ax=a.getContext("2d");ax.imageSmoothingQuality="high";ax.drawImage(c,0,0,a.width,a.height);
-    const b=document.createElement("canvas");b.width=Math.max(2,Math.round(W/div));b.height=Math.max(2,Math.round(H/div));const bx=b.getContext("2d");bx.imageSmoothingQuality="high";bx.drawImage(a,0,0,b.width,b.height);return b}
-  function seRoundPath(x,X,Y,w,h,r){r=Math.max(0,Math.min(r,w/2,h/2));x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath()}
-  function seRound(x,X,Y,w,h,r){x.beginPath();seRoundPath(x,X,Y,w,h,r)}
-  function seGlint(x,cx,cy,r,t){const g=x.createRadialGradient(cx,cy,0,cx,cy,r*1.5);g.addColorStop(0,"rgba(255,255,255,.95)");g.addColorStop(.25,"rgba(255,250,220,.5)");g.addColorStop(1,"rgba(255,250,220,0)");x.fillStyle=g;x.beginPath();x.arc(cx,cy,r*1.5,0,7);x.fill();
-    x.save();x.translate(cx,cy);x.rotate(t);x.fillStyle="rgba(255,255,255,.95)";x.beginPath();x.moveTo(0,-r*2);x.quadraticCurveTo(r*.12,-r*.12,r*2,0);x.quadraticCurveTo(r*.12,r*.12,0,r*2);x.quadraticCurveTo(-r*.12,r*.12,-r*2,0);x.quadraticCurveTo(-r*.12,-r*.12,0,-r*2);x.fill();x.restore()}
-  function seHeart(x,cx,cy,s,rot){x.save();x.translate(cx,cy);x.rotate(rot);x.beginPath();x.moveTo(0,-.35*s);x.bezierCurveTo(-.5*s,-1.05*s,-1.35*s,-.2*s,0,.78*s);x.bezierCurveTo(1.35*s,-.2*s,.5*s,-1.05*s,0,-.35*s);x.fill();x.restore()}
-  function seEffectDraw(x,c,W,H,id,seed,stamp){const R=seRng(seed),M=Math.min(W,H);x.save();
-    if(id==="glow"){const b=seBlurCopy(c,W,H,18);x.globalCompositeOperation="screen";x.globalAlpha=.5;x.drawImage(b,0,0,W,H);x.globalCompositeOperation="soft-light";x.globalAlpha=.35;x.drawImage(b,0,0,W,H)}
-    else if(id==="dreamy"){const b=seBlurCopy(c,W,H,10);x.globalCompositeOperation="screen";x.globalAlpha=.42;x.drawImage(b,0,0,W,H);const g=x.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.hypot(W,H)/2);g.addColorStop(0,"rgba(255,240,250,.22)");g.addColorStop(1,"rgba(255,255,255,0)");x.globalAlpha=1;x.fillStyle=g;x.fillRect(0,0,W,H)}
-    else if(id==="sparkle"){x.globalCompositeOperation="screen";for(let i=0;i<16;i++)seGlint(x,R()*W,R()*H,M*(.018+R()*.04),R()*.8)}
-    else if(id==="bokeh"){x.globalCompositeOperation="screen";const cols=["255,214,140","255,170,90","255,140,170","255,255,255","170,210,255"];
-      for(let i=0;i<26;i++){const r=M*(.03+R()*.1),cx=R()*W,cy=R()*H,cl=cols[Math.floor(R()*cols.length)],g=x.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,"rgba("+cl+",.34)");g.addColorStop(.75,"rgba("+cl+",.22)");g.addColorStop(1,"rgba("+cl+",0)");x.fillStyle=g;x.beginPath();x.arc(cx,cy,r,0,7);x.fill()}}
-    else if(id==="steam"){x.lineCap="round";x.strokeStyle="rgba(255,255,255,.3)";x.shadowColor="rgba(255,255,255,.9)";x.shadowBlur=M*.05;x.lineWidth=M*.03;
-      for(let i=0;i<4;i++){const sx=W*(.3+i*.13+R()*.05),sy=H*(.6+R()*.06),top=H*(.16+R()*.1),sw=W*(.04+R()*.04);x.beginPath();x.moveTo(sx,sy);x.bezierCurveTo(sx-sw,sy-(sy-top)*.33,sx+sw,sy-(sy-top)*.66,sx-sw*.3,top);x.stroke();x.stroke()}}
-    else if(id==="fire"){x.globalCompositeOperation="screen";const g=x.createLinearGradient(0,H,0,H*.45);g.addColorStop(0,"rgba(255,70,0,.8)");g.addColorStop(.45,"rgba(255,160,0,.35)");g.addColorStop(1,"rgba(255,200,0,0)");x.fillStyle=g;x.fillRect(0,0,W,H);
-      for(let i=0;i<46;i++){const er=M*(.004+R()*.01);x.fillStyle="rgba(255,"+Math.round(120+R()*100)+",40,"+(.5+R()*.5).toFixed(2)+")";x.shadowColor="rgba(255,120,0,.9)";x.shadowBlur=er*4;x.beginPath();x.arc(R()*W,H*(.45+R()*.55),er,0,7);x.fill()}}
-    else if(id==="hearts"){const cols=["#ff2d55","#ff6b81","#ff9ff3","#ffffff","#ff375f"];for(let i=0;i<16;i++){x.globalAlpha=.75+R()*.25;x.fillStyle=cols[Math.floor(R()*cols.length)];seHeart(x,R()*W,R()*H,M*(.03+R()*.06),(R()-.5)*.6)}}
-    else if(id==="confetti"){const cols=["#ff3b30","#ffcc00","#34c759","#007aff","#af52de","#ff9500","#ff2d55","#ffffff"];
-      for(let i=0;i<90;i++){const w=M*(.012+R()*.012);x.save();x.translate(R()*W,R()*H*.92);x.rotate(R()*Math.PI);x.fillStyle=cols[Math.floor(R()*cols.length)];x.fillRect(-w/2,-w*.35,w,w*(.5+R()*.6));x.restore()}}
-    else if(id==="leak"){x.globalCompositeOperation="screen";let g=x.createRadialGradient(W,H*.12,0,W,H*.12,Math.max(W,H)*.8);g.addColorStop(0,"rgba(255,130,40,.7)");g.addColorStop(.45,"rgba(255,60,120,.28)");g.addColorStop(1,"rgba(255,60,120,0)");x.fillStyle=g;x.fillRect(0,0,W,H);
-      g=x.createRadialGradient(0,H,0,0,H,Math.max(W,H)*.6);g.addColorStop(0,"rgba(255,210,90,.45)");g.addColorStop(1,"rgba(255,210,90,0)");x.fillStyle=g;x.fillRect(0,0,W,H)}
-    else if(id==="rainbow"){const g=x.createLinearGradient(0,0,W,H);["#ff3b30","#ff9500","#ffcc00","#34c759","#00c7be","#007aff","#af52de"].forEach((cl,i)=>g.addColorStop(i/6,cl));x.fillStyle=g;x.globalCompositeOperation="soft-light";x.globalAlpha=.6;x.fillRect(0,0,W,H);x.globalCompositeOperation="screen";x.globalAlpha=.14;x.fillRect(0,0,W,H)}
-    else if(id==="rays"){x.globalCompositeOperation="screen";const ox=-W*.05,oy=-H*.05,L=Math.hypot(W,H)*1.2;
-      for(let i=0;i<10;i++){const a0=i*.16+.02,a1=a0+.06+R()*.04;x.fillStyle="rgba(255,244,214,"+(.08+R()*.1).toFixed(2)+")";x.beginPath();x.moveTo(ox,oy);x.lineTo(ox+Math.cos(a0)*L,oy+Math.sin(a0)*L);x.lineTo(ox+Math.cos(a1)*L,oy+Math.sin(a1)*L);x.closePath();x.fill()}
-      const g=x.createRadialGradient(0,0,0,0,0,M*.7);g.addColorStop(0,"rgba(255,230,170,.55)");g.addColorStop(1,"rgba(255,230,170,0)");x.fillStyle=g;x.fillRect(0,0,W,H)}
-    else if(id==="rain"){x.fillStyle="rgba(15,23,42,.18)";x.fillRect(0,0,W,H);x.strokeStyle="#ffffff";x.lineCap="round";x.lineWidth=Math.max(1,M*.0028);
-      for(let i=0;i<170;i++){const rx=R()*W,ry=R()*H,l=H*(.03+R()*.05);x.globalAlpha=.3+R()*.45;x.beginPath();x.moveTo(rx,ry);x.lineTo(rx-l*.18,ry+l);x.stroke()}}
-    else if(id==="spotlight"){const g=x.createRadialGradient(W/2,H*.48,M*.12,W/2,H*.48,Math.hypot(W,H)*.5);g.addColorStop(0,"rgba(0,0,0,0)");g.addColorStop(.55,"rgba(0,0,0,.35)");g.addColorStop(1,"rgba(0,0,0,.82)");x.fillStyle=g;x.fillRect(0,0,W,H);
-      const s=x.createRadialGradient(W/2,H*.48,0,W/2,H*.48,M*.42);s.addColorStop(0,"rgba(255,250,235,.45)");s.addColorStop(1,"rgba(255,250,235,0)");x.globalCompositeOperation="soft-light";x.fillStyle=s;x.fillRect(0,0,W,H)}
-    else if(id==="retro"){const step=Math.max(2,H/240);x.fillStyle="rgba(0,0,0,.22)";for(let y=0;y<H;y+=step)x.fillRect(0,y,W,step*.45);
-      const fs=Math.max(8,Math.round(M*.055));x.font="700 "+fs+"px monospace";x.fillStyle="rgba(255,255,240,.92)";x.shadowColor="rgba(0,0,0,.6)";x.shadowBlur=fs*.2;x.textBaseline="top";x.fillText("▶ PLAY",W*.05,H*.05);
-      x.textAlign="right";x.textBaseline="bottom";x.fillText(String(stamp&&stamp.time||"").toUpperCase(),W*.95,H*.95)}
-    else if(id==="strip"){const bh=H*.075;x.fillStyle="#0b0b0b";x.fillRect(0,0,W,bh);x.fillRect(0,H-bh,W,bh);const hw=bh*.42,hh=bh*.48,gap=hw*1.9;x.fillStyle="#e7e2d6";
-      for(let px=gap*.5;px<W;px+=gap){seRound(x,px,bh*.26,hw,hh,hh*.22);x.fill();seRound(x,px,H-bh+bh*.26,hw,hh,hh*.22);x.fill()}x.restore();x.save();seGrain(x,W,H,.3)}
-    else if(id==="polaroid"){const sp=W*.05,bp=Math.min(H*.22,W*.2);x.fillStyle="#fbfaf6";x.fillRect(0,0,W,sp);x.fillRect(0,0,sp,H);x.fillRect(W-sp,0,sp,H);x.fillRect(0,H-bp,W,bp);x.strokeStyle="rgba(0,0,0,.12)";x.lineWidth=Math.max(1,W*.002);x.strokeRect(sp,sp,W-2*sp,H-sp-bp)}
-    x.restore()}
   // The photo with its filter, adjustments and effect. `base` is the photo already drawn at the target size.
-  function sePaintPhoto(c,d,base){const W=c.width,H=c.height,x=c.getContext("2d"),f=seFilter(d.filter),fx=seEffect(d.fx),t=Math.max(0,Math.min(1,(+d.amount||0)/100)),a=d.adj;
-    x.save();x.setTransform(1,0,0,1,0,0);x.globalCompositeOperation="source-over";x.globalAlpha=1;x.clearRect(0,0,W,H);x.drawImage(base,0,0,W,H);
-    const adj=seMat([["brightness",1+a.bright/100*.35],["contrast",1+a.contrast/100*.4],["saturate",1+a.sat/100],["warm",a.warm/100*.8],["fade",a.fade/100]]);
-    let m=seMul(adj,seLerpI(seMat(f.ops),t));if(fx.ops)m=seMul(seMat(fx.ops),m);
-    if(!seIsI(m)||a.sharp>0)sePixels(x,W,H,m,a.sharp/100);
-    if(f.tint&&t>0)seFill(x,W,H,f.tint[0],f.tint[1],f.tint[2]*t);
-    const vig=(f.vig||0)*t+a.vignette/100*.9;if(vig>0)seVignette(x,W,H,vig);
-    const grain=(f.grain||0)*t+a.grain/100*.6;if(grain>0)seGrain(x,W,H,grain);
-    if(a.soft>0){const b=seBlurCopy(c,W,H,22);x.globalAlpha=a.soft/100*.75;x.drawImage(b,0,0,W,H);x.globalAlpha=1}
-    if(fx.id!=="none")seEffectDraw(x,c,W,H,fx.id,d.seed,d.stamp);
-    x.restore()}
+  function sePaintPhoto(c,d,base){SE_FX.paint(c,d,base)}
   // ---- text, stickers and drawing
   function seLight(color){const c=seRgb(color);return .2126*c[0]+.7152*c[1]+.0722*c[2]>.62}
   function seMix(a,b,t){const A=seRgb(a),B=seRgb(b);return"rgb("+A.map((v,i)=>Math.round((v+(B[i]-v)*t)*255)).join(",")+")"}
@@ -4071,14 +3960,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     throw new Error("That photo is too big. Try another.")}
   // ---- screen
   function seThumb(kind,f,on){const src=seCache.thumbs[kind+":"+f.id];return'<button type="button" class="se-thumb'+(on?' on':'')+'" data-action="'+(kind==="f"?'se-filter':'se-effect')+'" data-id="'+f.id+'" aria-pressed="'+on+'"><span class="se-thumb-img">'+(src?'<img src="'+h(src)+'" alt="">':'')+'</span><span class="se-thumb-name">'+h(f.name)+'</span></button>'}
-  function seRange(k,v,min,max,label){return'<div class="se-range-row"><input type="range" class="se-range" id="se-range-'+k+'" data-k="'+k+'" min="'+min+'" max="'+max+'" step="1" value="'+v+'" aria-label="'+h(label)+'"><output class="se-range-val" id="se-range-val">'+v+'</output></div>'}
+  // Sliders: a centre mark for two-way controls, the live value above the thumb, a tick at zero.
+  function seRange(k,v,min,max,label){const pct=(Number(v)-min)/(max-min)*100,zero=min<0?(-min)/(max-min)*100:0,lo=Math.min(pct,zero),hi=Math.max(pct,zero);
+    return'<div class="se-range-row'+(min<0?' bipolar':'')+'" style="--lo:'+lo.toFixed(2)+'%;--hi:'+hi.toFixed(2)+'%;--at:'+pct.toFixed(2)+'%"><input type="range" class="se-range" id="se-range-'+k+'" data-k="'+k+'" data-min="'+min+'" min="'+min+'" max="'+max+'" step="1" value="'+v+'" aria-label="'+h(label)+'"><output class="se-range-val" id="se-range-val" data-k="'+k+'" title="Double-tap to reset">'+(min<0&&v>0?'+':'')+v+'</output></div>'}
   function seColors(action,current){return'<div class="se-strip se-colors" data-strip="colors">'+SE_COLORS.map(c=>'<button type="button" class="se-color'+(c===current?' on':'')+'" data-action="'+action+'" data-color="'+c+'" style="background:'+c+'" aria-label="Colour" aria-pressed="'+(c===current)+'"></button>').join("")+'</div>'}
   function seEditPanel(d){const tab=d.tab||"filters";let body="";
-    const tabs='<div class="se-tabs" role="tablist">'+[["filters","Filters"],["adjust","Adjust"],["effects","Effects"]].map(([k,l])=>'<button type="button" role="tab" class="se-tab'+(tab===k?' on':'')+'" aria-selected="'+(tab===k)+'" data-action="se-tab" data-tab="'+k+'">'+l+'</button>').join("")+'</div>';
-    if(tab==="filters")body='<div class="se-strip" data-strip="filters">'+SE_FILTERS.map(f=>seThumb("f",f,d.filter===f.id)).join("")+'</div>'+(d.filter!=="none"?seRange("amount",d.amount,0,100,"Strength"):'<p class="se-hint">Swipe the photo to try filters. Hold it to see the original.</p>');
-    else if(tab==="effects")body='<div class="se-strip" data-strip="effects">'+SE_EFFECTS.map(f=>seThumb("e",f,d.fx===f.id)).join("")+'</div>';
-    else{const k=d.adjKey||"bright",a=SE_ADJUST.find(x=>x.k===k)||SE_ADJUST[0];
-      body='<div class="se-strip" data-strip="adjust">'+SE_ADJUST.map(x=>'<button type="button" class="se-chip'+(x.k===k?' on':'')+(d.adj[x.k]?' set':'')+'" data-action="se-adj" data-k="'+x.k+'"><span aria-hidden="true">'+x.icon+'</span>'+h(x.name)+'</button>').join("")+(seAdjusted(d)?'<button type="button" class="se-chip" data-action="se-adj-reset">↺ Reset</button>':'')+'</div>'+seRange("adj",d.adj[k],a.min,100,a.name)}
+    const tabs='<div class="se-tabs" role="tablist">'+[["filters","Filters"],["adjust","Adjust"],["effects","Effects"]].map(([k,l])=>'<button type="button" role="tab" class="se-tab'+(tab===k?' on':'')+'" aria-selected="'+(tab===k)+'" data-action="se-tab" data-tab="'+k+'">'+l+(k==="adjust"&&seAdjusted(d)?'<i class="se-tab-dot"></i>':k==="effects"&&d.fx!=="none"?'<i class="se-tab-dot"></i>':'')+'</button>').join("")+'</div>';
+    const about=(name,use)=>'<p class="se-about"><strong>'+h(name)+'</strong><span>'+h(use)+'</span></p>';
+    if(tab==="filters"){const f=seFilter(d.filter);body='<div class="se-strip" data-strip="filters">'+SE_FILTERS.map(f=>seThumb("f",f,d.filter===f.id)).join("")+'</div>'+(f.id!=="none"?about(f.name,f.use)+seRange("amount",d.amount,0,100,"Strength"):'<p class="se-hint">Swipe the photo to try filters. Hold it to see the original.</p>')}
+    else if(tab==="effects"){const e=seEffect(d.fx);body='<div class="se-strip" data-strip="effects">'+SE_EFFECTS.map(f=>seThumb("e",f,d.fx===f.id)).join("")+'</div>'+(e.id!=="none"?about(e.name,e.use)+seRange("fxamount",d.fxAmount==null?100:d.fxAmount,0,100,"Effect strength"):'<p class="se-hint">Effects read your photo: sparkles find the shine, the spotlight finds the dish.</p>')}
+    else if(!SE_ADJUST.length)body='<p class="se-hint">Update Scraveit to adjust photos.</p>';
+    else{const k=d.adjKey||"exposure",a=SE_ADJUST.find(x=>x.k===k)||SE_ADJUST[0];
+      body='<div class="se-strip" data-strip="adjust">'+SE_ADJUST.map(x=>'<button type="button" class="se-chip se-adj-chip'+(x.k===k?' on':'')+(d.adj[x.k]?' set':'')+'" data-action="se-adj" data-k="'+x.k+'"><span class="se-adj-icon">'+x.icon+'</span>'+h(x.name)+'</button>').join("")+(seAdjusted(d)?'<button type="button" class="se-chip" data-action="se-adj-reset">↺ Reset all</button>':'')+'</div>'
+        +about(a.name,a.note)+seRange("adj",d.adj[k]||0,a.min,100,a.name)}
     return tabs+body}
   function seFoot(d){return'<form id="compose-form" class="se-foot"><input class="input se-caption" id="compose-caption" name="caption" maxlength="200" placeholder="Add a caption…" autocomplete="off" value="'+h(d.caption||"")+'">'
     +'<div class="se-foot-row"><div class="se-kind" role="radiogroup" aria-label="Share as"><button type="button" class="'+(d.kind==="story"?'on':'')+'" data-action="compose-kind" data-value="story" role="radio" aria-checked="'+(d.kind==="story")+'">Your story</button><button type="button" class="'+(d.kind==="post"?'on':'')+'" data-action="compose-kind" data-value="post" role="radio" aria-checked="'+(d.kind==="post")+'">Post</button></div>'
@@ -4116,7 +4010,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!seCache.P)seCache.P=Math.max(240,Math.round(Math.min(d.w,fw*Math.min(3,window.devicePixelRatio||1),960)));
     frame.querySelectorAll(".se-item").forEach(el=>seSizeItem(el));return true}
   function seSizeItem(el){const e=seCache.items.get(el.dataset.item);if(e&&seCache.P)el.style.width=(e.c.width*seCache.fw/seCache.P).toFixed(1)+"px"}
-  function seEnsurePhoto(d,frame){const img=seCache.base;if(!img||!frame)return;const P=seCache.P,PH=Math.max(1,Math.round(P*d.h/d.w)),sig=[P,d.filter,d.amount,d.fx,JSON.stringify(d.adj)].join("|");
+  function seEnsurePhoto(d,frame){const img=seCache.base;if(!img||!frame)return;const P=seCache.P,PH=Math.max(1,Math.round(P*d.h/d.w)),sig=[P,d.filter,d.amount,d.fx,d.fxAmount,JSON.stringify(d.adj)].join("|");
     if(!seCache.baseC||seCache.baseC.width!==P){const b=document.createElement("canvas");b.width=P;b.height=PH;const bx=b.getContext("2d");bx.imageSmoothingQuality="high";bx.drawImage(img,0,0,P,PH);seCache.baseC=b}
     let c=seCache.photo;if(!c){c=document.createElement("canvas");seCache.photo=c}
     if(c.width!==P||c.height!==PH){c.width=P;c.height=PH;seCache.photoSig=""}
@@ -4133,7 +4027,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     [...seCache.items.keys()].forEach(k=>{if(!d.items.some(i=>i.id===k))seCache.items.delete(k)})}
   function seEnsureThumbs(d){if(seCache.thumbFor===d.url||!seCache.base)return;seCache.thumbFor=d.url;const img=seCache.base,TW=120,TH=152,s=Math.max(TW/img.naturalWidth,TH/img.naturalHeight),b=document.createElement("canvas");b.width=TW;b.height=TH;
     b.getContext("2d").drawImage(img,(TW-img.naturalWidth*s)/2,(TH-img.naturalHeight*s)/2,img.naturalWidth*s,img.naturalHeight*s);
-    const look={amount:100,adj:{bright:0,contrast:0,sat:0,warm:0,sharp:0,fade:0,vignette:0,grain:0,soft:0},seed:d.seed,stamp:d.stamp},jobs=SE_FILTERS.map(f=>["f",f.id,{filter:f.id,fx:"none"}]).concat(SE_EFFECTS.map(f=>["e",f.id,{filter:"none",fx:f.id}]));let left=jobs.length;
+    const look={amount:100,fxAmount:100,adj:SE_FX.adjDefaults(),seed:d.seed,stamp:d.stamp},jobs=SE_FILTERS.map(f=>["f",f.id,{filter:f.id,fx:"none"}]).concat(SE_EFFECTS.map(f=>["e",f.id,{filter:"none",fx:f.id}]));let left=jobs.length;
     const done=()=>{if(--left>0)return;if(chatState().compose===d&&state.sheet&&state.sheet.type==="compose")renderSheet()};
     jobs.forEach(([kind,id,o])=>{const c=document.createElement("canvas");c.width=TW;c.height=TH;try{sePaintPhoto(c,Object.assign({},look,o),b)}catch(_){}
       c.toBlob(bl=>{if(bl&&seCache.thumbFor===d.url)seCache.thumbs[kind+":"+id]=URL.createObjectURL(bl);done()},"image/jpeg",.8)})}
@@ -4197,9 +4091,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       d.mode=d.mode===m?"":m;if(d.mode==="text")d.draft={font:d.lastFont||"classic",color:d.lastColor||"#ffffff",bg:0,align:"center",text:""};renderSheet();return true}
     if(action==="se-tab"){d.tab=control.dataset.tab||"filters";renderSheet();return true}
     if(action==="se-filter"){const f=seFilter(control.dataset.id);d.filter=f.id;d.amount=100;renderSheet();if(f.id!=="none")seFlash(f.name);return true}
-    if(action==="se-effect"){d.fx=seEffect(control.dataset.id).id;renderSheet();return true}
+    if(action==="se-effect"){const e=seEffect(control.dataset.id);if(d.fx!==e.id)d.fxAmount=100;d.fx=e.id;renderSheet();if(e.id!=="none")seFlash(e.name);return true}
     if(action==="se-adj"){d.adjKey=control.dataset.k;renderSheet();return true}
-    if(action==="se-adj-reset"){Object.keys(d.adj).forEach(k=>{d.adj[k]=0});renderSheet();return true}
+    if(action==="se-adj-reset"){d.adj=SE_FX.adjDefaults();haptic(8);renderSheet();return true}
     if(action==="se-undo"){d.strokes.pop();seInkRedraw(d);renderSheet();return true}
     if(action==="se-brush"){d.brush.tool=control.dataset.tool||"pen";renderSheet();return true}
     if(action==="se-brush-color"){d.brush.color=control.dataset.color;if(d.brush.tool==="eraser")d.brush.tool="pen";renderSheet();return true}
@@ -4214,9 +4108,21 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return true}
   document.addEventListener("input",e=>{const t=e.target;if(!t||!t.classList)return;const d=chatState().compose;if(!d||!d.adj)return;
     if(t.classList.contains("se-range")){const v=Number(t.value)||0,k=t.dataset.k;if(k==="size"){d.brush.size=v;return}
-      if(k==="amount")d.amount=v;else if(k==="adj")d.adj[d.adjKey||"bright"]=v;const o=document.getElementById("se-range-val");if(o)o.textContent=v;seQueuePaint();return}
+      let val=v;const min=Number(t.dataset.min)||0;
+      // Two-way sliders snap to zero near the middle, with a light tick.
+      if(min<0&&Math.abs(val)<=3){if(val!==0){val=0;t.value="0"}}
+      const prev=k==="amount"?d.amount:k==="fxamount"?(d.fxAmount==null?100:d.fxAmount):d.adj[d.adjKey||"exposure"];
+      if(min<0&&val===0&&prev!==0)haptic(6);
+      if(k==="amount")d.amount=val;else if(k==="fxamount")d.fxAmount=val;else if(k==="adj")d.adj[d.adjKey||"exposure"]=val;
+      seRangeLook(t,val);seQueuePaint();return}
     if(t.id==="se-text-input"){if(d.draft)d.draft.text=t.value;seAutoSize(t)}});
   document.addEventListener("change",e=>{if(e.target&&e.target.classList&&e.target.classList.contains("se-range")&&state.sheet&&state.sheet.type==="compose")renderSheet()});
+  function seRangeLook(t,val){const row=t.closest(".se-range-row"),min=Number(t.min),max=Number(t.max),pct=(val-min)/(max-min)*100,zero=min<0?(-min)/(max-min)*100:0;
+    if(row){row.style.setProperty("--lo",Math.min(pct,zero).toFixed(2)+"%");row.style.setProperty("--hi",Math.max(pct,zero).toFixed(2)+"%");row.style.setProperty("--at",pct.toFixed(2)+"%")}
+    const o=row&&row.querySelector(".se-range-val");if(o)o.textContent=(min<0&&val>0?"+":"")+val}
+  // Double-tap the number to put a slider back to where it started.
+  document.addEventListener("dblclick",e=>{const o=e.target&&e.target.closest&&e.target.closest(".se-range-val");const d=chatState().compose;if(!o||!d||!d.adj)return;const k=o.dataset.k;
+    if(k==="amount")d.amount=100;else if(k==="fxamount")d.fxAmount=100;else if(k==="adj")d.adj[d.adjKey||"exposure"]=0;else return;haptic(8);renderSheet()});
   // Buttons in the text editor keep the keyboard open.
   document.addEventListener("mousedown",e=>{if(e.target&&e.target.closest&&e.target.closest(".se-text button"))e.preventDefault()});
   window.addEventListener("resize",()=>{if(!state.sheet||state.sheet.type!=="compose")return;const d=chatState().compose,v=document.querySelector(".se-view");if(!d||!v)return;const st=v.querySelector(".se-stage"),fr=v.querySelector(".se-frame");if(st&&fr)seLayout(d,st,fr);const ta=document.getElementById("se-text-input");if(ta)seAutoSize(ta)});
