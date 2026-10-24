@@ -100,7 +100,7 @@ describe("Cashfree payments", () => {
     expect(create?.headers["x-idempotency-key"]).toBeTruthy();
     expect(String((create?.body?.customer_details as Record<string, string>).customer_id)).not.toContain("customer-1");
     expect(intent.provider).toBe("cashfree");
-    expect(intent.redirectUrl).toMatch(/^https:\/\/example\.test\/cashfreeCheckout\?op=pay&order_id=SVPAY_[A-F0-9]{32}&session=session_/);
+    expect(intent.redirectUrl).toMatch(/^https:\/\/example\.test\/cashfreeCheckout\?op=pay&order_id=SVPAY_[A-F0-9]{32}&session=session_[^&]+&env=sandbox$/);
   });
 
   it("a retried attempt reuses the session Cashfree already has", async () => {

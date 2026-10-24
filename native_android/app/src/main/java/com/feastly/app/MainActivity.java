@@ -62,9 +62,21 @@ import androidx.credentials.exceptions.GetCredentialException;
 
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
+import com.cashfree.pg.core.api.CFCorePaymentGatewayService;
+import com.cashfree.pg.core.api.CFSession;
+import com.cashfree.pg.core.api.base.CFPayment;
+import com.cashfree.pg.core.api.callback.CFCheckoutResponseCallback;
+import com.cashfree.pg.core.api.upi.CFUPI;
+import com.cashfree.pg.core.api.upi.CFUPIPayment;
+import com.cashfree.pg.core.api.utils.CFErrorResponse;
+import com.cashfree.pg.core.api.utils.CFUPIApp;
+import com.cashfree.pg.core.api.utils.CFUPIUtil;
+import com.cashfree.pg.core.api.webcheckout.CFWebCheckoutPayment;
+import com.cashfree.pg.core.api.webcheckout.CFWebCheckoutTheme;
 import com.google.firebase.crashlytics.FirebaseCrashlytics;
 import com.google.firebase.messaging.FirebaseMessaging;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
@@ -97,6 +109,8 @@ public class MainActivity extends ComponentActivity {
   private FirebaseCallableClient callableClient;
   private SecureOrderStore secureOrderStore;
   private JSONObject pendingPushEvent;
+  /** The JS request waiting for Cashfree to finish (one payment at a time). */
+  private String pendingCashfreeRequestId;
   private boolean pushReceiverRegistered;
   private final BroadcastReceiver pushReceiver = new BroadcastReceiver() {
     @Override public void onReceive(Context context, Intent intent) {
@@ -123,6 +137,7 @@ public class MainActivity extends ComponentActivity {
     pendingPushEvent = launchedFromPush != null ? launchedFromPush : storedPush;
     pendingTableLink = tableLinkFrom(getIntent());
     credentialManager = CredentialManager.create(this);
+    setUpCashfree();
     getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
       @Override public void handleOnBackPressed() {
         handleBackRequest();
@@ -857,6 +872,88 @@ public class MainActivity extends ComponentActivity {
       });
     }
 
+    /** The UPI apps installed on this phone, for the checkout "Pay using" list. */
+    @JavascriptInterface public void getUpiApps(String requestId) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          CFUPIUtil.getInstalledUPIApps(MainActivity.this, apps -> runOnUiThread(() -> {
+            JSONArray list = new JSONArray();
+            try {
+              if (apps != null) for (CFUPIApp app : apps) {
+                JSONObject item = new JSONObject();
+                item.put("appId", app.getAppId());
+                item.put("name", app.getDisplayName());
+                item.put("icon", app.getBase64Icon() == null ? "" : app.getBase64Icon());
+                list.put(item);
+              }
+              JSONObject result = new JSONObject();
+              result.put("apps", list);
+              publishNativeSuccess(requestId, "getUpiApps", result);
+            } catch (Exception error) {
+              publishNativeFailure(requestId, "getUpiApps", "UPI_APPS_UNAVAILABLE", "Could not read UPI apps.");
+            }
+          }));
+        } catch (Exception error) {
+          FirebaseCrashlytics.getInstance().recordException(error);
+          publishNativeFailure(requestId, "getUpiApps", "UPI_APPS_UNAVAILABLE", "Could not read UPI apps.");
+        }
+      });
+    }
+
+    /**
+     * Pays a Cashfree order inside the app. payload: {paymentUrl, upiAppId?}.
+     * With upiAppId the chosen UPI app opens directly; without it Cashfree's
+     * in-app checkout shows cards, netbanking and other UPI options. The
+     * result only says the customer finished; the order is marked paid by the
+     * server after Cashfree's signed webhook.
+     */
+    @JavascriptInterface public void startCashfreePayment(String requestId, String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          Uri link = Uri.parse(payload.optString("paymentUrl", ""));
+          String orderId = link.getQueryParameter("order_id");
+          String sessionId = link.getQueryParameter("session");
+          String env = link.getQueryParameter("env");
+          String upiAppId = payload.optString("upiAppId", "").trim();
+          if (!"https".equals(link.getScheme()) || orderId == null || !orderId.matches("SVPAY_[A-F0-9]{32}")
+              || sessionId == null || !sessionId.matches("session_[A-Za-z0-9_-]{10,400}")
+              || (!upiAppId.isEmpty() && !upiAppId.matches("[A-Za-z0-9_.]{3,120}"))) {
+            publishNativeFailure(requestId, "startCashfreePayment", "INVALID_ARGUMENT", "The payment link is invalid.");
+            return;
+          }
+          if (pendingCashfreeRequestId != null) {
+            publishNativeFailure(pendingCashfreeRequestId, "startCashfreePayment", "PAYMENT_REPLACED", "A newer payment was started.");
+          }
+          CFSession session = new CFSession.CFSessionBuilder()
+              .setEnvironment("production".equals(env) ? CFSession.Environment.PRODUCTION : CFSession.Environment.SANDBOX)
+              .setOrderId(orderId)
+              .setPaymentSessionID(sessionId)
+              .build();
+          CFPayment payment;
+          if (!upiAppId.isEmpty()) {
+            CFUPI upi = new CFUPI.CFUPIBuilder().setMode(CFUPI.Mode.INTENT).setUPIID(upiAppId).build();
+            payment = new CFUPIPayment.CFUPIPaymentBuilder().setSession(session).setCfUPI(upi).build();
+          } else {
+            CFWebCheckoutTheme theme = new CFWebCheckoutTheme.CFWebCheckoutThemeBuilder()
+                .setNavigationBarBackgroundColor("#1460F0")
+                .setNavigationBarTextColor("#FFFFFF")
+                .build();
+            payment = new CFWebCheckoutPayment.CFWebCheckoutPaymentBuilder().setSession(session).setCFWebCheckoutUITheme(theme).build();
+          }
+          pendingCashfreeRequestId = requestId;
+          CFCorePaymentGatewayService.getInstance().doPayment(MainActivity.this, payment);
+        } catch (Exception error) {
+          pendingCashfreeRequestId = null;
+          FirebaseCrashlytics.getInstance().recordException(error);
+          publishNativeFailure(requestId, "startCashfreePayment", "PAYMENT_NOT_STARTED",
+              "Payment could not start on this phone. Try another payment method.");
+        }
+      });
+    }
+
     @JavascriptInterface public void openExternalPayment(String requestId, String paymentUrl) {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
@@ -972,6 +1069,47 @@ public class MainActivity extends ComponentActivity {
       publishNativeFailure(requestId, "openExternalPayment", "APP_UNAVAILABLE",
           "Could not open a supported payment app on this device.");
     }
+  }
+
+  /** Cashfree reports the outcome here; it must be registered in onCreate (the activity can be recreated mid-payment). */
+  private void setUpCashfree() {
+    try {
+      CFCorePaymentGatewayService.initialize(getApplicationContext());
+      CFCorePaymentGatewayService.getInstance().setCheckoutCallback(new CFCheckoutResponseCallback() {
+        @Override public void onPaymentVerify(String orderId) {
+          runOnUiThread(() -> finishCashfreePayment(orderId, null));
+        }
+        @Override public void onPaymentFailure(CFErrorResponse error, String orderId) {
+          runOnUiThread(() -> finishCashfreePayment(orderId, error));
+        }
+      });
+    } catch (Throwable error) {
+      FirebaseCrashlytics.getInstance().recordException(error);
+    }
+  }
+
+  private void finishCashfreePayment(String orderId, CFErrorResponse error) {
+    String requestId = pendingCashfreeRequestId;
+    pendingCashfreeRequestId = null;
+    JSONObject result = new JSONObject();
+    try {
+      result.put("paymentOrderId", orderId == null ? "" : orderId);
+      result.put("finished", error == null);
+    } catch (Exception ignored) { }
+    if (requestId == null) {
+      // The page reloaded while paying: tell it so it can re-check the order.
+      try { result.put("type", "cashfreePaymentFinished"); } catch (Exception ignored) { }
+      publishJsonCallback("savrivoPaymentEvent", result);
+      return;
+    }
+    if (error == null) {
+      publishNativeSuccess(requestId, "startCashfreePayment", result);
+      return;
+    }
+    String code = error.getCode() == null ? "PAYMENT_FAILED" : error.getCode();
+    String message = error.getMessage() == null || error.getMessage().trim().isEmpty()
+        ? "Payment was not completed." : error.getMessage();
+    publishNativeFailure(requestId, "startCashfreePayment", code.toUpperCase(Locale.US), message);
   }
 
   private void publishNativeSuccess(String requestId, String operation, JSONObject data) {

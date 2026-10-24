@@ -1126,6 +1126,8 @@ em, .display em, .page-title em { font-family: var(--font-serif); font-style: it
 .pay-using { flex: 0 0 auto; display: grid; align-content: center; gap: 2px; background: none; border: 0; padding: 4px 8px; text-align: left; color: var(--ink); }
 .pay-using .caption { font-size: 11px; letter-spacing: .08em; }
 .pay-using strong { font-size: 15px; }
+.upi-app-icon { overflow: hidden; background: #fff; }
+.upi-app-icon img { width: 28px; height: 28px; object-fit: contain; }
 .pay-dock .pay-cta { flex: 1; min-height: 58px; border-radius: 16px; justify-content: space-between; padding: 0 16px; }
 .pay-cta-total { display: grid; text-align: left; line-height: 1.05; }
 .pay-cta-total small { font-size: 10px; letter-spacing: .1em; opacity: .85; }

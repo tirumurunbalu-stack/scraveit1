@@ -24,8 +24,8 @@ android {
         applicationId "com.feastly.app"
         minSdk 24
         targetSdk 36
-        versionCode 184
-        versionName "3.28.1"
+        versionCode 185
+        versionName "3.29.0"
         manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
         buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
     }
@@ -80,4 +80,7 @@ dependencies {
     releaseImplementation "com.google.firebase:firebase-appcheck-playintegrity"
     debugImplementation "com.google.firebase:firebase-appcheck-debug"
     implementation "com.google.firebase:firebase-crashlytics"
+
+    // Cashfree Payments: UPI apps open directly and cards/netbanking stay inside the app.
+    implementation "com.cashfree.pg:api:2.6.0"
 }

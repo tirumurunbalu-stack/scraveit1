@@ -401,6 +401,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   const nativeRequests = new Map();
+  // Cashfree finished while the page was reloading: the order screen re-reads its payment state.
+  window.savrivoPaymentEvent = function (event) {
+    if (!event || event.type !== "cashfreePaymentFinished") return;
+    toast(event.finished ? "Payment done. Confirming it with your bank…" : "Payment not completed. Tap Pay now to try again.", event.finished ? "success" : "danger");
+  };
   window.savrivoNativeResult = function (response) {
     if (!response || !response.requestId) return;
     const pending = nativeRequests.get(String(response.requestId));
@@ -424,7 +429,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Sign-in tokens expire after an hour. A call made with a stale one is
   // rejected by the server, so every signed-in call asks Firebase for a
   // current token first (Firebase refreshes it only when it is near expiry).
-  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr"];
+  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment"];
   function nativeInvoke(operation, payload, options) {
     const user = fbAuth.currentUser;
     if (!user || TOKENLESS_OPERATIONS.includes(operation)) return nativeInvokeWithToken(operation, payload, options);
@@ -463,6 +468,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
           FeastlyNative.createPhonePeIntent(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "openExternalPayment") {
           FeastlyNative.openExternalPayment(requestId, String(payload && payload.url || ""));
+        } else if (operation === "getUpiApps") {
+          FeastlyNative.getUpiApps(requestId);
+        } else if (operation === "startCashfreePayment") {
+          FeastlyNative.startCashfreePayment(requestId, JSON.stringify(payload || {}));
         } else if (operation === "registerPushToken") {
           FeastlyNative.registerPushToken(requestId, firebaseIdToken);
         } else if (operation === "unregisterPushToken") {
@@ -5054,8 +5063,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       onlineGatewayConfigured:value.onlineGatewayConfigured===true,
       methods:{
         cod:method("cod"),
-        upi:method("upi","phonepe"),
-        card:method("card","phonepe")
+        upi:method("upi",String(methods.upi&&methods.upi.provider)==="cashfree"?"cashfree":"phonepe"),
+        card:method("card",String(methods.card&&methods.card.provider)==="cashfree"?"cashfree":"phonepe")
       }
     };
   }
@@ -5088,8 +5097,21 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!paymentMethodEnabled(state.checkout.payment)&&next){state.checkout.payment=next;persistCheckout()}
   }
   function paymentIntentOperation(){return nativeAvailable("createPaymentIntent")?"createPaymentIntent":nativeAvailable("createPhonePeIntent")?"createPhonePeIntent":"";}
-  function onlinePaymentReady(){return nativeAvailable("createOrder")&&nativeAvailable("openExternalPayment")&&!!paymentIntentOperation();}
-  function paymentMethodTitle(value){return value==="cod"?"Cash on delivery":value==="upi"?"UPI":"Card";}
+  function onlinePaymentReady(){return nativeAvailable("createOrder")&&(nativeAvailable("startCashfreePayment")||nativeAvailable("openExternalPayment"))&&!!paymentIntentOperation();}
+  /** UPI apps on this phone (PhonePe, GPay, Paytm...), read once from Android for the "Pay using" list. */
+  function loadUpiApps(){
+    if(state.upiApps||state.upiAppsLoading||!nativeAvailable("getUpiApps"))return;
+    state.upiAppsLoading=true;
+    nativeInvoke("getUpiApps",{},{timeoutMs:8000}).then(res=>{
+      const apps=Array.isArray(res&&res.apps)?res.apps:[];
+      state.upiApps=apps.filter(a=>a&&/^[A-Za-z0-9_.]{3,120}$/.test(String(a.appId||""))).map(a=>({appId:String(a.appId),name:String(a.name||"UPI app").slice(0,40),icon:/^[A-Za-z0-9+/=]+$/.test(String(a.icon||""))?String(a.icon):""})).slice(0,12);
+      if(state.checkout.upiApp&&!state.upiApps.some(a=>a.appId===state.checkout.upiApp)){state.checkout.upiApp="";persistCheckout()}
+      if(state.checkout.payment==="upi"&&!state.checkout.upiApp&&state.upiApps.length){state.checkout.upiApp=state.upiApps[0].appId;persistCheckout()}
+    },()=>{state.upiApps=[]}).finally(()=>{state.upiAppsLoading=false;render({preserveScroll:true})});
+  }
+  function selectedUpiApp(){const id=state.checkout.payment==="upi"?String(state.checkout.upiApp||""):"";return id&&Array.isArray(state.upiApps)?state.upiApps.find(a=>a.appId===id)||null:null}
+  function paymentMethodTitle(value){if(value==="upi"){if(nativeAvailable("getUpiApps"))setTimeout(loadUpiApps,0);const app=selectedUpiApp();if(app)return app.name+" UPI"}return value==="cod"?"Cash on delivery":value==="upi"?"UPI":inAppCardCheckout()?"Card / netbanking":"Card";}
+  function inAppCardCheckout(){return nativeAvailable("startCashfreePayment")&&paymentMethodProvider("card")==="cashfree"}
   function paymentMethodCopy(value){
     const config=checkoutConfig(),method=checkoutMethodConfig(value);
     if(value==="cod")return method&&method.enabled===false?"Cash on delivery is disabled right now.":"Pay the rider at delivery.";
@@ -5118,8 +5140,21 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function billSheet(){
     return sheetShell("Bill summary","",'<div class="stack-lg"><section class="bill-card">'+priceBreakdown(true)+'</section>'+(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')+tipChooserMarkup()+'<p class="caption">The secure Scraveit server checks menu prices, discounts, distance and any weather or demand fee. The confirmed total replaces this estimate on your receipt.</p></div>');
   }
+  function upiAppOption(app){
+    const on=state.checkout.payment==="upi"&&state.checkout.upiApp===app.appId;
+    return '<button class="settings-row" data-action="select-payment" data-value="upi" data-upi-app="'+h(app.appId)+'"><span class="settings-icon upi-app-icon">'+(app.icon?'<img alt="" src="data:image/png;base64,'+app.icon+'">':icon("card"))+'</span><span class="grow"><strong>'+h(app.name)+'</strong><span class="supporting">Opens '+h(app.name)+' to pay</span></span><span class="'+(on?'status-pill success':'caption')+'">'+(on?'Selected':'Choose')+'</span></button>';
+  }
   function paySheet(){
-    return sheetShell("Pay using","Only verified payment methods can be selected.",'<section class="card settings-list">'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>');
+    const cashfreeInApp=nativeAvailable("startCashfreePayment")&&paymentMethodProvider("upi")==="cashfree";
+    if(cashfreeInApp)loadUpiApps();
+    const upiOn=paymentMethodEnabled("upi"),cardOn=paymentMethodEnabled("card"),apps=Array.isArray(state.upiApps)?state.upiApps:[];
+    if(!cashfreeInApp||!upiOn&&!cardOn)return sheetShell("Pay using","Only verified payment methods can be selected.",'<section class="card settings-list">'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>');
+    const upiRows=upiOn?(apps.length?apps.map(upiAppOption).join(""):state.upiAppsLoading?'<div class="settings-row"><span class="spinner"></span><span class="grow supporting">Finding UPI apps on this phone…</span></div>':''):'';
+    const other=(upiOn||cardOn)?paymentOption(cardOn?"card":"upi",cardOn?"Cards, netbanking & other UPI":"Other UPI apps or UPI ID",cardOn?"Debit/credit card, netbanking or any UPI app, inside Scraveit":"Pay with a UPI ID or another app",true):'';
+    return sheetShell("Pay using","Secured by Cashfree Payments.",
+      (upiRows?'<h3 class="section-title">UPI</h3><section class="card settings-list">'+upiRows+'</section>':'')
+      +'<h3 class="section-title">More ways to pay</h3><section class="card settings-list">'+other+'</section>'
+      +(paymentMethodEnabled("cod")?'<h3 class="section-title">Pay on delivery</h3><section class="card settings-list">'+paymentOption("cod","Cash on delivery","Pay the rider in cash or by scanning their QR",true)+'</section>':''));
   }
   /** Same names the server gives its time-of-day fees (domain/riderIncentiveEligibility.ts). */
   function timeOfDayFeeName(at){const hr=Number.isFinite(Number(at))&&Number(at)>0?new Date(Number(at)).getHours():12;return hr>=21||hr<4?"Late-night fee":hr<7?"Early-morning fee":"Surge fee"}
@@ -6803,6 +6838,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       },{idToken:state.session.idToken,timeoutMs:30000});
       const redirectUrl=String(intent&&intent.redirectUrl||"").trim();
       if(!redirectUrl)throw new Error("PAYMENT_INTENT_INVALID");
+      if(nativeAvailable("startCashfreePayment")&&String(intent.provider||"")==="cashfree"){
+        state.loading=false;render({preserveScroll:true});
+        // UPI with a chosen app opens that app directly; otherwise Cashfree's in-app checkout (cards, netbanking, any UPI).
+        const upiApp=order.paymentMethod==="upi"?String(state.checkout.upiApp||""):"";
+        try{
+          await nativeInvoke("startCashfreePayment",{paymentUrl:redirectUrl,...(upiApp?{upiAppId:upiApp}:{})},{timeoutMs:20*60*1000});
+          toast("Payment done. Confirming it with your bank…","success");
+        }catch(error){
+          const code=String(error&&error.message||"");
+          toast(/CANCEL|DROP/i.test(code)?"Payment cancelled. Your order is saved; tap Pay now to try again.":"Payment not completed. "+(error&&error.userMessage||"Try again or choose another method."),"danger");
+        }
+        return;
+      }
       await nativeInvoke("openExternalPayment",{url:redirectUrl},{timeoutMs:10000});
       toast(order.paymentState==="failed"?"Payment retry opened. Complete it in your payment app.":"Payment app opened. Complete the payment to continue your order.","success");
     }catch(error){
@@ -7183,7 +7231,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
     if(action==="delivery-mode"){if(control.dataset.value==="scheduled"){toast("Scheduling activates with the production dispatch backend.");return;}state.checkout.deliveryMode="asap";render({preserveScroll:true});return;}
     if(action==="toggle-contactless"){state.checkout.contactless=!state.checkout.contactless;render({preserveScroll:true});return;}
-    if(action==="select-payment"){const value=String(control.dataset.value||"cod");if(!paymentMethodEnabled(value)){toast(paymentMethodCopy(value),"warning");return;}state.checkout.payment=value;if(state.sheet&&state.sheet.type==="pay")state.sheet=null;render({preserveScroll:true});return;}
+    if(action==="select-payment"){const value=String(control.dataset.value||"cod");if(!paymentMethodEnabled(value)){toast(paymentMethodCopy(value),"warning");return;}state.checkout.payment=value;state.checkout.upiApp=value==="upi"?String(control.dataset.upiApp||""):"";persistCheckout();if(state.sheet&&state.sheet.type==="pay")state.sheet=null;render({preserveScroll:true});return;}
     if(action==="place-order"){submitOrder();return;}
     if(action==="open-order"){go("order",{orderId:control.dataset.orderId});return;}if(action==="open-order-chat"){const o=state.orders.find(x=>x.id===control.dataset.orderId);if(o)openOrderChat(o,control.dataset.channel,control.dataset.channel==="customerRider"?"Chat with delivery partner":"Chat with restaurant");return;}
     if(action==="pay-order"){const o=orderById(control.dataset.orderId);if(o)startOnlinePayment(o);return;}

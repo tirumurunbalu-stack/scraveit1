@@ -157,7 +157,8 @@ export class CashfreeGateway implements PaymentGateway {
     return {
       provider: "cashfree",
       merchantOrderId: request.merchantOrderId,
-      redirectUrl: `${c.checkoutUrl}?op=pay&order_id=${encodeURIComponent(request.merchantOrderId)}&session=${encodeURIComponent(session)}`,
+      // The app reads order_id, session and env from this link to pay in-app; older apps open it in the browser.
+      redirectUrl: `${c.checkoutUrl}?op=pay&order_id=${encodeURIComponent(request.merchantOrderId)}&session=${encodeURIComponent(session)}&env=${c.env}`,
       expiresAt: Number.isFinite(cfExpiry) && cfExpiry > Date.now() ? Math.min(cfExpiry, expiresAt) : expiresAt,
     };
   }
