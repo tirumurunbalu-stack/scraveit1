@@ -44,6 +44,7 @@ import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weat
 import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/googleMaps";
 import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
+import {VOICE_AGENT_SECRETS, handleVoiceWebhook, liveDeps as voiceAgentDeps, startConfirmationCall} from "./services/voiceAgent";
 import {
   resolveRiderFaceReview,
   resolveRiderFaceReviewSchema,
@@ -1417,6 +1418,47 @@ export const onOrderCreated = onDocumentCreated({
     logger.info("NEW_ORDER_PUSH_REQUESTED", {orderId: order.id, restaurantId: order.restaurantId});
     await notifyRestaurantNewOrder(order);
   });
+});
+
+/**
+ * Cash orders: an AI agent phones the customer to confirm, in Telugu or English.
+ * Off until settings/voiceAgent.enabled is true. No retry: a retried trigger must
+ * never ring the customer twice (startConfirmationCall also checks its own record).
+ */
+export const onCodOrderConfirmCall = onDocumentCreated({
+  document: "orders/{orderId}",
+  region: REGION,
+  retry: false,
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  maxInstances: 5,
+  secrets: VOICE_AGENT_SECRETS,
+}, async (event) => {
+  const order = event.data?.data() as SavrivoOrder | undefined;
+  if (!order || order.paymentMethod !== "cod") return;
+  await sideEffectLease(`cod-confirm-call:${order.id}`, async () => {
+    await startConfirmationCall(order, voiceAgentDeps());
+  }).catch((error) => logger.warn("VOICE_CONFIRM_START_FAILED", {orderId: order.id, error: String(error)}));
+});
+
+/** Plivo's call callbacks and the agent's audio. Each URL carries that call's own secret token. */
+export const voiceAgent = onRequest({
+  region: REGION,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  maxInstances: 10,
+  invoker: "public",
+  secrets: VOICE_AGENT_SECRETS,
+}, async (request, response) => {
+  const flat = (source: unknown): Record<string, string> => Object.fromEntries(Object.entries((source ?? {}) as Record<string, unknown>)
+    .map(([k, v]) => [k, String(Array.isArray(v) ? v[0] : v ?? "").slice(0, 2000)]));
+  try {
+    const result = await handleVoiceWebhook(flat(request.query), request.method === "POST" ? flat(request.body) : {}, voiceAgentDeps());
+    response.status(result.status).set("Content-Type", result.contentType).send(result.body);
+  } catch (error) {
+    logger.error("VOICE_AGENT_WEBHOOK_FAILED", {error: error instanceof Error ? error.message : "unknown"});
+    response.status(200).set("Content-Type", "application/xml").send("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response><Hangup/></Response>");
+  }
 });
 
 export const onOrderUpdated = onDocumentUpdated({

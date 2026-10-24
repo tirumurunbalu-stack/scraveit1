@@ -511,7 +511,8 @@ service cloud.firestore {
     }
 
     match /settings/{doc} {
-      allow read: if true; // Pricing config the client needs to render fee previews.
+      // Pricing config the client needs to render fee previews. voiceAgent holds test phone numbers: staff only.
+      allow read: if doc != "voiceAgent" || isPrivileged();
       allow write: if isPrivileged();
     }
 

@@ -752,6 +752,26 @@ export async function transitionOrder(
   return {order, actorRole, idempotent: false};
 }
 
+/**
+ * The customer said "cancel" on the COD confirmation call. Only an order the
+ * kitchen hasn't started (placed or just accepted) is cancelled; anything
+ * further along is left for a person to sort out. Returns whether it cancelled.
+ */
+export async function cancelOrderFromConfirmationCall(orderId: string, callId: string): Promise<boolean> {
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!before || before.paymentMethod !== "cod" || !["Order placed", "Accepted"].includes(before.status)) return false;
+  await commitAuthoritativeTransition({
+    before,
+    toStatus: "Cancelled",
+    actorId: "voice-agent",
+    actorRole: "system",
+    reason: "Customer cancelled on the order confirmation call",
+    detail: `confirmation call ${callId}`,
+  });
+  return true;
+}
+
 export async function transitionOrderFromTracking(
   customerId: string,
   orderId: string,
