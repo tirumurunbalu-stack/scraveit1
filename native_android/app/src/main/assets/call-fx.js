@@ -201,12 +201,13 @@
     rgb = rgb || [255, 63, 150];
     const C = (k, al2) => "rgba(" + Math.round(rgb[0] * k + 255 * (1 - k)) + "," + Math.round(rgb[1] * k + 255 * (1 - k)) + "," + Math.round(rgb[2] * k + 255 * (1 - k)) + "," + al2 + ")";
     let ang = Math.atan2(b.y - a.y, b.x - a.x); if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;
-    const d = Math.hypot(b.x - a.x, b.y - a.y); if (d < 8) return;
+    // d is the size unit: a little more than the distance between the eyes, so the glasses (arms
+    // included, about 2.3d) come out a bit wider than the face, like real party glasses.
+    const eyes = Math.hypot(b.x - a.x, b.y - a.y); if (eyes < 8) return;
+    const d = eyes * 1.2;
     const k = Math.min(1, t / .45), pop = k < 1 ? 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2) : 1;
     const on = t < .5 ? (t < .12 || (t > .2 && t < .26) || t > .34 ? 1 : .15) : 1, al = (t > life - .5 ? Math.max(0, (life - t) / .5) : 1) * on;
     if (al <= 0) return;
-    // Sized to the face: d is the distance between the eyes and a face is about 2.5d wide, so the
-    // glasses (arms included) stay about 2.3d wide and end at the temples, not past the cheeks.
     const w = d * .86, h = d * .54, gap = d * .57, path = new Path2D(), slats = new Path2D();
     if (style === "visor") {
       // One wraparound LED visor across both eyes, with a notch for the nose and glowing slats inside.
@@ -315,6 +316,8 @@
   // ---- sound ----
   const BPM = 128;
   let audio = null;
+  // Nothing of ours plays while the app is in the background; the next beat wakes the sound up again.
+  document.addEventListener("visibilitychange", () => { if (document.hidden && audio && audio.state === "running") audio.suspend().catch(() => { }); });
   /**
    * A short, original K-pop-style beat for the laser show, synthesised on the phone (no files).
    * Also sent to extra (a recording's audio) when given. With startAt (an audio-clock time) it plays
@@ -322,6 +325,7 @@
    * stops it, carrying .end: when it finishes on the audio clock.
    */
   function partyBeat(seconds, extra, startAt) {
+    if (document.hidden) return;
     try {
       const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
       if (!audio || audio.state === "closed") audio = new AC();
@@ -817,6 +821,9 @@
       x.drawImage(S, 0, 0);
     };
     st.raf = requestAnimationFrame(frame);
+    // Leaving the app (home screen, lock, another app) stops the beat; coming back starts it again.
+    const away = () => { clearTimeout(st.musicTimer); if (document.hidden) music(false); else if (!st.stopped && st.def.music) music(true); };
+    document.addEventListener("visibilitychange", away);
     return {
       lenses: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })),
       set(id) {
@@ -849,7 +856,7 @@
       },
       /** Recording finished: the beat goes back to the speaker only. */
       endRecord() { st.mix = null; if (st.def.music) music(true); },
-      stop() { st.stopped = true; cancelAnimationFrame(st.raf); clearTimeout(st.musicTimer); music(false); }
+      stop() { st.stopped = true; document.removeEventListener("visibilitychange", away); cancelAnimationFrame(st.raf); clearTimeout(st.musicTimer); music(false); }
     };
   }
 

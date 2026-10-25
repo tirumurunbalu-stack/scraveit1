@@ -4337,8 +4337,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function camStopRec(){clearInterval(cam.recTimer);if(cam.rec&&cam.rec.state!=="inactive"){try{cam.rec.stop()}catch(_){}}}
   function camToVideo(blob,dur){const poster=cam.poster;camClose();const old=chatState().vcompose;if(old&&old.url&&!old.shared)URL.revokeObjectURL(old.url);
     chatState().vcompose={blob,url:URL.createObjectURL(blob),poster,dur,caption:"",to:"friends",busy:false,muted:false};setSheet({type:"videoCompose"})}
-  // Back from the lock screen or another app: the camera feed may have stopped, so start it again.
-  document.addEventListener("visibilitychange",()=>{if(document.visibilityState!=="visible"||!state.sheet||state.sheet.type!=="storyCam"||cam.rec)return;
+  // Leaving the app lets go of the camera and microphone (a recording in progress is kept); back from
+  // the lock screen or another app, the camera feed starts again.
+  document.addEventListener("visibilitychange",()=>{if(!state.sheet||state.sheet.type!=="storyCam")return;
+    if(document.visibilityState!=="visible"){if(cam.rec){camStopRec();return}if(cam.lens){cam.lens.stop();cam.lens=null}camStopStream();return}
+    if(cam.rec)return;
     const t=cam.stream&&cam.stream.getVideoTracks()[0];if(!t||t.readyState==="ended"||t.muted){if(cam.lens){cam.lens.stop();cam.lens=null}camStart()}});
   async function camFlip(){cam.facing=cam.facing==="user"?"environment":"user";haptic(8);if(cam.lens){cam.lens.stop();cam.lens=null}await camStart()}
 
