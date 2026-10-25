@@ -13,12 +13,18 @@ import android.media.AudioAttributes;
 import android.media.RingtoneManager;
 import android.os.Build;
 
+import com.google.firebase.FirebaseApp;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 
 import org.json.JSONObject;
 
+import java.io.OutputStream;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+
+import javax.net.ssl.HttpsURLConnection;
 
 /** Receives Customer order updates and FCM installation-token changes. */
 public final class CustomerMessagingService extends FirebaseMessagingService {
@@ -56,6 +62,7 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     } else if ("CALL_INCOMING".equals(type)) {
       // With the app open, the page shows its own full-screen call.
       if (!MainActivity.isVisible()) showCallNotification(event);
+      confirmRinging(event);
     } else if ("CALL_ENDED".equals(type)) {
       NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
       if (manager != null) manager.cancel(callNotificationId(event.optString("callId", "")));
@@ -245,6 +252,8 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
         .setOngoing(true)
         .setAutoCancel(true)
         .setContentIntent(callIntent(event, "open", id))
+        // Screen off or locked: the call opens full screen over the lock screen and wakes the phone.
+        .setFullScreenIntent(callIntent(event, "open", id + 3), true)
         .addAction(new Notification.Action.Builder(null, "Decline", callIntent(event, "decline", id + 1)).build())
         .addAction(new Notification.Action.Builder(null, video ? "Answer video" : "Answer", callIntent(event, "answer", id + 2)).build());
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(45_000);
@@ -252,6 +261,43 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     notification.flags |= Notification.FLAG_INSISTENT;
     NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
     if (manager != null) manager.notify(id, notification);
+  }
+
+  /**
+   * Tells the server this phone has the call and is ringing, so the caller sees "Ringing…" instead of
+   * "Calling…". Proved with the key that came in the push. Best effort: a few seconds at most.
+   */
+  private void confirmRinging(JSONObject event) {
+    String callId = event.optString("callId", "");
+    String key = event.optString("ringKey", "");
+    if (!callId.matches("[A-Za-z0-9]{1,128}") || !key.matches("[0-9a-f]{32}")) return;
+    HttpsURLConnection connection = null;
+    try {
+      String projectId = FirebaseApp.getInstance().getOptions().getProjectId();
+      if (projectId == null || !projectId.matches("[a-z0-9-]{4,80}")) return;
+      JSONObject body = new JSONObject();
+      body.put("callId", callId);
+      body.put("key", key);
+      byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+      connection = (HttpsURLConnection) new URL("https://asia-south1-" + projectId
+          + ".cloudfunctions.net/callRang").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setConnectTimeout(5_000);
+      connection.setReadTimeout(6_000);
+      connection.setDoOutput(true);
+      connection.setUseCaches(false);
+      connection.setInstanceFollowRedirects(false);
+      connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+      connection.setFixedLengthStreamingMode(bytes.length);
+      try (OutputStream output = connection.getOutputStream()) {
+        output.write(bytes);
+      }
+      connection.getResponseCode();
+    } catch (Exception ignored) {
+      // The page marks the call as ringing too once it opens.
+    } finally {
+      if (connection != null) connection.disconnect();
+    }
   }
 
   private void showMissedCall(JSONObject event) {

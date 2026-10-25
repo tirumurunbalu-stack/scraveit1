@@ -4818,7 +4818,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!iceInflight)iceInflight=(async()=>{try{const res=await socialCall("callIceServers",{}),list=Array.isArray(res&&res.iceServers)?res.iceServers:[];if(list.length){iceCache={list,until:Date.now()+50*60000};return list}}catch(_){}
       return[{urls:["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]}]})().finally(()=>{iceInflight=null});
     return iceInflight}
-  function callNew(o){return Object.assign({id:"",ref:null,role:"caller",kind:"audio",pairId:"",other:"",name:"Friend",face:"",status:"calling",pc:null,local:null,remote:null,dc:null,unsubs:[],pendingCands:[],remoteCands:[],docReady:false,muted:false,camOff:false,remoteCamOff:false,remoteMuted:false,speaker:false,facing:"user",liveAt:0,timers:[],gestures:null,gestureState:"",ended:false,reactOpen:false},o)}
+  function callNew(o){return Object.assign({id:"",ref:null,role:"caller",kind:"audio",pairId:"",other:"",name:"Friend",face:"",status:"calling",ringing:false,pc:null,local:null,remote:null,dc:null,unsubs:[],pendingCands:[],remoteCands:[],docReady:false,muted:false,camOff:false,remoteCamOff:false,remoteMuted:false,speaker:false,facing:"user",liveAt:0,timers:[],gestures:null,gestureState:"",ended:false,reactOpen:false},o)}
   async function callPerms(video){try{const p=await nativeInvoke("callPermissions",{video},{timeoutMs:60000});
       if(!p||p.audio!==true){toast("Allow the microphone for calls (Settings › Apps › Scraveit › Permissions).","warning");return false}
       if(video&&p.video!==true){toast("Allow the camera for video calls (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}
@@ -4861,6 +4861,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function callSendData(m){try{if(call&&call.dc&&call.dc.readyState==="open")call.dc.send(JSON.stringify(m))}catch(_){}}
   function callWatchDoc(){const ref=call.ref,me=call;
     call.unsubs.push(ref.onSnapshot(async d=>{if(call!==me)return;const v=d.data();if(!v)return;
+      // The friend's phone has the call and is ringing: "Calling…" becomes "Ringing…", with the ringback.
+      if(me.role==="caller"&&v.ringingAt&&!me.ringing&&me.status==="calling"){me.ringing=true;callRingback(true);callUpdate()}
       if(me.role==="caller"&&v.answer&&me.pc&&!me.pc.currentRemoteDescription){try{await me.pc.setRemoteDescription(v.answer);callFlushRemote();if(me.status==="calling")me.status="connecting";callUpdate()}catch(_){callEnd("Couldn’t connect the call.")}}
       if(CALL_DONE.includes(v.status)&&!me.ended){const msg=v.status==="declined"?"Call declined":v.status==="busy"?"On another call":v.status==="missed"?"No answer":me.role==="callee"&&!me.liveAt?"Missed call":"Call ended";callEnd(msg,true)}}));
     call.unsubs.push(ref.collection("candidates").where("by","==",call.other).onSnapshot(sn=>{if(call!==me)return;sn.docChanges().forEach(ch=>{if(ch.type==="added")callAddRemoteCand(ch.doc.data().c)})}))}
@@ -4883,7 +4885,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       await ref.set({from:myUid(),to:other,pairId,kind:call.kind,status:"ringing",offer:{type:offer.type,sdp:offer.sdp},createdAt:firebase.firestore.FieldValue.serverTimestamp()});
       // Hung up while the call was still being set up: cancel it rather than leave it ringing.
       if(me.ended){ref.update({status:"cancelled",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
-      call.docReady=true;callFlushCands();callWatchDoc();callRingback(true);callUpdate();
+      call.docReady=true;callFlushCands();callWatchDoc();callUpdate();
       callNative({active:true,speaker:call.speaker,video:call.kind==="video"})}
     catch(e){if(call===me)callEnd(/Permission|NotAllowed/i.test(String(e&&e.name||e))?"Microphone or camera is blocked.":"Couldn’t start the call. "+chatError(e))}}
 
@@ -4891,6 +4893,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(call){if(call.id!==id)fs.collection("calls").doc(id).update({status:"busy",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
     call=callNew({id,ref:fs.collection("calls").doc(id),role:"callee",kind:data.kind==="video"?"video":"audio",pairId:String(data.pairId||""),other:String(data.from||""),offer:data.offer,status:"incoming",speaker:data.kind==="video"});
     const me=call;callShow();callWatchDoc();callNative({ring:true,dismissCallId:id});callIce().catch(()=>{});
+    if(!data.ringingAt)me.ref.update({ringingAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(()=>{});
     callPairInfo(me.pairId,me.other).then(info=>{if(call===me){me.name=info.name;me.face=info.face;callUpdate(true)}});
     call.timers.push(setTimeout(()=>{if(call===me&&me.status==="incoming")callEnd("Missed call",true)},Math.max(1000,CALL_RING_MS-(Date.now()-created))))}
   async function acceptCall(){const me=call;if(!me||me.role!=="callee"||me.status!=="incoming")return;
@@ -4906,7 +4909,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   async function handleCallPush(e){const id=String(e.callId||"");if(!id)return;
     if(e.type==="CALL_ENDED"){if(call&&call.id===id&&call.status==="incoming")callEnd("Missed call",true);if(e.openedFromNotification===true&&e.pairId)go("dm",{pairId:String(e.pairId)});return}
     if(!call||call.id!==id){let d;try{d=await fs.collection("calls").doc(id).get()}catch(_){return}const v=d.exists?d.data():null;
-      if(!v||v.status!=="ringing"){if(e.openedFromNotification===true&&e.pairId){toast("That call has ended.","info");go("dm",{pairId:String(e.pairId)})}return}
+      if(!v||v.status!=="ringing"){if(!call)callNative({ring:false,active:false});if(e.openedFromNotification===true&&e.pairId){toast("That call has ended.","info");go("dm",{pairId:String(e.pairId)})}return}
       await incomingCall(id,v)}
     if(!call||call.id!==id)return;
     if(e.callAction==="answer")acceptCall();
@@ -4951,7 +4954,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function callClock(){if(!call||!call.liveAt)return"";const s=Math.floor((Date.now()-call.liveAt)/1000);return(s>=3600?Math.floor(s/3600)+":":"")+String(Math.floor(s%3600/60)).padStart(s>=3600?2:1,"0")+":"+String(s%60).padStart(2,"0")}
   function callStatusText(){const c=call;if(!c)return"";
     if(c.status==="ended")return c.endMessage||"Call ended";if(c.status==="incoming")return c.kind==="video"?"Incoming video call":"Incoming voice call";
-    if(c.status==="calling")return c.docReady?"Ringing…":"Calling…";if(c.status==="connecting")return"Connecting…";if(c.status==="reconnecting")return"Reconnecting…";return callClock()}
+    if(c.status==="calling")return c.ringing?"Ringing…":"Calling…";if(c.status==="connecting")return"Connecting…";if(c.status==="reconnecting")return"Reconnecting…";return callClock()}
   function callShow(){let o=document.getElementById("call-ui");if(o)o.remove();o=document.createElement("div");o.id="call-ui";o.setAttribute("role","dialog");o.setAttribute("aria-modal","true");o.setAttribute("aria-label","Call");
     o.innerHTML='<div class="call-backdrop"></div><video class="call-remote" autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video><div class="call-remote-off"></div><canvas class="call-fx"></canvas>'
       +'<div class="call-top"><div class="call-face"></div><strong class="call-name"></strong><span class="call-status"></span></div>'

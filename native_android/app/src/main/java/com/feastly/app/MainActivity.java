@@ -110,6 +110,7 @@ public class MainActivity extends ComponentActivity {
   private Vibrator callVibrator;
   private PowerManager.WakeLock proximityLock;
   private boolean callActive;
+  private boolean overLockScreen;
   private static final String ORDER_CHANNEL = CustomerMessagingService.ORDER_CHANNEL;
   private static final String TRUSTED_HOST = "appassets.androidplatform.net";
   private static final String TRUSTED_ORIGIN = "https://" + TRUSTED_HOST + "/assets/";
@@ -154,6 +155,7 @@ public class MainActivity extends ComponentActivity {
     JSONObject launchedFromPush = CustomerMessagingService.eventFromIntent(getIntent());
     JSONObject storedPush = CustomerMessagingService.consumePendingEvent(this);
     pendingPushEvent = launchedFromPush != null ? launchedFromPush : storedPush;
+    if (isIncomingCall(launchedFromPush)) showOverLockScreen(true);
     pendingTableLink = tableLinkFrom(getIntent());
     credentialManager = CredentialManager.create(this);
     setUpCashfree();
@@ -944,6 +946,7 @@ public class MainActivity extends ComponentActivity {
           }
           if (p.has("ring")) setCallRinging(p.optBoolean("ring", false));
           if (p.has("active")) setCallActive(p.optBoolean("active", false), p.optBoolean("speaker", false), p.optBoolean("video", false));
+          if (p.has("active") && !p.optBoolean("active", false) && !p.optBoolean("ring", false)) showOverLockScreen(false);
           JSONObject result = new JSONObject();
           result.put("ok", true);
           publishNativeSuccess(requestId, "callAudio", result);
@@ -1353,7 +1356,9 @@ public class MainActivity extends ComponentActivity {
   @Override protected void onNewIntent(Intent intent) {
     super.onNewIntent(intent);
     setIntent(intent);
-    queuePushEvent(CustomerMessagingService.eventFromIntent(intent));
+    JSONObject pushed = CustomerMessagingService.eventFromIntent(intent);
+    if (isIncomingCall(pushed)) showOverLockScreen(true);
+    queuePushEvent(pushed);
     String link = tableLinkFrom(intent);
     if (!link.isEmpty()) {
       pendingTableLink = link;
@@ -1669,6 +1674,37 @@ public class MainActivity extends ComponentActivity {
     return value.replace("\\", "\\\\").replace("'", "\\'")
         .replace("\n", "\\n").replace("\r", "");
   }
+
+  private static boolean isIncomingCall(JSONObject event) {
+    return event != null && "CALL_INCOMING".equals(event.optString("type", ""))
+        && !"decline".equals(event.optString("callAction", ""));
+  }
+
+  /**
+   * A friend's call opens over the lock screen and turns the screen on, like a phone call. Back to
+   * normal when the call ends, or after a minute if it never started (the page never took it).
+   */
+  @SuppressWarnings("deprecation")
+  private void showOverLockScreen(boolean on) {
+    handler.removeCallbacks(lockScreenCheck);
+    if (on) handler.postDelayed(lockScreenCheck, 60_000);
+    if (on == overLockScreen) return;
+    overLockScreen = on;
+    int flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+      setShowWhenLocked(on);
+      setTurnScreenOn(on);
+    } else if (on) {
+      getWindow().addFlags(flags);
+    } else {
+      getWindow().clearFlags(flags);
+    }
+  }
+
+  private final Runnable lockScreenCheck = () -> {
+    if (callActive || callRingtone != null) handler.postDelayed(this.lockScreenCheck, 60_000);
+    else showOverLockScreen(false);
+  };
 
   private void setCallRinging(boolean on) {
     try {

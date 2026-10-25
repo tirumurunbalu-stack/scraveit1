@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Turns the screen off at the ear during voice calls (proximity sensor). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- A friend's call wakes the screen and shows over the lock screen, like a phone call. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- The Cashfree SDK asks for NFC (tap-to-pay cards); Scraveit does not use it. -->

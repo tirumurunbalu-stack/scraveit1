@@ -45,7 +45,7 @@ import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/google
 import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
 import {CASHFREE_SECRETS, CashfreeGateway, cashfreeCheckoutPage, liveCashfreeConfig} from "./services/cashfree";
-import {CALL_SECRETS, callIceServers as iceServersFor, onCallWritten as handleCallWritten} from "./services/calls";
+import {CALL_SECRETS, callIceServers as iceServersFor, confirmRinging, onCallWritten as handleCallWritten} from "./services/calls";
 import {VOICE_AGENT_SECRETS, handleVoiceWebhook, liveDeps as voiceAgentDeps, startConfirmationCall} from "./services/voiceAgent";
 import {
   resolveRiderFaceReview,
@@ -1515,6 +1515,27 @@ export const onCallWritten = onDocumentWritten({
   const after = event.data?.after?.exists ? event.data.after.data() as Record<string, unknown> : null;
   await handleCallWritten(String(event.params.callId), before, after)
     .catch((error) => logger.warn("CALL_TRIGGER_FAILED", {callId: event.params.callId, error: String(error)}));
+});
+
+/**
+ * The friend's phone got the call push and is ringing (it sends the key that came in the push);
+ * the caller's screen goes from "Calling…" to "Ringing…". Public: the key is the proof.
+ */
+export const callRang = onRequest({
+  region: REGION,
+  timeoutSeconds: 10,
+  memory: "256MiB",
+  maxInstances: 10,
+  invoker: "public",
+}, async (request, response) => {
+  if (request.method !== "POST") {
+    response.status(405).set("Allow", "POST").send("Method Not Allowed");
+    return;
+  }
+  const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+  const ok = await confirmRinging(String(body.callId ?? ""), String(body.key ?? ""))
+    .catch((error) => { logger.warn("CALL_RANG_FAILED", {error: String(error)}); return false; });
+  response.status(ok ? 204 : 404).end();
 });
 
 /**

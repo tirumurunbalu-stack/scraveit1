@@ -667,7 +667,10 @@ service cloud.firestore {
       // Who, what and when the call started never change. The person called answers (or declines);
       // either side ends it; the caller can give up while it rings.
       allow update: if inCall()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "answer", "answeredAt", "endedAt", "endedBy"])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "answer", "answeredAt", "endedAt", "endedBy", "ringingAt"])
+        // The person called marks it ringing once their phone shows it (the caller sees "Ringing…").
+        && (!("ringingAt" in request.resource.data.diff(resource.data).affectedKeys()) || (request.auth.uid == resource.data.to
+              && resource.data.status == "ringing" && request.resource.data.ringingAt == request.time))
         && request.resource.data.status in ["ringing", "accepted", "declined", "busy", "missed", "cancelled", "ended"]
         && !(resource.data.status in ["declined", "busy", "missed", "cancelled", "ended"])
         && (!("answer" in request.resource.data.diff(resource.data).affectedKeys()) || (request.auth.uid == resource.data.to

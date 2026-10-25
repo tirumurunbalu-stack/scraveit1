@@ -657,7 +657,7 @@ export async function notifyUserChat(input: {uid: string; key: string; title: st
  * A friend is calling. Data-only and high priority, so the app's own code always runs and shows a
  * ringing call notification with Answer/Decline, even when the app is closed. Useless after 40 s.
  */
-export async function notifyCallIncoming(input: {uid: string; callId: string; pairId: string; kind: "audio" | "video"; fromName: string}): Promise<void> {
+export async function notifyCallIncoming(input: {uid: string; callId: string; pairId: string; kind: "audio" | "video"; fromName: string; ringKey?: string}): Promise<void> {
   await enqueueAndAttempt({
     eventType: "CUSTOMER_CALL",
     aggregateType: "call",
@@ -665,7 +665,7 @@ export async function notifyCallIncoming(input: {uid: string; callId: string; pa
     deduplicationKey: `customer-call:${input.callId}:ring`,
     recipient: {kind: "user", id: input.uid, app: "customer"},
     message: storedMessage({
-      data: {type: "CALL_INCOMING", callId: input.callId, pairId: input.pairId, kind: input.kind, fromName: input.fromName.slice(0, 60)},
+      data: {type: "CALL_INCOMING", callId: input.callId, pairId: input.pairId, kind: input.kind, fromName: input.fromName.slice(0, 60), ...(input.ringKey ? {ringKey: input.ringKey} : {})},
       android: {priority: "high", ttl: 40_000},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
     }),
