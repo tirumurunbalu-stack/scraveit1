@@ -205,16 +205,18 @@
     const k = Math.min(1, t / .45), pop = k < 1 ? 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2) : 1;
     const on = t < .5 ? (t < .12 || (t > .2 && t < .26) || t > .34 ? 1 : .15) : 1, al = (t > life - .5 ? Math.max(0, (life - t) / .5) : 1) * on;
     if (al <= 0) return;
-    const w = d * 1.02, h = d * .62, gap = d * .7, path = new Path2D(), slats = new Path2D();
+    // Sized to the face: d is the distance between the eyes and a face is about 2.5d wide, so the
+    // glasses (arms included) stay about 2.3d wide and end at the temples, not past the cheeks.
+    const w = d * .86, h = d * .54, gap = d * .57, path = new Path2D(), slats = new Path2D();
     if (style === "visor") {
       // One wraparound LED visor across both eyes, with a notch for the nose and glowing slats inside.
-      const vw = d * 1.3, top = -d * .36, bot = d * .3;
-      path.moveTo(-vw, top + d * .08); path.quadraticCurveTo(0, top - d * .1, vw, top + d * .08);
-      path.quadraticCurveTo(vw + d * .1, (top + bot) / 2, vw - d * .1, bot); path.lineTo(d * .24, bot);
-      path.quadraticCurveTo(0, bot - d * .3, -d * .24, bot); path.lineTo(-vw + d * .1, bot);
-      path.quadraticCurveTo(-vw - d * .1, (top + bot) / 2, -vw, top + d * .08); path.closePath();
-      for (const s of [-1, 1]) { path.moveTo(s * vw, top + d * .1); path.quadraticCurveTo(s * (vw + d * .12), top + d * .06, s * (vw + d * .22), top + d * .2); }
-      for (let i = 1; i <= 3; i++) { const y = top + (bot - top) * i / 4.2, ins = i === 3 ? d * .3 : d * .05; slats.moveTo(-vw + d * .14, y); slats.lineTo(-ins, y); slats.moveTo(ins, y); slats.lineTo(vw - d * .14, y); }
+      const vw = d * .98, top = -d * .27, bot = d * .22;
+      path.moveTo(-vw, top + d * .06); path.quadraticCurveTo(0, top - d * .08, vw, top + d * .06);
+      path.quadraticCurveTo(vw + d * .08, (top + bot) / 2, vw - d * .08, bot); path.lineTo(d * .2, bot);
+      path.quadraticCurveTo(0, bot - d * .24, -d * .2, bot); path.lineTo(-vw + d * .08, bot);
+      path.quadraticCurveTo(-vw - d * .08, (top + bot) / 2, -vw, top + d * .06); path.closePath();
+      for (const s of [-1, 1]) { path.moveTo(s * vw, top + d * .08); path.quadraticCurveTo(s * (vw + d * .07), top + d * .05, s * (vw + d * .12), top + d * .14); }
+      for (let i = 1; i <= 3; i++) { const y = top + (bot - top) * i / 4.2, ins = i === 3 ? d * .24 : d * .04; slats.moveTo(-vw + d * .11, y); slats.lineTo(-ins, y); slats.moveTo(ins, y); slats.lineTo(vw - d * .11, y); }
     } else for (const s of [-1, 1]) {
       const cx = s * gap, P = (u, v) => [cx + s * u * w, v * h];
       if (style === "hearts") {
@@ -233,18 +235,18 @@
       }
       // The arm, heading back toward the ear.
       const arm = style === "hearts" ? P(.48, -.25) : P(.5, -.6);
-      path.moveTo(...arm); path.quadraticCurveTo(arm[0] + s * d * .12, arm[1] - h * .02, arm[0] + s * d * .2, arm[1] + h * .12);
+      path.moveTo(...arm); path.quadraticCurveTo(arm[0] + s * d * .07, arm[1] - h * .02, arm[0] + s * d * .12, arm[1] + h * .1);
     }
     // Bridge over the nose.
     const ix = gap - w * .5; path.moveTo(-ix, -h * .3); path.bezierCurveTo(-ix * .4, -h * .52, ix * .4, -h * .52, ix, -h * .3);
     x.save(); x.translate((a.x + b.x) / 2, (a.y + b.y) / 2); x.rotate(ang); x.scale(pop, pop);
     // Pink light falling on the face around the glasses.
-    const spill = x.createRadialGradient(0, h * .2, 0, 0, h * .2, d * 1.8);
-    spill.addColorStop(0, C(1, (.34 * al).toFixed(3))); spill.addColorStop(1, C(1, 0));
-    x.fillStyle = spill; x.fillRect(-d * 2, -d * 1.6, d * 4, d * 3.6);
+    const spill = x.createRadialGradient(0, h * .2, 0, 0, h * .2, d * 1.4);
+    spill.addColorStop(0, C(1, (.28 * al).toFixed(3))); spill.addColorStop(1, C(1, 0));
+    x.fillStyle = spill; x.fillRect(-d * 1.6, -d * 1.3, d * 3.2, d * 2.9);
     x.fillStyle = C(.9, (.12 * al).toFixed(3)); x.fill(path);
-    // A bulky frame drawn as two neon rails with a hollow between them: each stroke is drawn wide and
-    // its middle cut out, on a canvas of its own, so the glow can wrap both rails.
+    // A chunky (not heavy) frame drawn as two slim neon rails with a hollow between them: each stroke
+    // is drawn wide and its middle cut out, on a canvas of its own, so the glow can wrap both rails.
     const cw = Math.ceil(d * 3.6), ch = Math.ceil(d * 2), rails = (c, outer, inner, extra) => {
       if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
       const r = c.getContext("2d"); r.setTransform(1, 0, 0, 1, 0, 0); r.clearRect(0, 0, cw, ch); r.translate(cw / 2, ch / 2); r.lineJoin = r.lineCap = "round";
@@ -253,22 +255,22 @@
       r.globalCompositeOperation = "destination-out"; r.lineWidth = d * inner; r.stroke(path); r.globalCompositeOperation = "source-over";
       return c;
     };
-    const tube = rails(railTube, [C(1, 1), .22], .115), core = rails(railCore, [C(.15, .95), .185], .15, (r) => {
-      // Lights chasing round the frame.
-      r.setLineDash([d * .06, d * .34]); r.lineDashOffset = -t * d * 1.6; r.strokeStyle = "#fff"; r.lineWidth = d * .22; r.stroke(path); r.setLineDash([]);
+    const tube = rails(railTube, [C(1, 1), .15], .078), core = rails(railCore, [C(.15, .95), .124], .1, (r) => {
+      // A few small lights chasing round the frame.
+      r.setLineDash([d * .035, d * .42]); r.lineDashOffset = -t * d * 1.6; r.strokeStyle = "#fff"; r.lineWidth = d * .15; r.stroke(path); r.setLineDash([]);
     });
     const g = .8 + .35 * flash;
     // The frame's body between the rails, faintly lit.
-    x.lineJoin = x.lineCap = "round"; x.strokeStyle = C(1, (.16 * al).toFixed(3)); x.lineWidth = d * .18; x.stroke(path);
-    if (LOW_END) { x.strokeStyle = C(1, (.12 * al * g).toFixed(3)); x.lineWidth = d * .45; x.stroke(path); }
-    else { x.shadowColor = C(1, Math.min(1, al * g).toFixed(3)); x.shadowBlur = d * .45; }
+    x.lineJoin = x.lineCap = "round"; x.strokeStyle = C(1, (.14 * al).toFixed(3)); x.lineWidth = d * .12; x.stroke(path);
+    if (LOW_END) { x.strokeStyle = C(1, (.1 * al * g).toFixed(3)); x.lineWidth = d * .28; x.stroke(path); }
+    else { x.shadowColor = C(1, Math.min(1, al * g).toFixed(3)); x.shadowBlur = d * .28; }
     x.globalAlpha = al; x.drawImage(tube, -cw / 2, -ch / 2); x.shadowBlur = 0;
     x.drawImage(tube, -cw / 2, -ch / 2); x.drawImage(core, -cw / 2, -ch / 2); x.globalAlpha = 1;
     if (style === "visor") {
-      x.strokeStyle = C(1, (.9 * al).toFixed(3)); x.lineWidth = d * .045; if (!LOW_END) { x.shadowColor = C(1, al.toFixed(3)); x.shadowBlur = d * .25; }
-      x.stroke(slats); x.shadowBlur = 0; x.strokeStyle = C(.15, al.toFixed(3)); x.lineWidth = d * .016; x.stroke(slats);
+      x.strokeStyle = C(1, (.55 * al).toFixed(3)); x.lineWidth = Math.max(1.5, d * .028); if (!LOW_END) { x.shadowColor = C(1, al.toFixed(3)); x.shadowBlur = d * .15; }
+      x.stroke(slats); x.shadowBlur = 0; x.strokeStyle = C(.15, (.7 * al).toFixed(3)); x.lineWidth = Math.max(1, d * .01); x.stroke(slats);
     }
-    x.fillStyle = "rgba(255,255,255," + al.toFixed(3) + ")"; x.beginPath(); x.arc(0, -h * .45, d * .03, 0, 7); x.fill();
+    x.fillStyle = "rgba(255,255,255," + al.toFixed(3) + ")"; x.beginPath(); x.arc(0, -h * .45, d * .022, 0, 7); x.fill();
     x.restore();
   }
   /**
