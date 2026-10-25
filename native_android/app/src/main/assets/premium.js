@@ -4198,7 +4198,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const el=storyVideoEl;if(el.dataset.postId!==id){el.dataset.postId=id;el.src=v.url;el.currentTime=0}
     slot.appendChild(el);if(view.classList.contains("held"))el.pause();else el.play().catch(()=>{el.muted=true;el.play().catch(()=>{})})}
   // Holding a story or opening a panel pauses its video too.
-  new MutationObserver(()=>{const v=document.querySelector(".story-view");if(storyVideoEl&&v&&storyVideoEl.isConnected){if(v.classList.contains("held"))storyVideoEl.pause();else storyVideoEl.play().catch(()=>{})}}).observe(sheetRegion,{subtree:true,attributes:true,attributeFilter:["class"]});
+  if(typeof MutationObserver==="function")new MutationObserver(()=>{const v=document.querySelector(".story-view");if(storyVideoEl&&v&&storyVideoEl.isConnected){if(v.classList.contains("held"))storyVideoEl.pause();else storyVideoEl.play().catch(()=>{})}}).observe(sheetRegion,{subtree:true,attributes:true,attributeFilter:["class"]});
   const STORY_ICONS={
     heart:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3s-7.4-4.5-9.2-9C1.5 8 3.7 4.6 7.1 4.6c2 0 3.6 1.1 4.9 3 1.3-1.9 2.9-3 4.9-3 3.4 0 5.6 3.4 4.3 6.7-1.8 4.5-9.2 9-9.2 9Z"/></svg>',
     comment:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/></svg>'};
