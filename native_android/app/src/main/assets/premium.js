@@ -429,7 +429,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Sign-in tokens expire after an hour. A call made with a stale one is
   // rejected by the server, so every signed-in call asks Firebase for a
   // current token first (Firebase refreshes it only when it is near expiry).
-  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment"];
+  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment", "callPermissions", "callAudio"];
   function nativeInvoke(operation, payload, options) {
     const user = fbAuth.currentUser;
     if (!user || TOKENLESS_OPERATIONS.includes(operation)) return nativeInvokeWithToken(operation, payload, options);
@@ -492,6 +492,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
           FeastlyNative.scanTableQr(requestId);
         } else if (operation === "recoverDeliveryOtp") {
           FeastlyNative.recoverDeliveryOtp(requestId, firebaseIdToken, String(payload && payload.orderId || ""));
+        } else if (operation === "callPermissions") {
+          FeastlyNative.callPermissions(requestId, JSON.stringify(payload || {}));
+        } else if (operation === "callAudio") {
+          FeastlyNative.callAudio(requestId, JSON.stringify(payload || {}));
         } else {
           throw new Error("INVALID_OPERATION");
         }
@@ -3826,7 +3830,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     catch(_){keepPostPhoto(id,{missing:true})}
     finally{postPhotoLoading.delete(id);feedRerender()}}
   async function loadPostMeta(id,force){if(!id||(!force&&postMeta.has(id)))return;if(!postMeta.has(id))postMeta.set(id,{likes:{},views:{}});
-    try{const d=await fs.collection("posts").doc(id).get();if(d.exists){const x=d.data();postMeta.set(id,{likes:x.likes||{},views:x.views||{}})}}catch(_){}
+    try{const d=await fs.collection("posts").doc(id).get();if(d.exists){const x=d.data();postMeta.set(id,{likes:x.likes||{},views:x.views||{},stickers:Array.isArray(x.stickers)?x.stickers:[],tally:x.tally||{},to:x.to||"friends",hl:x.hl===true,caption:x.caption!=null?String(x.caption):null})}}catch(_){}
     feedRerender()}
   /** Posts from you and your current friends; stories only for their 24 hours. */
   function liveFeed(){const c=chatState(),uid=myUid(),now=Date.now(),people=new Set(c.pairs.filter(p=>p.status==="accepted").map(otherOf).concat([uid]));
@@ -3841,8 +3845,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function pairWith(uid){return chatState().pairs.find(x=>x.status==="accepted"&&otherOf(x)===uid)||null}
   /** Under-18 accounts see a friend's photo blurred until they tap it (as in chats). */
   function postVeiled(x){const a=chatState().account;return x.from!==myUid()&&!!(a&&a.minor===true)&&!dmPhotoSeen.has("p:"+x.postId)}
-  function storyRing(uid,groups,seen){const has=groups.has(uid),mine=uid===myUid();
-    return'<span class="story-ring'+(has?(!mine&&storyUnseen(groups,uid,seen)?' new':' seen'):'')+'">'+avatar(feedName(uid),0,uid).replace('class="chat-avatar','class="chat-avatar big')+(mine?'<span class="story-plus"'+(has?' data-action="feed-compose" data-kind="story" role="button" aria-label="Add another story"':' aria-hidden="true"')+'>+</span>':'')+'</span>'}
+  function storyRing(uid,groups,seen){const has=groups.has(uid),mine=uid===myUid(),close=has&&(groups.get(uid)||[]).some(x=>x.close);
+    return'<span class="story-ring'+(has?(!mine&&storyUnseen(groups,uid,seen)?' new':' seen'):'')+(close?' close':'')+'">'+avatar(feedName(uid),0,uid).replace('class="chat-avatar','class="chat-avatar big')+(mine?'<span class="story-plus"'+(has?' data-action="feed-compose" data-kind="story" role="button" aria-label="Add another story"':' aria-hidden="true"')+'>+</span>':'')+'</span>'}
   function storyFace(uid,groups,seen,label){return storyRing(uid,groups,seen)+'<span>'+h(label)+'</span>'}
   function myStoryBubble(groups,seen){const uid=myUid(),has=groups.has(uid);
     return'<button class="pal" data-action="'+(has?'story-open':'feed-compose')+'" data-uid="'+h(uid)+'" data-kind="story" aria-label="'+(has?'Your story':'Add to your story')+'">'+storyFace(uid,groups,seen,"Your story")+'</button>'}
@@ -3852,7 +3856,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<nav class="bottom-nav kind-nav social-nav" aria-label="Friends">'+b("feed","Feed")+b("post","Post")+b("chats","Chats")+'</nav>'}
   function screenFeed(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),groups=storyGroups(),seen=storySeenSet(),posts=liveFeed().filter(x=>x.kind==="post");
     return'<main class="screen no-nav feed-screen"><div class="screen-content page-stack">'+topbar("Feed","Only your friends see this",'<button class="icon-button flat" data-action="feed-compose" data-kind="post" aria-label="Share a photo">'+icon("plus")+'</button>')+networkBanner()
-      +(gate||('<div class="pals story-row" aria-label="Stories">'+myStoryBubble(groups,seen)+storyOrder(groups).filter(u=>u!==uid).map(u=>'<button class="pal" data-action="story-open" data-uid="'+h(u)+'">'+storyFace(u,groups,seen,String(feedName(u)).split(" ")[0])+'</button>').join("")+'</div>'
+      +(gate||('<div class="pals story-row" aria-label="Stories">'+myStoryBubble(groups,seen)+storyOrder(groups).filter(u=>u!==uid).map(u=>'<button class="pal" data-action="story-open" data-uid="'+h(u)+'">'+storyFace(u,groups,seen,String(feedName(u)).split(" ")[0])+'</button>').join("")+'</div>'+highlightsRow(uid,true)
         +(!c.feedLoaded?loadingRow("Loading your feed…"):posts.length?'<div class="feed-list">'+posts.map(feedPost).join("")+'</div>'
           :emptyState("chat","Nothing here yet","Share what you’re eating. Only your friends see it.")+'<button class="button primary full" data-action="feed-compose" data-kind="post">📷 Share a photo</button>')))
       +'</div>'+(gate?'':socialNav("feed"))+'</main>'}
@@ -3865,13 +3869,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +'<span class="feed-count">'+(likes.length?likes.length+(likes.length===1?' like':' likes'):mine?'No likes yet':'')+'</span>'+(mine?'':'<button class="text-button" data-action="feed-reply" data-post-id="'+h(x.postId)+'" data-uid="'+h(x.from)+'">Reply</button>')+'</div>'
       +(x.caption?'<p class="feed-caption"><strong>'+h(mine?"You":String(name).split(" ")[0])+'</strong> '+h(x.caption)+'</p>':'')+'</article>'}
   // Sharing: pick a photo, then choose story or post and add a caption.
-  async function feedCompose(kind){if(chatGate()){go("chats");return}
+  async function feedCompose(kind,gallery){if(chatGate()){go("chats");return}
+    if(kind!=="post"&&!gallery&&storyCamAvailable()){openStoryCam();return}
     if(!nativeAvailable("pickChatPhoto")){toast("Update Scraveit to share photos.","danger");return}
     let res;try{res=await nativeInvoke("pickChatPhoto",{},{timeoutMs:180000})}catch(e){if(!/CANCELLED|No photo/i.test(String(e&&e.message||"")))toast("Not shared. "+chatError(e),"danger");return}
     const d=res&&(res.image?res:res.data&&res.data.image?res.data:res.result)||{},img=String(d.image||""),w=Math.round(Number(d.w)||0),hh=Math.round(Number(d.h)||0);
     if(!img.startsWith("data:image/jpeg;base64,")||!w||!hh){toast("That photo couldn’t be used. Try another.","danger");return}
     const old=chatState().compose;if(old&&old.url)URL.revokeObjectURL(old.url);seReset();
-    chatState().compose={img,url:photoBlobUrl(img),w,h:hh,kind:kind==="post"?"post":"story",caption:"",busy:false};setSheet({type:"compose"})}
+    chatState().compose={img,url:photoBlobUrl(img),w,h:hh,kind:kind==="post"?"post":"story",caption:"",busy:false,to:"friends"};setSheet({type:"compose"})}
   // ===== Photo editor for stories and posts =====
   // Filters, adjustments, effects, text, stickers and drawing. The preview and
   // the photo that gets shared are drawn by the same code, so friends see
@@ -3943,7 +3948,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return c}
   function seItemCanvas(it,unit){const c=document.createElement("canvas"),x=c.getContext("2d");
     if(it.type==="emoji"){const fs=Math.max(8,unit*2.2);x.font=fs+"px sans-serif";const w=Math.ceil(x.measureText(it.text).width+fs*.3),hh=Math.ceil(fs*1.3);c.width=w;c.height=hh;x.font=fs+"px sans-serif";x.textAlign="center";x.textBaseline="middle";x.fillText(it.text,w/2,hh/2+fs*.04);return c}
-    return it.type==="tag"?seTagCanvas(c,x,it,unit):seTextCanvas(c,x,it,unit)}
+    return it.type==="ix"?seIxCanvas(c,x,it,unit):it.type==="tag"?seTagCanvas(c,x,it,unit):seTextCanvas(c,x,it,unit)}
   function sePath(x,pts,W,H){x.beginPath();if(!pts.length)return;const p=pts.map(q=>[q[0]*W,q[1]*H]);x.moveTo(p[0][0],p[0][1]);if(p.length===1){x.lineTo(p[0][0]+.01,p[0][1]);return}
     for(let i=1;i<p.length-1;i++)x.quadraticCurveTo(p[i][0],p[i][1],(p[i][0]+p[i+1][0])/2,(p[i][1]+p[i+1][1])/2);const l=p[p.length-1];x.lineTo(l[0],l[1])}
   function seDrawStrokes(x,W,H,strokes){strokes.forEach(s=>{const lw=Math.max(1,s.size*W*.006*(s.tool==="marker"?2.6:s.tool==="eraser"?2.4:1));x.save();x.lineCap="round";x.lineJoin="round";x.lineWidth=lw;
@@ -3956,7 +3961,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   async function seExport(d){const img=await seLoadBase(d),W=d.w,H=d.h,c=document.createElement("canvas"),base=document.createElement("canvas");c.width=base.width=W;c.height=base.height=H;
     base.getContext("2d").drawImage(img,0,0,W,H);sePaintPhoto(c,d,base);const x=c.getContext("2d");
     if(d.strokes.length){const ink=document.createElement("canvas");ink.width=W;ink.height=H;seDrawStrokes(ink.getContext("2d"),W,H,d.strokes);x.drawImage(ink,0,0)}
-    d.items.forEach(it=>{const b=seItemCanvas(it,W*SE_UNIT*it.s);x.save();x.translate(it.x*W,it.y*H);x.rotate(+it.r||0);x.drawImage(b,-b.width/2,-b.height/2);x.restore()});
+    d.items.forEach(it=>{if(it.type==="ix"&&d.kind==="story")return;const b=seItemCanvas(it,W*SE_UNIT*it.s);x.save();x.translate(it.x*W,it.y*H);x.rotate(+it.r||0);x.drawImage(b,-b.width/2,-b.height/2);x.restore()});
     for(const q of [.88,.8,.72,.64]){const out=c.toDataURL("image/jpeg",q);if(out.length<=700000)return{img:out,w:W,h:H}}
     for(const k of [.85,.7,.56]){const s=document.createElement("canvas");s.width=Math.round(W*k);s.height=Math.round(H*k);s.getContext("2d").drawImage(c,0,0,s.width,s.height);const out=s.toDataURL("image/jpeg",.72);if(out.length<=700000)return{img:out,w:s.width,h:s.height}}
     throw new Error("That photo is too big. Try another.")}
@@ -3978,7 +3983,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return tabs+body}
   function seFoot(d){return'<form id="compose-form" class="se-foot"><input class="input se-caption" id="compose-caption" name="caption" maxlength="200" placeholder="Add a caption…" autocomplete="off" value="'+h(d.caption||"")+'">'
     +'<div class="se-foot-row"><div class="se-kind" role="radiogroup" aria-label="Share as"><button type="button" class="'+(d.kind==="story"?'on':'')+'" data-action="compose-kind" data-value="story" role="radio" aria-checked="'+(d.kind==="story")+'">Your story</button><button type="button" class="'+(d.kind==="post"?'on':'')+'" data-action="compose-kind" data-value="post" role="radio" aria-checked="'+(d.kind==="post")+'">Post</button></div>'
-    +'<button class="se-share" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Sharing…':'Share')+'<span aria-hidden="true">➤</span></button></div><p class="se-hint">Only your friends can see it.</p></form>'}
+    +'<button class="se-share" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Sharing…':'Share')+'<span aria-hidden="true">➤</span></button></div>'+(d.kind==="story"?audienceRow(d):'')+'<p class="se-hint">'+(d.kind==="story"&&d.to==="close"?'Only your close friends can see it.':'Only your friends can see it.')+'</p></form>'}
   function seDrawPanel(d){const b=d.brush;
     return'<div class="se-draw"><div class="se-strip" data-strip="brushes">'+SE_BRUSHES.map(x=>'<button type="button" class="se-chip'+(b.tool===x.id?' on':'')+'" data-action="se-brush" data-tool="'+x.id+'"><span aria-hidden="true">'+x.icon+'</span>'+h(x.name)+'</button>').join("")+'</div>'
       +'<div class="se-range-row"><span class="se-dot-sm" aria-hidden="true"></span><input type="range" class="se-range" id="se-range-size" data-k="size" min="1" max="10" step="1" value="'+b.size+'" aria-label="Brush size"><span class="se-dot-lg" aria-hidden="true"></span></div>'
@@ -3994,8 +3999,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       {text:"Must try 🔥",look:"fire"},{text:"Yum! 😋",look:"sun"},{text:"Hungry? 🤤",look:"pink"},{text:"Treat day 🎉",look:"mint"},{text:"Chef’s kiss 😘",look:"pink"},{text:"Foodie mode",look:"dark"},
       {text:"Spice level 🌶️🌶️🌶️",look:"fire"},{text:"Homemade ❤️",look:"white"},{text:"Worth it 💯",look:"sun"},{text:"Coffee first ☕",look:"glass"},{text:"Dessert time 🍨",look:"pink"},
       {text:"Biryani mood",look:"sun"},{text:"Weekend vibes",look:"mint"},{text:"Party time 🥳",look:"brand"},{text:"Ordered on Scraveit",look:"brand"}]}
-  function seStickerPanel(){return'<div class="se-stickers" role="dialog" aria-label="Stickers"><div class="se-stickers-head"><strong>Stickers</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div>'
-    +'<div class="se-stickers-body"><div class="se-tag-grid">'+seTagChoices().map((t,i)=>'<button type="button" class="se-tag-pick se-look-'+t.look+'" data-action="se-add-tag" data-i="'+i+'">'+h(seTagText(t))+'</button>').join("")+'</div>'
+  function seStickerPanel(){const d=chatState().compose,story=!d||d.kind==="story";return'<div class="se-stickers" role="dialog" aria-label="Stickers"><div class="se-stickers-head"><strong>Stickers</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div>'
+    +'<div class="se-stickers-body">'+(story?'<div class="ix-kinds">'+IX_KINDS.map(k=>'<button type="button" class="ix-kind" data-action="se-add-ix" data-t="'+k.t+'"><span>'+k.icon+'</span>'+h(k.name)+'</button>').join("")+'</div>':'')+'<div class="se-tag-grid">'+seTagChoices().map((t,i)=>'<button type="button" class="se-tag-pick se-look-'+t.look+'" data-action="se-add-tag" data-i="'+i+'">'+h(seTagText(t))+'</button>').join("")+'</div>'
     +'<div class="se-emoji-grid">'+SE_EMOJI.map(e=>'<button type="button" data-action="se-add-emoji" data-emoji="'+e+'" aria-label="'+e+'">'+e+'</button>').join("")+'</div></div></div>'}
   function composeSheet(){const d=chatState().compose;if(!d)return"";seDefaults(d);requestAnimationFrame(seMount);
     const tool=(m,label,ic)=>'<button type="button" class="se-btn'+(d.mode===m?' on':'')+'" data-action="se-mode" data-mode="'+m+'" aria-label="'+label+'" aria-pressed="'+(d.mode===m)+'">'+ic+'</button>';
@@ -4006,7 +4011,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<div class="se-view" role="dialog" aria-modal="true" aria-label="Edit your photo">'+top
       +'<div class="se-stage'+(d.mode==="draw"?' drawing':'')+'"><div class="se-frame"><div class="se-photo-slot"></div><div class="se-ink-slot"></div><div class="se-items">'+items+'</div><img class="se-orig" src="'+h(d.url)+'" alt=""></div><div class="se-trash" aria-hidden="true">🗑</div></div>'
       +'<div class="se-bottom">'+(d.mode==="draw"?seDrawPanel(d):seEditPanel(d)+seFoot(d))+'</div>'
-      +(d.mode==="text"?seTextPanel(d):d.mode==="stickers"?seStickerPanel():'')+'</div>'}
+      +(d.mode==="text"?seTextPanel(d):d.mode==="stickers"?seStickerPanel():d.mode==="ix"?seIxPanel(d):'')+'</div>'}
   function seLayout(d,stage,frame){const aw=stage.clientWidth,ah=stage.clientHeight;if(!aw||!ah)return false;const r=d.w/d.h;let fw=Math.min(aw,ah*r);const fh=Math.floor(fw/r);fw=Math.floor(fw);
     frame.style.width=fw+"px";frame.style.height=fh+"px";seCache.fw=fw;seCache.fh=fh;
     if(!seCache.P)seCache.P=Math.max(240,Math.round(Math.min(d.w,fw*Math.min(3,window.devicePixelRatio||1),960)));
@@ -4022,7 +4027,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function seEnsureInk(d,frame){const P=seCache.P,PH=Math.max(1,Math.round(P*d.h/d.w));let c=seCache.ink;
     if(!c||c.width!==P||c.height!==PH){c=document.createElement("canvas");c.width=P;c.height=PH;seCache.ink=c;seInkRedraw(d)}
     const slot=frame.querySelector(".se-ink-slot");if(slot&&c.parentNode!==slot){slot.textContent="";slot.appendChild(c)}}
-  function seItemSig(it){return[seCache.P,it.type,it.text,it.font,it.color,it.bg,it.align,it.look,it.stars,Math.round(it.s*100)].join("|")}
+  function seItemSig(it){return[seCache.P,it.type,it.text,it.font,it.color,it.bg,it.align,it.look,it.stars,Math.round(it.s*100),it.ix?JSON.stringify(it.ix):""].join("|")}
   function seEnsureItems(d,frame){frame.querySelectorAll(".se-item").forEach(el=>{const it=d.items.find(i=>i.id===el.dataset.item);if(!it)return;
       const sig=seItemSig(it);let e=seCache.items.get(it.id);if(!e||e.sig!==sig){e={sig,c:seItemCanvas(it,seCache.P*SE_UNIT*it.s),s:it.s};seCache.items.set(it.id,e)}
       if(e.c.parentNode!==el){el.textContent="";el.appendChild(e.c)}seSizeItem(el)});
@@ -4106,6 +4111,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="se-text-bg"){d.draft.bg=((+d.draft.bg||0)+1)%3;seTextSync();return true}
     if(action==="se-text-align"){const o=["center","left","right"];d.draft.align=o[(o.indexOf(d.draft.align||"center")+1)%3];seTextSync();return true}
     if(action==="se-add-emoji"){seAddItem(d,{type:"emoji",text:control.dataset.emoji});return true}
+    if(action==="se-add-ix"){const t=String(control.dataset.t||"poll");if((d.items||[]).filter(it=>it.type==="ix").length>=6){toast("Up to six of these stickers on a story.","info");return true}
+      d.ixDraft={t,q:"",o:t==="poll"?["Yes","No"]:undefined,e:"😍"};d.mode="ix";renderSheet();return true}
+    if(action==="se-ix-more"){if(d.ixDraft){seIxRead(d);if((d.ixDraft.o||[]).length<4)d.ixDraft.o.push("");renderSheet()}return true}
+    if(action==="se-ix-emoji"){if(d.ixDraft){seIxRead(d);d.ixDraft.e=String(control.dataset.emoji||"😍");renderSheet()}return true}
+    if(action==="se-ix-mention"){seIxAdd(d,{t:"mention",uid:String(control.dataset.uid||""),name:String(control.dataset.name||"friend")});return true}
+    if(action==="se-ix-rest"){if(d.ixDraft){d.ixDraft.rid=String(control.dataset.rid||"");d.ixDraft.find="";renderSheet()}return true}
+    if(action==="se-ix-dish"){const r=d.ixDraft&&state.catalog[d.ixDraft.rid];if(r)seIxAdd(d,{t:"dish",rid:r.id,name:String(r.name||"").slice(0,50),item:String(control.dataset.item||"").slice(0,60)});return true}
     if(action==="se-add-tag"){const t=seTagChoices()[Number(control.dataset.i)];if(t)seAddItem(d,Object.assign({type:"tag"},t));return true}
     return true}
   document.addEventListener("input",e=>{const t=e.target;if(!t||!t.classList)return;const d=chatState().compose;if(!d||!d.adj)return;
@@ -4132,7 +4144,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   async function shareCompose(){const c=chatState(),d=c.compose;if(!d||d.busy)return;d.busy=true;renderSheet();
     try{const out=seEdited(d)?await seExport(d):{img:d.img,w:d.w,h:d.h},ref=fs.collection("posts").doc(),uid=myUid(),at=firebase.firestore.FieldValue.serverTimestamp();
       await fs.collection("postMedia").doc(ref.id).set({from:uid,image:out.img,at});
-      await ref.set({from:uid,kind:d.kind,caption:String(d.caption||"").trim().slice(0,200),w:out.w,h:out.h,createdAt:at});
+      const post={from:uid,kind:d.kind,caption:String(d.caption||"").trim().slice(0,200),w:out.w,h:out.h,createdAt:at};
+      if(d.kind==="story"){if(d.to==="close")post.to="close";const ix=(d.items||[]).filter(it=>it.type==="ix"&&it.ix).slice(0,6).map(it=>Object.assign({},it.ix,{x:+it.x.toFixed(4),y:+it.y.toFixed(4),s:+(+it.s||1).toFixed(3),r:+(+it.r||0).toFixed(3)}));if(ix.length)post.stickers=ix}
+      await ref.set(post);
       if(out.img!==d.img){URL.revokeObjectURL(d.url);keepPostPhoto(ref.id,{url:photoBlobUrl(out.img)})}else keepPostPhoto(ref.id,{url:d.url});c.compose=null;seReset();closeSheet();toast(d.kind==="story"?"Added to your story.":"Posted for your friends.","success");
       if(state.route!=="feed"&&d.kind==="post")go("feed")}
     catch(e){d.busy=false;renderSheet();toast("Not shared. "+chatError(e),"danger")}}
@@ -4140,29 +4154,51 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function openStory(uid){const groups=storyGroups(),list=groups.get(uid);if(!list||!list.length)return;const seen=storySeenSet(),first=list.findIndex(x=>!seen.has(x.postId));setSheet({type:"friendStory",uid,index:first<0?0:first})}
   function noteStoryView(x){if(storyViewsSent.has(x.postId))return;storyViewsSent.add(x.postId);markStorySeen(x.postId);
     if(x.from!==myUid())fs.collection("posts").doc(x.postId).update({["views."+myUid()]:Date.now()}).catch(()=>{})}
-  function storySheet(sheet){const groups=storyGroups(),list=groups.get(sheet.uid)||[],x=list[sheet.index];if(!x)return"";
-    const mine=x.from===myUid(),ph=postPhotos.get(x.postId),veiled=postVeiled(x),ready=!!(ph&&ph.url)&&!veiled,name=feedName(x.from,x),first=String(name).split(" ")[0];
-    if(!ph)loadPostPhoto(x.postId);const next=list[sheet.index+1];if(next)loadPostPhoto(next.postId);
+  function storySheet(sheet){const groups=storyGroups(),list=sheet.list||groups.get(sheet.uid)||[],x=list[sheet.index];if(!x)return"";
+    const mine=x.from===myUid(),ph=postPhotos.get(x.postId),vid=x.video?postVideos.get(x.postId):null,veiled=postVeiled(x),ready=(x.video?!!(vid&&vid.url):!!(ph&&ph.url))&&!veiled,name=feedName(x.from,x),first=String(name).split(" ")[0];
+    if(!ph)loadPostPhoto(x.postId);if(x.video&&!vid)loadPostVideo(x);const next=list[sheet.index+1];if(next){loadPostPhoto(next.postId);if(next.video)loadPostVideo(next)}
     if(ready)noteStoryView(x);
     const meta=postMeta.get(x.postId);if(!meta)loadPostMeta(x.postId);const viewers=mine?Object.keys(meta&&meta.views||{}).length:0,face=storyReaction(meta);
     watchStoryComments(x.postId);const said=storyComments.get(x.postId)||[];
     const talk='<button type="button" class="story-icon" data-action="story-comments" aria-label="Comments">'+STORY_ICONS.comment+'</button>';
     const heart='<button type="button" class="story-heart'+(face?' on':'')+'" data-action="story-heart" data-uid="'+h(x.from)+'" data-post-id="'+h(x.postId)+'" aria-pressed="'+!!face+'" aria-label="'+(face?'Remove your reaction':'Like')+'">'+(face&&face!=="❤️"?'<span class="story-heart-emoji">'+h(face)+'</span>':STORY_ICONS.heart)+'</button>';
     const reacts=mine?'':'<div class="story-reacts" role="group" aria-label="React">'+STORY_REACTS.map(e=>'<button type="button" class="'+(e===face?'on':'')+'" data-action="story-react" data-emoji="'+e+'" data-uid="'+h(x.from)+'" data-post-id="'+h(x.postId)+'" aria-label="React '+e+'">'+e+'</button>').join("")+'</div>';
+    const closeOnly=(meta&&meta.to==="close")||x.close,dur=x.video?Math.max(1,Number(x.dur)||15000)/1000:5,ar=Math.max(.2,(Number(x.w)||9)/(Number(x.h)||16)).toFixed(4);
+    const media=x.video&&!veiled?(vid&&vid.url?'<div class="story-video-slot" data-post-id="'+h(x.postId)+'"></div>':vid&&vid.missing?'<p class="story-gone">This video isn’t available.</p>':(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':'')+'<span class="dm-photo-wait" aria-hidden="true"></span>')
+      :ph&&ph.url?'<img src="'+h(ph.url)+'" alt=""'+(veiled?' class="veiled"':'')+'>':ph&&ph.missing?'<p class="story-gone">This story isn’t available.</p>':'<span class="dm-photo-wait" aria-hidden="true"></span>';
     return'<div class="story-view'+(storyPanelOpen(sheet)?' held':'')+'" role="dialog" aria-modal="true" aria-label="'+h(mine?"Your story":name+"’s story")+'">'
-      +'<div class="story-media">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt=""'+(veiled?' class="veiled"':'')+'>':ph&&ph.missing?'<p class="story-gone">This story isn’t available.</p>':'<span class="dm-photo-wait" aria-hidden="true"></span>')+'</div>'
-      +'<div class="story-top"><div class="story-bars" aria-hidden="true">'+list.map((s,i)=>'<span class="'+(i<sheet.index?'done':i===sheet.index&&ready?'run':'')+'"><b></b></span>').join("")+'</div>'
-      +'<header class="story-head">'+avatar(name,0,x.from)+'<strong>'+h(mine?"Your story":name)+'</strong><small>'+h(timeAgo(x.createdAt))+'</small>'
-        +(mine?'<button class="story-close story-tool story-first" data-action="feed-compose" data-kind="story" aria-label="Add to your story">＋</button><button class="story-close story-tool" data-action="story-delete" data-post-id="'+h(x.postId)+'" aria-label="Delete story">🗑</button>':'')+'<button class="story-close" data-action="close-sheet" aria-label="Close">×</button></header></div>'
+      +'<div class="story-media"><div class="story-frame" style="--ar:'+ar+'">'+media+(ready?storyStickers(x,meta,mine):'')+'</div></div>'
+      +'<div class="story-top"><div class="story-bars" aria-hidden="true">'+list.map((s,i)=>'<span class="'+(i<sheet.index?'done':i===sheet.index&&ready?'run':'')+'"'+(i===sheet.index?' style="--dur:'+dur+'s"':'')+'><b></b></span>').join("")+'</div>'
+      +'<header class="story-head">'+avatar(name,0,x.from)+'<strong>'+h(sheet.hlTitle?sheet.hlTitle:mine?"Your story":name)+'</strong><small>'+h(timeAgo(x.createdAt))+'</small>'+(closeOnly?'<span class="story-close-badge" title="Close friends">★</span>':'')
+        +(mine?(sheet.list?'':'<button class="story-close story-tool story-first" data-action="feed-compose" data-kind="story" aria-label="Add to your story">＋</button>')+'<button class="story-close story-tool" data-action="story-menu" data-post-id="'+h(x.postId)+'" aria-label="Story options">⋯</button>':'')+'<button class="story-close" data-action="close-sheet" aria-label="Close">×</button></header></div>'
       +'<button class="story-tap prev" data-action="story-prev" aria-label="Previous"></button><button class="story-tap next" data-action="story-next" aria-label="Next"></button>'
       +(veiled?'<button class="dm-veil story-unveil" data-action="story-unveil" data-post-id="'+h(x.postId)+'">Tap to view</button>':'')
       +'<div class="story-bottom">'+(x.caption?'<p class="story-caption">'+h(x.caption)+'</p>':'')+storyFloats(sheet,said)+reacts
       +(mine?'<form class="story-foot" id="story-send-form" data-post-id="'+h(x.postId)+'"><button type="button" class="story-action" data-action="story-viewers" data-post-id="'+h(x.postId)+'" aria-label="Seen by '+viewers+'">👀 '+viewers+'</button><input class="input" name="text" maxlength="300" placeholder="Send a message…" autocomplete="off" aria-label="Send your story with a message">'+talk+'<button class="story-send" type="submit" aria-label="Choose who to send it to">➤</button></form>'
         :'<form class="story-foot" id="story-reply-form" data-uid="'+h(x.from)+'"><input class="input" name="text" maxlength="300" placeholder="Message '+h(first)+'…" autocomplete="off" aria-label="Message '+h(first)+'">'+talk+heart+'<button class="story-send" type="submit" aria-label="Send">➤</button></form>')+'</div>'
-      +(sheet.comments?storyCommentsPanel(x,said,mine):sheet.send?storySendPanel(x,sheet.send):sheet.viewers?storyViewersPanel(meta):'')
+      +(sheet.comments?storyCommentsPanel(x,said,mine):sheet.send?storySendPanel(x,sheet.send):sheet.viewers?storyViewersPanel(meta)+(mine&&meta&&(meta.stickers||[]).length?'':'')
+        :sheet.results?storyResultsPanel(meta,sheet.results):sheet.asking?ixAskPanel(meta,sheet.asking):(sheet.menu||sheet.editing||sheet.hlPick)&&mine?storyOwnerPanel(x,meta,sheet):'')
       +'</div>'}
-  function storyPanelOpen(sheet){return!!(sheet&&(sheet.comments||sheet.send||sheet.viewers))}
-  function closeStoryPanel(){const sh=state.sheet;if(!sh)return;sh.comments=false;sh.send=null;sh.viewers=false;renderSheet()}
+  function storyPanelOpen(sheet){return!!(sheet&&(sheet.comments||sheet.send||sheet.viewers||sheet.menu||sheet.editing||sheet.hlPick||sheet.results||sheet.asking))}
+  function closeStoryPanelQuiet(sh){sh.comments=false;sh.send=null;sh.viewers=false;sh.menu=false;sh.editing=false;sh.hlPick=false;sh.results=null;sh.asking=null}
+  function closeStoryPanel(){const sh=state.sheet;if(!sh)return;sh.comments=false;sh.send=null;sh.viewers=false;sh.menu=false;sh.editing=false;sh.hlPick=false;sh.results=null;sh.asking=null;renderSheet()}
+  /**
+   * After each render of a story: keep the bar's progress (a re-render used to restart it) and put the
+   * story's video back, still playing from where it was.
+   */
+  let storyVideoEl=null;
+  function storyBarMs(){const b=document.querySelector(".story-view .story-bars span.run b"),a=b&&b.getAnimations&&b.getAnimations()[0];return a&&a.currentTime!=null?Number(a.currentTime):0}
+  function storyKey(sh){return sh.uid+":"+sh.index+":"+(sh.hl||"")+":"+(sh.list?sh.list.length:"")}
+  function storyMount(sheet,keepMs){const view=document.querySelector(".story-view");sheet.shownKey=storyKey(sheet);if(!view)return;
+    const b=view.querySelector(".story-bars span.run b");if(b&&keepMs>0)b.style.animationDelay=(-keepMs)+"ms";
+    const slot=view.querySelector(".story-video-slot");
+    if(!slot){if(storyVideoEl){storyVideoEl.pause();storyVideoEl.remove()}return}
+    const id=slot.dataset.postId,v=postVideos.get(id);if(!v||!v.url)return;
+    if(!storyVideoEl){storyVideoEl=document.createElement("video");storyVideoEl.playsInline=true;storyVideoEl.setAttribute("playsinline","");storyVideoEl.className="story-video"}
+    const el=storyVideoEl;if(el.dataset.postId!==id){el.dataset.postId=id;el.src=v.url;el.currentTime=0}
+    slot.appendChild(el);if(view.classList.contains("held"))el.pause();else el.play().catch(()=>{el.muted=true;el.play().catch(()=>{})})}
+  // Holding a story or opening a panel pauses its video too.
+  new MutationObserver(()=>{const v=document.querySelector(".story-view");if(storyVideoEl&&v&&storyVideoEl.isConnected){if(v.classList.contains("held"))storyVideoEl.pause();else storyVideoEl.play().catch(()=>{})}}).observe(sheetRegion,{subtree:true,attributes:true,attributeFilter:["class"]});
   const STORY_ICONS={
     heart:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3s-7.4-4.5-9.2-9C1.5 8 3.7 4.6 7.1 4.6c2 0 3.6 1.1 4.9 3 1.3-1.9 2.9-3 4.9-3 3.4 0 5.6 3.4 4.3 6.7-1.8 4.5-9.2 9-9.2 9Z"/></svg>',
     comment:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/></svg>'};
@@ -4227,11 +4263,242 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const storyRelease=()=>{clearTimeout(storyHoldTimer);const v=document.querySelector(".story-view.bare");if(v)v.classList.remove("held","bare")};
   document.addEventListener("pointerup",storyRelease);document.addEventListener("pointercancel",storyRelease);
   document.addEventListener("contextmenu",e=>{if(e.target&&e.target.closest&&e.target.closest(".story-view"))e.preventDefault()});
-  function storyStep(dir){const sh=state.sheet;if(!sh||sh.type!=="friendStory")return;const groups=storyGroups(),list=groups.get(sh.uid)||[],i=sh.index+dir;
-    if(i>=0&&i<list.length){sh.index=i;renderSheet();return}
+  function storyStep(dir){const sh=state.sheet;if(!sh||sh.type!=="friendStory")return;const groups=storyGroups(),list=sh.list||groups.get(sh.uid)||[],i=sh.index+dir;
+    sh.barMs=0;if(i>=0&&i<list.length){sh.index=i;renderSheet();return}
+    if(sh.list){if(dir>0)closeSheet();return}
     const order=storyOrder(groups),at=order.indexOf(sh.uid),nextUid=order[at+(dir>0?1:-1)];
     if(at>=0&&nextUid){const nl=groups.get(nextUid)||[];sh.uid=nextUid;sh.index=dir>0?0:Math.max(0,nl.length-1);renderSheet();return}
     if(dir>0)closeSheet()}
+  // ===== Stories+: the story camera, video stories, who sees a story, highlights, archive and interactive stickers =====
+  // Video clips live in Storage (storyVideos/{uid}/{postId}); the app talks to it over its REST API with the
+  // signed-in user's token, so the same rules decide who may play a clip as who may see its story.
+  const STORY_BUCKET=(function(){try{return firebase.app().options.storageBucket||"savrivo-app-mumbai"}catch(_){return"savrivo-app-mumbai"}})();
+  const postVideos=new Map(),postVideoLoading=new Set(),storyAnswers=new Map(),storyAnswerLoading=new Set();
+  function storagePathUrl(path){return"https://firebasestorage.googleapis.com/v0/b/"+STORY_BUCKET+"/o/"+encodeURIComponent(path)}
+  async function storageToken(){const u=firebase.auth().currentUser;if(!u)throw new Error("Sign in again.");return u.getIdToken()}
+  async function uploadStoryVideo(postId,blob){const type=String(blob.type||"video/mp4").split(";")[0];
+    const res=await fetch("https://firebasestorage.googleapis.com/v0/b/"+STORY_BUCKET+"/o?uploadType=media&name="+encodeURIComponent("storyVideos/"+myUid()+"/"+postId),{method:"POST",headers:{Authorization:"Firebase "+await storageToken(),"Content-Type":type},body:blob});
+    if(!res.ok)throw new Error(res.status===403?"Video upload isn’t allowed.":"The video didn’t upload ("+res.status+").")}
+  function keepPostVideo(id,entry){postVideos.set(id,entry);while(postVideos.size>8){const [old,e]=postVideos.entries().next().value;if(e&&e.url)URL.revokeObjectURL(e.url);postVideos.delete(old)}}
+  async function loadPostVideo(x){const id=x&&x.postId;if(!id||postVideos.has(id)||postVideoLoading.has(id))return;postVideoLoading.add(id);
+    try{const res=await fetch(storagePathUrl("storyVideos/"+x.from+"/"+id)+"?alt=media",{headers:{Authorization:"Firebase "+await storageToken()}});if(!res.ok)throw new Error(String(res.status));keepPostVideo(id,{url:URL.createObjectURL(await res.blob())})}
+    catch(_){keepPostVideo(id,{missing:true})}
+    finally{postVideoLoading.delete(id);if(state.sheet&&state.sheet.type==="friendStory")renderSheet()}}
+
+  // ---- the story camera: live lenses; tap for a photo, hold for a video (up to 15 seconds) ----
+  const cam={stream:null,video:null,lens:null,facing:"user",lensId:"party",rec:null,chunks:[],recAt:0,recTimer:0,poster:null,hold:0,opening:false};
+  function storyCamAvailable(){return!!(window.ScraveitCallFx&&ScraveitCallFx.lens&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&HTMLCanvasElement.prototype.captureStream)}
+  async function camPerms(){if(!nativeAvailable("callPermissions"))return true;
+    try{const p=await nativeInvoke("callPermissions",{video:true},{timeoutMs:60000});if(!p||p.video!==true){toast("Allow the camera for stories (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}catch(_){return false}}
+  async function openStoryCam(){if(chatGate()){go("chats");return}if(cam.opening)return;cam.opening=true;
+    try{if(!await camPerms())return;setSheet({type:"storyCam"});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));await camStart()}finally{cam.opening=false}}
+  function camStopStream(){if(cam.stream){cam.stream.getTracks().forEach(t=>t.stop());cam.stream=null}}
+  function camClose(){clearInterval(cam.recTimer);clearTimeout(cam.hold);if(cam.rec){try{cam.rec.onstop=null;cam.rec.stop()}catch(_){}cam.rec=null}
+    if(cam.lens){cam.lens.stop();cam.lens=null}camStopStream();if(cam.video){cam.video.srcObject=null}}
+  async function camStart(){const view=document.querySelector(".sc-view");if(!view)return;camStopStream();
+    const want={video:{facingMode:cam.facing,width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}},audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}};
+    try{cam.stream=await navigator.mediaDevices.getUserMedia(want)}catch(_){try{cam.stream=await navigator.mediaDevices.getUserMedia({video:want.video,audio:false})}catch(e){toast("The camera is busy or blocked.","danger");closeSheet();return}}
+    if(!state.sheet||state.sheet.type!=="storyCam"){camStopStream();return}
+    const v=cam.video||(cam.video=document.createElement("video"));v.muted=true;v.playsInline=true;v.setAttribute("playsinline","");v.srcObject=cam.stream;v.play().catch(()=>{});
+    camMount()}
+  /** (Re)attach the live picture to the camera screen; safe to call after any re-render. */
+  function camMount(){const view=document.querySelector(".sc-view");if(!view||!cam.stream)return;const cv=view.querySelector(".sc-stage");
+    if(cam.lens&&cam.lens.canvas===cv)return;if(cam.lens)cam.lens.stop();cam.lens=ScraveitCallFx.lens(cv,cam.video,{mirror:cam.facing==="user"});cam.lens.canvas=cv;cam.lens.set(cam.lensId);
+    view.querySelectorAll(".sc-lens").forEach(b=>{const on=b.dataset.id===cam.lensId;b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));if(on)b.scrollIntoView({block:"nearest",inline:"center"})});
+    const name=view.querySelector(".sc-lens-name"),l=(ScraveitCallFx.LENSES||[]).find(x=>x.id===cam.lensId);if(name)name.textContent=l?l.name:"";
+    const sh=view.querySelector(".sc-shutter");if(sh&&!sh.dataset.bound){sh.dataset.bound="1";
+      sh.addEventListener("pointerdown",e=>{e.preventDefault();clearTimeout(cam.hold);cam.hold=setTimeout(camRecord,320)});
+      const up=()=>{if(cam.rec){camStopRec();return}if(cam.hold){clearTimeout(cam.hold);cam.hold=0;camPhoto()}};
+      sh.addEventListener("pointerup",up);sh.addEventListener("pointercancel",()=>{if(cam.rec)camStopRec();clearTimeout(cam.hold);cam.hold=0});sh.addEventListener("contextmenu",e=>e.preventDefault())}}
+  function camSheet(){const lenses=(window.ScraveitCallFx&&ScraveitCallFx.LENSES)||[];
+    return'<div class="sc-view" role="dialog" aria-modal="true" aria-label="Story camera"><canvas class="sc-stage" aria-hidden="true"></canvas>'
+      +'<div class="sc-top"><button type="button" class="sc-btn" data-action="sc-close" aria-label="Close">×</button><span class="sc-rec" aria-live="polite"></span><button type="button" class="sc-btn" data-action="sc-flip" aria-label="Switch camera">⟲</button></div>'
+      +'<div class="sc-bottom"><p class="sc-lens-name"></p><div class="sc-lenses" role="group" aria-label="Effects">'+lenses.map(l=>'<button type="button" class="sc-lens" data-action="sc-lens" data-id="'+h(l.id)+'" aria-label="'+h(l.name)+'"><span>'+l.icon+'</span></button>').join("")+'</div>'
+      +'<div class="sc-controls"><button type="button" class="sc-side" data-action="sc-gallery" aria-label="Choose from gallery">🖼️</button><button type="button" class="sc-shutter" aria-label="Tap for a photo, hold for a video"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="sc-ring" cx="50" cy="50" r="45"/><circle class="sc-prog" cx="50" cy="50" r="45"/></svg><span></span></button><span class="sc-side sc-hint">Hold for<br>video</span></div></div></div>'}
+  function camSetLens(id){cam.lensId=id;haptic(8);if(cam.lens)cam.lens.set(id);const view=document.querySelector(".sc-view");if(!view)return;
+    view.querySelectorAll(".sc-lens").forEach(b=>{const on=b.dataset.id===id;b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on))});
+    const l=(ScraveitCallFx.LENSES||[]).find(x=>x.id===id),name=view.querySelector(".sc-lens-name");if(name){name.textContent=l?l.name:"";name.classList.remove("flash");void name.offsetWidth;name.classList.add("flash")}}
+  function camPhoto(){if(!cam.lens)return;let p;try{p=cam.lens.photo()}catch(_){toast("Couldn’t take the photo.","danger");return}haptic(14);camClose();
+    const old=chatState().compose;if(old&&old.url)URL.revokeObjectURL(old.url);seReset();
+    chatState().compose={img:p.img,url:photoBlobUrl(p.img),w:p.w,h:p.h,kind:"story",caption:"",busy:false,to:"friends"};setSheet({type:"compose"})}
+  function camRecUi(on,secs){const view=document.querySelector(".sc-view");if(!view)return;view.classList.toggle("recording",!!on);
+    const t=view.querySelector(".sc-rec");if(t)t.textContent=on?"● "+Math.floor(secs||0)+"s":"";const pr=view.querySelector(".sc-prog");if(pr)pr.style.strokeDashoffset=String(283*(1-Math.min(1,(secs||0)/15)))}
+  function camRecord(){cam.hold=0;if(cam.rec||!cam.lens)return;if(!window.MediaRecorder){toast("Video isn’t available on this phone. Tap for a photo.","warning");return}
+    const mic=cam.stream&&cam.stream.getAudioTracks()[0],stream=cam.lens.record(mic);
+    const type=["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp8,opus","video/webm"].find(t=>{try{return MediaRecorder.isTypeSupported(t)}catch(_){return false}})||"";
+    let rec;try{rec=new MediaRecorder(stream,type?{mimeType:type,videoBitsPerSecond:2000000,audioBitsPerSecond:96000}:undefined)}catch(_){cam.lens.endRecord();toast("Video isn’t available on this phone. Tap for a photo.","warning");return}
+    cam.chunks=[];cam.rec=rec;cam.poster=cam.lens.photo();cam.recAt=Date.now();haptic(20);
+    rec.ondataavailable=e=>{if(e.data&&e.data.size)cam.chunks.push(e.data)};
+    rec.onstop=()=>{clearInterval(cam.recTimer);const dur=Math.min(16000,Date.now()-cam.recAt),mime=String(rec.mimeType||type||"video/webm").split(";")[0],blob=new Blob(cam.chunks,{type:mime});
+      stream.getVideoTracks().forEach(t=>t.stop());if(cam.lens)cam.lens.endRecord();cam.rec=null;camRecUi(false);
+      if(dur<800||blob.size<4000){toast("Hold the button a little longer to record.","info");return}camToVideo(blob,dur)};
+    try{rec.start(250)}catch(_){cam.rec=null;cam.lens.endRecord();toast("Couldn’t start recording.","danger");return}
+    camRecUi(true,0);cam.recTimer=setInterval(()=>{const s=(Date.now()-cam.recAt)/1000;camRecUi(true,s);if(s>=15)camStopRec()},100)}
+  function camStopRec(){clearInterval(cam.recTimer);if(cam.rec&&cam.rec.state!=="inactive"){try{cam.rec.stop()}catch(_){}}}
+  function camToVideo(blob,dur){const poster=cam.poster;camClose();const old=chatState().vcompose;if(old&&old.url&&!old.shared)URL.revokeObjectURL(old.url);
+    chatState().vcompose={blob,url:URL.createObjectURL(blob),poster,dur,caption:"",to:"friends",busy:false,muted:false};setSheet({type:"videoCompose"})}
+  // Back from the lock screen or another app: the camera feed may have stopped, so start it again.
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState!=="visible"||!state.sheet||state.sheet.type!=="storyCam"||cam.rec)return;
+    const t=cam.stream&&cam.stream.getVideoTracks()[0];if(!t||t.readyState==="ended"||t.muted){if(cam.lens){cam.lens.stop();cam.lens=null}camStart()}});
+  async function camFlip(){cam.facing=cam.facing==="user"?"environment":"user";haptic(8);if(cam.lens){cam.lens.stop();cam.lens=null}await camStart()}
+
+  // ---- sharing a video story ----
+  function audienceRow(d){const close=d.to==="close";
+    return'<div class="aud-row" role="radiogroup" aria-label="Who sees it"><button type="button" class="aud'+(close?'':' on')+'" data-action="aud-set" data-to="friends" role="radio" aria-checked="'+!close+'">🌍 All friends</button>'
+      +'<button type="button" class="aud close'+(close?' on':'')+'" data-action="aud-set" data-to="close" role="radio" aria-checked="'+close+'">★ Close friends</button><button type="button" class="aud-edit" data-action="story-prefs" data-tab="close">Edit list</button></div>'}
+  function videoComposeSheet(){const d=chatState().vcompose;if(!d)return"";
+    return'<div class="vc-view" role="dialog" aria-modal="true" aria-label="Share your video"><video class="vc-video" src="'+h(d.url)+'" autoplay loop playsinline'+(d.muted?' muted':'')+'></video>'
+      +'<div class="se-top"><button type="button" class="se-btn" data-action="vc-close" aria-label="Discard">×</button><span class="se-grow"></span><button type="button" class="se-btn" data-action="vc-mute" aria-label="'+(d.muted?'Sound on':'Sound off')+'">'+(d.muted?'🔇':'🔊')+'</button></div>'
+      +'<form id="vc-form" class="se-foot vc-foot"><input class="input se-caption" id="vc-caption" name="caption" maxlength="200" placeholder="Add a caption…" autocomplete="off" value="'+h(d.caption||"")+'">'+audienceRow(d)
+      +'<div class="se-foot-row"><span class="se-grow"></span><button class="se-share" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Sharing…':'Share')+'<span aria-hidden="true">➤</span></button></div><p class="se-hint">'+(d.to==="close"?'Only your close friends can see it.':'Only your friends can see it.')+'</p></form></div>'}
+  async function shareVideoStory(){const d=chatState().vcompose;if(!d||d.busy)return;d.busy=true;renderSheet();
+    try{const ref=fs.collection("posts").doc(),uid=myUid(),at=firebase.firestore.FieldValue.serverTimestamp();
+      await uploadStoryVideo(ref.id,d.blob);
+      await fs.collection("postMedia").doc(ref.id).set({from:uid,image:d.poster.img,at});
+      const post={from:uid,kind:"story",caption:String(d.caption||"").trim().slice(0,200),w:d.poster.w,h:d.poster.h,createdAt:at,video:true,dur:Math.round(Math.max(500,Math.min(16000,d.dur)))};if(d.to==="close")post.to="close";
+      await ref.set(post);keepPostPhoto(ref.id,{url:photoBlobUrl(d.poster.img)});keepPostVideo(ref.id,{url:d.url});d.shared=true;chatState().vcompose=null;closeSheet();
+      toast(d.to==="close"?"Shared with your close friends.":"Added to your story.","success")}
+    catch(e){d.busy=false;renderSheet();toast("Not shared. "+chatError(e),"danger")}}
+  document.addEventListener("input",e=>{if(e.target&&e.target.id==="vc-caption"&&chatState().vcompose)chatState().vcompose.caption=e.target.value});
+
+  // ---- who sees your stories: Close Friends and Hide story from ----
+  const storyPrefs={loaded:false,close:[],hide:[]};
+  async function loadStoryPrefs(){try{const d=await fs.collection("storyPrefs").doc(myUid()).get(),x=d.exists?d.data():{};storyPrefs.close=(x.close||[]).map(String);storyPrefs.hide=(x.hide||[]).map(String)}catch(_){}storyPrefs.loaded=true;return storyPrefs}
+  function friendList(){return chatState().pairs.filter(p=>p.status==="accepted").map(p=>({uid:otherOf(p),name:nameOf(p,otherOf(p))})).sort((a,b)=>String(a.name).localeCompare(String(b.name)))}
+  function storyPrefsSheet(sheet){const tab=sheet.tab==="hide"?"hide":"close";
+    if(!storyPrefs.loaded){loadStoryPrefs().then(()=>{if(state.sheet===sheet)renderSheet()});return sheetShell("Who sees your stories","",loadingRow("Loading…"))}
+    if(!sheet.sel)sheet.sel={close:storyPrefs.close.slice(),hide:storyPrefs.hide.slice()};const sel=new Set(sheet.sel[tab]),list=friendList();
+    const tabs='<div class="se-kind sp-tabs" role="tablist"><button type="button" class="'+(tab==="close"?'on':'')+'" data-action="sp-tab" data-tab="close" role="tab" aria-selected="'+(tab==="close")+'">★ Close friends</button><button type="button" class="'+(tab==="hide"?'on':'')+'" data-action="sp-tab" data-tab="hide" role="tab" aria-selected="'+(tab==="hide")+'">Hide story from</button></div>';
+    const copy=tab==="close"?"Stories you share to Close friends go only to these people.":"These friends won’t see any of your stories.";
+    return sheetShell("Who sees your stories",copy,tabs+(list.length?'<div class="sp-list">'+list.map(f=>'<button type="button" class="sp-row'+(sel.has(f.uid)?' on':'')+'" data-action="sp-toggle" data-uid="'+h(f.uid)+'" aria-pressed="'+sel.has(f.uid)+'">'+avatar(f.name,0,f.uid)+'<span class="grow">'+h(f.name)+'</span><span class="sp-check '+tab+'" aria-hidden="true">'+(sel.has(f.uid)?(tab==="close"?'★':'✓'):'')+'</span></button>').join("")+'</div>':emptyState("chat","No friends yet","Add friends to choose who sees your stories."))
+      +'<button type="button" class="button primary full" data-action="sp-save"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Saving…':'Save')+'</button>')}
+  async function saveStoryPrefs(sheet){if(!sheet||!sheet.sel||sheet.busy)return;sheet.busy=true;renderSheet();
+    try{await fs.collection("storyPrefs").doc(myUid()).set({close:sheet.sel.close.slice(0,500),hide:sheet.sel.hide.slice(0,500),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      storyPrefs.close=sheet.sel.close.slice();storyPrefs.hide=sheet.sel.hide.slice();toast("Saved.","success");const back=sheet.back;if(back){setSheet(back)}else closeSheet()}
+    catch(e){sheet.busy=false;renderSheet();toast("Not saved. "+chatError(e),"danger")}}
+
+  // ---- highlights (kept stories on a profile) and your archive (your stories from the last 30 days) ----
+  const hlState={byUser:new Map(),loading:new Set(),archive:null};
+  async function loadHighlights(uid){if(!uid||hlState.loading.has(uid))return;hlState.loading.add(uid);
+    try{const q=await fs.collection("highlights").where("from","==",uid).get();hlState.byUser.set(uid,q.docs.map(d=>Object.assign({id:d.id},d.data())).sort((a,b)=>tsMs(b.updatedAt)-tsMs(a.updatedAt)))}
+    catch(_){hlState.byUser.set(uid,[])}finally{hlState.loading.delete(uid);render({preserveScroll:true});if(state.sheet)renderSheet()}}
+  function tsMs(v){return v&&typeof v.toMillis==="function"?v.toMillis():Number(v)||0}
+  function highlightsRow(uid,mine){const list=hlState.byUser.get(uid);if(!list){loadHighlights(uid);return""}
+    if(!list.length&&!mine)return"";list.forEach(x=>{if(x.cover)loadPostPhoto(x.cover)});
+    return'<div class="hl-row" aria-label="Highlights">'+(mine?'<button type="button" class="hl" data-action="story-archive" aria-label="Your story archive"><span class="hl-cover hl-new">🕘</span><span>Archive</span></button>':'')
+      +list.map(x=>{const ph=postPhotos.get(x.cover);return'<button type="button" class="hl" data-action="hl-open" data-hl="'+h(x.id)+'" data-uid="'+h(uid)+'"><span class="hl-cover">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':'')+'</span><span>'+h(x.title)+'</span></button>'}).join("")+'</div>'}
+  /** Card-like entries for stories read straight from their posts (a highlight or the archive). */
+  async function storyEntries(ids){const out=[];for(const id of ids){try{const d=await fs.collection("posts").doc(id).get();if(!d.exists)continue;const x=d.data();
+      out.push({postId:id,from:String(x.from||""),kind:"story",caption:String(x.caption||""),w:Number(x.w)||1,h:Number(x.h)||1,createdAt:tsMs(x.createdAt),video:x.video===true,dur:Number(x.dur)||0,close:x.to==="close",archived:x.archived===true})}catch(_){}}return out}
+  async function openHighlight(uid,hid){const hl=(hlState.byUser.get(uid)||[]).find(x=>x.id===hid);if(!hl)return;const list=await storyEntries(hl.items||[]);
+    if(!list.length){toast(uid===myUid()?"This highlight is empty.":"You can’t see these stories.","info");return}setSheet({type:"friendStory",uid,index:0,list,hl:hid,hlTitle:hl.title})}
+  async function openArchive(){setSheet({type:"storyArchive"});try{const q=await fs.collection("posts").where("from","==",myUid()).get();
+      hlState.archive=q.docs.map(d=>Object.assign({postId:d.id},d.data())).filter(x=>x.kind==="story").map(x=>({postId:x.postId,from:myUid(),kind:"story",caption:String(x.caption||""),w:Number(x.w)||1,h:Number(x.h)||1,createdAt:tsMs(x.createdAt),video:x.video===true,dur:Number(x.dur)||0,close:x.to==="close",hl:x.hl===true})).sort((a,b)=>b.createdAt-a.createdAt)}
+    catch(e){hlState.archive=[];toast("Couldn’t load your archive. "+chatError(e),"danger")}if(state.sheet&&state.sheet.type==="storyArchive")renderSheet()}
+  function archiveSheet(){const list=hlState.archive;if(!list)return sheetShell("Your story archive","",loadingRow("Loading…"));list.slice(0,60).forEach(x=>loadPostPhoto(x.postId));
+    return sheetShell("Your story archive","Only you see these. Stories stay here for 30 days; add one to a highlight to keep it on your profile.",
+      list.length?'<div class="arch-grid">'+list.map((x,i)=>{const ph=postPhotos.get(x.postId);return'<button type="button" class="arch" data-action="arch-open" data-i="'+i+'">'+(ph&&ph.url?'<img src="'+h(ph.url)+'" alt="">':'')+'<span class="arch-date">'+h(new Date(x.createdAt).toLocaleDateString("en-IN",{day:"numeric",month:"short"}))+'</span>'+(x.video?'<span class="arch-badge">▶</span>':'')+(x.hl?'<span class="arch-badge hl">★</span>':'')+'</button>'}).join("")+'</div>'
+        :emptyState("chat","No stories yet","Stories you share stay here for 30 days."))}
+  async function addToHighlight(postId,hid,title){const uid=myUid(),ts=firebase.firestore.FieldValue.serverTimestamp();
+    try{if(hid)await fs.collection("highlights").doc(hid).update({items:firebase.firestore.FieldValue.arrayUnion(postId),updatedAt:ts});
+      else await fs.collection("highlights").doc().set({from:uid,title:String(title||"Highlights").trim().slice(0,30)||"Highlights",items:[postId],cover:postId,updatedAt:ts});
+      await fs.collection("posts").doc(postId).update({hl:true});haptic(12);toast("Added to your highlight.","success");loadHighlights(uid);loadPostMeta(postId,true)}
+    catch(e){toast("Couldn’t add it. "+chatError(e),"danger")}}
+  async function removeFromHighlight(postId,hid){const uid=myUid(),list=hlState.byUser.get(uid)||[],hl=list.find(x=>x.id===hid);if(!hl)return;
+    try{const left=(hl.items||[]).filter(x=>x!==postId);if(left.length)await fs.collection("highlights").doc(hid).update({items:left,cover:left.includes(hl.cover)?hl.cover:left[0],updatedAt:firebase.firestore.FieldValue.serverTimestamp()});else await fs.collection("highlights").doc(hid).delete();
+      if(!list.some(x=>x.id!==hid&&(x.items||[]).includes(postId)))await fs.collection("posts").doc(postId).update({hl:false});toast("Removed from the highlight.","success");closeSheet();loadHighlights(uid)}
+    catch(e){toast("Couldn’t remove it. "+chatError(e),"danger")}}
+
+  // ---- the owner's menu on a story: edit caption, audience, highlight, hide-from list, delete ----
+  function storyOwnerPanel(x,meta,sheet){const close=(meta&&meta.to==="close")||x.close,mine=(hlState.byUser.get(myUid())||[]);if(!hlState.byUser.has(myUid()))loadHighlights(myUid());
+    if(sheet.hlPick)return'<div class="story-comments story-panel" role="dialog" aria-label="Add to highlight"><div class="story-comments-head"><strong>Add to highlight</strong><button type="button" class="story-close" data-action="story-panel-close" aria-label="Close">×</button></div>'
+      +'<div class="hl-pick">'+mine.map(hl=>'<button type="button" class="sp-row" data-action="hl-add" data-hl="'+h(hl.id)+'" data-post-id="'+h(x.postId)+'"><span class="hl-cover small">'+((postPhotos.get(hl.cover)||{}).url?'<img src="'+h(postPhotos.get(hl.cover).url)+'" alt="">':'')+'</span><span class="grow">'+h(hl.title)+'</span><span>'+((hl.items||[]).includes(x.postId)?'✓':'＋')+'</span></button>').join("")+'</div>'
+      +'<form class="story-foot" id="hl-new-form" data-post-id="'+h(x.postId)+'"><input class="input" name="title" maxlength="30" placeholder="New highlight name…" autocomplete="off" aria-label="New highlight name"><button class="story-send" type="submit" aria-label="Create">＋</button></form></div>';
+    if(sheet.editing)return'<div class="story-comments story-panel" role="dialog" aria-label="Edit caption"><div class="story-comments-head"><strong>Edit caption</strong><button type="button" class="story-close" data-action="story-panel-close" aria-label="Close">×</button></div>'
+      +'<form class="story-foot" id="story-edit-form" data-post-id="'+h(x.postId)+'"><input class="input" name="caption" maxlength="200" value="'+h((meta&&meta.caption!=null?meta.caption:x.caption)||"")+'" placeholder="Add a caption…" autocomplete="off" aria-label="Caption"><button class="story-send" type="submit" aria-label="Save">✓</button></form></div>';
+    return'<div class="story-comments story-panel" role="dialog" aria-label="Story options"><div class="story-comments-head"><strong>Your story</strong><button type="button" class="story-close" data-action="story-panel-close" aria-label="Close">×</button></div><div class="so-list">'
+      +'<button type="button" class="so" data-action="story-edit">✏️ Edit caption</button>'
+      +'<button type="button" class="so" data-action="story-aud" data-post-id="'+h(x.postId)+'" data-to="'+(close?'friends':'close')+'">'+(close?'🌍 Share with all friends':'★ Share with close friends only')+'</button>'
+      +(sheet.hl?'<button type="button" class="so" data-action="hl-remove" data-hl="'+h(sheet.hl)+'" data-post-id="'+h(x.postId)+'">➖ Remove from “'+h(sheet.hlTitle||"highlight")+'”</button>':'<button type="button" class="so" data-action="story-hl" data-post-id="'+h(x.postId)+'">⭐ Add to highlight</button>')
+      +'<button type="button" class="so" data-action="story-prefs" data-tab="close">👥 Close friends &amp; hidden</button>'
+      +'<button type="button" class="so danger" data-action="story-delete" data-post-id="'+h(x.postId)+'">🗑 Delete</button></div></div>'}
+  async function saveStoryCaption(form){const id=String(form.dataset.postId||""),caption=String(form.elements.caption.value||"").trim().slice(0,200);
+    try{await fs.collection("posts").doc(id).update({caption});const m=postMeta.get(id);if(m)m.caption=caption;const sh=state.sheet;if(sh){sh.editing=false;sh.menu=false;if(sh.list){const e=sh.list.find(y=>y.postId===id);if(e)e.caption=caption}}renderSheet();toast("Caption saved.","success")}
+    catch(e){toast("Not saved. "+chatError(e),"danger")}}
+  async function setStoryAudience(id,to){try{await fs.collection("posts").doc(id).update({to});const m=postMeta.get(id);if(m)m.to=to;const sh=state.sheet;if(sh)sh.menu=false;renderSheet();toast(to==="close"?"Now only your close friends see it.":"Now all your friends see it.","success")}
+    catch(e){toast("Not changed. "+chatError(e),"danger")}}
+
+  // ---- interactive stickers: poll, question, slider, mention, dish ----
+  const IX_KINDS=[{t:"poll",icon:"📊",name:"Poll"},{t:"ask",icon:"❓",name:"Question"},{t:"slider",icon:"😍",name:"Slider"},{t:"mention",icon:"@",name:"Mention"},{t:"dish",icon:"🍽️",name:"Dish"}];
+  async function loadStoryAnswer(id){if(!id||storyAnswers.has(id)||storyAnswerLoading.has(id))return;storyAnswerLoading.add(id);
+    try{const d=await fs.collection("posts").doc(id).collection("responses").doc(myUid()).get();storyAnswers.set(id,d.exists?d.data():{})}catch(_){storyAnswers.set(id,{})}finally{storyAnswerLoading.delete(id);if(state.sheet&&state.sheet.type==="friendStory")renderSheet()}}
+  async function answerSticker(postId,kind,i,val){const uid=myUid(),cur=Object.assign({},storyAnswers.get(postId)||{});cur[kind]=Object.assign({},cur[kind]||{},{[String(i)]:val});storyAnswers.set(postId,cur);haptic(10);renderSheet();
+    try{await fs.collection("posts").doc(postId).collection("responses").doc(uid).set({from:uid,[kind]:{[String(i)]:val},at:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});setTimeout(()=>loadPostMeta(postId,true),1800)}
+    catch(e){toast("Couldn’t send that. "+chatError(e),"danger")}}
+  function ixPos(s){return'left:'+(Number(s.x)*100).toFixed(2)+'%;top:'+(Number(s.y)*100).toFixed(2)+'%;--s:'+(Number(s.s)||1).toFixed(3)+';--r:'+(Number(s.r)||0).toFixed(3)+'rad'}
+  function storyStickers(x,meta,mine){const list=(meta&&meta.stickers)||[];if(!list.length)return"";if(!mine)loadStoryAnswer(x.postId);const tally=(meta&&meta.tally)||{},ans=storyAnswers.get(x.postId)||{};
+    return'<div class="ix-layer">'+list.map((s,i)=>{const pos=ixPos(s),k=String(i),t=tally[k]||{};
+      if(s.t==="poll"){const mineVote=ans.poll&&ans.poll[k],voted=mine||mineVote!=null,votes=(t.votes||[]).slice(),n=t.n||0;if(!mine&&mineVote!=null&&!(n>0))votes[mineVote]=(votes[mineVote]||0)+1;const total=votes.reduce((a,b)=>a+(b||0),0)||1;
+        return'<div class="ix ix-poll" style="'+pos+'">'+(s.q?'<p>'+h(s.q)+'</p>':'')+'<div class="ix-opts">'+(s.o||[]).map((o,j)=>{const pct=Math.round(100*(votes[j]||0)/total);
+          return'<button type="button" class="ix-opt'+(mineVote===j?' mine':'')+(voted?' done':'')+'" data-action="ix-vote" data-post-id="'+h(x.postId)+'" data-i="'+i+'" data-c="'+j+'"'+(mine||voted?' disabled':'')+' style="--p:'+(voted?pct:0)+'%"><span>'+h(o)+'</span>'+(voted?'<b>'+pct+'%</b>':'')+'</button>'}).join("")+'</div>'+(mine?'<small>'+(n||0)+' vote'+(n===1?'':'s')+'</small>':'')+'</div>'}
+      if(s.t==="ask"){const a=ans.ask&&ans.ask[k];return'<div class="ix ix-ask" style="'+pos+'"><p>'+h(s.q||"Ask me anything")+'</p>'+(mine?'<button type="button" class="ix-field" data-action="story-results" data-post-id="'+h(x.postId)+'">'+(t.n||0)+' answer'+(t.n===1?'':'s')+' ›</button>':'<button type="button" class="ix-field" data-action="ix-ask" data-post-id="'+h(x.postId)+'" data-i="'+i+'">'+h(a?"✓ "+a:"Type something…")+'</button>')+'</div>'}
+      if(s.t==="slider"){const v=ans.slider&&ans.slider[k],done=mine||v!=null;return'<div class="ix ix-slider" style="'+pos+'">'+(s.q?'<p>'+h(s.q)+'</p>':'')+'<div class="ix-track" style="--avg:'+(t.n?t.avg:50)+'%"><input type="range" class="ix-range" min="0" max="100" value="'+(v!=null?v:mine?(t.avg||50):0)+'" data-post-id="'+h(x.postId)+'" data-i="'+i+'" data-emoji="'+h(s.e||"😍")+'" aria-label="'+h(s.q||"Slide")+'"'+(done?' disabled':'')+' style="--e:\''+h(s.e||"😍")+'\'">'+'<span class="ix-thumb" aria-hidden="true" style="left:'+(v!=null?v:mine?(t.avg||50):0)+'%">'+h(s.e||"😍")+'</span>'+(done&&t.n?'<i class="ix-avg" aria-hidden="true"></i>':'')+'</div>'+(mine?'<small>'+(t.n||0)+' answer'+(t.n===1?'':'s')+(t.n?' · average '+t.avg+'%':'')+'</small>':'')+'</div>'}
+      if(s.t==="mention")return'<button type="button" class="ix ix-mention" style="'+pos+'" data-action="ix-mention" data-uid="'+h(s.uid)+'">@'+h(s.name||"friend")+'</button>';
+      if(s.t==="dish")return'<button type="button" class="ix ix-dish" style="'+pos+'" data-action="ix-dish" data-restaurant-id="'+h(s.rid)+'"><span>🍽️</span><span><b>'+h(s.item||s.name||"Order")+'</b>'+(s.item&&s.name?'<small>'+h(s.name)+'</small>':'<small>Order on Scraveit</small>')+'</span><span aria-hidden="true">›</span></button>';
+      return""}).join("")+'</div>'}
+  document.addEventListener("input",e=>{const r=e.target;if(!r||!r.classList||!r.classList.contains("ix-range"))return;const th=r.parentNode&&r.parentNode.querySelector(".ix-thumb");if(th)th.style.left=r.value+"%"});
+  document.addEventListener("change",e=>{const r=e.target;if(!r||!r.classList||!r.classList.contains("ix-range"))return;answerSticker(String(r.dataset.postId||""),"slider",Number(r.dataset.i),Math.max(0,Math.min(100,Math.round(Number(r.value)))))});
+  /** The poster's view of what friends answered. */
+  async function storyResultsPanelLoad(id){const sh=state.sheet;if(!sh)return;sh.results={id,list:null};renderSheet();
+    try{const q=await fs.collection("posts").doc(id).collection("responses").get();if(state.sheet===sh){sh.results={id,list:q.docs.map(d=>Object.assign({uid:d.id},d.data()))};renderSheet()}}
+    catch(e){if(state.sheet===sh){sh.results={id,list:[]};renderSheet()}toast("Couldn’t load answers. "+chatError(e),"danger")}}
+  function storyResultsPanel(meta,res){const list=res.list,stickers=(meta&&meta.stickers)||[];
+    const body=!list?loadingRow("Loading…"):!list.length?'<p class="story-none">No answers yet.</p>':stickers.map((s,i)=>{const k=String(i);
+      if(s.t==="poll")return'<div class="res"><strong>📊 '+h(s.q||"Poll")+'</strong>'+(s.o||[]).map((o,j)=>{const who=list.filter(a=>a.poll&&a.poll[k]===j).map(a=>feedName(a.uid));return'<p><b>'+h(o)+'</b> · '+who.length+(who.length?' — '+h(who.join(", ")):'')+'</p>'}).join("")+'</div>';
+      if(s.t==="slider"){const who=list.filter(a=>a.slider&&a.slider[k]!=null);return'<div class="res"><strong>'+h((s.e||"😍")+" "+(s.q||"Slider"))+'</strong>'+who.map(a=>'<p>'+h(feedName(a.uid))+' · '+Number(a.slider[k])+'%</p>').join("")+'</div>'}
+      if(s.t==="ask"){const who=list.filter(a=>a.ask&&String(a.ask[k]||"").trim());return'<div class="res"><strong>❓ '+h(s.q||"Question")+'</strong>'+who.map(a=>'<p><b>'+h(feedName(a.uid))+'</b> '+h(String(a.ask[k]))+' <button type="button" class="text-button" data-action="story-message" data-uid="'+h(a.uid)+'">Reply</button></p>').join("")+'</div>'}
+      return""}).join("");
+    return'<div class="story-comments story-panel" role="dialog" aria-label="Answers"><div class="story-comments-head"><strong>Answers</strong><button type="button" class="story-close" data-action="story-panel-close" aria-label="Close">×</button></div><div class="res-list">'+body+'</div></div>'}
+  function openIxAsk(postId,i){const sh=state.sheet;if(!sh)return;sh.asking={postId,i};renderSheet();setTimeout(()=>{const el=document.getElementById("ix-ask-input");if(el)el.focus()},60)}
+  function ixAskPanel(meta,a){const s=((meta&&meta.stickers)||[])[a.i]||{};
+    return'<div class="story-comments story-panel" role="dialog" aria-label="Answer"><div class="story-comments-head"><strong>'+h(s.q||"Ask me anything")+'</strong><button type="button" class="story-close" data-action="story-panel-close" aria-label="Close">×</button></div>'
+      +'<form class="story-foot" id="ix-ask-form" data-post-id="'+h(a.postId)+'" data-i="'+a.i+'"><input class="input" id="ix-ask-input" name="text" maxlength="200" placeholder="Type your answer…" autocomplete="off" aria-label="Your answer"><button class="story-send" type="submit" aria-label="Send">➤</button></form></div>'}
+
+  // ---- interactive stickers in the photo editor (placed like any sticker, not drawn into the photo) ----
+  function seIxCanvas(c,x,it,unit){const s=it.ix||{},fs=Math.max(6,unit*.62),pad=fs*.9,W=Math.round(fs*13),font=(w,n)=>w+" "+(fs*n)+"px sans-serif";
+    let H=pad*2,lines=[];x.font=font(800,1);
+    const wrap=(text,maxW,f)=>{x.font=f;const words=String(text||"").split(" "),out=[];let line="";words.forEach(w=>{const tst=line?line+" "+w:w;if(x.measureText(tst).width>maxW&&line){out.push(line);line=w}else line=tst});if(line)out.push(line);return out.slice(0,3)};
+    if(s.t==="mention"||s.t==="dish"){const text=s.t==="mention"?"@"+(s.name||"friend"):"🍽️ "+(s.item||s.name||"Dish"),sub=s.t==="dish"&&s.item?s.name:"";x.font=font(800,1.1);const tw=x.measureText(text).width;x.font=font(600,.72);const sw=sub?x.measureText(sub).width:0;
+      const w=Math.ceil(Math.max(tw,sw)+pad*2),hh=Math.ceil(fs*(sub?2.6:1.9));c.width=w;c.height=hh;x.fillStyle=s.t==="mention"?"#ffffff":"#111827";seRound(x,0,0,w,hh,hh*.3);x.fill();
+      x.textAlign="center";x.textBaseline="middle";x.font=font(800,1.1);x.fillStyle=s.t==="mention"?"#7c3aed":"#ffffff";x.fillText(text,w/2,sub?hh*.38:hh/2);if(sub){x.font=font(600,.72);x.fillStyle="rgba(255,255,255,.75)";x.fillText(sub,w/2,hh*.72)}return c}
+    const q=s.t==="ask"?(s.q||"Ask me anything"):s.q||"";lines=q?wrap(q,W-pad*2,font(800,1)):[];H+=lines.length*fs*1.25;
+    const rows=s.t==="poll"?(s.o||[]).length:1,rowH=fs*2.1;H+=(lines.length?fs*.5:0)+rows*rowH+(rows-1)*fs*.4;c.width=W;c.height=Math.ceil(H);
+    x.shadowColor="rgba(0,0,0,.25)";x.shadowBlur=fs*.6;x.fillStyle="#ffffff";seRound(x,fs*.2,fs*.2,W-fs*.4,H-fs*.4,fs*1.1);x.fill();x.shadowBlur=0;
+    x.textAlign="center";x.textBaseline="top";x.fillStyle="#111827";x.font=font(800,1);let y=pad;lines.forEach(l=>{x.fillText(l,W/2,y);y+=fs*1.25});if(lines.length)y+=fs*.5;
+    if(s.t==="poll")(s.o||[]).forEach(o=>{x.fillStyle="#f3f4f6";seRound(x,pad,y,W-pad*2,rowH,rowH/2);x.fill();x.fillStyle="#2563eb";x.font=font(800,.95);x.textBaseline="middle";x.fillText(String(o).slice(0,30),W/2,y+rowH/2);x.textBaseline="top";y+=rowH+fs*.4});
+    else if(s.t==="ask"){x.fillStyle="#f3f4f6";seRound(x,pad,y,W-pad*2,rowH,rowH*.3);x.fill();x.fillStyle="#9ca3af";x.font=font(600,.85);x.textBaseline="middle";x.fillText("Type something…",W/2,y+rowH/2)}
+    else if(s.t==="slider"){const ty=y+rowH/2;x.fillStyle="#e5e7eb";seRound(x,pad,ty-fs*.18,W-pad*2,fs*.36,fs*.18);x.fill();const g=x.createLinearGradient(pad,0,W/2,0);g.addColorStop(0,"#f472b6");g.addColorStop(1,"#a855f7");x.fillStyle=g;seRound(x,pad,ty-fs*.18,W/2-pad,fs*.36,fs*.18);x.fill();
+      x.font=(fs*1.6)+"px sans-serif";x.textBaseline="middle";x.fillText(s.e||"😍",W/2,ty)}
+    return c}
+  function seIxPanel(d){const s=d.ixDraft||{};
+    if(s.t==="mention"){const friends=friendList();return'<div class="se-stickers" role="dialog" aria-label="Mention a friend"><div class="se-stickers-head"><strong>Mention a friend</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div><div class="se-stickers-body">'
+      +(friends.length?friends.map(f=>'<button type="button" class="sp-row" data-action="se-ix-mention" data-uid="'+h(f.uid)+'" data-name="'+h(String(f.name).split(" ")[0])+'">'+avatar(f.name,0,f.uid)+'<span class="grow">'+h(f.name)+'</span></button>').join(""):'<p class="se-hint">Add friends to mention them.</p>')+'</div></div>'}
+    if(s.t==="dish"){const qq=String(s.find||"").toLowerCase(),list=restaurantsAtAddress().filter(r=>!qq||String(r.name||"").toLowerCase().includes(qq)).slice(0,30),r=s.rid?state.catalog[s.rid]:null;
+      if(r){if(!r.menuLoaded)ensureRestaurantMenu(r.id);const items=(r.menu||[]).filter(it=>!qq||String(it.name||"").toLowerCase().includes(qq)).slice(0,40);
+        return'<div class="se-stickers" role="dialog" aria-label="Pick a dish"><div class="se-stickers-head"><strong>'+h(r.name)+'</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div><div class="se-stickers-body">'
+          +'<button type="button" class="sp-row" data-action="se-ix-dish" data-item="">🍽️ <span class="grow">Just the restaurant</span></button>'+items.map(it=>'<button type="button" class="sp-row" data-action="se-ix-dish" data-item="'+h(it.name)+'"><span class="grow">'+h(it.name)+'</span></button>').join("")+'</div></div>'}
+      return'<div class="se-stickers" role="dialog" aria-label="Pick a restaurant"><div class="se-stickers-head"><strong>Tag a dish</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div><div class="se-stickers-body"><input class="input" id="se-ix-find" placeholder="Search restaurants…" autocomplete="off" value="'+h(s.find||"")+'">'
+        +list.map(x=>'<button type="button" class="sp-row" data-action="se-ix-rest" data-rid="'+h(x.id)+'"><span class="grow">'+h(x.name)+'</span><span>›</span></button>').join("")+'</div></div>'}
+    const opts=s.t==="poll"?(s.o||["Yes","No"]):[];
+    return'<div class="se-stickers" role="dialog" aria-label="'+h(s.t==="poll"?"Poll":s.t==="ask"?"Question":"Slider")+'"><div class="se-stickers-head"><strong>'+(s.t==="poll"?"📊 Poll":s.t==="ask"?"❓ Question":"😍 Slider")+'</strong><button type="button" class="se-btn" data-action="se-mode" data-mode="" aria-label="Close">×</button></div>'
+      +'<form class="se-stickers-body ix-form" id="se-ix-form"><input class="input" name="q" maxlength="80" placeholder="'+(s.t==="poll"?"Ask a question…":s.t==="ask"?"Ask me anything":"How spicy was it?")+'" value="'+h(s.q||"")+'" autocomplete="off">'
+      +opts.map((o,j)=>'<input class="input" name="o'+j+'" maxlength="30" placeholder="Option '+(j+1)+'" value="'+h(o)+'" autocomplete="off">').join("")
+      +(s.t==="poll"&&opts.length<4?'<button type="button" class="text-button" data-action="se-ix-more">＋ Add option</button>':'')
+      +(s.t==="slider"?'<div class="ix-emojis">'+["😍","🔥","🌶️","🤤","😂","💯","😮"].map(e=>'<button type="button" class="'+(s.e===e?'on':'')+'" data-action="se-ix-emoji" data-emoji="'+e+'">'+e+'</button>').join("")+'</div>':'')
+      +'<button class="button primary full" type="submit">Add sticker</button></form></div>'}
+  function seIxRead(d){const f=document.getElementById("se-ix-form"),s=d.ixDraft;if(!f||!s)return;s.q=String(f.elements.q.value||"");if(s.t==="poll")s.o=(s.o||[]).map((o,j)=>f.elements["o"+j]?String(f.elements["o"+j].value||""):o)}
+  function seIxAdd(d,ix){d.ixDraft=null;seAddItem(d,{type:"ix",ix,s:1.1})}
+  document.addEventListener("input",e=>{if(e.target&&e.target.id==="se-ix-find"){const d=chatState().compose;if(d&&d.ixDraft){d.ixDraft.find=e.target.value;const pos=e.target.selectionStart;renderSheet();const el=document.getElementById("se-ix-find");if(el){el.focus();try{el.setSelectionRange(pos,pos)}catch(_){}}}}});
   // A story moves on when its bar fills; typing a reply holds it.
   document.addEventListener("animationend",e=>{if(e.target&&e.target.matches&&e.target.matches(".story-bars span.run b"))storyStep(1)});
   document.addEventListener("focusin",e=>{if(e.target&&e.target.closest&&e.target.closest("#story-reply-form,#story-send-form")){const v=document.querySelector(".story-view");if(v)v.classList.add("held","replying")}});
@@ -4247,6 +4514,36 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="social-tab"){const r=control.dataset.route;if(state.route!==r)go(r,{},["feed","chats"].includes(state.route));return true}
     if(action==="feed-compose"){feedCompose(control.dataset.kind||"story");return true}
     if(action.startsWith("se-"))return seClick(action,control);
+    // The story camera and video sharing.
+    if(action==="sc-close"){camClose();closeSheet();return true}
+    if(action==="sc-flip"){camFlip();return true}
+    if(action==="sc-lens"){camSetLens(String(control.dataset.id||"none"));return true}
+    if(action==="sc-gallery"){camClose();closeSheet();feedCompose("story",true);return true}
+    if(action==="vc-close"){(async()=>{if(await askConfirm("Discard this video?","It won’t be shared.","Discard","Keep")){const d=chatState().vcompose;if(d&&d.url&&!d.shared)URL.revokeObjectURL(d.url);chatState().vcompose=null;closeSheet()}})();return true}
+    if(action==="vc-mute"){const d=chatState().vcompose;if(d){d.muted=!d.muted;renderSheet()}return true}
+    if(action==="aud-set"){const to=control.dataset.to==="close"?"close":"friends",d=state.sheet&&state.sheet.type==="videoCompose"?chatState().vcompose:chatState().compose;if(d){d.to=to;haptic(8);if(to==="close"&&!storyPrefs.loaded)loadStoryPrefs();renderSheet()}return true}
+    // Who sees your stories.
+    if(action==="story-prefs"){const back=state.sheet&&["compose","videoCompose"].includes(state.sheet.type)?state.sheet:null;setSheet({type:"storyPrefs",tab:control.dataset.tab==="hide"?"hide":"close",back});return true}
+    if(action==="sp-tab"){const sh=state.sheet;if(sh&&sh.type==="storyPrefs"){sh.tab=control.dataset.tab==="hide"?"hide":"close";renderSheet()}return true}
+    if(action==="sp-toggle"){const sh=state.sheet;if(sh&&sh.sel){const tab=sh.tab==="hide"?"hide":"close",list=sh.sel[tab],i=list.indexOf(u);if(i>=0)list.splice(i,1);else list.push(u);haptic(6);renderSheet()}return true}
+    if(action==="sp-save"){saveStoryPrefs(state.sheet);return true}
+    // Highlights and the archive.
+    if(action==="story-archive"){openArchive();return true}
+    if(action==="arch-open"){const list=hlState.archive||[],i=Number(control.dataset.i)||0;if(list[i])setSheet({type:"friendStory",uid:myUid(),index:i,list,hlTitle:"Archive"});return true}
+    if(action==="hl-open"){openHighlight(u,String(control.dataset.hl||""));return true}
+    if(action==="story-hl"){const sh=state.sheet;if(sh){sh.menu=false;sh.hlPick=true;renderSheet()}return true}
+    if(action==="hl-add"){const sh=state.sheet;addToHighlight(id,String(control.dataset.hl||""));if(sh){sh.hlPick=false;renderSheet()}return true}
+    if(action==="hl-remove"){removeFromHighlight(id,String(control.dataset.hl||""));return true}
+    // Your story's menu.
+    if(action==="story-menu"){const sh=state.sheet;if(sh){closeStoryPanelQuiet(sh);sh.menu=true;loadPostMeta(id,true);renderSheet()}return true}
+    if(action==="story-edit"){const sh=state.sheet;if(sh){sh.menu=false;sh.editing=true;renderSheet();setTimeout(()=>{const el=document.querySelector("#story-edit-form input");if(el)el.focus()},60)}return true}
+    if(action==="story-aud"){setStoryAudience(id,control.dataset.to==="close"?"close":"friends");return true}
+    // Interactive stickers.
+    if(action==="ix-vote"){answerSticker(id,"poll",Number(control.dataset.i),Number(control.dataset.c));return true}
+    if(action==="ix-ask"){openIxAsk(id,Number(control.dataset.i));return true}
+    if(action==="story-results"){const sh=state.sheet;if(sh){closeStoryPanelQuiet(sh);storyResultsPanelLoad(id)}return true}
+    if(action==="ix-mention"){const p=pairWith(u);if(u===myUid())return true;if(!p){toast("You can see friends’ profiles only.","info");return true}setSheet({type:"friendMenu",pairId:p.id});return true}
+    if(action==="ix-dish"){const rid=String(control.dataset.restaurantId||"");if(!rid)return true;closeSheet();state.selectedMenuCategory="All";state.menuPrice="all";state.menuSort="recommended";state.diet="all";go("restaurant",{restaurantId:rid});ensureRestaurantMenu(rid);return true}
     if(action==="compose-kind"){const d=chatState().compose;if(d){d.kind=control.dataset.value==="post"?"post":"story";renderSheet()}return true}
     if(action==="story-open"){openStory(u);return true}
     if(action==="story-next"||action==="story-prev"){if(storyHoldUsed){storyHoldUsed=false;return true}
@@ -4269,6 +4566,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return false}
   async function handleFeedSubmit(form){
     if(form.id==="compose-form"){shareCompose();return true}
+    if(form.id==="vc-form"){shareVideoStory();return true}
+    if(form.id==="story-edit-form"){saveStoryCaption(form);return true}
+    if(form.id==="hl-new-form"){const title=String(form.elements.title.value||"").trim();if(!title){form.elements.title.focus();return true}const sh=state.sheet;await addToHighlight(String(form.dataset.postId||""),null,title);if(sh){sh.hlPick=false;renderSheet()}return true}
+    if(form.id==="ix-ask-form"){const text=String(form.elements.text.value||"").trim().slice(0,200);if(!text)return true;const sh=state.sheet;answerSticker(String(form.dataset.postId||""),"ask",Number(form.dataset.i),text);if(sh){sh.asking=null;renderSheet()}toast("Sent.","success");return true}
+    if(form.id==="se-ix-form"){const d=chatState().compose;if(!d||!d.ixDraft)return true;seIxRead(d);const s=d.ixDraft,q=String(s.q||"").trim().slice(0,80);
+      if(s.t==="poll"){const o=(s.o||[]).map(x=>String(x||"").trim().slice(0,30)).filter(Boolean);if(o.length<2){toast("Add at least two options.","warning");return true}seIxAdd(d,{t:"poll",q,o});return true}
+      if(s.t==="ask"){seIxAdd(d,{t:"ask",q:q||"Ask me anything"});return true}
+      if(s.t==="slider"){seIxAdd(d,{t:"slider",q,e:s.e||"😍"});return true}return true}
     if(form.id==="story-comment-form"){postStoryComment(form);return true}
     if(form.id==="story-send-form"){const sh=state.sheet,input=form.elements.text;if(!sh)return true;sh.comments=false;sh.viewers=false;sh.send={text:String(input.value||"").trim().slice(0,300),sent:{}};input.value="";input.blur();renderSheet();return true}
     if(form.id==="story-reply-form"||form.id==="feed-reply-form"){const input=form.elements.text,text=String(input.value||"").trim(),p=pairWith(form.dataset.uid);if(!text||!p)return true;input.value="";
@@ -4364,7 +4669,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
     const st=streakOf(p);
     return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+dmHeader(p,pairId,other,blocked,st)
-      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.removed)return'<p class="dm-removed">Message removed</p>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.hiddenFor&&m.hiddenFor[uid])return'';if(m.removed)return'<p class="dm-removed">Message removed</p>';if(m.unsent)return'<div class="dm-msg '+(mine?'mine':'theirs')+' dm-unsent" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'"><p>🚫 '+(mine?'You unsent a message':'This message was deleted')+'</p></div>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
         :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
@@ -4497,14 +4802,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function ensureCallWatch(){const uid=myUid();if(!uid||callWatchUid===uid||!callsAvailable())return;
     if(callWatchUnsub){try{callWatchUnsub()}catch(_){}callWatchUnsub=null}callWatchUid=uid;
     try{callWatchUnsub=fs.collection("calls").where("to","==",uid).where("status","==","ringing").onSnapshot(snap=>{snap.docChanges().forEach(ch=>{if(ch.type==="added")incomingCall(ch.doc.id,ch.doc.data())})},()=>{callWatchUid=""})}catch(_){callWatchUid="";return}
-    if(pendingCallEvent){const e=pendingCallEvent;pendingCallEvent=null;setTimeout(()=>handleCallPush(e),300)}}
+    if(pendingCallEvent){const e=pendingCallEvent;pendingCallEvent=null;setTimeout(()=>handleCallPush(e),300)}
+    setTimeout(()=>{callIce().catch(()=>{})},4000)}
   async function callPairInfo(pairId,other){const c=chatState();let p=c.pairs.find(x=>x.id===pairId);
     if(!p){try{const d=await fs.collection("friendships").doc(pairId).get();p=d.exists?Object.assign({id:d.id},d.data()):null}catch(_){p=null}}
     let face=c.avatars&&c.avatars[other]||"";if(!face){try{const a=await fs.collection("chatAvatars").doc(other).get();face=a.exists?String(a.data().image||""):""}catch(_){}}
     return{name:p?nameOf(p,other):"Friend",face}}
-  async function callIce(){if(iceCache&&iceCache.until>Date.now())return iceCache.list;
-    try{const res=await socialCall("callIceServers",{}),list=Array.isArray(res&&res.iceServers)?res.iceServers:[];if(list.length){iceCache={list,until:Date.now()+50*60000};return list}}catch(_){}
-    return[{urls:["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]}]}
+  // Fetched when the app opens and while the camera starts, so placing or answering a call
+  // never waits on the server; parallel askers share one request.
+  let iceInflight=null;
+  function callIce(){if(iceCache&&iceCache.until>Date.now())return Promise.resolve(iceCache.list);
+    if(!iceInflight)iceInflight=(async()=>{try{const res=await socialCall("callIceServers",{}),list=Array.isArray(res&&res.iceServers)?res.iceServers:[];if(list.length){iceCache={list,until:Date.now()+50*60000};return list}}catch(_){}
+      return[{urls:["stun:stun.cloudflare.com:3478","stun:stun.l.google.com:19302"]}]})().finally(()=>{iceInflight=null});
+    return iceInflight}
   function callNew(o){return Object.assign({id:"",ref:null,role:"caller",kind:"audio",pairId:"",other:"",name:"Friend",face:"",status:"calling",pc:null,local:null,remote:null,dc:null,unsubs:[],pendingCands:[],remoteCands:[],docReady:false,muted:false,camOff:false,remoteCamOff:false,remoteMuted:false,speaker:false,facing:"user",liveAt:0,timers:[],gestures:null,gestureState:"",ended:false,reactOpen:false},o)}
   async function callPerms(video){try{const p=await nativeInvoke("callPermissions",{video},{timeoutMs:60000});
       if(!p||p.audio!==true){toast("Allow the microphone for calls (Settings › Apps › Scraveit › Permissions).","warning");return false}
@@ -4520,13 +4830,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // The other phone's network candidates wait until this phone has their offer/answer to match them to.
   function callAddRemoteCand(c){if(!call||!c)return;if(!call.pc||!call.pc.remoteDescription){call.remoteCands.push(c);return}call.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{})}
   function callFlushRemote(){if(!call)return;const q=call.remoteCands.splice(0);q.forEach(callAddRemoteCand)}
+  // Video data cap, about WhatsApp's level: 1 Mbps on Wi-Fi, 600 kbps on mobile data, 350 kbps on a slow
+  // network. Without it a 720p call used 25–35 MB a minute. Re-applied when the network changes.
+  function callCapVideo(pc){try{const s=pc&&pc.getSenders().find(x=>x.track&&x.track.kind==="video");if(!s||!s.getParameters)return;
+    const nc=navigator.connection||{},slow=/(^|-)(2g|3g)$/.test(nc.effectiveType||""),cell=nc.type==="cellular",p=s.getParameters();if(!p.encodings||!p.encodings.length)return;
+    p.encodings[0].maxBitrate=slow?350000:cell?600000:1000000;p.encodings[0].maxFramerate=slow||cell?24:30;s.setParameters(p).catch(()=>{})}catch(_){}}
+  if(navigator.connection&&navigator.connection.addEventListener)navigator.connection.addEventListener("change",()=>{if(call&&call.pc)callCapVideo(call.pc)});
+  /** Data used by the current call so far, for checking a phone over USB: await ScraveitCallStats(). */
+  window.ScraveitCallStats=async()=>{if(!call||!call.pc)return null;let sent=0,got=0,pair=null;(await call.pc.getStats()).forEach(r=>{if(r.type==="transport"){sent+=r.bytesSent||0;got+=r.bytesReceived||0}if(r.type==="candidate-pair"&&r.nominated&&r.state==="succeeded")pair=r});
+    const enc=call.pc.getSenders().map(x=>x.track&&x.track.kind==="video"&&x.getParameters().encodings).find(Boolean),secs=call.liveAt?(Date.now()-call.liveAt)/1000:0;
+    return{secs:Math.round(secs),sentMB:+(sent/1e6).toFixed(2),receivedMB:+(got/1e6).toFixed(2),mbPerMin:secs?+((sent+got)/1e6/(secs/60)).toFixed(1):0,cap:enc&&enc[0]&&enc[0].maxBitrate,network:(navigator.connection||{}).type||"unknown",outKbps:pair&&pair.availableOutgoingBitrate?Math.round(pair.availableOutgoingBitrate/1000):null}};
   async function callPeer(){const pc=new RTCPeerConnection({iceServers:await callIce(),bundlePolicy:"max-bundle"});call.pc=pc;
     call.local.getTracks().forEach(t=>pc.addTrack(t,call.local));
     pc.ontrack=e=>{if(!call)return;call.remote=e.streams[0]||new MediaStream([e.track]);const v=document.querySelector("#call-ui .call-remote");if(v&&v.srcObject!==call.remote){v.srcObject=call.remote;v.play().catch(()=>{})}};
     pc.onicecandidate=e=>{if(e.candidate)callSendCand(e.candidate)};
     pc.ondatachannel=e=>callWireData(e.channel);
     pc.onconnectionstatechange=()=>{if(!call||call.pc!==pc)return;const st=pc.connectionState;
-      if(st==="connected"){callRingback(false);if(!call.liveAt){call.liveAt=Date.now();callNative({active:true,speaker:call.speaker,video:call.kind==="video"});callStartGestures();try{navigator.vibrate&&navigator.vibrate(30)}catch(_){}}call.status="live";callUpdate()}
+      if(st==="connected"){callRingback(false);callCapVideo(pc);if(!call.liveAt){call.liveAt=Date.now();callNative({active:true,speaker:call.speaker,video:call.kind==="video"});callStartGestures();try{navigator.vibrate&&navigator.vibrate(30)}catch(_){}}call.status="live";callUpdate()}
       else if(st==="disconnected"){call.status="reconnecting";callUpdate()}
       else if(st==="failed"){callEnd("Call dropped. Check your connection.")}};
     return pc}
@@ -4549,6 +4869,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const other=otherOf(p);if(!await callPerms(kind==="video"))return;
     call=callNew({role:"caller",kind:kind==="video"?"video":"audio",pairId,other,name:nameOf(p,other),face:chatState().avatars[other]||"",status:"calling",speaker:kind==="video"});
     const me=call;callShow();
+    // Like WhatsApp: the ring stops 45 s after tapping Call, even if setup (camera, network) stalls.
+    call.timers.push(setTimeout(()=>{if(call!==me||me.liveAt)return;if(me.ref&&me.docReady)me.ref.update({status:"missed",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});callEnd("No answer")},CALL_RING_MS));
+    call.timers.push(setTimeout(()=>{if(call===me&&!me.docReady&&!me.ended)callEnd("Couldn’t connect. Check your internet and try again.")},20000));
+    callIce().catch(()=>{});
     try{await callMedia();if(call!==me)return;await callPeer();if(call!==me)return;
       callWireData(call.pc.createDataChannel("fx"));
       const ref=fs.collection("calls").doc();call.ref=ref;call.id=ref.id;
@@ -4557,14 +4881,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       // Hung up while the call was still being set up: cancel it rather than leave it ringing.
       if(me.ended){ref.update({status:"cancelled",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
       call.docReady=true;callFlushCands();callWatchDoc();callRingback(true);callUpdate();
-      callNative({active:true,speaker:call.speaker,video:call.kind==="video"});
-      call.timers.push(setTimeout(()=>{if(call===me&&!me.liveAt&&me.ref){me.ref.update({status:"missed",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});callEnd("No answer")}},CALL_RING_MS))}
+      callNative({active:true,speaker:call.speaker,video:call.kind==="video"})}
     catch(e){if(call===me)callEnd(/Permission|NotAllowed/i.test(String(e&&e.name||e))?"Microphone or camera is blocked.":"Couldn’t start the call. "+chatError(e))}}
 
   async function incomingCall(id,data){if(!data||data.to!==myUid())return;const created=callTs(data.createdAt);if(!created||Date.now()-created>CALL_RING_MS)return;
     if(call){if(call.id!==id)fs.collection("calls").doc(id).update({status:"busy",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
     call=callNew({id,ref:fs.collection("calls").doc(id),role:"callee",kind:data.kind==="video"?"video":"audio",pairId:String(data.pairId||""),other:String(data.from||""),offer:data.offer,status:"incoming",speaker:data.kind==="video"});
-    const me=call;callShow();callWatchDoc();callNative({ring:true,dismissCallId:id});
+    const me=call;callShow();callWatchDoc();callNative({ring:true,dismissCallId:id});callIce().catch(()=>{});
     callPairInfo(me.pairId,me.other).then(info=>{if(call===me){me.name=info.name;me.face=info.face;callUpdate(true)}});
     call.timers.push(setTimeout(()=>{if(call===me&&me.status==="incoming")callEnd("Missed call",true)},Math.max(1000,CALL_RING_MS-(Date.now()-created))))}
   async function acceptCall(){const me=call;if(!me||me.role!=="callee"||me.status!=="incoming")return;
@@ -4606,7 +4929,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       ring();ringback={ctx,t:setInterval(ring,3000)}}catch(_){}}
 
   // ---- reactions ----
-  function callPlayFx(id,origin){const fx=window.ScraveitCallFx,cv=document.querySelector("#call-ui .call-fx");if(fx&&cv)fx.play(cv,id,origin)}
+  function callPlayFx(id,origin){const fx=window.ScraveitCallFx,cv=document.querySelector("#call-ui .call-fx"),rv=document.querySelector("#call-ui .call-remote");if(fx&&cv)fx.play(cv,id,origin,call&&call.kind==="video"&&!call.remoteCamOff?rv:null)}
   function callReact(id,origin){callPlayFx(id,origin);callSendData({t:"fx",id})}
   function callStartGestures(){const me=call,fx=window.ScraveitCallFx,self=document.querySelector("#call-ui .call-self");if(!me||me.kind!=="video"||!fx||!self||me.gestures)return;
     me.gestures=fx.watchGestures(self,(id,origin)=>{if(call===me&&!me.camOff)callReact(id,origin)},st=>{if(call===me){me.gestureState=st;callUpdate()}})}
@@ -4627,9 +4950,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(c.status==="ended")return c.endMessage||"Call ended";if(c.status==="incoming")return c.kind==="video"?"Incoming video call":"Incoming voice call";
     if(c.status==="calling")return c.docReady?"Ringing…":"Calling…";if(c.status==="connecting")return"Connecting…";if(c.status==="reconnecting")return"Reconnecting…";return callClock()}
   function callShow(){let o=document.getElementById("call-ui");if(o)o.remove();o=document.createElement("div");o.id="call-ui";o.setAttribute("role","dialog");o.setAttribute("aria-modal","true");o.setAttribute("aria-label","Call");
-    o.innerHTML='<div class="call-backdrop"></div><video class="call-remote" autoplay playsinline></video><div class="call-remote-off"></div><canvas class="call-fx"></canvas>'
+    o.innerHTML='<div class="call-backdrop"></div><video class="call-remote" autoplay playsinline poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video><div class="call-remote-off"></div><canvas class="call-fx"></canvas>'
       +'<div class="call-top"><div class="call-face"></div><strong class="call-name"></strong><span class="call-status"></span></div>'
-      +'<video class="call-self" autoplay playsinline muted></video><div class="call-hint"></div><div class="call-react"></div><div class="call-controls"></div>';
+      +'<video class="call-self" autoplay playsinline muted poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></video><div class="call-hint"></div><div class="call-react"></div><div class="call-controls"></div>';
     document.body.appendChild(o);
     o.addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("[data-call]");if(!b||!call)return;const a=b.dataset.call;
       if(a==="accept")acceptCall();else if(a==="decline")declineCall();else if(a==="end")callEnd();
@@ -4683,13 +5006,30 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function sharePlaceSheet(sheet){const list=restaurantsFiltered().slice(0,12);
     return sheetShell("Send a place","They can open its menu from the chat.",'<div class="stack">'+list.map(r=>'<button class="chat-row" data-action="send-place" data-pair-id="'+h(sheet.pairId)+'" data-restaurant-id="'+h(r.id)+'"><img class="chat-place-img" src="'+h(safeUrl(r.image))+'" alt=""><span class="grow"><strong>'+h(r.name)+'</strong><span class="chat-preview">'+h((r.cuisines||[]).slice(0,2).join(", "))+'</span></span></button>').join("")+'</div>')}
   function friendMenuSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"Friend";
-    return sheetShell(name,"",'<div class="stack"><button class="button primary full" data-action="open-dm" data-pair-id="'+h(sheet.pairId)+'">'+icon("chat","small")+' Message</button><button class="button tonal full" data-action="friend-unfriend" data-pair-id="'+h(sheet.pairId)+'">Remove friend</button><button class="button tonal full" data-action="friend-block" data-pair-id="'+h(sheet.pairId)+'">Block</button><button class="button danger full" data-action="dm-menu" data-pair-id="'+h(sheet.pairId)+'">Report</button></div>')}
+    return sheetShell(name,"",(p?highlightsRow(otherOf(p),false):'')+'<div class="stack"><button class="button primary full" data-action="open-dm" data-pair-id="'+h(sheet.pairId)+'">'+icon("chat","small")+' Message</button><button class="button tonal full" data-action="friend-unfriend" data-pair-id="'+h(sheet.pairId)+'">Remove friend</button><button class="button tonal full" data-action="friend-block" data-pair-id="'+h(sheet.pairId)+'">Block</button><button class="button danger full" data-action="dm-menu" data-pair-id="'+h(sheet.pairId)+'">Report</button></div>')}
   // Reactions: double-tap a message for ❤️, press and hold to choose an emoji.
   const REACTIONS=["❤️","😂","🤤","🌶️","🔥","🍦","😮","😢"];
   async function setReaction(pairId,msgId,emoji){const uid=myUid();if(!uid||!pairId||!msgId)return;const ref=fs.collection("chats").doc(pairId).collection("messages").doc(msgId);
     try{await ref.update(emoji?{["reactions."+uid]:emoji}:{["reactions."+uid]:firebase.firestore.FieldValue.delete()})}catch(e){toast("Couldn’t react. "+chatError(e),"danger")}}
   function myReaction(pairId,msgId){const m=(chatState().threads[pairId]||[]).find(x=>x.id===msgId);return m&&m.reactions&&m.reactions[myUid()]||""}
-  function reactSheet(sheet){const mine=myReaction(sheet.pairId,sheet.msgId);return sheetShell("React","",'<div class="react-row">'+REACTIONS.map(e=>'<button class="react-pick'+(mine===e?' on':'')+'" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="'+h(e)+'" aria-label="React '+h(e)+'">'+e+'</button>').join("")+'</div>'+(mine?'<button class="button tonal full" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="">Remove my reaction</button>':''))}
+  // Long-press menu: react, delete for me, or unsend your own message (2 days, like WhatsApp).
+  const UNSEND_MS=48*60*60*1000;
+  function threadMsg(pairId,msgId){return(chatState().threads[pairId]||[]).find(x=>x.id===msgId)||null}
+  function msgMenuButtons(sheet){const m=threadMsg(sheet.pairId,sheet.msgId),uid=myUid();if(!m)return"";const at=callTs(m.at),attr=' data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'"';
+    const canUnsend=m.from===uid&&!m.unsent&&!(m.card&&m.card.type==="call")&&at&&Date.now()-at<UNSEND_MS;
+    return'<div class="stack" style="margin-top:12px">'+(canUnsend?'<button class="button danger full" data-action="msg-unsend"'+attr+'>Unsend for everyone</button>':'')+'<button class="button tonal full" data-action="msg-hide"'+attr+'>Delete for me</button></div>'}
+  function reactSheet(sheet){const mine=myReaction(sheet.pairId,sheet.msgId),m=threadMsg(sheet.pairId,sheet.msgId);
+    if(m&&m.unsent)return sheetShell("Message","",msgMenuButtons(sheet));
+    return sheetShell("React","",'<div class="react-row">'+REACTIONS.map(e=>'<button class="react-pick'+(mine===e?' on':'')+'" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="'+h(e)+'" aria-label="React '+h(e)+'">'+e+'</button>').join("")+'</div>'+(mine?'<button class="button tonal full" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="">Remove my reaction</button>':'')+msgMenuButtons(sheet))}
+  async function hideMessage(pairId,msgId){const uid=myUid(),m=threadMsg(pairId,msgId);if(!uid||!m)return;
+    if(!await askConfirm("Delete for you?","It's removed from this phone's chat only. Your friend still sees it.","Delete for me"))return;
+    m.hiddenFor=Object.assign({},m.hiddenFor,{[uid]:true});chatRerender();
+    try{await fs.collection("chats").doc(pairId).collection("messages").doc(msgId).update({["hiddenFor."+uid]:true})}
+    catch(e){delete m.hiddenFor[uid];chatRerender();toast("Couldn’t delete. "+chatError(e),"danger")}}
+  async function unsendMessage(pairId,msgId){const m=threadMsg(pairId,msgId);if(!m)return;
+    if(!await askConfirm("Unsend this message?","It's removed for both of you and shows “This message was deleted”. Scraveit keeps a private copy for 180 days, only for safety reports.","Unsend"))return;
+    const before={text:m.text,card:m.card,unsent:m.unsent};m.unsent=true;m.text="";delete m.card;chatRerender();
+    if(!await chatAction("chatUnsend",{pairId,messageId:msgId},"Message unsent.")){Object.assign(m,before);if(!before.card)delete m.card;chatRerender()}}
   // ===== Scraveit-only chat: food reactions that do things, streaks, cravings, eating now =====
   const REACT_FX={"🌶️":"fx-chilli","🔥":"fx-fire","🍦":"fx-melt","🤤":"fx-drool","❤️":"fx-love","😂":"fx-pop","😮":"fx-pop","😢":"fx-pop"};
   function reactionFx(prev,next){if(!prev)return[];const old={};prev.forEach(m=>{old[m.id]=m.reactions||{}});const out=[];next.forEach(m=>{const o=old[m.id];if(!o)return;Object.entries(m.reactions||{}).forEach(([u,e])=>{if(e&&o[u]!==e)out.push({id:m.id,emoji:e})})});return out}
@@ -4839,6 +5179,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="chat-photo-remove"){askConfirm("Remove your photo?","Friends will see your first letter instead.","Remove","Keep").then(y=>{if(y)removePhoto()});return true}
     if(action==="chat-username-edit"){state.social.editUsername=!state.social.editUsername;render({preserveScroll:true});return true}
     if(action==="react-pick"){closeSheet();setReaction(pid,control.dataset.msgId,control.dataset.emoji||"");return true}
+    if(action==="msg-hide"){closeSheet();hideMessage(pid,control.dataset.msgId);return true}
+    if(action==="msg-unsend"){closeSheet();unsendMessage(pid,control.dataset.msgId);return true}
     if(action==="dm-menu"){setSheet({type:"chatReport",pairId:pid});return true}
     if(action==="dm-share-place"){setSheet({type:"sharePlace",pairId:pid});return true}
     if(action==="send-place"){const r=restaurant(control.dataset.restaurantId);closeSheet();if(r)sendDm(pid,"",{type:"restaurant",restaurantId:r.id,restaurantName:String(r.name||"").slice(0,80),image:String(r.image||"").slice(0,400),name:String(r.name||"").slice(0,80)});return true}
@@ -6936,7 +7278,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   let lastSheetHtml="", lastSheetShown=null;
   function renderSheet() {
-    if(!state.sheet||state.sheet.type!=="friendStory")stopStoryComments();
+    if(!state.sheet||state.sheet.type!=="friendStory"){stopStoryComments();if(storyVideoEl){storyVideoEl.pause();storyVideoEl.remove()}}
+    if((!state.sheet||state.sheet.type!=="storyCam")&&(cam.stream||cam.lens))camClose();
     if(!state.sheet){sheetRegion.innerHTML="";lastSheetHtml="";lastSheetShown=null;return;}
     const sheet=state.sheet;let html="";
     if(sheet.type==="confirm")html=confirmSheet(sheet);
@@ -6974,6 +7317,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="photo")html=photoViewer(sheet);
     else if(sheet.type==="compose")html=composeSheet();
     else if(sheet.type==="friendStory")html=storySheet(sheet);
+    else if(sheet.type==="storyCam")html=camSheet();
+    else if(sheet.type==="videoCompose")html=videoComposeSheet();
+    else if(sheet.type==="storyPrefs")html=storyPrefsSheet(sheet);
+    else if(sheet.type==="storyArchive")html=archiveSheet();
     else if(sheet.type==="feedReply")html=feedReplySheet(sheet);
     else if(sheet.type==="iou")html=iouSheet(sheet);
     else if(sheet.type==="taste")html=tasteSheet(sheet);
@@ -6993,7 +7340,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const update=Boolean(open&&html&&sheet===lastSheetShown);
     const scrolled=update&&sheetRegion.querySelector(".sheet"),top=scrolled?scrolled.scrollTop:0;
     lastSheetHtml=html;lastSheetShown=sheet;
+    const barMs=sheet.type==="friendStory"&&update&&sheet.shownKey===storyKey(sheet)?storyBarMs():0;
     sheetRegion.innerHTML=html;
+    if(sheet.type==="friendStory")storyMount(sheet,barMs);else if(sheet.type==="storyCam")requestAnimationFrame(camMount);
     if(update){sheetRegion.querySelectorAll(".sheet-backdrop,.sheet").forEach(el=>{el.style.animation="none"});const s=sheetRegion.querySelector(".sheet");if(s)s.scrollTop=top;return;}
     if(html)requestAnimationFrame(()=>{const focus=sheetRegion.querySelector("input,select,textarea,button");if(focus)focus.focus({preventScroll:true});});
   }
@@ -7683,7 +8032,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
-    if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form"].includes(form.id)){handleFeedSubmit(form);return;}
+    if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form","vc-form","story-edit-form","hl-new-form","ix-ask-form","se-ix-form"].includes(form.id)){handleFeedSubmit(form);return;}
     if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form","iou-form"].includes(form.id)){handleChatSubmit(form);return;}
     if(form.id==="referral-form")applyReferral(form);
     else if(form.id==="meal-subscribe-form")submitMealSubscribe(form);

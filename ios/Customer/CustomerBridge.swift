@@ -1,6 +1,9 @@
 import UIKit
 import CoreLocation
 import UserNotifications
+import AVFoundation
+import AudioToolbox
+import PhotosUI
 
 enum AppEntry: ScraveitApp {
     static func makeBridge() -> NativeBridge { CustomerBridge() }
@@ -20,17 +23,27 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
     private static let dineInFunctions: Set<String> = [
         "dineInBookTable", "dineInCancelBooking", "dineInOpenTable", "dineInPlaceRound", "dineInTableRequest",
     ]
+    /// Friends, chat and calls: the same list as Android's MainActivity.SOCIAL_FUNCTIONS.
+    private static let socialFunctions: Set<String> = [
+        "callIceServers", "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
+        "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
+        "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
+        "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou", "chatUnsend",
+    ]
     /// Methods this build supports. Google sign-in and table QR scanning are
     /// left out until they're built for iOS, so the page hides those buttons.
     private static let asyncMethods = Array(callables.keys) + [
         "invokeDineIn", "openExternalPayment", "getDeliveryOtp", "recoverDeliveryOtp", "deleteDeliveryOtp",
         "clearDeliveryOtps", "setStatusBarStyle", "requestCurrentLocation", "haptic", "shareText", "shareImage",
         "notifyOrder", "registerPushToken", "unregisterPushToken",
+        "invokeSocial", "callPermissions", "callAudio", "pickChatPhoto", "pickProfilePhoto",
     ]
 
     private let location = CLLocationManager()
     private weak var shell: WebShellViewController?
     private var wantsLocation = false
+    private var ringTimer: Timer?
+    private var photoRequest: (id: String, chat: Bool)?
 
     override init() {
         super.init()
@@ -62,6 +75,19 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
             return
         }
         switch method {
+        case "invokeSocial":
+            guard Self.socialFunctions.contains(text(2)) else {
+                shell.publish(requestId: text(0), operation: method,
+                              result: .failure(.init(code: "INVALID_ARGUMENT", message: "That action isn't available.")))
+                return
+            }
+            callFunction(text(2), operation: method, requestId: text(0), idToken: text(1), payloadJson: text(3))
+        case "callPermissions":
+            callPermissions(requestId: text(0), video: (jsonObject(text(1))["video"] as? Bool) ?? false)
+        case "callAudio":
+            callAudio(requestId: text(0), jsonObject(text(1)))
+        case "pickChatPhoto", "pickProfilePhoto":
+            pickPhoto(requestId: text(0), chat: method == "pickChatPhoto")
         case "invokeDineIn":
             guard Self.dineInFunctions.contains(text(2)) else {
                 shell.publish(requestId: text(0), operation: method,
@@ -109,6 +135,130 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
         default:
             break
         }
+    }
+
+    private func jsonObject(_ text: String) -> [String: Any] {
+        guard let data = text.data(using: .utf8) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    // MARK: calls
+
+    /// Asks iOS for the microphone (and the camera for video); replies {audio, video} like Android.
+    private func callPermissions(requestId: String, video: Bool) {
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] audio in
+            let finish = { (camera: Bool) in
+                self?.shell?.publish(requestId: requestId, operation: "callPermissions", result: .success(["audio": audio, "video": camera]))
+            }
+            if video { AVCaptureDevice.requestAccess(for: .video) { finish($0) } }
+            else { finish(AVCaptureDevice.authorizationStatus(for: .video) == .authorized) }
+        }
+    }
+
+    /// Phone side of a call, same payload as Android: {ring, active, speaker, video, dismissCallId, background}.
+    private func callAudio(requestId: String, _ p: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let dismiss = p["dismissCallId"] as? String, !dismiss.isEmpty {
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["call-\(dismiss)"])
+            }
+            if let ring = p["ring"] as? Bool { self.setRinging(ring) }
+            if let active = p["active"] as? Bool {
+                self.setCallActive(active, speaker: p["speaker"] as? Bool ?? false, video: p["video"] as? Bool ?? false)
+            }
+            // "background" (send the app behind the call) has no iOS equivalent; the call screen stays.
+            self.shell?.publish(requestId: requestId, operation: "callAudio", result: .success(["ok": true]))
+        }
+    }
+
+    /// iOS has no public ringtone API: an alert sound and a buzz every two seconds instead.
+    private func setRinging(_ on: Bool) {
+        ringTimer?.invalidate()
+        ringTimer = nil
+        guard on else { return }
+        let ring = { AudioServicesPlayAlertSound(1005); AudioServicesPlaySystemSound(kSystemSoundID_Vibrate) }
+        ring()
+        ringTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in ring() }
+    }
+
+    private func setCallActive(_ on: Bool, speaker: Bool, video: Bool) {
+        if on { setRinging(false) }
+        UIApplication.shared.isIdleTimerDisabled = on
+        // Voice call at the ear: the screen turns off when held to the face.
+        UIDevice.current.isProximityMonitoringEnabled = on && !video && !speaker
+        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on && speaker ? .speaker : .none)
+    }
+
+    // MARK: photos
+
+    /// Chat photo -> {image, w, h} (longest side 1280, shrunk until it fits a chat message);
+    /// profile photo -> {image} (320 px square). Re-encoding drops EXIF, location included.
+    private func pickPhoto(requestId: String, chat: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let shell = self.shell else { return }
+            if let pending = self.photoRequest {
+                shell.publish(requestId: pending.id, operation: pending.chat ? "pickChatPhoto" : "pickProfilePhoto",
+                              result: .failure(.init(code: "CANCELLED", message: "No photo chosen.")))
+            }
+            self.photoRequest = (requestId, chat)
+            var config = PHPickerConfiguration()
+            config.filter = .images
+            config.selectionLimit = 1
+            let picker = PHPickerViewController(configuration: config)
+            picker.delegate = self
+            shell.present(picker, animated: true)
+        }
+    }
+
+    fileprivate func finishPhoto(_ image: UIImage?) {
+        guard let request = photoRequest else { return }
+        photoRequest = nil
+        let operation = request.chat ? "pickChatPhoto" : "pickProfilePhoto"
+        guard let image else {
+            shell?.publish(requestId: request.id, operation: operation, result: .failure(.init(code: "CANCELLED", message: "No photo chosen.")))
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let out = request.chat ? Self.chatJpeg(image) : Self.squareJpeg(image, side: 320, quality: 0.8).map { ["image": $0] }
+            DispatchQueue.main.async {
+                self?.shell?.publish(requestId: request.id, operation: operation,
+                                     result: out.map { .success($0) } ?? .failure(.init(code: "INVALID", message: "That photo couldn't be used. Try another.")))
+            }
+        }
+    }
+
+    private static func render(_ image: UIImage, width: Int, height: Int) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { _ in
+            image.draw(in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    private static func chatJpeg(_ image: UIImage) -> [String: Any]? {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > 0 else { return nil }
+        for (side, quality) in [(1280.0, 0.78), (1280.0, 0.66), (1024.0, 0.66), (880.0, 0.60), (720.0, 0.58)] {
+            let scale = min(1.0, side / longest)
+            let w = max(1, Int((image.size.width * scale).rounded())), h = max(1, Int((image.size.height * scale).rounded()))
+            guard let data = render(image, width: w, height: h).jpegData(compressionQuality: quality) else { continue }
+            let url = "data:image/jpeg;base64," + data.base64EncodedString()
+            if url.count <= 700_000 { return ["image": url, "w": w, "h": h] }
+        }
+        return nil
+    }
+
+    private static func squareJpeg(_ image: UIImage, side: Int, quality: CGFloat) -> String? {
+        let size = min(image.size.width, image.size.height)
+        guard size > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let square = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            let scale = CGFloat(side) / size
+            let w = image.size.width * scale, h = image.size.height * scale
+            image.draw(in: CGRect(x: (CGFloat(side) - w) / 2, y: (CGFloat(side) - h) / 2, width: w, height: h))
+        }
+        return square.jpegData(compressionQuality: quality).map { "data:image/jpeg;base64," + $0.base64EncodedString() }
     }
 
     // MARK: Cloud Functions
@@ -222,5 +372,17 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
         guard wantsLocation else { return }
         wantsLocation = false
         shell?.evaluate("window.locationUnavailable && window.locationUnavailable()")
+    }
+}
+
+extension CustomerBridge: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let provider = results.first?.itemProvider, provider.canLoadObject(ofClass: UIImage.self) else {
+            finishPhoto(nil); return
+        }
+        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+            DispatchQueue.main.async { self?.finishPhoto(object as? UIImage) }
+        }
     }
 }

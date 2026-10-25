@@ -173,6 +173,13 @@ export async function deleteCustomerAccount(uid: string, now = Date.now()): Prom
   add("comments", await deleteDocs(refsOf(comments.docs)));
   const media = await firestoreDb.collection("postMedia").where("from", "==", uid).get();
   add("postMedia", await deleteDocs(refsOf(media.docs.filter((d) => d.data().removed !== true))));
+  // Story answers they gave, their highlights and who-sees-my-stories lists.
+  const answers = await firestoreDb.collectionGroup("responses").where("from", "==", uid).get();
+  add("responses", await deleteDocs(refsOf(answers.docs)));
+  const highlights = await firestoreDb.collection("highlights").where("from", "==", uid).get();
+  add("highlights", await deleteDocs(refsOf(highlights.docs)));
+  const storyPrefs = firestoreDb.collection("storyPrefs").doc(uid);
+  if ((await storyPrefs.get()).exists) { await storyPrefs.delete(); add("storyPrefs", 1); }
 
   // Parent links: a parent leaving withdraws their approval; a child's own request goes.
   const children = await firestoreDb.collection("parentRequests").where("parentUid", "==", uid).get();

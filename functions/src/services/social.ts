@@ -41,6 +41,9 @@ const usernames = () => firestoreDb.collection("usernames");
 const friendships = () => firestoreDb.collection("friendships");
 const reports = () => firestoreDb.collection("chatReports");
 const messagesOf = (pairId: string) => firestoreDb.collection("chats").doc(pairId).collection("messages");
+/** What an unsent message said, staff-only, so a later report still has it. */
+const unsentArchive = () => firestoreDb.collection("chatUnsent");
+export const UNSEND_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 export function pairIdFor(a: string, b: string): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`;
@@ -375,8 +378,13 @@ export async function chatReport(uid: string, input: {pairId: string; reason: Re
   const messages = recent.docs.reverse().map((d) => {
     const m = d.data() as Rec;
     const at = m.at && typeof (m.at as {toMillis?: () => number}).toMillis === "function" ? (m.at as {toMillis: () => number}).toMillis() : Number(m.at ?? 0);
-    return {id: d.id, from: String(m.from ?? ""), text: String(m.text ?? "").slice(0, 1000), card: m.card ?? null, at};
+    return {id: d.id, from: String(m.from ?? ""), text: String(m.text ?? "").slice(0, 1000), card: m.card ?? null, at, unsent: m.unsent === true};
   });
+  // An unsent message is blank in the chat; the report carries what it said.
+  for (const m of messages.filter((x) => x.unsent)) {
+    const kept = await unsentArchive().doc(`${input.pairId}_${m.id}`).get();
+    if (kept.exists) { const k = kept.data() as Rec; m.text = String(k.text ?? "").slice(0, 1000); m.card = k.card ?? null; }
+  }
   const names = (pair.names ?? {}) as Record<string, string>;
   const minors = (pair.minors ?? {}) as Record<string, boolean>;
   const ref = reports().doc();
@@ -393,6 +401,43 @@ export async function chatReport(uid: string, input: {pairId: string; reason: Re
     title: priority === "urgent" ? "Urgent chat report (minor involved)" : "New chat report",
     body: `${names[uid] || "A customer"} reported ${names[reported] || "someone"}: ${input.reason}.`});
   return {reportId: ref.id};
+}
+
+/**
+ * Unsend: the sender takes back their own message within 2 days. Both people then see
+ * "This message was deleted"; a photo or voice note in it becomes unreadable. What it said
+ * is kept staff-only for 180 days (like moderator removals) so a report can still use it.
+ */
+export async function chatUnsend(uid: string, input: {pairId: string; messageId: string}, now = Date.now()) {
+  const pairSnap = await friendships().doc(input.pairId).get();
+  const pair = pairSnap.exists ? pairSnap.data() as Rec : null;
+  if (!pair || !(pair.members as string[]).includes(uid)) throw new DomainError("not-found", "That chat isn't available.");
+  const ref = messagesOf(input.pairId).doc(input.messageId);
+  const snap = await ref.get();
+  const m = snap.exists ? snap.data() as Rec : null;
+  if (!m || m.removed === true) throw new DomainError("not-found", "That message isn't available.");
+  if (String(m.from ?? "") !== uid) throw new DomainError("permission-denied", "You can unsend only your own messages.");
+  if (m.unsent === true) return {unsent: true};
+  const card = (m.card ?? null) as Rec | null;
+  if (card && card.type === "call") throw new DomainError("failed-precondition", "Call history can't be unsent.");
+  const at = m.at && typeof (m.at as {toMillis?: () => number}).toMillis === "function" ? (m.at as {toMillis: () => number}).toMillis() : Number(m.at ?? 0);
+  if (!at || now - at > UNSEND_WINDOW_MS) throw new DomainError("failed-precondition", "Messages can be unsent for 2 days. You can still delete it for yourself.");
+  const keep = {removedAt: now, deleteAfter: now + REMOVED_KEEP_MS};
+  const batch = firestoreDb.batch();
+  batch.set(unsentArchive().doc(`${input.pairId}_${input.messageId}`), {
+    pairId: input.pairId, messageId: input.messageId, from: uid, text: String(m.text ?? ""), card, at, unsentAt: now, deleteAfter: keep.deleteAfter,
+  });
+  batch.update(ref, {text: "", card: FieldValue.delete(), reactions: FieldValue.delete(), unsent: true, unsentAt: now});
+  const chat = firestoreDb.collection("chats").doc(input.pairId);
+  if (card && card.type === "photo" && typeof card.photoId === "string") batch.set(chat.collection("photos").doc(card.photoId), {removed: true, ...keep}, {merge: true});
+  if (card && card.type === "voice" && typeof card.voiceId === "string") batch.set(chat.collection("voices").doc(card.voiceId), {removed: true, ...keep}, {merge: true});
+  await batch.commit();
+  // The chat list shouldn't keep showing what was taken back.
+  const latest = await messagesOf(input.pairId).orderBy("at", "desc").limit(1).get();
+  if (latest.docs[0]?.id === input.messageId) {
+    await friendships().doc(input.pairId).update({lastText: "🚫 This message was deleted", updatedAt: now}).catch(() => undefined);
+  }
+  return {unsent: true};
 }
 
 export type ReportAction = "dismiss" | "warn" | "remove" | "suspend" | "ban";

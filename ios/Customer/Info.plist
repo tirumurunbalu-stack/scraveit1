@@ -14,6 +14,9 @@
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>ITSAppUsesNonExemptEncryption</key><false/>
 	<key>NSLocationWhenInUseUsageDescription</key><string>Scraveit uses your location to find your delivery address and the restaurants that deliver to you.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Scraveit uses the microphone for calls and voice messages with your friends.</string>
+	<key>NSCameraUsageDescription</key><string>Scraveit uses the camera for video calls with your friends.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key><string>Scraveit saves photos you choose to keep from chats.</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array><string>upi</string><string>phonepe</string><string>paytmmp</string><string>tez</string><string>gpay</string></array>
 	<key>UILaunchScreen</key>

@@ -52,6 +52,8 @@ final class WebShellViewController: UIViewController, WKScriptMessageHandler, WK
         config.userContentController = controller
         config.websiteDataStore = .default()
         config.allowsInlineMediaPlayback = true
+        // Call audio and video play as soon as they arrive, without a tap.
+        config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
 
         let web = WKWebView(frame: .zero, configuration: config)
@@ -150,6 +152,15 @@ final class WebShellViewController: UIViewController, WKScriptMessageHandler, WK
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         webView.reload()
+    }
+
+    // Calls and voice messages: the app already asked iOS for the microphone and
+    // camera, so its own page gets them without a second prompt; nothing else does.
+    @available(iOS 15.0, *)
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(frame.isMainFrame && origin.protocol == AssetSchemeHandler.scheme ? .grant : .deny)
     }
 
     // Page dialogs, so a confirm() can never leave the page waiting.

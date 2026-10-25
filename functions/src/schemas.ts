@@ -981,6 +981,7 @@ export const chatRespondSchema = z.object({pairId: pairIdSchema, action: z.enum(
 export const chatPairSchema = z.object({pairId: pairIdSchema}).strict();
 export const chatParentRespondSchema = z.object({childUid: identifier, approve: z.boolean()}).strict();
 export const chatChildSchema = z.object({childUid: identifier}).strict();
+export const chatMessageSchema = z.object({pairId: pairIdSchema, messageId: identifier}).strict();
 export const chatReportSchema = z.object({pairId: pairIdSchema, reason: z.enum(["harassment", "sexual", "spam", "self-harm", "other"]), note: z.string().trim().max(500).default(""), block: z.boolean().default(true)}).strict();
 export const resolveChatReportSchema = z.object({reportId: identifier, action: z.enum(["dismiss", "warn", "remove", "suspend", "ban"]), note: z.string().trim().max(500).default("")}).strict();
 

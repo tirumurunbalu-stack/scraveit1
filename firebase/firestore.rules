@@ -594,6 +594,13 @@ service cloud.firestore {
         && request.resource.data.reactions.diff(resource.data.get("reactions", {})).affectedKeys().hasOnly([request.auth.uid])
         && (!(request.auth.uid in request.resource.data.reactions)
             || request.resource.data.reactions[request.auth.uid] in ["❤️", "😂", "😮", "😢", "🔥", "👍", "🌶️", "🍦", "🤤"]);
+      // Delete for me: a member hides a message from their own view only (unsend goes through the server).
+      allow update: if request.auth != null
+        && request.auth.uid in pair().members
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["hiddenFor"])
+        && request.resource.data.hiddenFor is map
+        && request.resource.data.hiddenFor.diff(resource.data.get("hiddenFor", {})).affectedKeys().hasOnly([request.auth.uid])
+        && request.resource.data.hiddenFor[request.auth.uid] == true;
       allow delete: if false;
     }
     // A photo sent in a chat: its own document, pointed to by a message card. Only the
@@ -698,10 +705,16 @@ service cloud.firestore {
     }
     match /posts/{postId} {
       allow read: if request.auth != null && (isPrivileged() || resource.data.from == request.auth.uid || inMyFeed(postId));
+      // A story may also go to Close Friends only ("to"), be a video (its clip in Storage,
+      // "dur" in ms) and carry interactive stickers (cleaned by the server).
       allow create: if request.auth != null && mayShare()
-        && request.resource.data.keys().hasOnly(["from", "kind", "caption", "w", "h", "createdAt"])
+        && request.resource.data.keys().hasOnly(["from", "kind", "caption", "w", "h", "createdAt", "to", "video", "dur", "stickers"])
         && request.resource.data.from == request.auth.uid
         && request.resource.data.kind in ["story", "post"]
+        && request.resource.data.get("to", "friends") in ["friends", "close"]
+        && (!("video" in request.resource.data) || (request.resource.data.video == true && request.resource.data.kind == "story"
+          && request.resource.data.dur is int && request.resource.data.dur >= 500 && request.resource.data.dur <= 16000))
+        && (!("stickers" in request.resource.data) || (request.resource.data.stickers is list && request.resource.data.stickers.size() <= 6))
         && request.resource.data.caption is string && request.resource.data.caption.size() <= 200
         && request.resource.data.w is int && request.resource.data.w > 0 && request.resource.data.w <= 4096
         && request.resource.data.h is int && request.resource.data.h > 0 && request.resource.data.h <= 4096
@@ -716,6 +729,57 @@ service cloud.firestore {
         && (!(request.auth.uid in request.resource.data.get("likes", {})) || request.resource.data.likes[request.auth.uid] == true
           || request.resource.data.likes[request.auth.uid] in ["😋", "🤤", "🔥", "😍", "😂", "👏"])
         && (!(request.auth.uid in request.resource.data.get("views", {})) || request.resource.data.views[request.auth.uid] is int);
+      // The poster edits a caption, changes a story's audience, or keeps a story in a highlight.
+      allow update: if request.auth != null && resource.data.from == request.auth.uid && mayShare()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["caption", "to", "hl"])
+        && request.resource.data.caption is string && request.resource.data.caption.size() <= 200
+        && request.resource.data.get("to", "friends") in ["friends", "close"]
+        && (resource.data.kind == "story" || request.resource.data.get("to", "friends") == resource.data.get("to", "friends"))
+        && request.resource.data.get("hl", false) is bool;
+      allow delete: if request.auth != null && resource.data.from == request.auth.uid;
+    }
+    // Answers to a story's stickers: one record per friend (poll choice, slider value,
+    // question answer, keyed by the sticker's place). The poster reads them all; the server
+    // totals them on the story for everyone.
+    match /posts/{postId}/responses/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || isPrivileged()
+        || get(/databases/$(database)/documents/posts/$(postId)).data.from == request.auth.uid);
+      allow create, update: if request.auth != null && request.auth.uid == uid && mayShare() && inMyFeed(postId)
+        && get(/databases/$(database)/documents/posts/$(postId)).data.from != request.auth.uid
+        && request.resource.data.keys().hasOnly(["from", "poll", "slider", "ask", "at"])
+        && request.resource.data.from == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.get("poll", {}) is map && request.resource.data.get("poll", {}).size() <= 6
+        && request.resource.data.get("slider", {}) is map && request.resource.data.get("slider", {}).size() <= 6
+        && request.resource.data.get("ask", {}) is map && request.resource.data.get("ask", {}).size() <= 6;
+      allow delete: if false;
+    }
+    // Who sees your stories: a Close Friends list and people your stories are hidden from.
+    match /storyPrefs/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["close", "hide", "updatedAt"])
+        && request.resource.data.get("close", []) is list && request.resource.data.get("close", []).size() <= 500
+        && request.resource.data.get("hide", []) is list && request.resource.data.get("hide", []).size() <= 500
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+    // Story highlights on a profile: the owner's named sets of kept stories. Friends may read
+    // them; each story inside still needs its own card in their feed to open.
+    function friendsWith(other) {
+      let pid = request.auth.uid < other ? request.auth.uid + "_" + other : other + "_" + request.auth.uid;
+      return exists(/databases/$(database)/documents/friendships/$(pid))
+        && get(/databases/$(database)/documents/friendships/$(pid)).data.status == "accepted";
+    }
+    match /highlights/{id} {
+      allow read: if request.auth != null && (resource.data.from == request.auth.uid || isPrivileged() || friendsWith(resource.data.from));
+      allow create, update: if request.auth != null && request.resource.data.from == request.auth.uid && mayShare()
+        && (resource == null || resource.data.from == request.auth.uid)
+        && request.resource.data.keys().hasOnly(["from", "title", "items", "cover", "updatedAt"])
+        && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 30
+        && request.resource.data.items is list && request.resource.data.items.size() > 0 && request.resource.data.items.size() <= 100
+        && request.resource.data.cover is string && request.resource.data.cover.size() <= 128
+        && request.resource.data.updatedAt == request.time;
       allow delete: if request.auth != null && resource.data.from == request.auth.uid;
     }
     // Comments on a post or story: seen by everyone the post is shown to. The app writes

@@ -561,7 +561,7 @@ public class MainActivity extends ComponentActivity {
       "callIceServers", "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
       "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
       "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
-      "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou"));
+      "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou", "chatUnsend"));
 
   private class NativeBridge {
     /** The table link the app was opened with (once), as "restaurantId/tableId". */

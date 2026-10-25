@@ -68,6 +68,17 @@ service firebase.storage {
         && request.resource.contentType.matches('image/jpeg');
     }
 
+    // Video stories: the poster uploads the clip before posting; a friend may play it
+    // while the story's card is in their feed (the same test as the story's photo).
+    match /storyVideos/{uid}/{postId} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin()
+        || firestore.exists(/databases/(default)/documents/feeds/$(request.auth.uid)/feedItems/$(postId)));
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('video/(mp4|webm)');
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

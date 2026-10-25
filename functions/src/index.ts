@@ -119,6 +119,7 @@ import {
   chatParentRespondSchema,
   chatChildSchema,
   chatReportSchema,
+  chatMessageSchema,
   resolveChatReportSchema,
   restaurantMealPlansSchema,
   saveMealPlanSchema,
@@ -2437,6 +2438,8 @@ export const chatIou = economicsCallable("chatIou", chatIouSchema, (uid, _t, inp
 export const weeklyFoodCardPush = onSchedule({schedule: "0 19 * * 0", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 300, memory: "256MiB"},
   async () => { await chatFun.weeklyCardPush(); });
 export const chatReport = economicsCallable("chatReport", chatReportSchema, (uid, _t, input) => social.chatReport(uid, input));
+/** Unsend one of your own messages (within 2 days): gone for both, kept for moderators. */
+export const chatUnsend = economicsCallable("chatUnsend", chatMessageSchema, (uid, _t, input) => social.chatUnsend(uid, input));
 export const resolveChatReport = economicsCallable("resolveChatReport", resolveChatReportSchema,
   (uid, token, input) => social.resolveChatReport(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
 
@@ -2467,10 +2470,22 @@ export const onPostCreated = onDocumentCreated({
   const data = event.data?.data() as Record<string, unknown> | undefined;
   if (data) await posts.onPostCreated(event.params.postId, data);
 });
-/** A post deleted (by its poster, or its story ended): its cards and photo go too. */
+/** A post deleted (by its poster, or its story ended): its cards, photo and video go too. */
 export const onPostDeleted = onDocumentDeleted({
   document: "posts/{postId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
-}, async (event) => { await posts.onPostDeleted(event.params.postId); });
+}, async (event) => { await posts.onPostDeleted(event.params.postId, event.data?.data() as Record<string, unknown> | undefined); });
+/** The poster edited a caption or audience, or kept a story in a highlight: cards follow. */
+export const onPostUpdated = onDocumentUpdated({
+  document: "posts/{postId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB", maxInstances: 10,
+}, async (event) => {
+  const before = event.data?.before?.data() as Record<string, unknown> | undefined;
+  const after = event.data?.after?.data() as Record<string, unknown> | undefined;
+  if (before && after) await posts.onPostUpdated(event.params.postId, before, after);
+});
+/** A friend answered a story's poll, slider or question: the totals on the story refresh. */
+export const onStoryResponse = onDocumentWritten({
+  document: "posts/{postId}/responses/{uid}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB", maxInstances: 10,
+}, async (event) => { await posts.onStoryResponse(event.params.postId); });
 /** A comment on a post or story: the commenter's name goes on it and the poster is told. */
 export const onPostCommentCreated = onDocumentCreated({
   document: "posts/{postId}/comments/{commentId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
