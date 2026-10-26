@@ -3691,7 +3691,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const CHAT_REASONS=[["harassment","Harassment or bullying"],["sexual","Sexual or abusive content"],["spam","Spam or scam"],["self-harm","Talk of self-harm"],["other","Something else"]];
   function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],payAsks:[],payInbox:[],payBusy:"",children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
   function myUid(){return String(state.session&&state.session.uid||"")}
-  function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;
+  function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;setTimeout(()=>{e2eOwn()},1500);
     const pc=readPeopleCache(uid);if(pc){if(pc.me)c.avatars[uid]=pc.me;pc.people.forEach(x=>{if(x.img&&!c.avatars[x.uid])c.avatars[x.uid]=x.img})}
     try{
       loadAvatars();
@@ -3808,7 +3808,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!p.lastAt)return{bold:false,text:"Say hi 👋"};
     if(p.lastFrom===uid&&/^Reacted /.test(p.lastText||""))return{bold:false,text:"You r"+String(p.lastText).slice(1).replace(" to your message","")+" · "+t};
     if(p.lastFrom===uid)return{bold:false,text:(Number(p.readAt&&p.readAt[other]||0)>=Number(p.lastAt)?"Seen ":"Sent ")+t+" ago"};
-    return{bold:false,text:(p.lastText||"")+" · "+t}}
+    return{bold:false,text:lastTextOf(p)+" · "+t}}
   function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,groups=storyGroups(),seen=storySeenSet(),requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0));
     return'<main class="screen no-nav"><div class="screen-content page-stack">'+topbar(me&&me.name?me.name:"Chats","",'<button class="icon-button flat" data-action="go" data-route="friends" aria-label="Add friends">'+icon("plus")+'</button>')+networkBanner()
       +(gate||((convos.length?'<label class="inbox-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
@@ -4588,7 +4588,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Friends right on the food home: story rings, who's eating, what they're craving
   // and who has written to you, as a short line under their name. One tap jumps in.
   function friendStatus(p){const uid=myUid(),n=Number(p.unread&&p.unread[uid]||0),e=eatingOf(p),c=friendCrave(p),ci=c&&craveInfo(c.dish);
-    if(n&&p.lastFrom&&p.lastFrom!==uid)return{kind:"msg",html:n>1?h(n+" new"):/^📷/.test(String(p.lastText||""))?"sent a photo":"new message"};
+    if(n&&p.lastFrom&&p.lastFrom!==uid)return{kind:"msg",html:n>1?h(n+" new"):/^📷/.test(String(lastTextOf(p)))?"sent a photo":"new message"};
     if(e)return{kind:"eat",html:"eating now"};
     if(ci)return{kind:"crave",html:'craving<i aria-hidden="true"> '+h(ci[1])+'</i>',text:"craving "+ci[2]};
     return null}
@@ -4641,7 +4641,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +(kids.length?'<section class="card stack"><h2 class="section-title">Your children</h2>'+kids.map(r=>'<div class="cluster between"><span>'+h(r.childName||"Child")+'</span><button class="button tonal small" data-action="parent-revoke" data-child-uid="'+h(r.childUid)+'">Turn chat off</button></div>').join("")+'</section>':''))
       +'</div></main>'}
   function openThread(pairId){const c=chatState();if(c.threadId===pairId&&c.threadUnsub)return;closeThread();c.threadId=pairId;
-    try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{const prev=c.threads[pairId],next=s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse(),fx=reactionFx(prev,next);c.threads[pairId]=next;if(state.route==="dm"){const stick=!prev||dmNearBottom()||(next.length&&next[next.length-1].from===myUid()&&!(prev||[]).some(m=>m.id===next[next.length-1].id));render({preserveScroll:true});if(!fx.length&&stick)scrollThreadToEnd();playReactionFx(fx)}markThreadRead(pairId)},()=>{})}catch(_){}
+    try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{const prev=c.threads[pairId],next=e2eApply(pairId,s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse()),fx=reactionFx(prev,next);c.threads[pairId]=next;if(state.route==="dm"){const stick=!prev||dmNearBottom()||(next.length&&next[next.length-1].from===myUid()&&!(prev||[]).some(m=>m.id===next[next.length-1].id));render({preserveScroll:true});if(!fx.length&&stick)scrollThreadToEnd();playReactionFx(fx)}markThreadRead(pairId)},()=>{})}catch(_){}
   }
   function closeThread(){const c=chatState();if(c.threadUnsub){try{c.threadUnsub()}catch(_){}}c.threadUnsub=null;c.threadId=""}
   let readTimer=null;function markThreadRead(pairId){clearTimeout(readTimer);readTimer=setTimeout(()=>{const p=chatState().pairs.find(x=>x.id===pairId);if(p&&Number(p.unread&&p.unread[myUid()]||0)>0)socialCall("chatMarkRead",{pairId}).catch(()=>{})},600)}
@@ -4674,17 +4674,92 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
     const st=streakOf(p);
     return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+dmHeader(p,pairId,other,blocked,st)
-      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.hiddenFor&&m.hiddenFor[uid])return'';if(m.removed)return'<p class="dm-removed">Message removed</p>';if(m.unsent)return'<div class="dm-msg '+(mine?'mine':'theirs')+' dm-unsent" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'"><p>🚫 '+(mine?'You unsent a message':'This message was deleted')+'</p></div>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(blocked?'':e2eNotice(p,other))+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.hiddenFor&&m.hiddenFor[uid])return'';if(m.removed)return'<p class="dm-removed">Message removed</p>';if(m.unsent)return'<div class="dm-msg '+(mine?'mine':'theirs')+' dm-unsent" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'"><p>🚫 '+(mine?'You unsent a message':'This message was deleted')+'</p></div>';if(m.e2e&&(m.e2ePending||m.e2eError))return'<div class="dm-msg '+(mine?'mine':'theirs')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+e2eBubble(m)+'</div>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
         :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
+  // ---- End-to-end encryption ----
+  // Messages, photos and voice messages are locked on this phone with a key only the two friends'
+  // phones can work out (chat-e2e.js); Scraveit's server stores and forwards only the locked bytes.
+  // This phone's keys come from the Android app (kept with the Keystore); friends' public keys are
+  // published in chatKeys/{uid}. A friend on an older app gets plain messages until they update.
+  const e2e={own:null,uid:"",loading:null,loadingUid:"",failUid:"",failAt:0,peers:new Map(),opened:new Map(),previews:new Map(),busy:new Set()};
+  function e2eReady(){return!!(window.ScraveitE2E&&ScraveitE2E.available&&nativeAvailable("chatKeys"))}
+  function e2eOwn(){const uid=myUid();if(!uid||!e2eReady())return Promise.resolve(null);if(e2e.own&&e2e.uid===uid)return Promise.resolve(e2e.own);
+    if(e2e.loading&&e2e.loadingUid===uid)return e2e.loading;if(e2e.failUid===uid&&Date.now()-e2e.failAt<60000)return Promise.resolve(null);e2e.loadingUid=uid;
+    e2e.loading=(async()=>{try{const own=await ScraveitE2E.importOwn(await nativeInvoke("chatKeys",{uid},{timeoutMs:15000}));if(myUid()!==uid)return null;e2e.own=own;e2e.uid=uid;
+        // Publish this phone's public keys (again, if the account was last used on another phone).
+        try{const ref=fs.collection("chatKeys").doc(uid),d=await ref.get(),v=d.exists?d.data():null;if(!v||v.agree!==own.agreePub||v.sign!==own.signPub)await ref.set({agree:own.agreePub,sign:own.signPub,at:firebase.firestore.FieldValue.serverTimestamp()})}catch(_){}
+        // Messages that waited for the keys get unlocked now.
+        e2e.opened.forEach((v,k)=>{if(v&&v.error==="app")e2e.opened.delete(k)});e2e.previews.forEach((v,k)=>{if(v==="🔒 Message")e2e.previews.delete(k)});
+        const c=chatState();if(c.threadId&&c.threads[c.threadId])e2eApply(c.threadId,c.threads[c.threadId]);
+        chatRerender();return own}
+      catch(_){e2e.failUid=uid;e2e.failAt=Date.now();return null}finally{e2e.loading=null}})();
+    return e2e.loading}
+  // Friends' keys seen on this phone are remembered, so a change shows "security code changed".
+  const E2E_PINS="scraveit.e2e.pins.";
+  function e2ePins(){try{return JSON.parse(localStorage.getItem(E2E_PINS+myUid())||"{}")||{}}catch(_){return{}}}
+  function e2eSavePins(v){try{localStorage.setItem(E2E_PINS+myUid(),JSON.stringify(v))}catch(_){}}
+  function e2ePin(uid,k){const pins=e2ePins(),cur=pins[uid];if(cur&&cur.agree===k.agree&&cur.sign===k.sign)return;
+    pins[uid]={agree:k.agree,sign:k.sign,known:Array.from(new Set((cur&&cur.known||[]).concat(k.agree))).slice(-8),changed:!!cur};e2eSavePins(pins);if(cur)chatRerender()}
+  // A message locked with a key of theirs this phone hasn't seen: tell the person, like a key change.
+  function e2eSeen(uid,agree){const pins=e2ePins(),cur=pins[uid];if(!cur||(cur.known||[]).includes(agree))return;cur.known=(cur.known||[]).concat(agree).slice(-8);cur.changed=true;e2eSavePins(pins);chatRerender()}
+  // A friend's published keys, looked up at most every 10 minutes (sooner when asked fresh).
+  function e2ePeer(uid,fresh){const c=e2e.peers.get(uid);if(c&&c.p)return c.p;if(c&&!fresh&&Date.now()-c.at<10*60000)return Promise.resolve(c.v);
+    const was=c?c.v:undefined,p=(async()=>{try{const d=await fs.collection("chatKeys").doc(uid).get(),v=d.exists?d.data():null;
+        const val=v&&ScraveitE2E.isPub(v.agree)&&ScraveitE2E.isPub(v.sign)?{agree:v.agree,sign:v.sign}:null;e2e.peers.set(uid,{v:val,at:Date.now()});if(val)e2ePin(uid,val);
+        if(was===undefined||!was!==!val||(was&&val&&was.agree!==val.agree))chatRerender();return val}
+      // Offline: try again in a minute.
+      catch(_){e2e.peers.set(uid,{v:was,at:Date.now()-9*60000});return was||null}})();
+    e2e.peers.set(uid,{v:was,at:c?c.at:0,p});return p}
+  /** "on": this chat is locked end to end; "off": the friend's app can't yet; "": still finding out. */
+  function e2eState(other){if(!e2eReady())return"off";const c=e2e.peers.get(other);if(!c||c.v===undefined){e2ePeer(other);return""}if(!c.v)return"off";if(!e2e.own||e2e.uid!==myUid()){e2eOwn();return""}return"on"}
+  async function e2eLock(other){if(!other||!e2eReady())return null;const own=await e2eOwn(),peer=own?await e2ePeer(other):null;return own&&peer?{own,peer}:null}
+  // Fills in each locked message's words and card once this phone has unlocked it.
+  function e2eApply(pairId,list){(list||[]).forEach(m=>{if(!m.e2e||m.unsent)return;const got=e2e.opened.get(m.id);
+      if(got){delete m.e2ePending;if(got.error)m.e2eError=got.error;else{delete m.e2eError;m.text=got.text;if(got.card)m.card=got.card;else delete m.card}return}
+      delete m.e2eError;m.e2ePending=true;e2eOpenMsg(pairId,m)});return list}
+  async function e2eOpenMsg(pairId,m){if(e2e.busy.has(m.id))return;e2e.busy.add(m.id);
+    try{const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const v=await ScraveitE2E.openMessage(own,m.e2e,pairId,m.from,m.id);
+      if(m.from!==myUid())e2eSeen(m.from,m.e2e.spk);v.text=maskPhoneNumbers(v.text);e2e.opened.set(m.id,v)}
+    catch(e){e2e.opened.set(m.id,{error:/NOT_FOR_THIS_PHONE/.test(String(e&&e.message))?"phone":/UNAVAILABLE/.test(String(e&&e.message))?"app":"broken"})}
+    finally{e2e.busy.delete(m.id);const list=chatState().threads[pairId];if(list){e2eApply(pairId,list);chatRerender()}}}
+  function e2eSummary(v){const t=maskPhoneNumbers(String(v&&v.text||"")).trim(),c=v&&v.card;
+    if(c){if(c.type==="photo")return t?"📷 "+t.slice(0,110):"📷 Photo";if(c.type==="voice")return"🎤 Voice message ("+vnClock(c.ms)+")";if(c.type==="story")return t||"📸 Shared a story";if(!t)return"🍽 "+String(c.name||"A dish")}
+    return t.slice(0,120)||"Message"}
+  /** The chat list's last line: unlocked on this phone when it was locked. */
+  function lastTextOf(p){const e=p&&p.lastE2e;if(!e||!e.id)return p&&p.lastText||"";const k=p.id+"|"+e.id;if(e2e.previews.has(k))return e2e.previews.get(k);
+    if(!e2e.busy.has(k)){e2e.busy.add(k);(async()=>{let text="🔒 Message";try{const own=await e2eOwn();const done=e2e.opened.get(e.id);
+        if(done&&!done.error)text=e2eSummary(done);else if(own)text=e2eSummary(await ScraveitE2E.openMessage(own,e,p.id,e.from,e.id))}catch(_){}
+      e2e.previews.set(k,text);e2e.busy.delete(k);chatRerender()})()}
+    return"🔒 Message"}
+  /** The bubble for a locked message this phone hasn't (or can't) unlock. */
+  function e2eBubble(m){if(m.e2ePending)return'<p class="dm-locked" aria-label="Unlocking message">🔒 …</p>';
+    return'<p class="dm-locked">🔒 '+(m.e2eError==="phone"?"This message was locked for another phone. It can’t be shown here.":m.e2eError==="app"?"Update Scraveit to read this message.":"This message couldn’t be unlocked.")+'</p>'}
+  function e2eNotice(p,other){const st=e2eState(other),pin=e2ePins()[other],name=String(nameOf(p,other)).split(" ")[0];
+    const changed=pin&&pin.changed?'<div class="dm-e2e-changed" role="status"><span>🔐 '+h(name)+'’s security code changed. This happens when they reinstall Scraveit or use a new phone.</span><span class="cluster"><button class="button tonal small" data-action="e2e-info" data-pair-id="'+h(p.id)+'">Verify</button><button class="button text small" data-action="e2e-ack" data-uid="'+h(other)+'">OK</button></span></div>':'';
+    if(st==="on")return changed+'<button type="button" class="dm-e2e-note" data-action="e2e-info" data-pair-id="'+h(p.id)+'">🔒 Messages and calls are end-to-end encrypted. No one outside this chat, not even Scraveit, can read or listen to them. <b>Tap to verify.</b></button>';
+    if(st==="off")return changed+'<p class="dm-e2e-note off">Messages aren’t end-to-end encrypted yet. '+(e2eReady()?h(name)+' needs to update Scraveit.':'Update Scraveit to turn it on.')+'</p>';
+    return changed}
+  function e2eInfoSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),other=p?otherOf(p):"",name=p?nameOf(p,other):"your friend",code=sheet.code||"";
+    const grid=code?'<div class="e2e-code" aria-label="Security code">'+code.match(/\d{5}/g).map(g=>'<span>'+g+'</span>').join("")+'</div>':sheet.error?'<p class="supporting">'+h(sheet.error)+'</p>':'<div class="e2e-code wait" aria-busy="true"></div>';
+    return sheetShell("Encryption",name,'<div class="e2e-info"><div class="e2e-lock" aria-hidden="true">🔒</div><p>Messages, photos, voice messages and calls with <b>'+h(name)+'</b> are locked on your phones. Scraveit can’t read or listen to them.</p>'+grid
+      +'<p class="caption">To be sure, compare these numbers with '+h(String(name).split(" ")[0])+'’s phone (Chat › tap this line). If they match, no one is in between.</p></div>')}
+  async function openE2eInfo(pairId){const p=chatState().pairs.find(x=>x.id===pairId);if(!p)return;const other=otherOf(p);setSheet({type:"e2eInfo",pairId});
+    const own=await e2eOwn(),peer=await e2ePeer(other,true),sh=state.sheet;if(!sh||sh.type!=="e2eInfo")return;
+    if(!own||!peer){sh.error=own?nameOf(p,other)+" needs to update Scraveit first.":"Update Scraveit to use encryption.";renderSheet();return}
+    sh.code=await ScraveitE2E.safetyCode(myUid(),{agree:own.agreePub,sign:own.signPub},other,peer);
+    const pins=e2ePins();if(pins[other]){pins[other].changed=false;e2eSavePins(pins)}if(state.sheet===sh)renderSheet();chatRerender()}
+
   // Photos in chats: each photo is its own document beside the messages (only the two friends can read it);
   // the message carries a small card pointing to it. Photos are fetched once and shown from memory.
   const dmPhotos=new Map(),dmPhotoLoading=new Set(),dmPhotoSeen=new Set(),DM_PHOTO_KEEP=60;
   function photoBlobUrl(dataUrl){const b=atob(dataUrl.slice(dataUrl.indexOf(",")+1)),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);return URL.createObjectURL(new Blob([bytes],{type:"image/jpeg"}))}
   function keepDmPhoto(id,entry){dmPhotos.set(id,entry);while(dmPhotos.size>DM_PHOTO_KEEP){const [old,e]=dmPhotos.entries().next().value;if(e&&e.url)URL.revokeObjectURL(e.url);dmPhotos.delete(old)}}
   async function loadDmPhoto(pairId,id){if(!id||dmPhotos.has(id)||dmPhotoLoading.has(id))return;dmPhotoLoading.add(id);
-    try{const d=await fs.collection("chats").doc(pairId).collection("photos").doc(id).get(),img=d.exists?String(d.data().image||""):"";keepDmPhoto(id,img.startsWith("data:image/jpeg;base64,")?{url:photoBlobUrl(img)}:{missing:true})}
+    try{const d=await fs.collection("chats").doc(pairId).collection("photos").doc(id).get(),v=d.exists?d.data():null,img=v?String(v.image||""):"";
+      if(v&&v.e2e){const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const f=await ScraveitE2E.openFile(own,v.e2e,pairId,ScraveitE2E.photoAad(pairId,String(v.from||""),id));keepDmPhoto(id,{url:URL.createObjectURL(new Blob([f.bytes],{type:"image/jpeg"}))})}
+      else keepDmPhoto(id,img.startsWith("data:image/jpeg;base64,")?{url:photoBlobUrl(img)}:{missing:true})}
     catch(_){keepDmPhoto(id,{missing:true})}
     finally{dmPhotoLoading.delete(id);if(state.route==="dm"){const near=dmNearBottom();render({preserveScroll:true});if(near)scrollThreadToEnd()}}}
   /** Under-18 accounts see a friend's photo blurred until they tap it. */
@@ -4703,13 +4778,20 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const d=res&&(res.image?res:res.data&&res.data.image?res.data:res.result)||{},img=String(d.image||""),w=Math.round(Number(d.w)||0),hh=Math.round(Number(d.h)||0);
     if(!img.startsWith("data:image/jpeg;base64,")||!w||!hh){toast("That photo couldn’t be used. Try another.","danger");return}
     toast("Sending photo…");
-    try{const ref=fs.collection("chats").doc(pairId).collection("photos").doc();
-      await ref.set({from:myUid(),image:img,w,h:hh,at:firebase.firestore.FieldValue.serverTimestamp()});
+    try{const ref=fs.collection("chats").doc(pairId).collection("photos").doc(),p=chatState().pairs.find(x=>x.id===pairId),lock=await e2eLock(p?otherOf(p):"");
+      // Locked on this phone first when the friend's app can unlock it.
+      const body=lock?{from:myUid(),e2e:await ScraveitE2E.sealFile(lock.own,lock.peer.agree,pairId,ScraveitE2E.photoAad(pairId,myUid(),ref.id),"image/jpeg",ScraveitE2E.unb64(img.slice(img.indexOf(",")+1)))}:{from:myUid(),image:img};
+      await ref.set(Object.assign(body,{w,h:hh,at:firebase.firestore.FieldValue.serverTimestamp()}));
       keepDmPhoto(ref.id,{url:photoBlobUrl(img)});
       await sendDm(pairId,"",{type:"photo",photoId:ref.id,w,h:hh});scrollThreadToEnd()}
     catch(e){toast("Photo not sent. "+chatError(e),"danger")}}
-  async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const body={from:uid,text:String(text||"").slice(0,1000),at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
-    try{await fs.collection("chats").doc(pairId).collection("messages").add(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
+  async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const words=String(text||"").slice(0,1000);
+    const ref=fs.collection("chats").doc(pairId).collection("messages").doc(),p=chatState().pairs.find(x=>x.id===pairId);
+    let body={from:uid,text:words,at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
+    try{const lock=await e2eLock(p?otherOf(p):"");
+      if(lock){const shown=maskPhoneNumbers(words);e2e.opened.set(ref.id,{text:shown,card:card||null});
+        body={from:uid,text:"",e2e:await ScraveitE2E.sealMessage(lock.own,lock.peer.agree,pairId,uid,ref.id,shown,card||null),at:firebase.firestore.FieldValue.serverTimestamp()}}
+      await ref.set(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
   // ---- Voice messages ----
   // Recorded as Opus (about 3 KB a second) up to 2 minutes; each one is its own document beside the
   // messages, readable only by the two friends. The message card carries the length and a waveform.
@@ -4727,7 +4809,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<div class="vn-body"><div class="vn-wave" data-voice-id="'+h(id)+'">'+bars+'</div><div class="vn-meta"><span class="vn-time">'+vnClock(ms)+'</span><span>🎤</span></div></div>'
       +'<button type="button" class="vn-speed" data-action="vn-speed" aria-label="Playback speed">'+(vnPlay.speed===1?'1×':vnPlay.speed===1.5?'1.5×':'2×')+'</button></div>'}
   async function vnLoad(pairId,id){if(vnAudio.has(id))return vnAudio.get(id);if(vnLoading.has(id))return null;vnLoading.add(id);chatRerender();
-    try{const d=await fs.collection("chats").doc(pairId).collection("voices").doc(id).get(),a=d.exists?String(d.data().audio||""):"";
+    try{const d=await fs.collection("chats").doc(pairId).collection("voices").doc(id).get(),v=d.exists?d.data():null,a=v?String(v.audio||""):"";
+      if(v&&v.e2e){const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const f=await ScraveitE2E.openFile(own,v.e2e,pairId,ScraveitE2E.voiceAad(pairId,String(v.from||""),id));
+        const url=URL.createObjectURL(new Blob([f.bytes],{type:f.mime.split(";")[0]||"audio/webm"}));vnAudio.set(id,url);return url}
       if(!/^data:audio\/[a-z0-9]+(;codecs=opus)?;base64,/.test(a))throw new Error("VOICE_MISSING");
       const comma=a.indexOf(","),mime=a.slice(5,a.indexOf(";")),b=atob(a.slice(comma+1)),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);
       const url=URL.createObjectURL(new Blob([bytes],{type:mime}));vnAudio.set(id,url);return url}
@@ -4782,9 +4866,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const audio=await new Promise((ok,bad)=>{const fr=new FileReader();fr.onload=()=>ok(String(fr.result||""));fr.onerror=bad;fr.readAsDataURL(blob)}).catch(()=>"");
     if(!/^data:audio\/(webm|ogg|mp4|aac)(;codecs=opus)?;base64,/.test(audio)){toast("Voice message not sent. Try again.","danger");return}
     if(audio.length>650000){toast("That recording is too long to send.","danger");return}
-    try{const ref=fs.collection("chats").doc(pairId).collection("voices").doc();
+    try{const ref=fs.collection("chats").doc(pairId).collection("voices").doc(),p=chatState().pairs.find(x=>x.id===pairId),lock=await e2eLock(p?otherOf(p):"");
       vnAudio.set(ref.id,URL.createObjectURL(blob));
-      await ref.set({from:myUid(),audio,ms:Math.round(ms),at:firebase.firestore.FieldValue.serverTimestamp()});
+      const mime=audio.slice(5,audio.indexOf(";base64"));
+      const body=lock?{from:myUid(),e2e:await ScraveitE2E.sealFile(lock.own,lock.peer.agree,pairId,ScraveitE2E.voiceAad(pairId,myUid(),ref.id),mime,ScraveitE2E.unb64(audio.slice(audio.indexOf(",")+1)))}:{from:myUid(),audio};
+      await ref.set(Object.assign(body,{ms:Math.round(ms),at:firebase.firestore.FieldValue.serverTimestamp()}));
       await sendDm(pairId,"",{type:"voice",voiceId:ref.id,ms:Math.round(ms),wave});scrollThreadToEnd()}
     catch(e){toast("Voice message not sent. "+chatError(e),"danger")}}
   // Hold vs tap on the mic.
@@ -4865,10 +4951,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     call.unsubs.push(ref.onSnapshot(async d=>{if(call!==me)return;const v=d.data();if(!v)return;
       // The friend's phone has the call and is ringing: "Calling…" becomes "Ringing…", with the ringback.
       if(me.role==="caller"&&v.ringingAt&&!me.ringing&&me.status==="calling"){me.ringing=true;callRingback(true);callUpdate()}
-      if(me.role==="caller"&&v.answer&&me.pc&&!me.pc.currentRemoteDescription){try{await me.pc.setRemoteDescription(v.answer);callFlushRemote();if(me.status==="calling")me.status="connecting";callUpdate()}catch(_){callEnd("Couldn’t connect the call.")}}
+      if(me.role==="caller"&&v.answer&&me.pc&&!me.pc.currentRemoteDescription&&!me.verifying){me.verifying=true;
+        if(!await callTrusted(me.other,v.answerSig,me.id,"answer",v.answer.sdp)){me.verifying=false;if(call===me)callEnd("This call couldn’t be verified, so it was stopped.");return}
+        me.verifying=false;if(call!==me||me.pc.currentRemoteDescription)return;
+        try{await me.pc.setRemoteDescription(v.answer);callFlushRemote();if(me.status==="calling")me.status="connecting";callUpdate()}catch(_){callEnd("Couldn’t connect the call.")}}
       if(CALL_DONE.includes(v.status)&&!me.ended){const msg=v.status==="declined"?"Call declined":v.status==="busy"?"On another call":v.status==="missed"?"No answer":me.role==="callee"&&!me.liveAt?"Missed call":"Call ended";callEnd(msg,true)}}));
     call.unsubs.push(ref.collection("candidates").where("by","==",call.other).onSnapshot(sn=>{if(call!==me)return;sn.docChanges().forEach(ch=>{if(ch.type==="added")callAddRemoteCand(ch.doc.data().c)})}))}
 
+  /**
+   * End-to-end check for calls: when the friend has encryption keys, their side of the call must be
+   * signed with them (a missing or wrong signature means someone may be in between).
+   */
+  async function callTrusted(other,sig,callId,side,sdp){if(!e2eReady())return true;const peer=await e2ePeer(other,true).catch(()=>null);if(!peer)return true;
+    return ScraveitE2E.verifyCall(peer.sign,sig,callId,side,sdp)}
   async function startCall(pairId,kind){
     if(call){toast("You’re already on a call.","info");return}
     if(!callsAvailable()){toast("Update Scraveit to make calls.","info");return}
@@ -4884,7 +4979,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       callWireData(call.pc.createDataChannel("fx"));
       const ref=fs.collection("calls").doc();call.ref=ref;call.id=ref.id;
       const offer=await call.pc.createOffer();await call.pc.setLocalDescription(offer);
-      await ref.set({from:myUid(),to:other,pairId,kind:call.kind,status:"ringing",offer:{type:offer.type,sdp:offer.sdp},createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      // Signed with this phone's key, so the friend's phone knows no one is in between (end to end).
+      const own=await e2eOwn().catch(()=>null),offerSig=own?await ScraveitE2E.signCall(own,ref.id,"offer",offer.sdp).catch(()=>null):null;
+      await ref.set(Object.assign({from:myUid(),to:other,pairId,kind:call.kind,status:"ringing",offer:{type:offer.type,sdp:offer.sdp},createdAt:firebase.firestore.FieldValue.serverTimestamp()},offerSig?{offerSig}:{}));
       // Hung up while the call was still being set up: cancel it rather than leave it ringing.
       if(me.ended){ref.update({status:"cancelled",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
       call.docReady=true;callFlushCands();callWatchDoc();callUpdate();
@@ -4893,7 +4990,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   async function incomingCall(id,data){if(!data||data.to!==myUid())return;const created=callTs(data.createdAt);if(!created||Date.now()-created>CALL_RING_MS)return;
     if(call){if(call.id!==id)fs.collection("calls").doc(id).update({status:"busy",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
-    call=callNew({id,ref:fs.collection("calls").doc(id),role:"callee",kind:data.kind==="video"?"video":"audio",pairId:String(data.pairId||""),other:String(data.from||""),offer:data.offer,status:"incoming",speaker:data.kind==="video"});
+    call=callNew({id,ref:fs.collection("calls").doc(id),role:"callee",kind:data.kind==="video"?"video":"audio",pairId:String(data.pairId||""),other:String(data.from||""),offer:data.offer,offerSig:data.offerSig||null,status:"incoming",speaker:data.kind==="video"});
     const me=call;callShow();callWatchDoc();callNative({ring:true,dismissCallId:id});callIce().catch(()=>{});
     if(!data.ringingAt)me.ref.update({ringingAt:firebase.firestore.FieldValue.serverTimestamp()}).catch(()=>{});
     callPairInfo(me.pairId,me.other).then(info=>{if(call===me){me.name=info.name;me.face=info.face;callUpdate(true)}});
@@ -4901,10 +4998,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   async function acceptCall(){const me=call;if(!me||me.role!=="callee"||me.status!=="incoming")return;
     callNative({ring:false,dismissCallId:me.id});me.status="connecting";callUpdate(true);
     if(!await callPerms(me.kind==="video")){declineCall();return}
+    if(!await callTrusted(me.other,me.offerSig,me.id,"offer",me.offer&&me.offer.sdp)){if(call===me)declineCall();toast("This call couldn’t be verified, so it was stopped.","danger");return}
     try{await callMedia();if(call!==me)return;await callPeer();if(call!==me)return;
       await me.pc.setRemoteDescription(me.offer);callFlushRemote();
       const answer=await me.pc.createAnswer();await me.pc.setLocalDescription(answer);
-      await me.ref.update({answer:{type:answer.type,sdp:answer.sdp},status:"accepted",answeredAt:firebase.firestore.FieldValue.serverTimestamp()});
+      const own=await e2eOwn().catch(()=>null),answerSig=own?await ScraveitE2E.signCall(own,me.id,"answer",answer.sdp).catch(()=>null):null;
+      await me.ref.update(Object.assign({answer:{type:answer.type,sdp:answer.sdp},status:"accepted",answeredAt:firebase.firestore.FieldValue.serverTimestamp()},answerSig?{answerSig}:{}));
       if(call!==me)return;me.docReady=true;callFlushCands();callNative({active:true,speaker:me.speaker,video:me.kind==="video"});callUpdate()}
     catch(e){if(call===me)callEnd("Couldn’t join the call. "+chatError(e))}}
   function declineCall(){const me=call;if(!me)return;if(me.ref)me.ref.update({status:"declined",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});callEnd("Declined",true)}
@@ -5037,7 +5136,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   async function unsendMessage(pairId,msgId){const m=threadMsg(pairId,msgId);if(!m)return;
     if(!await askConfirm("Unsend this message?","It's removed for both of you and shows “This message was deleted”. Scraveit keeps a private copy for 180 days, only for safety reports.","Unsend"))return;
     const before={text:m.text,card:m.card,unsent:m.unsent};m.unsent=true;m.text="";delete m.card;chatRerender();
-    if(!await chatAction("chatUnsend",{pairId,messageId:msgId},"Message unsent.")){Object.assign(m,before);if(!before.card)delete m.card;chatRerender()}}
+    const att=before.card&&before.card.type==="photo"?{photoId:String(before.card.photoId||"")}:before.card&&before.card.type==="voice"?{voiceId:String(before.card.voiceId||"")}:{};
+    if(!await chatAction("chatUnsend",Object.assign({pairId,messageId:msgId},m.e2e?att:{}),"Message unsent.")){Object.assign(m,before);if(!before.card)delete m.card;chatRerender()}}
   // ===== Scraveit-only chat: food reactions that do things, streaks, cravings, eating now =====
   const REACT_FX={"🌶️":"fx-chilli","🔥":"fx-fire","🍦":"fx-melt","🤤":"fx-drool","❤️":"fx-love","😂":"fx-pop","😮":"fx-pop","😢":"fx-pop"};
   function reactionFx(prev,next){if(!prev)return[];const old={};prev.forEach(m=>{old[m.id]=m.reactions||{}});const out=[];next.forEach(m=>{const o=old[m.id];if(!o)return;Object.entries(m.reactions||{}).forEach(([u,e])=>{if(e&&o[u]!==e)out.push({id:m.id,emoji:e})})});return out}
@@ -5141,7 +5241,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(lastTap.id===id&&now-lastTap.at<320){lastTap={id:"",at:0};setReaction(el.dataset.pairId,id,myReaction(el.dataset.pairId,id)==="❤️"?"":"❤️")}else lastTap={id,at:now}});
   })();
   function reportSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),name=p?nameOf(p,otherOf(p)):"this person";
-    return sheetShell("Report or block",name,'<form id="chat-report-form" class="form-grid" data-pair-id="'+h(sheet.pairId)+'"><fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">What’s wrong?</legend>'+CHAT_REASONS.map((r,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="reason" value="'+r[0]+'" '+(i===0?'checked':'')+'><span class="grow">'+r[1]+'</span></label>').join("")+'</fieldset><div class="field"><label for="report-note">Anything else (optional)</label><textarea class="textarea" id="report-note" name="note" maxlength="500"></textarea></div><label class="settings-row"><input type="checkbox" name="block" checked><span class="grow">Also block '+h(name)+'</span></label><p class="caption">Your last 20 messages in this chat go with the report so our team can check it.</p><button class="button danger full" type="submit"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Sending…':'Send report')+'</button><button class="button tonal full" type="button" data-action="dm-block-only" data-pair-id="'+h(sheet.pairId)+'">Just block, no report</button></form>')}
+    return sheetShell("Report or block",name,'<form id="chat-report-form" class="form-grid" data-pair-id="'+h(sheet.pairId)+'"><fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">What’s wrong?</legend>'+CHAT_REASONS.map((r,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="reason" value="'+r[0]+'" '+(i===0?'checked':'')+'><span class="grow">'+r[1]+'</span></label>').join("")+'</fieldset><div class="field"><label for="report-note">Anything else (optional)</label><textarea class="textarea" id="report-note" name="note" maxlength="500"></textarea></div><label class="settings-row"><input type="checkbox" name="block" checked><span class="grow">Also block '+h(name)+'</span></label><p class="caption">The last 20 messages in this chat go with the report so our team can check it. Your phone unlocks them to send.</p><button class="button danger full" type="submit"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Sending…':'Send report')+'</button><button class="button tonal full" type="button" data-action="dm-block-only" data-pair-id="'+h(sheet.pairId)+'">Just block, no report</button></form>')}
+  /** For a report: what this phone shows for the chat's recent locked messages (the server can't read them). */
+  function e2eRevealed(pairId){return(chatState().threads[pairId]||[]).filter(m=>m.e2e&&!m.unsent).slice(-20).map(m=>{const v=e2e.opened.get(m.id);
+      return v&&!v.error?{id:m.id,text:String(v.text||"").slice(0,1000),card:v.card&&typeof v.card==="object"?v.card:null}:null}).filter(Boolean)}
   async function chatAction(fn,data,ok){try{await socialCall(fn,data);if(ok)toast(ok,"success");return true}catch(e){toast(chatError(e),"danger");return false}}
   // Show a friend request's answer at once; the server can take a few seconds to wake up.
   // If it then refuses, the request comes back as it was.
@@ -5190,6 +5293,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="msg-hide"){closeSheet();hideMessage(pid,control.dataset.msgId);return true}
     if(action==="msg-unsend"){closeSheet();unsendMessage(pid,control.dataset.msgId);return true}
     if(action==="dm-menu"){setSheet({type:"chatReport",pairId:pid});return true}
+    if(action==="e2e-info"){openE2eInfo(pid);return true}
+    if(action==="e2e-ack"){const pins=e2ePins(),u=String(control.dataset.uid||"");if(pins[u]){pins[u].changed=false;e2eSavePins(pins)}chatRerender();return true}
     if(action==="dm-share-place"){setSheet({type:"sharePlace",pairId:pid});return true}
     if(action==="send-place"){const r=restaurant(control.dataset.restaurantId);closeSheet();if(r)sendDm(pid,"",{type:"restaurant",restaurantId:r.id,restaurantName:String(r.name||"").slice(0,80),image:String(r.image||"").slice(0,400),name:String(r.name||"").slice(0,80)});return true}
     if(action==="share-dish"){setSheet({type:"shareFriend",title:control.dataset.title||"",card:{type:"dish",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId}});return true}
@@ -5209,7 +5314,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(form.id==="add-friend-form"){try{const r=await socialCall("chatAddFriend",{handle:form.elements.code.value});form.reset();const who=r&&(r.name||(r.username?"@"+r.username:""));toast(r&&r.status==="accepted"?"You’re now friends"+(who?" with "+who:"")+".":"Request sent"+(who?" to "+who:"")+".","success")}catch(e){toast(chatError(e),"danger")}return true}
     if(form.id==="iou-form"){const d=chatState().iouDraft||{},b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;await iouAct(form.dataset.pairId,{action:"create",treat:d.treat||"waffles",owedBy:d.owedBy||"them",note:String(form.elements.note.value||"").trim()});closeSheet();return true}
     if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";await sendDm(form.dataset.pairId,text);input.focus();return true}
-    if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
+    if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked,revealed:e2eRevealed(pid)});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
     return false;
   }
   function squadHomeCard(){
@@ -7316,6 +7421,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="shareFriend")html=shareFriendSheet(sheet);
     else if(sheet.type==="sharePlace")html=sharePlaceSheet(sheet);
     else if(sheet.type==="chatReport")html=reportSheet(sheet);
+    else if(sheet.type==="e2eInfo")html=e2eInfoSheet(sheet);
     else if(sheet.type==="friendMenu")html=friendMenuSheet(sheet);
     else if(sheet.type==="dob")html=dobSheet();
     else if(sheet.type==="react")html=reactSheet(sheet);

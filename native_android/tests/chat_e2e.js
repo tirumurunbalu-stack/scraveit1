@@ -1,4 +1,4 @@
-// Chat end-to-end encryption (assets/chat-e2e.js). The fixed vector below was made with keys from
+// Chat end-to-end encryption (assets/chat-e2e.js). The fixed vector (support/chat_e2e_vector.json) was made with keys from
 // Java's EC key generator (as the Android app makes them) and locked by chat-e2e.js; Java's
 // ChatE2eCrypto opened it, so the app and the notification code agree on the format.
 const assert = require("node:assert/strict");
@@ -7,35 +7,8 @@ const path = require("node:path");
 
 new Function(fs.readFileSync(path.join(__dirname, "../app/src/main/assets/chat-e2e.js"), "utf8"))();
 const E = globalThis.ScraveitE2E;
-// Test-only keys, made for this file. Not used anywhere else.
-const V = {
-  "a": {
-    "agreePriv": "MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCDZTHzSohtah/2DVHARD18odl+YruOSJhnC+L6KUs119Q==",
-    "agreePub": "BIZEYyareiEuWa4upS+/u9E5gNFijfui2EEQXQFsuEmRwbaPyCtcSSZZIlJ1ccsZs9LqTl8oHj9sCUM6CHfIm8A=",
-    "signPriv": "MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCBGo2alYc3/oFbzdqtnKeS56pePLUJyRUO07UCSZMMHyg==",
-    "signPub": "BDAP178O0VRoCavp+OBDWnOQK7rn1wcfAtF4/znbDXfQTjPZtDcgvy5tBYik0ryOEsjFGI+7HRh8llI1GT2eVmQ=",
-    "kid": "33babfe48bea5a54"
-  },
-  "b": {
-    "agreePriv": "MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCBCrpcDZBtAVEkBxUQgEVB1/nJJWdXfnw4Fp42jroK32w==",
-    "agreePub": "BPzYDUKhGpvI8Pl6ZhEHUHm7jK9+0YvAsEnroypJ0w6NIUvP9qXCHEQ6IeEeo97MFnC8GaQ0hDNZIHh+oPZt8u0=",
-    "signPriv": "MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCCRc8WLrhG1uuDpvILh9rR4kkxISaIxvQxc0D+zcIcpEw==",
-    "signPub": "BGta8lhH1cMItzBoRaqRUUHqr5fxbivcM+XBfCYKDf1oTd6mZvLR8XwaI7cdymgr/gl/yjunLp5WWr9QR0Hg0BQ=",
-    "kid": "192badd3ec621424"
-  },
-  "pair": "uidA_uidB",
-  "from": "uidA",
-  "id": "msg123",
-  "text": "హాయ్ Ravi! Biryani at 8? 🍛",
-  "sealed": {
-    "v": 1,
-    "iv": "HVYE+pAAQ+nxK/A8",
-    "ct": "ezxsjjLraK7QuMCKsvo+8+TdsI3Fe5288ce07n4tflul4AHST2j5EeE1RVan6YddQZqWhI4YAaV1elcymqZnzF69gO4h0HbXjEEgjUU9fmBxSqpo6bij9lA12JE5SKTWDqJ58NTs7yJS/A==",
-    "spk": "BIZEYyareiEuWa4upS+/u9E5gNFijfui2EEQXQFsuEmRwbaPyCtcSSZZIlJ1ccsZs9LqTl8oHj9sCUM6CHfIm8A=",
-    "rpk": "BPzYDUKhGpvI8Pl6ZhEHUHm7jK9+0YvAsEnroypJ0w6NIUvP9qXCHEQ6IeEeo97MFnC8GaQ0hDNZIHh+oPZt8u0="
-  },
-  "code": "572862336274807307431136707076862854086416994691428564267242"
-};
+// Test-only keys, made for these tests. Not used anywhere else.
+const V = require("./support/chat_e2e_vector.json");
 
 (async () => {
   const a = await E.importOwn(V.a), b = await E.importOwn(V.b);

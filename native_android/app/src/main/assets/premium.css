@@ -2687,6 +2687,21 @@ body:has(.kind-nav):has(.floating-cart) .toast-region, body:has(.kind-nav):has(.
 .call-line.missed strong { color: #dc2626; }
 .call-line small { font-size: 12px; color: var(--muted, #64748b); }
 .dm-msg.dm-unsent p{font-style:italic;opacity:.72}
+/* End-to-end encryption: the note at the top of a chat, locked bubbles, the key-change line, the safety code. */
+.dm-e2e-note{display:block;align-self:center;max-width:320px;margin:4px auto 10px;padding:9px 13px;border:0;border-radius:12px;background:#fdf6d8;color:#5c4a12;font:inherit;font-size:12.5px;line-height:1.4;text-align:center;cursor:pointer}
+.dm-e2e-note b{font-weight:700}
+.dm-e2e-note.off{background:var(--surface-2,#f3f4f6);color:var(--muted,#64748b);cursor:default}
+.dm-locked{font-style:italic;opacity:.75}
+.dm-e2e-changed{display:flex;flex-direction:column;gap:8px;align-self:center;max-width:340px;margin:2px auto 10px;padding:10px 13px;border-radius:12px;background:#fff1e6;color:#7a3b0b;font-size:12.5px;line-height:1.4;text-align:center}
+.dm-e2e-changed .cluster{justify-content:center}
+.e2e-info{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;padding-bottom:6px}
+.e2e-lock{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;font-size:30px;background:#fdf6d8;box-shadow:0 6px 18px rgba(180,140,20,.18)}
+.e2e-code{display:grid;grid-template-columns:repeat(4,1fr);gap:10px 16px;padding:16px 18px;border-radius:16px;background:var(--surface-2,#f3f4f6);font:600 17px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;min-height:120px;min-width:250px}
+.e2e-code.wait{background:linear-gradient(90deg,var(--surface-2,#f3f4f6),#e5e7eb,var(--surface-2,#f3f4f6));background-size:200% 100%;animation:e2eShimmer 1.2s linear infinite}
+@keyframes e2eShimmer{to{background-position:-200% 0}}
+[data-theme="dark"] .dm-e2e-note{background:#3a3214;color:#f3e3a6}
+[data-theme="dark"] .dm-e2e-changed{background:#3d2614;color:#ffd2ad}
+[data-theme="dark"] .e2e-lock{background:#3a3214}
 
 /* ===== Stories+: camera, video stories, audiences, highlights, interactive stickers ===== */
 .story-frame { position: relative; width: min(100vw, calc(100dvh * var(--ar, .5625))); aspect-ratio: var(--ar, .5625); max-height: 100dvh; container-type: inline-size; display: grid; place-items: center; }

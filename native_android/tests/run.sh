@@ -17,6 +17,7 @@ fi
 "$NODE_EXECUTABLE" "$TEST_DIR/../../firebase/tests/validate-deploy-config.mjs"
 "$NODE_EXECUTABLE" "$TEST_DIR/offer_math.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/chat_e2e.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/chat_e2e_app.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/boot_smoke.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/home_performance_smoke.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/confirm_sheet.js"
