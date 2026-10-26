@@ -913,6 +913,33 @@ public class MainActivity extends ComponentActivity {
       });
     }
 
+    /**
+     * This phone's chat encryption keys for the signed-in account (made once, kept encrypted with the
+     * Keystore). payload: {uid}. The page locks and unlocks messages with them.
+     */
+    @JavascriptInterface public void chatKeys(String requestId, String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        String uid = "";
+        try { uid = new JSONObject(payloadJson == null ? "{}" : payloadJson).optString("uid", ""); } catch (Exception ignored) { }
+        if (!ChatE2eKeys.validUid(uid)) {
+          publishNativeFailure(requestId, "chatKeys", "INVALID_ARGUMENT", "Sign in again to chat.");
+          return;
+        }
+        final String account = uid;
+        credentialExecutor.execute(() -> {
+          try {
+            JSONObject keys = ChatE2eKeys.keysFor(getApplicationContext(), account);
+            runOnUiThread(() -> publishNativeSuccess(requestId, "chatKeys", keys));
+          } catch (Exception error) {
+            FirebaseCrashlytics.getInstance().recordException(error);
+            runOnUiThread(() -> publishNativeFailure(requestId, "chatKeys", "E2E_UNAVAILABLE",
+                "Chat encryption isn’t available on this phone."));
+          }
+        });
+      });
+    }
+
     /** Asks Android for the microphone (and the camera for video). payload: {video: boolean}. */
     @JavascriptInterface public void callPermissions(String requestId, String payloadJson) {
       runOnUiThread(() -> {

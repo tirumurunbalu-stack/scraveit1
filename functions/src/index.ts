@@ -119,7 +119,7 @@ import {
   chatParentRespondSchema,
   chatChildSchema,
   chatReportSchema,
-  chatMessageSchema,
+  chatUnsendSchema,
   resolveChatReportSchema,
   restaurantMealPlansSchema,
   saveMealPlanSchema,
@@ -2460,7 +2460,7 @@ export const weeklyFoodCardPush = onSchedule({schedule: "0 19 * * 0", timeZone: 
   async () => { await chatFun.weeklyCardPush(); });
 export const chatReport = economicsCallable("chatReport", chatReportSchema, (uid, _t, input) => social.chatReport(uid, input));
 /** Unsend one of your own messages (within 2 days): gone for both, kept for moderators. */
-export const chatUnsend = economicsCallable("chatUnsend", chatMessageSchema, (uid, _t, input) => social.chatUnsend(uid, input));
+export const chatUnsend = economicsCallable("chatUnsend", chatUnsendSchema, (uid, _t, input) => social.chatUnsend(uid, input));
 export const resolveChatReport = economicsCallable("resolveChatReport", resolveChatReportSchema,
   (uid, token, input) => social.resolveChatReport(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
 

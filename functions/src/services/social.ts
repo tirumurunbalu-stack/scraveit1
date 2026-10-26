@@ -8,7 +8,7 @@ import {ageOn} from "../domain/customerSegments";
 import {DomainError} from "../errors";
 import {alarmAdmins, requestAlarmId} from "./adminAlerts";
 import {accountSetBirthDate, loadAccountAge} from "./accountAge";
-import {notifyUserChat} from "./notifications";
+import {notifyChatSealed, notifyUserChat} from "./notifications";
 import {celebrateStreak, streakUpdate} from "./chatFun";
 
 /**
@@ -369,7 +369,7 @@ export async function chatParentRevoke(uid: string, input: {childUid: string}, n
 
 // ------------------------------------------------------------------ reports
 
-export async function chatReport(uid: string, input: {pairId: string; reason: ReportReason; note: string; block: boolean}, now = Date.now()) {
+export async function chatReport(uid: string, input: {pairId: string; reason: ReportReason; note: string; block: boolean; revealed?: Array<{id: string; text: string; card?: Rec | null}>}, now = Date.now()) {
   const fsnap = await friendships().doc(input.pairId).get();
   const pair = fsnap.exists ? fsnap.data() as Rec : null;
   if (!pair || !(pair.members as string[]).includes(uid)) throw new DomainError("not-found", "That chat isn't available.");
@@ -378,6 +378,12 @@ export async function chatReport(uid: string, input: {pairId: string; reason: Re
   const messages = recent.docs.reverse().map((d) => {
     const m = d.data() as Rec;
     const at = m.at && typeof (m.at as {toMillis?: () => number}).toMillis === "function" ? (m.at as {toMillis: () => number}).toMillis() : Number(m.at ?? 0);
+    // Locked end to end: only the reporter's phone can unlock it, so the report carries what it showed.
+    if (m.e2e) {
+      const shown = (input.revealed ?? []).find((r) => r.id === d.id);
+      return {id: d.id, from: String(m.from ?? ""), text: shown ? String(shown.text).slice(0, 1000) : "🔒 Locked message", card: shown?.card ?? null, at,
+        unsent: m.unsent === true, locked: true, revealedByReporter: !!shown};
+    }
     return {id: d.id, from: String(m.from ?? ""), text: String(m.text ?? "").slice(0, 1000), card: m.card ?? null, at, unsent: m.unsent === true};
   });
   // An unsent message is blank in the chat; the report carries what it said.
@@ -408,7 +414,7 @@ export async function chatReport(uid: string, input: {pairId: string; reason: Re
  * "This message was deleted"; a photo or voice note in it becomes unreadable. What it said
  * is kept staff-only for 180 days (like moderator removals) so a report can still use it.
  */
-export async function chatUnsend(uid: string, input: {pairId: string; messageId: string}, now = Date.now()) {
+export async function chatUnsend(uid: string, input: {pairId: string; messageId: string; photoId?: string; voiceId?: string}, now = Date.now()) {
   const pairSnap = await friendships().doc(input.pairId).get();
   const pair = pairSnap.exists ? pairSnap.data() as Rec : null;
   if (!pair || !(pair.members as string[]).includes(uid)) throw new DomainError("not-found", "That chat isn't available.");
@@ -420,22 +426,31 @@ export async function chatUnsend(uid: string, input: {pairId: string; messageId:
   if (m.unsent === true) return {unsent: true};
   const card = (m.card ?? null) as Rec | null;
   if (card && card.type === "call") throw new DomainError("failed-precondition", "Call history can't be unsent.");
+  const locked = !!m.e2e;
   const at = m.at && typeof (m.at as {toMillis?: () => number}).toMillis === "function" ? (m.at as {toMillis: () => number}).toMillis() : Number(m.at ?? 0);
   if (!at || now - at > UNSEND_WINDOW_MS) throw new DomainError("failed-precondition", "Messages can be unsent for 2 days. You can still delete it for yourself.");
   const keep = {removedAt: now, deleteAfter: now + REMOVED_KEEP_MS};
   const batch = firestoreDb.batch();
   batch.set(unsentArchive().doc(`${input.pairId}_${input.messageId}`), {
+    // A locked message can't be read here; what it said stays on the phones that had it.
     pairId: input.pairId, messageId: input.messageId, from: uid, text: String(m.text ?? ""), card, at, unsentAt: now, deleteAfter: keep.deleteAfter,
+    ...(locked ? {locked: true} : {}),
   });
-  batch.update(ref, {text: "", card: FieldValue.delete(), reactions: FieldValue.delete(), unsent: true, unsentAt: now});
+  batch.update(ref, {text: "", card: FieldValue.delete(), e2e: FieldValue.delete(), reactions: FieldValue.delete(), unsent: true, unsentAt: now});
   const chat = firestoreDb.collection("chats").doc(input.pairId);
-  if (card && card.type === "photo" && typeof card.photoId === "string") batch.set(chat.collection("photos").doc(card.photoId), {removed: true, ...keep}, {merge: true});
-  if (card && card.type === "voice" && typeof card.voiceId === "string") batch.set(chat.collection("voices").doc(card.voiceId), {removed: true, ...keep}, {merge: true});
+  // A locked message's photo or voice message is named by the sender's phone (only it can read the card).
+  const photoId = card && card.type === "photo" && typeof card.photoId === "string" ? card.photoId : locked ? input.photoId : undefined;
+  const voiceId = card && card.type === "voice" && typeof card.voiceId === "string" ? card.voiceId : locked ? input.voiceId : undefined;
+  for (const [kind, id] of [["photos", photoId], ["voices", voiceId]] as const) {
+    if (!id) continue;
+    const file = await chat.collection(kind).doc(id).get();
+    if (file.exists && String((file.data() as Rec).from ?? "") === uid) batch.set(chat.collection(kind).doc(id), {removed: true, ...keep}, {merge: true});
+  }
   await batch.commit();
   // The chat list shouldn't keep showing what was taken back.
   const latest = await messagesOf(input.pairId).orderBy("at", "desc").limit(1).get();
   if (latest.docs[0]?.id === input.messageId) {
-    await friendships().doc(input.pairId).update({lastText: "🚫 This message was deleted", updatedAt: now}).catch(() => undefined);
+    await friendships().doc(input.pairId).update({lastText: "🚫 This message was deleted", lastE2e: FieldValue.delete(), updatedAt: now}).catch(() => undefined);
   }
   return {unsent: true};
 }
@@ -482,7 +497,7 @@ export async function resolveChatReport(adminUid: string, token: DecodedIdToken,
 
 // ------------------------------------------------------------------ trigger
 
-/** A new message: hide phone numbers, update the chat list, and push to the friend. */
+/** A new message: hide phone numbers (the phones do it for locked ones), update the chat list, push to the friend. */
 export async function onChatMessage(pairId: string, messageId: string, message: Rec, now = Date.now()): Promise<void> {
   const from = String(message.from ?? "");
   const text = String(message.text ?? "");
@@ -493,19 +508,39 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
   if (!pair || pair.status !== "accepted") return;
   const to = (pair.members as string[]).find((m) => m !== from);
   if (!to) return;
+  const names = (pair.names ?? {}) as Record<string, string>;
+  const sealed = sealedOf(message.e2e);
+  const {streak, milestone} = streakUpdate(pair, from, now);
+  if (sealed) {
+    // Locked end to end: the server can't read it. Each phone unlocks the chat-list line and the
+    // notification itself, so they carry the locked message.
+    await friendships().doc(pairId).update({lastText: "🔒 Message", lastE2e: {...sealed, from, id: messageId}, lastFrom: from, lastAt: now,
+      [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
+    if (milestone) await celebrateStreak({...pair, id: pairId}, milestone);
+    await notifyChatSealed({uid: to, key: `chat:${pairId}:${messageId}`, fromName: names[from] || "New message", pairId, messageId, from, sealed})
+      .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));
+    return;
+  }
   const card = message.card as Rec | undefined;
   const preview = card ? (card.type === "photo" ? (masked ? `📷 ${masked.slice(0, 110)}` : "📷 Photo")
     : card.type === "voice" ? `🎤 Voice message (${voiceLength(card.ms)})`
     : card.type === "call" ? callPreview(card)
     : card.type === "story" ? "📸 Shared a story" : `🍽 ${String(card.name ?? "A dish")}`) : masked.slice(0, 120);
-  const {streak, milestone} = streakUpdate(pair, from, now);
-  await friendships().doc(pairId).update({lastText: preview, lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
+  await friendships().doc(pairId).update({lastText: preview, lastE2e: FieldValue.delete(), lastFrom: from, lastAt: now, [`unread.${to}`]: FieldValue.increment(1), streak, updatedAt: now});
   if (milestone) await celebrateStreak({...pair, id: pairId}, milestone);
-  const names = (pair.names ?? {}) as Record<string, string>;
   // Call lines: the ringing/missed-call push already told them.
   if (card && card.type === "call") return;
   await notifyUserChat({uid: to, key: `chat:${pairId}:${messageId}`, title: names[from] || "New message", body: preview, data: {route: `dm:${pairId}`}})
     .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));
+}
+
+/** A message's end-to-end lock, if it has a well-formed one. */
+function sealedOf(value: unknown): {v: 1; iv: string; ct: string; spk: string; rpk: string} | null {
+  const e = value as Rec | null;
+  if (!e || typeof e !== "object" || e.v !== 1) return null;
+  const str = (k: string, max: number) => typeof e[k] === "string" && (e[k] as string).length > 0 && (e[k] as string).length <= max;
+  if (!str("iv", 16) || !str("ct", 8000) || !str("spk", 88) || !str("rpk", 88)) return null;
+  return {v: 1, iv: String(e.iv), ct: String(e.ct), spk: String(e.spk), rpk: String(e.rpk)};
 }
 
 /** 0:07 style length for a voice message preview. */
@@ -527,7 +562,7 @@ export async function onChatReaction(pairId: string, before: Rec, after: Rec, no
   if (!pair || pair.status !== "accepted") return;
   const names = (pair.names ?? {}) as Record<string, string>;
   const text = `Reacted ${emoji} to your message`;
-  await friendships().doc(pairId).update({lastText: text, lastFrom: reactor, lastAt: now, [`unread.${author}`]: FieldValue.increment(1), updatedAt: now});
+  await friendships().doc(pairId).update({lastText: text, lastE2e: FieldValue.delete(), lastFrom: reactor, lastAt: now, [`unread.${author}`]: FieldValue.increment(1), updatedAt: now});
   await notifyUserChat({uid: author, key: `react:${pairId}:${reactor}:${now}`, title: names[reactor] || "Your friend", body: text, data: {route: `dm:${pairId}`}})
     .catch((error) => logger.warn("CHAT_REACTION_PUSH_FAILED", {pairId, error: String(error)}));
 }

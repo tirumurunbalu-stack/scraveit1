@@ -22,6 +22,7 @@ import org.json.JSONObject;
 import java.io.OutputStream;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
 import java.util.Map;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -34,6 +35,8 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
   static final String REMINDERS_CHANNEL = "customer_reminders";
   // Friends calling: rings with the phone's ringtone until answered, declined or the caller hangs up.
   static final String CALLS_CHANNEL = "customer_calls";
+  // Messages from friends (locked end to end; unlocked here to show what they say).
+  static final String CHATS_CHANNEL = "customer_chats";
   static final String PUSH_ACTION = "com.feastly.app.CUSTOMER_PUSH_EVENT";
   static final String EXTRA_PUSH_JSON = "savrivo_push_json";
   private static final String PREFS = "savrivo_customer_push_events_v1";
@@ -67,6 +70,9 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
       NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
       if (manager != null) manager.cancel(callNotificationId(event.optString("callId", "")));
       if ("1".equals(event.optString("missed", "0"))) showMissedCall(event);
+    } else if ("CHAT".equals(type) && "1".equals(event.optString("e2e", ""))) {
+      // With the app open, the chat updates on screen by itself.
+      if (!MainActivity.isVisible()) showChatNotification(event);
     } else if ("CUSTOMER_BROADCAST".equals(type)) {
       String title = event.optString("title", "Scraveit");
       String body = event.optString("body", "");
@@ -102,10 +108,15 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     calls.enableVibration(true);
     calls.setVibrationPattern(new long[]{0, 900, 700, 900, 700, 900});
     calls.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+    NotificationChannel chats = new NotificationChannel(
+        CHATS_CHANNEL, "Messages from friends", NotificationManager.IMPORTANCE_HIGH);
+    chats.setDescription("Chat messages from your Scraveit friends");
+    chats.enableVibration(true);
     NotificationManager manager = context.getSystemService(NotificationManager.class);
     if (manager != null) {
       manager.createNotificationChannel(channel);
       manager.createNotificationChannel(calls);
+      manager.createNotificationChannel(chats);
       manager.createNotificationChannel(promotions);
       manager.createNotificationChannel(reminders);
     }
@@ -298,6 +309,75 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
     } finally {
       if (connection != null) connection.disconnect();
     }
+  }
+
+  /** "Ravi: Biryani at 8?" — the message is unlocked on this phone with its own chat key. */
+  private void showChatNotification(JSONObject event) {
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+    String pairId = event.optString("pairId", "");
+    if (!pairId.matches("[A-Za-z0-9_]{3,200}")) return;
+    createNotificationChannels(this);
+    int id = 0x5D000000 | (pairId.hashCode() & 0x00ffffff);
+    String body = chatPreview(event, pairId);
+    Intent launch = new Intent(this, MainActivity.class)
+        .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(EXTRA_PUSH_JSON, event.toString());
+    PendingIntent pending = PendingIntent.getActivity(this, id, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ? new Notification.Builder(this, CHATS_CHANNEL) : new Notification.Builder(this);
+    builder.setSmallIcon(R.drawable.savrivo_notification)
+        .setColor(getColor(R.color.savrivo_primary))
+        .setContentTitle(event.optString("fromName", "New message"))
+        .setContentText(body)
+        .setStyle(new Notification.BigTextStyle().bigText(body))
+        .setCategory(Notification.CATEGORY_MESSAGE)
+        .setPriority(Notification.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .setContentIntent(pending);
+    NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+    if (manager != null) manager.notify(id, builder.build());
+  }
+
+  /** What the message says (like the chat list), or "New message" when this phone can't unlock it. */
+  private String chatPreview(JSONObject event, String pairId) {
+    try {
+      String uid = event.optString("to", "");
+      String ct = event.optString("ct", "");
+      if (ct.isEmpty() || !ChatE2eKeys.validUid(uid)) return "New message";
+      PrivateKey mine = ChatE2eKeys.agreeKeyFor(this, uid, event.optString("rpk", ""));
+      if (mine == null) return "New message";
+      byte[] key = ChatE2eCrypto.chatKey(mine, event.optString("spk", ""), pairId);
+      byte[] plain = ChatE2eCrypto.open(key, event.optString("iv", ""), ct,
+          ChatE2eCrypto.messageAad(pairId, event.optString("from", ""), event.optString("messageId", "")));
+      JSONObject message = new JSONObject(new String(plain, StandardCharsets.UTF_8));
+      String text = maskPhones(message.optString("t", "")).trim();
+      JSONObject card = message.optJSONObject("c");
+      if (card != null) {
+        String type = card.optString("type", "");
+        if ("photo".equals(type)) return text.isEmpty() ? "📷 Photo" : "📷 " + clip(text);
+        if ("voice".equals(type)) return "🎤 Voice message (" + clock(card.optLong("ms", 0)) + ")";
+        if ("story".equals(type)) return text.isEmpty() ? "📸 Shared a story" : clip(text);
+        if (text.isEmpty()) return "🍽 " + card.optString("name", "A dish");
+      }
+      return text.isEmpty() ? "New message" : clip(text);
+    } catch (Exception unreadable) {
+      return "New message";
+    }
+  }
+
+  private static String clip(String text) {
+    return text.length() > 300 ? text.substring(0, 300) + "…" : text;
+  }
+
+  private static String clock(long ms) {
+    long total = Math.max(1, Math.min(600, Math.round(ms / 1000.0)));
+    return (total / 60) + ":" + (total % 60 < 10 ? "0" : "") + (total % 60);
+  }
+
+  /** Hides phone numbers, like the chat itself does. */
+  static String maskPhones(String text) {
+    return text.replaceAll("(?:\\+?91[\\s-]*)?\\d(?:[\\s-]*\\d){9}", "[phone number hidden]");
   }
 
   private void showMissedCall(JSONObject event) {

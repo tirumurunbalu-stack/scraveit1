@@ -429,7 +429,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Sign-in tokens expire after an hour. A call made with a stale one is
   // rejected by the server, so every signed-in call asks Firebase for a
   // current token first (Firebase refreshes it only when it is near expiry).
-  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment", "callPermissions", "callAudio"];
+  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment", "callPermissions", "callAudio", "chatKeys"];
   function nativeInvoke(operation, payload, options) {
     const user = fbAuth.currentUser;
     if (!user || TOKENLESS_OPERATIONS.includes(operation)) return nativeInvokeWithToken(operation, payload, options);
@@ -496,6 +496,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
           FeastlyNative.callPermissions(requestId, JSON.stringify(payload || {}));
         } else if (operation === "callAudio") {
           FeastlyNative.callAudio(requestId, JSON.stringify(payload || {}));
+        } else if (operation === "chatKeys") {
+          FeastlyNative.chatKeys(requestId, JSON.stringify(payload || {}));
         } else {
           throw new Error("INVALID_OPERATION");
         }

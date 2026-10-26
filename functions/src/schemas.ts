@@ -982,7 +982,11 @@ export const chatPairSchema = z.object({pairId: pairIdSchema}).strict();
 export const chatParentRespondSchema = z.object({childUid: identifier, approve: z.boolean()}).strict();
 export const chatChildSchema = z.object({childUid: identifier}).strict();
 export const chatMessageSchema = z.object({pairId: pairIdSchema, messageId: identifier}).strict();
-export const chatReportSchema = z.object({pairId: pairIdSchema, reason: z.enum(["harassment", "sexual", "spam", "self-harm", "other"]), note: z.string().trim().max(500).default(""), block: z.boolean().default(true)}).strict();
+// Unsend: for a message locked end to end, the sender's phone names its photo or voice message.
+export const chatUnsendSchema = chatMessageSchema.extend({photoId: identifier.optional(), voiceId: identifier.optional()}).strict();
+export const chatReportSchema = z.object({pairId: pairIdSchema, reason: z.enum(["harassment", "sexual", "spam", "self-harm", "other"]), note: z.string().trim().max(500).default(""), block: z.boolean().default(true),
+  // What the reporter's phone showed for messages locked end to end (the server can't read them).
+  revealed: z.array(z.object({id: identifier, text: z.string().max(1000), card: z.record(z.string(), z.unknown()).nullable().optional()}).strict()).max(20).default([])}).strict();
 export const resolveChatReportSchema = z.object({reportId: identifier, action: z.enum(["dismiss", "warn", "remove", "suspend", "ban"]), note: z.string().trim().max(500).default("")}).strict();
 
 export const attachPackedPhotoSchema = z.object({orderId: identifier, path: z.string().min(10).max(400)}).strict();

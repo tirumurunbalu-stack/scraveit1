@@ -570,6 +570,24 @@ service cloud.firestore {
       allow read: if isPrivileged();
       allow write: if false;
     }
+    // Chat encryption: each account's public keys (one phone's), readable by anyone signed in so
+    // friends can lock messages for it. Only the owner's phone publishes them.
+    match /chatKeys/{uid} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["agree", "sign", "at"])
+        && request.resource.data.agree is string && request.resource.data.agree.size() == 88
+        && request.resource.data.sign is string && request.resource.data.sign.size() == 88
+        && request.resource.data.at == request.time;
+      allow delete: if false;
+    }
+    // A message, photo or voice message locked end to end on the phone (see chat-e2e.js).
+    function sealedOk(e, maxCt) {
+      return e is map && e.keys().hasOnly(["v", "iv", "ct", "spk", "rpk"]) && e.keys().hasAll(["v", "iv", "ct", "spk", "rpk"])
+        && e.v == 1 && e.iv is string && e.iv.size() == 16
+        && e.ct is string && e.ct.size() > 0 && e.ct.size() <= maxCt
+        && e.spk is string && e.spk.size() == 88 && e.rpk is string && e.rpk.size() == 88;
+    }
     match /chats/{pairId}/messages/{messageId} {
       function pair() { return get(/databases/$(database)/documents/friendships/$(pairId)).data; }
       function me() { return get(/databases/$(database)/documents/chatProfiles/$(request.auth.uid)).data; }
@@ -580,12 +598,15 @@ service cloud.firestore {
       allow read: if request.auth != null && (isPrivileged() || request.auth.uid in pair().members);
       allow create: if request.auth != null
         && request.auth.uid in pair().members && pair().status == "accepted" && mayChat()
-        && request.resource.data.keys().hasOnly(["from", "text", "card", "at"])
+        && request.resource.data.keys().hasOnly(["from", "text", "card", "at", "e2e"])
         && request.resource.data.from == request.auth.uid
         && request.resource.data.at == request.time
         && request.resource.data.text is string && request.resource.data.text.size() <= 1000
-        && (request.resource.data.text.size() > 0 || request.resource.data.card is map)
-        && (!("card" in request.resource.data) || (request.resource.data.card is map && request.resource.data.card.size() <= 10));
+        && (request.resource.data.text.size() > 0 || request.resource.data.card is map || "e2e" in request.resource.data)
+        && (!("card" in request.resource.data) || (request.resource.data.card is map && request.resource.data.card.size() <= 10))
+        // Locked: the words and any card travel only inside the lock.
+        && (!("e2e" in request.resource.data) || (request.resource.data.text == "" && !("card" in request.resource.data)
+              && sealedOk(request.resource.data.e2e, 8000)));
       // A reaction: a member sets or clears only their own emoji, nothing else.
       allow update: if request.auth != null
         && request.auth.uid in pair().members && pair().status == "accepted"
@@ -614,11 +635,12 @@ service cloud.firestore {
         && request.auth.uid in photoPair().members && photoPair().status == "accepted"
         && (photoMe().status == "active" || (photoMe().status == "suspended" && photoMe().suspendedUntil < request.time.toMillis()))
         && (photoMe().minor != true || photoMe().parentStatus == "approved")
-        && request.resource.data.keys().hasOnly(["from", "image", "w", "h", "at"])
         && request.resource.data.from == request.auth.uid
         && request.resource.data.at == request.time
-        && request.resource.data.image is string && request.resource.data.image.size() <= 720000
-        && request.resource.data.image.matches("data:image/jpeg;base64,[A-Za-z0-9+/=]+")
+        && ((request.resource.data.keys().hasOnly(["from", "image", "w", "h", "at"])
+              && request.resource.data.image is string && request.resource.data.image.size() <= 720000
+              && request.resource.data.image.matches("data:image/jpeg;base64,[A-Za-z0-9+/=]+"))
+            || (request.resource.data.keys().hasOnly(["from", "e2e", "w", "h", "at"]) && sealedOk(request.resource.data.e2e, 740000)))
         && request.resource.data.w is int && request.resource.data.w > 0 && request.resource.data.w <= 4096
         && request.resource.data.h is int && request.resource.data.h > 0 && request.resource.data.h <= 4096;
       allow update, delete: if false;
@@ -634,24 +656,31 @@ service cloud.firestore {
         && request.auth.uid in voicePair().members && voicePair().status == "accepted"
         && (voiceMe().status == "active" || (voiceMe().status == "suspended" && voiceMe().suspendedUntil < request.time.toMillis()))
         && (voiceMe().minor != true || voiceMe().parentStatus == "approved")
-        && request.resource.data.keys().hasOnly(["from", "audio", "ms", "at"])
         && request.resource.data.from == request.auth.uid
         && request.resource.data.at == request.time
-        && request.resource.data.audio is string && request.resource.data.audio.size() <= 650000
-        && request.resource.data.audio.matches("data:audio/(webm|ogg|mp4|aac)(;codecs=opus)?;base64,[A-Za-z0-9+/=]+")
+        && ((request.resource.data.keys().hasOnly(["from", "audio", "ms", "at"])
+              && request.resource.data.audio is string && request.resource.data.audio.size() <= 650000
+              && request.resource.data.audio.matches("data:audio/(webm|ogg|mp4|aac)(;codecs=opus)?;base64,[A-Za-z0-9+/=]+"))
+            || (request.resource.data.keys().hasOnly(["from", "e2e", "ms", "at"]) && sealedOk(request.resource.data.e2e, 660000)))
         && request.resource.data.ms is int && request.resource.data.ms > 0 && request.resource.data.ms <= 120500;
       allow update, delete: if false;
     }
 
     // Voice and video calls between friends. The call document carries the WebRTC offer/answer
     // and the status; each side adds its own network candidates. No audio or video is stored.
+    function callSigOk(sig) {
+      return sig is map && sig.keys().hasOnly(["k", "s"]) && sig.k is string && sig.k.size() == 16
+        && sig.s is string && sig.s.size() > 0 && sig.s.size() <= 200;
+    }
     match /calls/{callId} {
       function callPair(pid) { return get(/databases/$(database)/documents/friendships/$(pid)).data; }
       function callMe() { return get(/databases/$(database)/documents/chatProfiles/$(request.auth.uid)).data; }
       function inCall() { return request.auth != null && (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to); }
       allow read: if inCall();
       allow create: if request.auth != null
-        && request.resource.data.keys().hasOnly(["from", "to", "pairId", "kind", "status", "offer", "createdAt"])
+        && request.resource.data.keys().hasOnly(["from", "to", "pairId", "kind", "status", "offer", "offerSig", "createdAt"])
+        // The caller's phone signs the call's DTLS fingerprints (end-to-end check, see chat-e2e.js).
+        && (!("offerSig" in request.resource.data) || callSigOk(request.resource.data.offerSig))
         && request.resource.data.from == request.auth.uid
         && request.resource.data.to is string && request.resource.data.to != request.auth.uid
         && callPair(request.resource.data.pairId).status == "accepted"
@@ -667,7 +696,9 @@ service cloud.firestore {
       // Who, what and when the call started never change. The person called answers (or declines);
       // either side ends it; the caller can give up while it rings.
       allow update: if inCall()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "answer", "answeredAt", "endedAt", "endedBy", "ringingAt"])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "answer", "answerSig", "answeredAt", "endedAt", "endedBy", "ringingAt"])
+        && (!("answerSig" in request.resource.data.diff(resource.data).affectedKeys()) || (request.auth.uid == resource.data.to
+              && callSigOk(request.resource.data.answerSig)))
         // The person called marks it ringing once their phone shows it (the caller sees "Ringing…").
         && (!("ringingAt" in request.resource.data.diff(resource.data).affectedKeys()) || (request.auth.uid == resource.data.to
               && resource.data.status == "ringing" && request.resource.data.ringingAt == request.time))

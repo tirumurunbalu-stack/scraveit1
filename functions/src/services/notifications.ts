@@ -654,6 +654,30 @@ export async function notifyUserChat(input: {uid: string; key: string; title: st
 }
 
 /**
+ * A chat message locked end to end. Data-only, so the phone's own code runs, unlocks it with its key
+ * and shows what it says. FCM allows 4 KB of data: a long message travels without its text and
+ * shows as "New message".
+ */
+export async function notifyChatSealed(input: {uid: string; key: string; fromName: string; pairId: string; messageId: string; from: string; sealed: {iv: string; ct: string; spk: string; rpk: string}}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_CHAT",
+    aggregateType: "chat",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-chat:${input.key}:${input.uid}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      data: {
+        type: "CHAT", e2e: "1", route: `dm:${input.pairId}`, pairId: input.pairId, messageId: input.messageId, from: input.from, to: input.uid,
+        fromName: input.fromName.slice(0, 60), iv: input.sealed.iv, ct: input.sealed.ct.length <= 2600 ? input.sealed.ct : "",
+        spk: input.sealed.spk, rpk: input.sealed.rpk,
+      },
+      android: {priority: "high"},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {alert: {title: input.fromName.slice(0, 60), body: "New message"}, sound: "default", mutableContent: true}}},
+    }),
+  });
+}
+
+/**
  * A friend is calling. Data-only and high priority, so the app's own code always runs and shows a
  * ringing call notification with Answer/Decline, even when the app is closed. Useless after 40 s.
  */
