@@ -570,23 +570,57 @@ service cloud.firestore {
       allow read: if isPrivileged();
       allow write: if false;
     }
-    // Chat encryption: each account's public keys (one phone's), readable by anyone signed in so
-    // friends can lock messages for it. Only the owner's phone publishes them.
+    // Chat encryption: each account's identity key and current (signed) chat key, readable by anyone
+    // signed in so friends can lock messages for it. Only the account's own phones publish it; the
+    // chat key only moves forward (a new identity starts again at 1).
     match /chatKeys/{uid} {
       allow read: if request.auth != null;
       allow create, update: if request.auth != null && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(["agree", "sign", "at"])
-        && request.resource.data.agree is string && request.resource.data.agree.size() == 88
+        && request.resource.data.keys().hasOnly(["v", "sign", "agree", "epoch", "agreeSig", "at"])
+        && request.resource.data.v == 2
         && request.resource.data.sign is string && request.resource.data.sign.size() == 88
-        && request.resource.data.at == request.time;
+        && request.resource.data.agree is string && request.resource.data.agree.size() == 88
+        && request.resource.data.epoch is int && request.resource.data.epoch >= 1
+        && request.resource.data.agreeSig is string && request.resource.data.agreeSig.size() <= 120
+        && request.resource.data.at == request.time
+        && (resource == null || resource.data.get("v", 1) != 2 || request.resource.data.epoch >= resource.data.epoch
+            || request.resource.data.sign != resource.data.sign);
       allow delete: if false;
+    }
+    // The account's key vault, locked on its phones with a key only they hold (the server can't open
+    // it). Old chat keys sit in its archive, locked to the person's recovery key.
+    match /chatVault/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["v", "check", "id", "epochs", "archive", "rpk", "recovery", "avkr", "at"])
+        && request.resource.data.v == 2 && request.resource.data.rpk is string && request.resource.data.rpk.size() == 88
+        && request.resource.data.epochs is map && request.resource.data.archive is map;
+      allow delete: if false;
+    }
+    // Adding a phone: the new phone asks, one of the account's phones approves and hands over the
+    // vault key locked to the request. Only the account itself sees these.
+    match /chatLinks/{uid}/requests/{reqId} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["epk", "name", "status", "at"])
+        && request.resource.data.epk is string && request.resource.data.epk.size() == 88
+        && request.resource.data.name is string && request.resource.data.name.size() <= 60
+        && request.resource.data.status == "pending" && request.resource.data.at == request.time;
+      allow update: if request.auth != null && request.auth.uid == uid && resource.data.status == "pending"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "box"])
+        && request.resource.data.status in ["approved", "declined"]
+        && (request.resource.data.status == "declined" || (request.resource.data.box is map
+              && request.resource.data.box.keys().hasOnly(["epk", "iv", "c"])));
     }
     // A message, photo or voice message locked end to end on the phone (see chat-e2e.js).
     function sealedOk(e, maxCt) {
-      return e is map && e.keys().hasOnly(["v", "iv", "ct", "spk", "rpk"]) && e.keys().hasAll(["v", "iv", "ct", "spk", "rpk"])
-        && e.v == 1 && e.iv is string && e.iv.size() == 16
+      return e is map && e.iv is string && e.iv.size() == 16
         && e.ct is string && e.ct.size() > 0 && e.ct.size() <= maxCt
-        && e.spk is string && e.spk.size() == 88 && e.rpk is string && e.rpk.size() == 88;
+        && e.spk is string && e.spk.size() == 88
+        && ((e.v == 1 && e.keys().hasOnly(["v", "iv", "ct", "spk", "rpk"]) && e.rpk is string && e.rpk.size() == 88)
+          || (e.v == 2 && e.keys().hasOnly(["v", "iv", "ct", "epk", "spk", "se", "ss", "w"])
+              && e.epk is string && e.epk.size() == 88 && e.se is int && e.ss is string && e.ss.size() <= 120
+              && e.w is list && e.w.size() >= 1 && e.w.size() <= 4));
     }
     match /chats/{pairId}/messages/{messageId} {
       function pair() { return get(/databases/$(database)/documents/friendships/$(pairId)).data; }

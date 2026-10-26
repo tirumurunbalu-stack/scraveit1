@@ -82,6 +82,18 @@ describe("chat locked end to end", () => {
     expect(docs.get(`chats/${PAIR}/messages/m1`)!.phoneHidden).toBeUndefined();
   });
 
+  it("a version 2 lock (account keys, a wrap for each account) goes to the push with its wraps", async () => {
+    const v2 = {v: 2, iv: "AAAAAAAAAAAAAAAA", ct: "bG9ja2Vk", epk: KEY, spk: KEY, se: 3, ss: "c2ln",
+      w: [{k: "0123456789abcdef", iv: "AAAAAAAAAAAAAAAA", c: "Y2Vr"}, {k: "fedcba9876543210", iv: "AAAAAAAAAAAAAAAA", c: "Y2Vr"}]};
+    msg("m4", {from: "aaaaaa", text: "", e2e: v2});
+    await onChatMessage(PAIR, "m4", {from: "aaaaaa", text: "", e2e: v2}, NOW);
+    expect(docs.get(`friendships/${PAIR}`)).toMatchObject({lastText: "🔒 Message", lastE2e: {...v2, from: "aaaaaa", id: "m4"}});
+    expect(pushes[0]).toEqual(["sealed", expect.objectContaining({sealed: v2, messageId: "m4"})]);
+    pushes.length = 0;
+    await onChatMessage(PAIR, "m5", {from: "aaaaaa", text: "", e2e: {...v2, w: []}}, NOW);
+    expect(pushes[0]?.[0]).toBe("plain");
+  });
+
   it("a plain message (an older app, a call line) clears the locked chat-list line", async () => {
     docs.set(`friendships/${PAIR}`, {...docs.get(`friendships/${PAIR}`)!, lastE2e: {...sealed, from: "aaaaaa", id: "m1"}});
     msg("m2", {from: "bbbbbb", text: "call me on 9848022338"});

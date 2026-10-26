@@ -3691,7 +3691,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const CHAT_REASONS=[["harassment","Harassment or bullying"],["sexual","Sexual or abusive content"],["spam","Spam or scam"],["self-harm","Talk of self-harm"],["other","Something else"]];
   function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],payAsks:[],payInbox:[],payBusy:"",children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
   function myUid(){return String(state.session&&state.session.uid||"")}
-  function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;setTimeout(()=>{e2eOwn()},1500);
+  function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;setTimeout(()=>{e2eAccount()},1500);
     const pc=readPeopleCache(uid);if(pc){if(pc.me)c.avatars[uid]=pc.me;pc.people.forEach(x=>{if(x.img&&!c.avatars[x.uid])c.avatars[x.uid]=x.img})}
     try{
       loadAvatars();
@@ -4637,6 +4637,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +(sent.length?'<section class="stack"><h2 class="section-title">Sent</h2>'+sent.map((x,i)=>row(x,'<small class="caption">Waiting</small>',i)).join("")+'</section>':'')
         +(blocked.length?'<section class="stack"><h2 class="section-title">Blocked</h2>'+blocked.map((x,i)=>row(x,btn("Unblock","friend-unblock",x.id),i)).join("")+'</section>':'')
         +'<section class="card stack"><h2 class="section-title">Who can send you requests</h2><div class="stack" role="radiogroup" aria-label="Who can send you requests">'+(p.minor?[["code","People with my code"],["nobody","Nobody"]]:[["everyone","Anyone with my username or code"],["code","Only people with my code"],["nobody","Nobody"]]).map(o=>{const cur=p.requests||(p.minor?"code":"everyone");return'<button class="settings-row chat-radio '+(cur===o[0]?'on':'')+'" role="radio" aria-checked="'+(cur===o[0])+'" data-action="chat-privacy" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>'}).join("")+'</div>'+(p.minor?'<p class="caption">Under 18, people can add you only with the code you share.</p>':'')+'</section>'
+        +(e2eReady()?'<section class="card stack e2e-rows"><button class="settings-row" data-action="e2e-account"><span class="grow"><strong>🔒 Chat encryption</strong><span class="supporting">'+(e2e.acct&&e2e.acct.bundle.pendingCode?'Save your recovery key so you can get your chats back on a new phone.':e2e.needs==="link"?'Set up this phone to read your encrypted chats.':'Recovery key, older messages and your phones.')+'</span></span><span aria-hidden="true">›</span></button></section>':'')
         +(()=>{const on=typeof p.shareEating==="boolean"?p.shareEating:!p.minor;return'<section class="card stack"><button class="settings-row" data-action="chat-eating-share" data-value="'+(on?'off':'on')+'"><span class="grow"><strong>Show friends when I’m eating</strong><span class="supporting">When your food arrives, friends see the dish and restaurant on your photo for 30 minutes. Never your address.</span></span><span class="switch '+(on?'on':'')+'" aria-hidden="true"></span></button></section>'})()
         +(kids.length?'<section class="card stack"><h2 class="section-title">Your children</h2>'+kids.map(r=>'<div class="cluster between"><span>'+h(r.childName||"Child")+'</span><button class="button tonal small" data-action="parent-revoke" data-child-uid="'+h(r.childUid)+'">Turn chat off</button></div>').join("")+'</section>':''))
       +'</div></main>'}
@@ -4679,77 +4680,235 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
   // ---- End-to-end encryption ----
-  // Messages, photos and voice messages are locked on this phone with a key only the two friends'
-  // phones can work out (chat-e2e.js); Scraveit's server stores and forwards only the locked bytes.
-  // This phone's keys come from the Android app (kept with the Keystore); friends' public keys are
-  // published in chatKeys/{uid}. A friend on an older app gets plain messages until they update.
-  const e2e={own:null,uid:"",loading:null,loadingUid:"",failUid:"",failAt:0,peers:new Map(),opened:new Map(),previews:new Map(),busy:new Set()};
+  // Messages, photos and voice messages are locked on this phone (chat-e2e.js); Scraveit's server
+  // stores and forwards only locked bytes. All of an account's phones share one key set: the first
+  // phone makes it (with a recovery key the person saves), another phone joins when one of theirs
+  // approves it or with the recovery key. Keys are kept by the Android app (Keystore-protected) and
+  // synced through the account's locked vault; a new chat key every week, and keys older than 30 days
+  // leave the phones (forward secrecy), so this phone remembers the keys of messages it has shown.
+  // A friend on an older app gets plain messages until they update.
+  const e2e={acct:null,v1:null,uid:"",loading:null,loadingUid:"",failUid:"",failAt:0,needs:"",peers:new Map(),opened:new Map(),previews:new Map(),busy:new Set(),stores:new Map(),synced:"",linkUnsub:null,linkUid:"",myReq:"",seenReq:new Set(),recoveryShown:""};
+  const E2E_ERR={phone:"🔒 This message is older than this phone’s keys.",link:"🔒 Set up chat on this phone to read this message.",app:"🔒 Update Scraveit to read this message.",sender:"⚠️ This message couldn’t be checked as really coming from your friend, so it isn’t shown.",broken:"🔒 This message couldn’t be unlocked."};
   function e2eReady(){return!!(window.ScraveitE2E&&ScraveitE2E.available&&nativeAvailable("chatKeys"))}
-  function e2eOwn(){const uid=myUid();if(!uid||!e2eReady())return Promise.resolve(null);if(e2e.own&&e2e.uid===uid)return Promise.resolve(e2e.own);
-    if(e2e.loading&&e2e.loadingUid===uid)return e2e.loading;if(e2e.failUid===uid&&Date.now()-e2e.failAt<60000)return Promise.resolve(null);e2e.loadingUid=uid;
-    e2e.loading=(async()=>{try{const own=await ScraveitE2E.importOwn(await nativeInvoke("chatKeys",{uid},{timeoutMs:15000}));if(myUid()!==uid)return null;e2e.own=own;e2e.uid=uid;
-        // Publish this phone's public keys (again, if the account was last used on another phone).
-        try{const ref=fs.collection("chatKeys").doc(uid),d=await ref.get(),v=d.exists?d.data():null;if(!v||v.agree!==own.agreePub||v.sign!==own.signPub)await ref.set({agree:own.agreePub,sign:own.signPub,at:firebase.firestore.FieldValue.serverTimestamp()})}catch(_){}
-        // Messages that waited for the keys get unlocked now.
-        e2e.opened.forEach((v,k)=>{if(v&&v.error==="app")e2e.opened.delete(k)});e2e.previews.forEach((v,k)=>{if(v==="🔒 Message")e2e.previews.delete(k)});
-        const c=chatState();if(c.threadId&&c.threads[c.threadId])e2eApply(c.threadId,c.threads[c.threadId]);
-        chatRerender();return own}
+  const e2eDir=uid=>fs.collection("chatKeys").doc(uid),e2eVault=uid=>fs.collection("chatVault").doc(uid);
+  const e2eNow=()=>firebase.firestore.FieldValue.serverTimestamp();
+  function e2eSave(uid,bundle){return nativeInvoke("chatKeys",bundle?{uid,op:"put",v2:bundle}:{uid,op:"forget"},{timeoutMs:15000})}
+  // What the vault holds, to tell whether another phone changed it in the meantime.
+  function e2eVaultSig(v){const e=v&&v.epochs||{},a=v&&v.archive||{};return Object.keys(e).sort().map(k=>k+":"+e[k].c).join()+"|"+Object.keys(a).sort().join()+"|"+(v&&v.check&&v.check.c)+"|"+(v&&v.rpk)}
+  /** This phone's account keys, ready to use; null while the phone isn't set up (e2e.needs says why). */
+  function e2eAccount(){const uid=myUid();if(!uid||!e2eReady())return Promise.resolve(null);if(e2e.acct&&e2e.uid===uid)return Promise.resolve(e2e.acct);
+    if(e2e.loading&&e2e.loadingUid===uid)return e2e.loading;if(e2e.failUid===uid&&Date.now()-e2e.failAt<60000)return Promise.resolve(null);
+    e2e.loadingUid=uid;
+    e2e.loading=(async()=>{try{const got=await nativeInvoke("chatKeys",{uid,op:"get"},{timeoutMs:15000});if(myUid()!==uid)return null;
+        e2e.v1=got&&got.v1?await ScraveitE2E.importOwn(got.v1).catch(()=>null):null;
+        let bundle=got&&got.v2||null;
+        if(!bundle){const vs=await e2eVault(uid).get();
+          // The account already has keys on another phone: this one has to be added.
+          if(vs.exists){e2e.uid=uid;e2e.needs="link";chatRerender();return null}
+          const made=await ScraveitE2E.newAccount(uid,Date.now());
+          const created=await fs.runTransaction(async t=>{const cur=await t.get(e2eVault(uid));if(cur.exists)return false;
+            t.set(e2eVault(uid),Object.assign({},made.vault,{at:e2eNow()}));t.set(e2eDir(uid),Object.assign({},made.directory,{at:e2eNow()}));return true});
+          if(!created){e2e.uid=uid;e2e.needs="link";chatRerender();return null}
+          await e2eSave(uid,made.bundle);bundle=made.bundle}
+        const acct=await e2eSync(uid,bundle);if(!acct||myUid()!==uid)return null;
+        e2e.acct=acct;e2e.uid=uid;e2e.needs="";e2eRetry();e2eWatchLinks();chatRerender();return acct}
       catch(_){e2e.failUid=uid;e2e.failAt=Date.now();return null}finally{e2e.loading=null}})();
     return e2e.loading}
-  // Friends' keys seen on this phone are remembered, so a change shows "security code changed".
-  const E2E_PINS="scraveit.e2e.pins.";
+  /**
+   * Brings this phone in line with the vault (another phone may have made a new key, retired old ones
+   * or signed this phone out), does the weekly upkeep once a session, and publishes the current key.
+   */
+  async function e2eSync(uid,bundle){const ref=e2eVault(uid);let snap=await ref.get();if(!snap.exists)return ScraveitE2E.loadAccount(bundle);
+    let vault=snap.data(),next;
+    try{next=await ScraveitE2E.bundleFromVault(uid,vault,ScraveitE2E.unb64(bundle.avk),bundle)}
+    catch(e){if(/VAULT_LOCKED/.test(String(e&&e.message))){await e2eSave(uid,null).catch(()=>{});e2e.uid=uid;e2e.needs="link";chatRerender();return null}throw e}
+    if(e2e.synced!==uid){e2e.synced=uid;
+      const due=await ScraveitE2E.maintain(await ScraveitE2E.loadAccount(next),vault,Date.now());
+      if(due){const sig=e2eVaultSig(vault);
+        const done=await fs.runTransaction(async t=>{const cur=await t.get(ref);if(!cur.exists||e2eVaultSig(cur.data())!==sig)return false;t.set(ref,Object.assign({},due,{at:e2eNow()}));return true}).catch(()=>false);
+        if(!done){snap=await ref.get();vault=snap.data()}else vault=due;
+        next=await ScraveitE2E.bundleFromVault(uid,vault,ScraveitE2E.unb64(bundle.avk),next)}}
+    if(JSON.stringify(next)!==JSON.stringify(bundle))await e2eSave(uid,next);
+    const acct=await ScraveitE2E.loadAccount(next),dir=ScraveitE2E.directoryOf(next);
+    try{const d=await e2eDir(uid).get(),cur=d.exists?d.data():null;if(!cur||cur.v!==2||cur.agree!==dir.agree||cur.sign!==dir.sign||cur.epoch!==dir.epoch)await e2eDir(uid).set(Object.assign({},dir,{at:e2eNow()}))}catch(_){}
+    return acct}
+  /** Pulls the vault again (at most once a minute) in case another phone made a new key. */
+  let e2eCatchUpAt=0,e2eCatchUpRun=null;
+  function e2eCatchUp(){const a=e2e.acct;if(!a)return Promise.resolve(null);if(e2eCatchUpRun)return e2eCatchUpRun;if(Date.now()-e2eCatchUpAt<60000)return Promise.resolve(null);e2eCatchUpAt=Date.now();
+    e2eCatchUpRun=(async()=>{try{const before=JSON.stringify(a.bundle.epochs),next=await e2eSync(a.uid,a.bundle);if(!next)return null;e2e.acct=next;return JSON.stringify(next.bundle.epochs)===before?null:next}catch(_){return null}finally{e2eCatchUpRun=null}})();
+    return e2eCatchUpRun}
+  // Messages that waited (no keys yet, older keys) get another go.
+  function e2eRetry(){e2e.opened.forEach((v,k)=>{if(v&&["app","link","phone"].includes(v.error))e2e.opened.delete(k)});e2e.previews.forEach((v,k)=>{if(v==="🔒 Message")e2e.previews.delete(k)});
+    const c=chatState();if(c.threadId&&c.threads[c.threadId])e2eApply(c.threadId,c.threads[c.threadId])}
+  async function e2eUse(uid,bundle,toast_){await e2eSave(uid,bundle);e2e.acct=null;e2e.synced="";e2e.failAt=0;e2e.needs="";const acct=await e2eAccount();if(acct&&toast_)toast(toast_,"success");return acct}
+
+  // ---- friends' keys ----
+  // A friend's identity key is remembered on this phone; if it changes, the chat says so.
+  const E2E_PINS="scraveit.e2e.pins2.";
   function e2ePins(){try{return JSON.parse(localStorage.getItem(E2E_PINS+myUid())||"{}")||{}}catch(_){return{}}}
   function e2eSavePins(v){try{localStorage.setItem(E2E_PINS+myUid(),JSON.stringify(v))}catch(_){}}
-  function e2ePin(uid,k){const pins=e2ePins(),cur=pins[uid];if(cur&&cur.agree===k.agree&&cur.sign===k.sign)return;
-    pins[uid]={agree:k.agree,sign:k.sign,known:Array.from(new Set((cur&&cur.known||[]).concat(k.agree))).slice(-8),changed:!!cur};e2eSavePins(pins);if(cur)chatRerender()}
-  // A message locked with a key of theirs this phone hasn't seen: tell the person, like a key change.
-  function e2eSeen(uid,agree){const pins=e2ePins(),cur=pins[uid];if(!cur||(cur.known||[]).includes(agree))return;cur.known=(cur.known||[]).concat(agree).slice(-8);cur.changed=true;e2eSavePins(pins);chatRerender()}
-  // A friend's published keys, looked up at most every 10 minutes (sooner when asked fresh).
+  function e2ePin(uid,sign){const pins=e2ePins(),cur=pins[uid];if(cur&&cur.sign===sign)return;
+    pins[uid]={sign,known:Array.from(new Set((cur&&cur.known||[]).concat(sign))).slice(-6),changed:!!cur};e2eSavePins(pins);if(cur)chatRerender()}
+  function e2eSigns(uid){const p=e2ePins()[uid],c=e2e.peers.get(uid);return Array.from(new Set([].concat(p&&p.known||[],c&&c.v?[c.v.sign]:[])))}
+  /** A friend's checked keys ({sign, agree, epoch}), looked up at most every 10 minutes (sooner when asked fresh). */
   function e2ePeer(uid,fresh){const c=e2e.peers.get(uid);if(c&&c.p)return c.p;if(c&&!fresh&&Date.now()-c.at<10*60000)return Promise.resolve(c.v);
-    const was=c?c.v:undefined,p=(async()=>{try{const d=await fs.collection("chatKeys").doc(uid).get(),v=d.exists?d.data():null;
-        const val=v&&ScraveitE2E.isPub(v.agree)&&ScraveitE2E.isPub(v.sign)?{agree:v.agree,sign:v.sign}:null;e2e.peers.set(uid,{v:val,at:Date.now()});if(val)e2ePin(uid,val);
-        if(was===undefined||!was!==!val||(was&&val&&was.agree!==val.agree))chatRerender();return val}
-      // Offline: try again in a minute.
+    const was=c?c.v:undefined,p=(async()=>{try{const d=await e2eDir(uid).get(),val=await ScraveitE2E.checkDirectory(uid,d.exists?d.data():null);
+        e2e.peers.set(uid,{v:val,at:Date.now()});if(val)e2ePin(uid,val.sign);if(was===undefined||!was!==!val)chatRerender();return val}
       catch(_){e2e.peers.set(uid,{v:was,at:Date.now()-9*60000});return was||null}})();
     e2e.peers.set(uid,{v:was,at:c?c.at:0,p});return p}
-  /** "on": this chat is locked end to end; "off": the friend's app can't yet; "": still finding out. */
-  function e2eState(other){if(!e2eReady())return"off";const c=e2e.peers.get(other);if(!c||c.v===undefined){e2ePeer(other);return""}if(!c.v)return"off";if(!e2e.own||e2e.uid!==myUid()){e2eOwn();return""}return"on"}
-  async function e2eLock(other){if(!other||!e2eReady())return null;const own=await e2eOwn(),peer=own?await e2ePeer(other):null;return own&&peer?{own,peer}:null}
+  /** "on": locked end to end; "off": the friend's app can't yet; "link": this phone isn't set up; "": finding out. */
+  function e2eState(other){if(!e2eReady())return"off";if(e2e.needs==="link"&&e2e.uid===myUid())return"link";const c=e2e.peers.get(other);if(!c||c.v===undefined){e2ePeer(other);return""}
+    if(!c.v)return"off";if(!e2e.acct||e2e.uid!==myUid()){e2eAccount();return""}return"on"}
+  /** Keys to lock a message for a friend: null for a friend on an older app; throws if this phone can't lock yet. */
+  async function e2eLock(other){if(!other||!e2eReady())return null;const peer=await e2ePeer(other);if(!peer)return null;const acct=await e2eAccount();
+    if(!acct){if(e2e.needs==="link")setSheet({type:"e2eSetup"});throw Object.assign(new Error("E2E_NOT_READY"),{userMessage:e2e.needs==="link"?"Set up chat on this phone first.":"Couldn’t lock the message. Try again."})}
+    return{acct,peer}}
+
+  // ---- unlocking ----
+  // This phone's memory of message keys: messages it has shown stay readable after their chat key retires.
+  function e2eStore(uid){if(!e2e.stores.has(uid))e2e.stores.set(uid,ScraveitE2E.store("scraveit-e2e-"+uid));return e2e.stores.get(uid)}
+  async function e2eCekGet(acct,key){try{const rec=await e2eStore(acct.uid).get(key);return rec?await ScraveitE2E.cacheOpen(acct,key,rec):null}catch(_){return null}}
+  async function e2eCekPut(acct,key,cek){try{await e2eStore(acct.uid).put(key,await ScraveitE2E.cacheSeal(acct,key,cek))}catch(_){}}
+  /** Unlocks a message ("m"), photo ("p") or voice message ("v"): {text, card} or {mime, bytes}. */
+  async function e2eUnlock(pairId,kind,id,from,e){const E=ScraveitE2E,aad=kind==="m"?E.msgAad(pairId,from,id):kind==="p"?E.photoAad(pairId,from,id):E.voiceAad(pairId,from,id);
+    const acct=await e2eAccount();
+    if(e.v===1){if(!e2e.v1)throw new Error(acct||e2e.needs!=="link"?"E2E_NOT_FOR_THIS_PHONE":"E2E_LINK");return kind==="m"?E.openMessage(e2e.v1,e,pairId,from,id):E.openFile(e2e.v1,e,pairId,aad)}
+    if(!acct)throw new Error(e2e.needs==="link"?"E2E_LINK":"E2E_UNAVAILABLE");
+    const key=kind+"|"+pairId+"|"+id;let cek=await e2eCekGet(acct,key),a=acct;
+    if(!cek){try{cek=await E.unwrap2(a,e,pairId,aad)}
+      // Locked for a key another of my phones made since this one last looked: catch up and try again.
+      catch(err){if(!/NOT_FOR_THIS_PHONE/.test(String(err&&err.message))||!(a=await e2eCatchUp()))throw err;cek=await E.unwrap2(a,e,pairId,aad)}
+      e2eCekPut(a,key,cek)}
+    // The sender's own identity key must have signed the chat key it was sent with.
+    if(from!==acct.uid)await e2ePeer(from);
+    if(!await E.senderOk(from,from===acct.uid?[acct.signPub]:e2eSigns(from),e))throw new Error("E2E_SENDER");
+    const bytes=await E.openBody(cek,e,aad);return kind==="m"?E.messageFrom(bytes):E.fileFrom(bytes)}
+  function e2eErr(e){const m=String(e&&e.message||"");return/NOT_FOR_THIS_PHONE/.test(m)?"phone":/E2E_LINK/.test(m)?"link":/UNAVAILABLE/.test(m)?"app":/E2E_SENDER/.test(m)?"sender":"broken"}
   // Fills in each locked message's words and card once this phone has unlocked it.
   function e2eApply(pairId,list){(list||[]).forEach(m=>{if(!m.e2e||m.unsent)return;const got=e2e.opened.get(m.id);
       if(got){delete m.e2ePending;if(got.error)m.e2eError=got.error;else{delete m.e2eError;m.text=got.text;if(got.card)m.card=got.card;else delete m.card}return}
       delete m.e2eError;m.e2ePending=true;e2eOpenMsg(pairId,m)});return list}
   async function e2eOpenMsg(pairId,m){if(e2e.busy.has(m.id))return;e2e.busy.add(m.id);
-    try{const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const v=await ScraveitE2E.openMessage(own,m.e2e,pairId,m.from,m.id);
-      if(m.from!==myUid())e2eSeen(m.from,m.e2e.spk);v.text=maskPhoneNumbers(v.text);e2e.opened.set(m.id,v)}
-    catch(e){e2e.opened.set(m.id,{error:/NOT_FOR_THIS_PHONE/.test(String(e&&e.message))?"phone":/UNAVAILABLE/.test(String(e&&e.message))?"app":"broken"})}
+    try{const v=await e2eUnlock(pairId,"m",m.id,m.from,m.e2e);v.text=maskPhoneNumbers(v.text);e2e.opened.set(m.id,v)}
+    catch(e){e2e.opened.set(m.id,{error:e2eErr(e)})}
     finally{e2e.busy.delete(m.id);const list=chatState().threads[pairId];if(list){e2eApply(pairId,list);chatRerender()}}}
   function e2eSummary(v){const t=maskPhoneNumbers(String(v&&v.text||"")).trim(),c=v&&v.card;
     if(c){if(c.type==="photo")return t?"📷 "+t.slice(0,110):"📷 Photo";if(c.type==="voice")return"🎤 Voice message ("+vnClock(c.ms)+")";if(c.type==="story")return t||"📸 Shared a story";if(!t)return"🍽 "+String(c.name||"A dish")}
     return t.slice(0,120)||"Message"}
   /** The chat list's last line: unlocked on this phone when it was locked. */
   function lastTextOf(p){const e=p&&p.lastE2e;if(!e||!e.id)return p&&p.lastText||"";const k=p.id+"|"+e.id;if(e2e.previews.has(k))return e2e.previews.get(k);
-    if(!e2e.busy.has(k)){e2e.busy.add(k);(async()=>{let text="🔒 Message";try{const own=await e2eOwn();const done=e2e.opened.get(e.id);
-        if(done&&!done.error)text=e2eSummary(done);else if(own)text=e2eSummary(await ScraveitE2E.openMessage(own,e,p.id,e.from,e.id))}catch(_){}
+    if(!e2e.busy.has(k)){e2e.busy.add(k);(async()=>{let text="🔒 Message";try{const done=e2e.opened.get(e.id);text=e2eSummary(done&&!done.error?done:await e2eUnlock(p.id,"m",e.id,e.from,e))}catch(_){}
       e2e.previews.set(k,text);e2e.busy.delete(k);chatRerender()})()}
     return"🔒 Message"}
   /** The bubble for a locked message this phone hasn't (or can't) unlock. */
   function e2eBubble(m){if(m.e2ePending)return'<p class="dm-locked" aria-label="Unlocking message">🔒 …</p>';
-    return'<p class="dm-locked">🔒 '+(m.e2eError==="phone"?"This message was locked for another phone. It can’t be shown here.":m.e2eError==="app"?"Update Scraveit to read this message.":"This message couldn’t be unlocked.")+'</p>'}
+    const act=m.e2eError==="link"?'<button class="text-button" data-action="e2e-setup">Set up</button>':m.e2eError==="phone"?'<button class="text-button" data-action="e2e-old">Read with recovery key</button>':"";
+    return'<p class="dm-locked">'+h(E2E_ERR[m.e2eError]||E2E_ERR.broken)+'</p>'+act}
   function e2eNotice(p,other){const st=e2eState(other),pin=e2ePins()[other],name=String(nameOf(p,other)).split(" ")[0];
-    const changed=pin&&pin.changed?'<div class="dm-e2e-changed" role="status"><span>🔐 '+h(name)+'’s security code changed. This happens when they reinstall Scraveit or use a new phone.</span><span class="cluster"><button class="button tonal small" data-action="e2e-info" data-pair-id="'+h(p.id)+'">Verify</button><button class="button text small" data-action="e2e-ack" data-uid="'+h(other)+'">OK</button></span></div>':'';
+    e2eRecoveryNudge();
+    const changed=pin&&pin.changed?'<div class="dm-e2e-changed" role="status"><span>🔐 '+h(name)+'’s security code changed. This happens when they start over with chat encryption.</span><span class="cluster"><button class="button tonal small" data-action="e2e-info" data-pair-id="'+h(p.id)+'">Verify</button><button class="button text small" data-action="e2e-ack" data-uid="'+h(other)+'">OK</button></span></div>':'';
     if(st==="on")return changed+'<button type="button" class="dm-e2e-note" data-action="e2e-info" data-pair-id="'+h(p.id)+'">🔒 Messages and calls are end-to-end encrypted. No one outside this chat, not even Scraveit, can read or listen to them. <b>Tap to verify.</b></button>';
+    if(st==="link")return changed+'<button type="button" class="dm-e2e-note warn" data-action="e2e-setup">🔐 Set up chat on this phone to read and send encrypted messages. <b>Set up</b></button>';
     if(st==="off")return changed+'<p class="dm-e2e-note off">Messages aren’t end-to-end encrypted yet. '+(e2eReady()?h(name)+' needs to update Scraveit.':'Update Scraveit to turn it on.')+'</p>';
     return changed}
+
+  // ---- safety code ----
   function e2eInfoSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId),other=p?otherOf(p):"",name=p?nameOf(p,other):"your friend",code=sheet.code||"";
     const grid=code?'<div class="e2e-code" aria-label="Security code">'+code.match(/\d{5}/g).map(g=>'<span>'+g+'</span>').join("")+'</div>':sheet.error?'<p class="supporting">'+h(sheet.error)+'</p>':'<div class="e2e-code wait" aria-busy="true"></div>';
     return sheetShell("Encryption",name,'<div class="e2e-info"><div class="e2e-lock" aria-hidden="true">🔒</div><p>Messages, photos, voice messages and calls with <b>'+h(name)+'</b> are locked on your phones. Scraveit can’t read or listen to them.</p>'+grid
-      +'<p class="caption">To be sure, compare these numbers with '+h(String(name).split(" ")[0])+'’s phone (Chat › tap this line). If they match, no one is in between.</p></div>')}
+      +'<p class="caption">To be sure, compare these numbers with '+h(String(name).split(" ")[0])+'’s phone (Chat › tap the lock line). If they match, no one is in between.</p></div>')}
   async function openE2eInfo(pairId){const p=chatState().pairs.find(x=>x.id===pairId);if(!p)return;const other=otherOf(p);setSheet({type:"e2eInfo",pairId});
-    const own=await e2eOwn(),peer=await e2ePeer(other,true),sh=state.sheet;if(!sh||sh.type!=="e2eInfo")return;
-    if(!own||!peer){sh.error=own?nameOf(p,other)+" needs to update Scraveit first.":"Update Scraveit to use encryption.";renderSheet();return}
-    sh.code=await ScraveitE2E.safetyCode(myUid(),{agree:own.agreePub,sign:own.signPub},other,peer);
+    const acct=await e2eAccount(),peer=await e2ePeer(other,true),sh=state.sheet;if(!sh||sh.type!=="e2eInfo")return;
+    if(!acct||!peer){sh.error=!peer?nameOf(p,other)+" needs to update Scraveit first.":e2e.needs==="link"?"Set up chat on this phone first.":"Update Scraveit to use encryption.";renderSheet();return}
+    sh.code=await ScraveitE2E.safetyCode(acct.uid,acct.signPub,other,peer.sign);
     const pins=e2ePins();if(pins[other]){pins[other].changed=false;e2eSavePins(pins)}if(state.sheet===sh)renderSheet();chatRerender()}
+
+  // ---- recovery key ----
+  function e2eRecoveryNudge(){const a=e2e.acct;if(!a||!a.bundle.pendingCode||e2e.recoveryShown===a.uid||state.sheet)return;e2e.recoveryShown=a.uid;setTimeout(()=>{if(!state.sheet)setSheet({type:"e2eRecovery"})},400)}
+  function e2eRecoverySheet(){const a=e2e.acct,code=a&&a.bundle.pendingCode;if(!code)return sheetShell("Recovery key","",'<p class="supporting">Your recovery key is saved. Lost it? Make a new one from Friends › Chat encryption.</p>');
+    return sheetShell("Save your recovery key","",'<div class="e2e-info"><div class="e2e-lock" aria-hidden="true">🔑</div><p>If you lose this phone, this key brings your chats back on a new one. <b>Scraveit can’t recover it for you.</b></p>'
+      +'<div class="e2e-code e2e-recovery" aria-label="Recovery key">'+ScraveitE2E.formatCode(code).split(" ").map(g=>'<span>'+h(g)+'</span>').join("")+'</div>'
+      +'<p class="caption">Keep it in a password manager or write it down. Don’t share a screenshot of it.</p>'
+      +'<div class="cluster" style="justify-content:center"><button class="button tonal" data-action="e2e-copy-code">Copy</button><button class="button primary" data-action="e2e-code-saved">I’ve saved it</button></div></div>')}
+  async function e2eCodeSaved(){const a=e2e.acct;if(!a)return;const b=Object.assign({},a.bundle);delete b.pendingCode;try{await e2eSave(a.uid,b);a.bundle=b;closeSheet();toast("Recovery key saved. Keep it safe.","success")}catch(e){toast("Couldn’t save. Try again.","danger")}}
+
+  // ---- adding this phone to the account ----
+  function e2eSetupSheet(sheet){const s=sheet||{};
+    if(s.mode==="code")return sheetShell("Use your recovery key","",'<form id="e2e-restore-form" class="form-grid"><div class="field"><label for="e2e-code">Recovery key</label><input class="input e2e-code-input" id="e2e-code" name="code" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX XXXX XXXX XXXX XXXX XXXX"></div>'+(s.error?'<p class="notice danger">'+h(s.error)+'</p>':'')+'<button class="button primary full" type="submit"'+(s.busy?' disabled':'')+'>'+(s.busy?'Unlocking…':'Unlock my chats')+'</button></form>');
+    if(s.mode==="wait")return sheetShell("Approve from your other phone","",'<div class="e2e-info"><p>Open Scraveit on a phone where your chats work. It will ask to add this phone.</p><p class="caption">Approve only if it shows this code:</p><div class="e2e-link-code">'+h(s.code||"")+'</div>'+(s.error?'<p class="notice danger">'+h(s.error)+'</p>':'<p class="caption"><span class="spinner"></span> Waiting…</p>')+'<button class="button tonal" data-action="e2e-setup">Back</button></div>');
+    return sheetShell("Chats on this phone","",'<div class="e2e-info"><div class="e2e-lock" aria-hidden="true">🔐</div><p>Your chats are end-to-end encrypted, so this phone needs your keys to read them.</p>'
+      +'<button class="button primary full" data-action="e2e-link-start">Approve from my other phone</button><button class="button tonal full" data-action="e2e-setup-code">Use my recovery key</button>'
+      +'<button class="text-button danger" data-action="e2e-start-over">Lost both? Start over</button><p class="caption">Starting over makes new keys: older encrypted messages can’t be read, and friends see your security code change.</p></div>')}
+  function e2eDeviceName(){const m=/;\s*([^;)]+?)\s+Build\//.exec(navigator.userAgent||"");return String(m?m[1]:"Android phone").slice(0,60)}
+  async function e2eLinkStart(){const uid=myUid();if(!uid)return;const start=await ScraveitE2E.linkStart(),ref=fs.collection("chatLinks").doc(uid).collection("requests").doc();
+    e2e.myReq=ref.id;setSheet({type:"e2eSetup",mode:"wait",code:start.code});
+    try{await ref.set({epk:start.epk,name:e2eDeviceName(),status:"pending",at:e2eNow()})}catch(e){const sh=state.sheet;if(sh&&sh.mode==="wait"){sh.error="Couldn’t ask your other phone. "+chatError(e);renderSheet()}return}
+    const stop=ref.onSnapshot(async d=>{const v=d.data();if(!v||v.status==="pending")return;stop();
+      const sh=state.sheet,mine=sh&&sh.type==="e2eSetup"&&sh.mode==="wait";
+      if(v.status!=="approved"){ref.delete().catch(()=>{});if(mine){sh.error="Your other phone said no.";renderSheet()}return}
+      try{const avk=await ScraveitE2E.linkFinish(start,uid,ref.id,v.box),vs=await e2eVault(uid).get(),bundle=await ScraveitE2E.bundleFromVault(uid,vs.data(),avk,null);
+        ref.delete().catch(()=>{});closeSheet();await e2eUse(uid,bundle,"Chats unlocked on this phone.")}
+      catch(_){if(mine){sh.error="That didn’t work. Try again.";renderSheet()}}},()=>{})}
+  async function e2eRestore(code){const uid=myUid(),sh=state.sheet;if(!uid)return;if(sh){sh.busy=true;sh.error="";renderSheet()}
+    try{const vs=await e2eVault(uid).get();if(!vs.exists)throw new Error("E2E_NO_VAULT");
+      const got=await ScraveitE2E.restore(uid,vs.data(),code,Date.now());
+      // Already set up here: just bring back the old keys.
+      const cur=e2e.acct&&e2e.acct.uid===uid?e2e.acct.bundle:null;
+      const bundle=cur?Object.assign({},cur,{epochs:Object.assign({},got.bundle.epochs,cur.epochs)}):got.bundle;
+      closeSheet();await e2eUse(uid,bundle,cur?"Older messages unlocked.":"Chats unlocked on this phone.")}
+    catch(e){const s=state.sheet;if(s){s.busy=false;s.error=/FORMAT/.test(e.message)?"A recovery key has 24 letters and numbers.":/WRONG/.test(e.message)?"That recovery key doesn’t match.":"Couldn’t unlock. Try again.";renderSheet()}}}
+  async function e2eStartOver(){const uid=myUid();if(!uid)return;
+    if(!await askConfirm("Start over?","New keys are made. Encrypted messages from before can’t be read, and your friends see your security code change.","Start over"))return;
+    try{const made=await ScraveitE2E.newAccount(uid,Date.now());
+      await fs.runTransaction(async t=>{t.set(e2eVault(uid),Object.assign({},made.vault,{at:e2eNow()}));t.set(e2eDir(uid),Object.assign({},made.directory,{at:e2eNow()}))});
+      closeSheet();await e2eUse(uid,made.bundle,"");e2e.recoveryShown="";e2eRecoveryNudge()}
+    catch(e){toast("Couldn’t start over. "+chatError(e),"danger")}}
+  // On a phone that's set up: another phone of mine asking to be added.
+  function e2eWatchLinks(){const uid=myUid();if(!uid||e2e.linkUid===uid)return;if(e2e.linkUnsub){try{e2e.linkUnsub()}catch(_){}}e2e.linkUid=uid;
+    try{e2e.linkUnsub=fs.collection("chatLinks").doc(uid).collection("requests").where("status","==","pending").onSnapshot(s=>{s.docChanges().forEach(ch=>{const v=ch.doc.data(),id=ch.doc.id,at=callTs(v.at);
+      if(ch.type!=="added"||id===e2e.myReq||e2e.seenReq.has(id)||(at&&Date.now()-at>10*60000))return;e2e.seenReq.add(id);
+      ScraveitE2E.linkCode(v.epk).then(code=>setSheet({type:"e2eApprove",reqId:id,epk:v.epk,name:String(v.name||"A phone"),code}))})},()=>{})}catch(_){}}
+  function e2eApproveSheet(sheet){return sheetShell("Add a phone to your chats?","",'<div class="e2e-info"><div class="e2e-lock" aria-hidden="true">📱</div><p><b>'+h(sheet.name)+'</b> wants to read and send your encrypted chats.</p><p class="caption">Approve only if that phone shows this code:</p><div class="e2e-link-code">'+h(sheet.code)+'</div><p class="caption">Didn’t ask for this? Tap No.</p>'
+    +'<div class="cluster" style="justify-content:center"><button class="button tonal" data-action="e2e-link-no">No</button><button class="button primary" data-action="e2e-link-yes">Approve</button></div></div>')}
+  async function e2eLinkAnswer(yes){const sh=state.sheet,uid=myUid();if(!sh||sh.type!=="e2eApprove"||!uid)return;const ref=fs.collection("chatLinks").doc(uid).collection("requests").doc(sh.reqId);closeSheet();
+    try{if(!yes){await ref.update({status:"declined"});return}const acct=await e2eAccount();if(!acct)throw new Error("E2E_UNAVAILABLE");
+      await ref.update({status:"approved",box:await ScraveitE2E.linkApprove(acct,sh.reqId,sh.epk)});toast("Phone added. Your chats will open there.","success")}
+    catch(e){toast("Couldn’t answer. "+chatError(e),"danger")}}
+
+  // ---- account settings ----
+  function e2eAccountSheet(){const a=e2e.acct,ready=!!a;
+    const row=(label,sub,action,tone)=>'<button class="settings-row" data-action="'+action+'"><span class="grow"><strong'+(tone?' class="'+tone+'"':'')+'>'+label+'</strong><span class="supporting">'+sub+'</span></span></button>';
+    if(!ready)return sheetShell("Chat encryption","",'<div class="e2e-info"><p>'+(e2e.needs==="link"?"This phone isn’t set up for your encrypted chats yet.":"Encryption isn’t ready on this phone yet.")+'</p>'+(e2e.needs==="link"?'<button class="button primary full" data-action="e2e-setup">Set up this phone</button>':'')+'</div>');
+    return sheetShell("Chat encryption","Messages, photos, voice messages and calls are end-to-end encrypted.",'<div class="stack e2e-rows">'
+      +(a.bundle.pendingCode?row("🔑 Save your recovery key","You haven’t confirmed saving it yet.","e2e-show-code","warn"):"")
+      +row("Make a new recovery key","The old one stops working.","e2e-new-code")
+      +row("Read older messages","Messages older than 30 days need your recovery key on a new phone.","e2e-old")
+      +row("Sign out other phones","Other phones stop getting your new messages until you add them again.","e2e-signout","danger")
+      +'<p class="caption">Your keys change every week. Old ones leave your phones after 30 days, so a stolen phone can’t open older messages. Add a phone: open Scraveit on it and approve it here.</p></div>')}
+  async function e2eNewCode(){const a=await e2eAccount();if(!a)return;if(!await askConfirm("Make a new recovery key?","Your old recovery key stops working. Save the new one somewhere safe.","Make new key"))return;
+    try{const ref=e2eVault(a.uid),code=await fs.runTransaction(async t=>{const cur=await t.get(ref);const r=await ScraveitE2E.newRecovery(a,cur.data());t.set(ref,Object.assign({},r.vault,{at:e2eNow()}));return r.code});
+      const b=Object.assign({},a.bundle,{pendingCode:code});await e2eSave(a.uid,b);a.bundle=b;setSheet({type:"e2eRecovery"})}
+    catch(e){toast("Couldn’t make a new key. "+chatError(e),"danger")}}
+  async function e2eSignOutOthers(){const a=await e2eAccount();if(!a)return;if(!await askConfirm("Sign out other phones?","Other phones stop getting new messages. Add them again from this phone, or with your recovery key.","Sign out others"))return;
+    try{const ref=e2eVault(a.uid),avk=await fs.runTransaction(async t=>{const cur=await t.get(ref);const r=await ScraveitE2E.resetVault(a,cur.data(),Date.now());t.set(ref,Object.assign({},r.vault,{at:e2eNow()}));return r.avkRaw});
+      const vs=await ref.get(),bundle=await ScraveitE2E.bundleFromVault(a.uid,vs.data(),avk,a.bundle);closeSheet();await e2eUse(a.uid,bundle,"Other phones are signed out of your chats.")}
+    catch(e){toast("Couldn’t sign out other phones. "+chatError(e),"danger")}}
+  async function e2eCopyCode(){const a=e2e.acct,code=a&&a.bundle.pendingCode;if(!code)return;try{await navigator.clipboard.writeText(ScraveitE2E.formatCode(code));toast("Copied. Paste it into your password manager, then clear your clipboard.","success")}catch(_){toast("Copy didn’t work. Write it down instead.","warning")}}
+  function e2eHandleClick(action,control){
+    if(action==="e2e-info"){openE2eInfo(String(control.dataset.pairId||""));return true}
+    if(action==="e2e-ack"){const pins=e2ePins(),u=String(control.dataset.uid||"");if(pins[u]){pins[u].changed=false;e2eSavePins(pins)}chatRerender();return true}
+    if(action==="e2e-setup"){setSheet({type:"e2eSetup"});return true}
+    if(action==="e2e-setup-code"||action==="e2e-old"){setSheet({type:"e2eSetup",mode:"code"});return true}
+    if(action==="e2e-link-start"){e2eLinkStart();return true}
+    if(action==="e2e-start-over"){e2eStartOver();return true}
+    if(action==="e2e-link-yes"||action==="e2e-link-no"){e2eLinkAnswer(action==="e2e-link-yes");return true}
+    if(action==="e2e-account"){setSheet({type:"e2eAccount"});return true}
+    if(action==="e2e-show-code"){setSheet({type:"e2eRecovery"});return true}
+    if(action==="e2e-code-saved"){e2eCodeSaved();return true}
+    if(action==="e2e-copy-code"){e2eCopyCode();return true}
+    if(action==="e2e-new-code"){e2eNewCode();return true}
+    if(action==="e2e-signout"){e2eSignOutOthers();return true}
+    return false}
 
   // Photos in chats: each photo is its own document beside the messages (only the two friends can read it);
   // the message carries a small card pointing to it. Photos are fetched once and shown from memory.
@@ -4758,7 +4917,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function keepDmPhoto(id,entry){dmPhotos.set(id,entry);while(dmPhotos.size>DM_PHOTO_KEEP){const [old,e]=dmPhotos.entries().next().value;if(e&&e.url)URL.revokeObjectURL(e.url);dmPhotos.delete(old)}}
   async function loadDmPhoto(pairId,id){if(!id||dmPhotos.has(id)||dmPhotoLoading.has(id))return;dmPhotoLoading.add(id);
     try{const d=await fs.collection("chats").doc(pairId).collection("photos").doc(id).get(),v=d.exists?d.data():null,img=v?String(v.image||""):"";
-      if(v&&v.e2e){const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const f=await ScraveitE2E.openFile(own,v.e2e,pairId,ScraveitE2E.photoAad(pairId,String(v.from||""),id));keepDmPhoto(id,{url:URL.createObjectURL(new Blob([f.bytes],{type:"image/jpeg"}))})}
+      if(v&&v.e2e){const f=await e2eUnlock(pairId,"p",id,String(v.from||""),v.e2e);keepDmPhoto(id,{url:URL.createObjectURL(new Blob([f.bytes],{type:"image/jpeg"}))})}
       else keepDmPhoto(id,img.startsWith("data:image/jpeg;base64,")?{url:photoBlobUrl(img)}:{missing:true})}
     catch(_){keepDmPhoto(id,{missing:true})}
     finally{dmPhotoLoading.delete(id);if(state.route==="dm"){const near=dmNearBottom();render({preserveScroll:true});if(near)scrollThreadToEnd()}}}
@@ -4780,7 +4939,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     toast("Sending photo…");
     try{const ref=fs.collection("chats").doc(pairId).collection("photos").doc(),p=chatState().pairs.find(x=>x.id===pairId),lock=await e2eLock(p?otherOf(p):"");
       // Locked on this phone first when the friend's app can unlock it.
-      const body=lock?{from:myUid(),e2e:await ScraveitE2E.sealFile(lock.own,lock.peer.agree,pairId,ScraveitE2E.photoAad(pairId,myUid(),ref.id),"image/jpeg",ScraveitE2E.unb64(img.slice(img.indexOf(",")+1)))}:{from:myUid(),image:img};
+      let body={from:myUid(),image:img};
+      if(lock){const s=await ScraveitE2E.sealFile2(lock.acct,lock.peer.agree,pairId,ScraveitE2E.photoAad(pairId,myUid(),ref.id),"image/jpeg",ScraveitE2E.unb64(img.slice(img.indexOf(",")+1)));e2eCekPut(lock.acct,"p|"+pairId+"|"+ref.id,s.cek);body={from:myUid(),e2e:s.e2e}}
       await ref.set(Object.assign(body,{w,h:hh,at:firebase.firestore.FieldValue.serverTimestamp()}));
       keepDmPhoto(ref.id,{url:photoBlobUrl(img)});
       await sendDm(pairId,"",{type:"photo",photoId:ref.id,w,h:hh});scrollThreadToEnd()}
@@ -4789,8 +4949,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const ref=fs.collection("chats").doc(pairId).collection("messages").doc(),p=chatState().pairs.find(x=>x.id===pairId);
     let body={from:uid,text:words,at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
     try{const lock=await e2eLock(p?otherOf(p):"");
-      if(lock){const shown=maskPhoneNumbers(words);e2e.opened.set(ref.id,{text:shown,card:card||null});
-        body={from:uid,text:"",e2e:await ScraveitE2E.sealMessage(lock.own,lock.peer.agree,pairId,uid,ref.id,shown,card||null),at:firebase.firestore.FieldValue.serverTimestamp()}}
+      if(lock){const shown=maskPhoneNumbers(words),s=await ScraveitE2E.sealMessage2(lock.acct,lock.peer.agree,pairId,uid,ref.id,shown,card||null);
+        e2e.opened.set(ref.id,{text:shown,card:card||null});e2eCekPut(lock.acct,"m|"+pairId+"|"+ref.id,s.cek);
+        body={from:uid,text:"",e2e:s.e2e,at:firebase.firestore.FieldValue.serverTimestamp()}}
       await ref.set(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
   // ---- Voice messages ----
   // Recorded as Opus (about 3 KB a second) up to 2 minutes; each one is its own document beside the
@@ -4810,7 +4971,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<button type="button" class="vn-speed" data-action="vn-speed" aria-label="Playback speed">'+(vnPlay.speed===1?'1×':vnPlay.speed===1.5?'1.5×':'2×')+'</button></div>'}
   async function vnLoad(pairId,id){if(vnAudio.has(id))return vnAudio.get(id);if(vnLoading.has(id))return null;vnLoading.add(id);chatRerender();
     try{const d=await fs.collection("chats").doc(pairId).collection("voices").doc(id).get(),v=d.exists?d.data():null,a=v?String(v.audio||""):"";
-      if(v&&v.e2e){const own=await e2eOwn();if(!own)throw new Error("E2E_UNAVAILABLE");const f=await ScraveitE2E.openFile(own,v.e2e,pairId,ScraveitE2E.voiceAad(pairId,String(v.from||""),id));
+      if(v&&v.e2e){const f=await e2eUnlock(pairId,"v",id,String(v.from||""),v.e2e);
         const url=URL.createObjectURL(new Blob([f.bytes],{type:f.mime.split(";")[0]||"audio/webm"}));vnAudio.set(id,url);return url}
       if(!/^data:audio\/[a-z0-9]+(;codecs=opus)?;base64,/.test(a))throw new Error("VOICE_MISSING");
       const comma=a.indexOf(","),mime=a.slice(5,a.indexOf(";")),b=atob(a.slice(comma+1)),bytes=new Uint8Array(b.length);for(let i=0;i<b.length;i++)bytes[i]=b.charCodeAt(i);
@@ -4869,7 +5030,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     try{const ref=fs.collection("chats").doc(pairId).collection("voices").doc(),p=chatState().pairs.find(x=>x.id===pairId),lock=await e2eLock(p?otherOf(p):"");
       vnAudio.set(ref.id,URL.createObjectURL(blob));
       const mime=audio.slice(5,audio.indexOf(";base64"));
-      const body=lock?{from:myUid(),e2e:await ScraveitE2E.sealFile(lock.own,lock.peer.agree,pairId,ScraveitE2E.voiceAad(pairId,myUid(),ref.id),mime,ScraveitE2E.unb64(audio.slice(audio.indexOf(",")+1)))}:{from:myUid(),audio};
+      let body={from:myUid(),audio};
+      if(lock){const s=await ScraveitE2E.sealFile2(lock.acct,lock.peer.agree,pairId,ScraveitE2E.voiceAad(pairId,myUid(),ref.id),mime,ScraveitE2E.unb64(audio.slice(audio.indexOf(",")+1)));e2eCekPut(lock.acct,"v|"+pairId+"|"+ref.id,s.cek);body={from:myUid(),e2e:s.e2e}}
       await ref.set(Object.assign(body,{ms:Math.round(ms),at:firebase.firestore.FieldValue.serverTimestamp()}));
       await sendDm(pairId,"",{type:"voice",voiceId:ref.id,ms:Math.round(ms),wave});scrollThreadToEnd()}
     catch(e){toast("Voice message not sent. "+chatError(e),"danger")}}
@@ -4968,7 +5130,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(call){toast("You’re already on a call.","info");return}
     if(!callsAvailable()){toast("Update Scraveit to make calls.","info");return}
     const p=chatState().pairs.find(x=>x.id===pairId);if(!p||p.status!=="accepted"){toast("You can call friends only.","warning");return}
-    const other=otherOf(p);if(!await callPerms(kind==="video"))return;
+    const other=otherOf(p);
+    // Calls with a friend who has encryption keys are signed by this phone's keys.
+    if(e2eReady()&&!await e2eAccount()&&e2e.needs==="link"&&await e2ePeer(other)){setSheet({type:"e2eSetup"});toast("Set up chat on this phone to make encrypted calls.","info");return}
+    if(!await callPerms(kind==="video"))return;
     call=callNew({role:"caller",kind:kind==="video"?"video":"audio",pairId,other,name:nameOf(p,other),face:chatState().avatars[other]||"",status:"calling",speaker:kind==="video"});
     const me=call;callShow();
     // Like WhatsApp: the ring stops 45 s after tapping Call, even if setup (camera, network) stalls.
@@ -4980,7 +5145,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       const ref=fs.collection("calls").doc();call.ref=ref;call.id=ref.id;
       const offer=await call.pc.createOffer();await call.pc.setLocalDescription(offer);
       // Signed with this phone's key, so the friend's phone knows no one is in between (end to end).
-      const own=await e2eOwn().catch(()=>null),offerSig=own?await ScraveitE2E.signCall(own,ref.id,"offer",offer.sdp).catch(()=>null):null;
+      const own=await e2eAccount().catch(()=>null),offerSig=own?await ScraveitE2E.signCall(own,ref.id,"offer",offer.sdp).catch(()=>null):null;
       await ref.set(Object.assign({from:myUid(),to:other,pairId,kind:call.kind,status:"ringing",offer:{type:offer.type,sdp:offer.sdp},createdAt:firebase.firestore.FieldValue.serverTimestamp()},offerSig?{offerSig}:{}));
       // Hung up while the call was still being set up: cancel it rather than leave it ringing.
       if(me.ended){ref.update({status:"cancelled",endedAt:firebase.firestore.FieldValue.serverTimestamp(),endedBy:myUid()}).catch(()=>{});return}
@@ -4996,13 +5161,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     callPairInfo(me.pairId,me.other).then(info=>{if(call===me){me.name=info.name;me.face=info.face;callUpdate(true)}});
     call.timers.push(setTimeout(()=>{if(call===me&&me.status==="incoming")callEnd("Missed call",true)},Math.max(1000,CALL_RING_MS-(Date.now()-created))))}
   async function acceptCall(){const me=call;if(!me||me.role!=="callee"||me.status!=="incoming")return;
+    if(me.offerSig&&e2eReady()&&!await e2eAccount()&&e2e.needs==="link"){toast("Set up chat on this phone to answer encrypted calls.","info");declineCall();setSheet({type:"e2eSetup"});return}
     callNative({ring:false,dismissCallId:me.id});me.status="connecting";callUpdate(true);
     if(!await callPerms(me.kind==="video")){declineCall();return}
     if(!await callTrusted(me.other,me.offerSig,me.id,"offer",me.offer&&me.offer.sdp)){if(call===me)declineCall();toast("This call couldn’t be verified, so it was stopped.","danger");return}
     try{await callMedia();if(call!==me)return;await callPeer();if(call!==me)return;
       await me.pc.setRemoteDescription(me.offer);callFlushRemote();
       const answer=await me.pc.createAnswer();await me.pc.setLocalDescription(answer);
-      const own=await e2eOwn().catch(()=>null),answerSig=own?await ScraveitE2E.signCall(own,me.id,"answer",answer.sdp).catch(()=>null):null;
+      const own=await e2eAccount().catch(()=>null),answerSig=own?await ScraveitE2E.signCall(own,me.id,"answer",answer.sdp).catch(()=>null):null;
       await me.ref.update(Object.assign({answer:{type:answer.type,sdp:answer.sdp},status:"accepted",answeredAt:firebase.firestore.FieldValue.serverTimestamp()},answerSig?{answerSig}:{}));
       if(call!==me)return;me.docReady=true;callFlushCands();callNative({active:true,speaker:me.speaker,video:me.kind==="video"});callUpdate()}
     catch(e){if(call===me)callEnd("Couldn’t join the call. "+chatError(e))}}
@@ -5293,8 +5459,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="msg-hide"){closeSheet();hideMessage(pid,control.dataset.msgId);return true}
     if(action==="msg-unsend"){closeSheet();unsendMessage(pid,control.dataset.msgId);return true}
     if(action==="dm-menu"){setSheet({type:"chatReport",pairId:pid});return true}
-    if(action==="e2e-info"){openE2eInfo(pid);return true}
-    if(action==="e2e-ack"){const pins=e2ePins(),u=String(control.dataset.uid||"");if(pins[u]){pins[u].changed=false;e2eSavePins(pins)}chatRerender();return true}
+    if(e2eHandleClick(action,control))return true;
     if(action==="dm-share-place"){setSheet({type:"sharePlace",pairId:pid});return true}
     if(action==="send-place"){const r=restaurant(control.dataset.restaurantId);closeSheet();if(r)sendDm(pid,"",{type:"restaurant",restaurantId:r.id,restaurantName:String(r.name||"").slice(0,80),image:String(r.image||"").slice(0,400),name:String(r.name||"").slice(0,80)});return true}
     if(action==="share-dish"){setSheet({type:"shareFriend",title:control.dataset.title||"",card:{type:"dish",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId}});return true}
@@ -5314,6 +5479,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(form.id==="add-friend-form"){try{const r=await socialCall("chatAddFriend",{handle:form.elements.code.value});form.reset();const who=r&&(r.name||(r.username?"@"+r.username:""));toast(r&&r.status==="accepted"?"You’re now friends"+(who?" with "+who:"")+".":"Request sent"+(who?" to "+who:"")+".","success")}catch(e){toast(chatError(e),"danger")}return true}
     if(form.id==="iou-form"){const d=chatState().iouDraft||{},b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;await iouAct(form.dataset.pairId,{action:"create",treat:d.treat||"waffles",owedBy:d.owedBy||"them",note:String(form.elements.note.value||"").trim()});closeSheet();return true}
     if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";await sendDm(form.dataset.pairId,text);input.focus();return true}
+    if(form.id==="e2e-restore-form"){e2eRestore(String(form.elements.code.value||""));return true}
     if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked,revealed:e2eRevealed(pid)});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
     return false;
   }
@@ -7422,6 +7588,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="sharePlace")html=sharePlaceSheet(sheet);
     else if(sheet.type==="chatReport")html=reportSheet(sheet);
     else if(sheet.type==="e2eInfo")html=e2eInfoSheet(sheet);
+    else if(sheet.type==="e2eSetup")html=e2eSetupSheet(sheet);
+    else if(sheet.type==="e2eApprove")html=e2eApproveSheet(sheet);
+    else if(sheet.type==="e2eRecovery")html=e2eRecoverySheet(sheet);
+    else if(sheet.type==="e2eAccount")html=e2eAccountSheet(sheet);
     else if(sheet.type==="friendMenu")html=friendMenuSheet(sheet);
     else if(sheet.type==="dob")html=dobSheet();
     else if(sheet.type==="react")html=reactSheet(sheet);
@@ -8147,7 +8317,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
     if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form","vc-form","story-edit-form","hl-new-form","ix-ask-form","se-ix-form"].includes(form.id)){handleFeedSubmit(form);return;}
-    if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form","iou-form"].includes(form.id)){handleChatSubmit(form);return;}
+    if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form","iou-form","e2e-restore-form"].includes(form.id)){handleChatSubmit(form);return;}
     if(form.id==="referral-form")applyReferral(form);
     else if(form.id==="meal-subscribe-form")submitMealSubscribe(form);
     else if(form.id==="login-form")submitLogin(form);

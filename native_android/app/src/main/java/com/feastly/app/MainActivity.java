@@ -914,23 +914,38 @@ public class MainActivity extends ComponentActivity {
     }
 
     /**
-     * This phone's chat encryption keys for the signed-in account (made once, kept encrypted with the
-     * Keystore). payload: {uid}. The page locks and unlocks messages with them.
+     * Chat encryption keys on this phone for the signed-in account, kept encrypted with the Keystore.
+     * payload: {uid, op: "get"} → {v1, v2} (either may be null); {uid, op: "put", v2: bundle} stores
+     * the account's shared key set (made and synced by the page); {uid, op: "forget"} removes it.
      */
     @JavascriptInterface public void chatKeys(String requestId, String payloadJson) {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
-        String uid = "";
-        try { uid = new JSONObject(payloadJson == null ? "{}" : payloadJson).optString("uid", ""); } catch (Exception ignored) { }
-        if (!ChatE2eKeys.validUid(uid)) {
+        JSONObject payload;
+        try { payload = new JSONObject(payloadJson == null ? "{}" : payloadJson); } catch (Exception bad) { payload = new JSONObject(); }
+        final String uid = payload.optString("uid", "");
+        final String op = payload.optString("op", "get");
+        final JSONObject bundle = payload.optJSONObject("v2");
+        if (!ChatE2eKeys.validUid(uid) || !("get".equals(op) || "put".equals(op) || "forget".equals(op))) {
           publishNativeFailure(requestId, "chatKeys", "INVALID_ARGUMENT", "Sign in again to chat.");
           return;
         }
-        final String account = uid;
         credentialExecutor.execute(() -> {
           try {
-            JSONObject keys = ChatE2eKeys.keysFor(getApplicationContext(), account);
-            runOnUiThread(() -> publishNativeSuccess(requestId, "chatKeys", keys));
+            JSONObject result = new JSONObject();
+            if ("put".equals(op)) {
+              ChatE2eKeys.putV2Bundle(getApplicationContext(), uid, bundle);
+              result.put("ok", true);
+            } else if ("forget".equals(op)) {
+              ChatE2eKeys.forgetV2Bundle(getApplicationContext(), uid);
+              result.put("ok", true);
+            } else {
+              JSONObject v1 = ChatE2eKeys.v1Keys(getApplicationContext(), uid);
+              JSONObject v2 = ChatE2eKeys.v2Bundle(getApplicationContext(), uid);
+              result.put("v1", v1 == null ? JSONObject.NULL : v1);
+              result.put("v2", v2 == null ? JSONObject.NULL : v2);
+            }
+            runOnUiThread(() -> publishNativeSuccess(requestId, "chatKeys", result));
           } catch (Exception error) {
             FirebaseCrashlytics.getInstance().recordException(error);
             runOnUiThread(() -> publishNativeFailure(requestId, "chatKeys", "E2E_UNAVAILABLE",

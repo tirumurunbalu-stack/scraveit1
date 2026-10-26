@@ -17,6 +17,7 @@ import com.google.firebase.FirebaseApp;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.OutputStream;
@@ -345,11 +346,24 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
       String uid = event.optString("to", "");
       String ct = event.optString("ct", "");
       if (ct.isEmpty() || !ChatE2eKeys.validUid(uid)) return "New message";
-      PrivateKey mine = ChatE2eKeys.agreeKeyFor(this, uid, event.optString("rpk", ""));
-      if (mine == null) return "New message";
-      byte[] key = ChatE2eCrypto.chatKey(mine, event.optString("spk", ""), pairId);
-      byte[] plain = ChatE2eCrypto.open(key, event.optString("iv", ""), ct,
-          ChatE2eCrypto.messageAad(pairId, event.optString("from", ""), event.optString("messageId", "")));
+      String aad = ChatE2eCrypto.messageAad(pairId, event.optString("from", ""), event.optString("messageId", ""));
+      byte[] plain = null;
+      if ("2".equals(event.optString("v", ""))) {
+        // Version 2: the message key is wrapped for one of this account's chat keys.
+        Map<String, Object[]> mine = ChatE2eKeys.v2EpochKeys(this, uid);
+        JSONArray wraps = new JSONArray(event.optString("w", "[]"));
+        for (int i = 0; i < wraps.length() && plain == null; i++) {
+          JSONObject wrap = wraps.getJSONObject(i);
+          Object[] key = mine.get(wrap.optString("k", ""));
+          if (key == null) continue;
+          plain = ChatE2eCrypto.openV2((PrivateKey) key[0], (String) key[1], pairId, aad, event.optString("epk", ""),
+              event.optString("spk", ""), wrap.optString("iv", ""), wrap.optString("c", ""), event.optString("iv", ""), ct);
+        }
+      } else {
+        PrivateKey mine = ChatE2eKeys.agreeKeyFor(this, uid, event.optString("rpk", ""));
+        if (mine != null) plain = ChatE2eCrypto.open(ChatE2eCrypto.chatKey(mine, event.optString("spk", ""), pairId), event.optString("iv", ""), ct, aad);
+      }
+      if (plain == null) return "New message";
       JSONObject message = new JSONObject(new String(plain, StandardCharsets.UTF_8));
       String text = maskPhones(message.optString("t", "")).trim();
       JSONObject card = message.optJSONObject("c");

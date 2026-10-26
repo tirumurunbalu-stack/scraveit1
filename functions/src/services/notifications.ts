@@ -658,7 +658,13 @@ export async function notifyUserChat(input: {uid: string; key: string; title: st
  * and shows what it says. FCM allows 4 KB of data: a long message travels without its text and
  * shows as "New message".
  */
-export async function notifyChatSealed(input: {uid: string; key: string; fromName: string; pairId: string; messageId: string; from: string; sealed: {iv: string; ct: string; spk: string; rpk: string}}): Promise<void> {
+export async function notifyChatSealed(input: {uid: string; key: string; fromName: string; pairId: string; messageId: string; from: string;
+  sealed: {v: 1 | 2; iv: string; ct: string; spk: string; rpk?: string; epk?: string; w?: Array<{k: string; iv: string; c: string}>}}): Promise<void> {
+  const s = input.sealed;
+  // The phone needs the wraps (version 2) or the recipient's key (version 1) to unlock it.
+  const lock: Record<string, string> = s.v === 2
+    ? {v: "2", epk: s.epk ?? "", w: JSON.stringify(s.w ?? [])}
+    : {v: "1", rpk: s.rpk ?? ""};
   await enqueueAndAttempt({
     eventType: "CUSTOMER_CHAT",
     aggregateType: "chat",
@@ -668,8 +674,7 @@ export async function notifyChatSealed(input: {uid: string; key: string; fromNam
     message: storedMessage({
       data: {
         type: "CHAT", e2e: "1", route: `dm:${input.pairId}`, pairId: input.pairId, messageId: input.messageId, from: input.from, to: input.uid,
-        fromName: input.fromName.slice(0, 60), iv: input.sealed.iv, ct: input.sealed.ct.length <= 2600 ? input.sealed.ct : "",
-        spk: input.sealed.spk, rpk: input.sealed.rpk,
+        fromName: input.fromName.slice(0, 60), iv: s.iv, ct: s.ct.length <= 2400 ? s.ct : "", spk: s.spk, ...lock,
       },
       android: {priority: "high"},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {alert: {title: input.fromName.slice(0, 60), body: "New message"}, sound: "default", mutableContent: true}}},

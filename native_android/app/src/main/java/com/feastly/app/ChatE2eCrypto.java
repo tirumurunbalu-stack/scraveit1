@@ -15,7 +15,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * The maths behind chat encryption, the same as assets/chat-e2e.js (version 1): P-256 ECDH,
+ * The maths behind chat encryption, the same as assets/chat-e2e.js (versions 1 and 2): P-256 ECDH,
  * HKDF-SHA256 and AES-256-GCM. Plain Java, so it runs in the push service without the WebView.
  */
 final class ChatE2eCrypto {
@@ -39,16 +39,38 @@ final class ChatE2eCrypto {
   }
 
   static byte[] chatKey(PrivateKey mine, String theirPub, String pairId) throws Exception {
+    return hkdf(ecdh(mine, theirPub), "scraveit-chat-v1|" + pairId, "chat");
+  }
+
+  /**
+   * Version 2: the message's own key (CEK) is wrapped for this account's chat key myPub with
+   * HKDF(ECDH(mine, epk) || ECDH(mine, spk)); unwrap it, then unlock the message with it.
+   */
+  static byte[] openV2(PrivateKey mine, String myPub, String pairId, String aad, String epk, String spk,
+                       String wrapIv, String wrapC, String iv, String ct) throws Exception {
+    byte[] a = ecdh(mine, epk);
+    byte[] b = ecdh(mine, spk);
+    byte[] both = Arrays.copyOf(a, a.length + b.length);
+    System.arraycopy(b, 0, both, a.length, b.length);
+    byte[] wrapKey = hkdf(both, "scraveit-chat-v2|" + pairId, "wrap|" + epk + "|" + spk + "|" + myPub);
+    byte[] cek = open(wrapKey, wrapIv, wrapC, aad);
+    return open(cek, iv, ct, aad);
+  }
+
+  private static byte[] ecdh(PrivateKey mine, String theirPub) throws Exception {
     KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
     agreement.init(mine);
     agreement.doPhase(publicFromRaw(theirPub), true);
-    byte[] shared = agreement.generateSecret();
-    // HKDF-SHA256, one block: extract with the salt, expand with "chat" and the counter byte 1.
+    return agreement.generateSecret();
+  }
+
+  /** HKDF-SHA256 for one 32-byte block: extract with the salt, expand with the info and counter 1. */
+  private static byte[] hkdf(byte[] ikm, String salt, String info) throws Exception {
     Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(("scraveit-chat-v1|" + pairId).getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-    byte[] prk = mac.doFinal(shared);
+    mac.init(new SecretKeySpec(salt.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+    byte[] prk = mac.doFinal(ikm);
     mac.init(new SecretKeySpec(prk, "HmacSHA256"));
-    mac.update("chat".getBytes(StandardCharsets.UTF_8));
+    mac.update(info.getBytes(StandardCharsets.UTF_8));
     mac.update((byte) 1);
     return mac.doFinal();
   }

@@ -24,5 +24,88 @@
     "spk": "BIZEYyareiEuWa4upS+/u9E5gNFijfui2EEQXQFsuEmRwbaPyCtcSSZZIlJ1ccsZs9LqTl8oHj9sCUM6CHfIm8A=",
     "rpk": "BPzYDUKhGpvI8Pl6ZhEHUHm7jK9+0YvAsEnroypJ0w6NIUvP9qXCHEQ6IeEeo97MFnC8GaQ0hDNZIHh+oPZt8u0="
   },
-  "code": "572862336274807307431136707076862854086416994691428564267242"
+  "v2": {
+    "ravi": {
+      "bundle": {
+        "v": 2,
+        "uid": "uidRavi",
+        "id": {
+          "priv": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgS+PJv88F/mwqGl9i+pDdMMc4/ZA61xXbd7Ew4+FzK1OhRANCAATC5gLf9QXfbqsQivMyNqWXg8RF+Kho7mapwt6XHjggL1F9Y4QnMpoQrcKENhmy4oGn0PxMII+VTZGNgdpDpzC3",
+          "pub": "BMLmAt/1Bd9uqxCK8zI2pZeDxEX4qGjuZqnC3pceOCAvUX1jhCcymhCtwoQ2GbLigafQ/Ewgj5VNkY2B2kOnMLc="
+        },
+        "avk": "v2v1ZgbVpPnu4iHrKVrQMwVuBHVDN36oCKy7kcTblfs=",
+        "cache": "TcG2izZHKpJa0hhJ5vRD78c3anfiEEqTX4iS224ENaU=",
+        "epochs": {
+          "1": {
+            "priv": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg001hJ5kaX4LogiIxprkZ1rXycfDgAS/wG/cELBPTJoOhRANCAATqubJbzzeX2WsymNBLYr1Hy4wz+R1880Ig/LM0oP9Hm8N08yzyyXMcofyT9m8Di3Cck8nqpNhCZCV0XvhWhWEQ",
+            "pub": "BOq5slvPN5fZazKY0EtivUfLjDP5HXzzQiD8szSg/0ebw3TzLPLJcxyh/JP2bwOLcJyTyeqk2EJkJXRe+FaFYRA=",
+            "at": 1790812800000,
+            "sig": "jlEXqMKWakUjTk7LWHhZG8G12ZMubKXASHNze2beM9OLqgb6zeGgofSY5Y+mR5Wy+lQDq/pRQPAOh+Y5+6KNIw=="
+          }
+        },
+        "pendingCode": "P7WH5A0QW32X5QMY30QNA0M9"
+      },
+      "directory": {
+        "v": 2,
+        "sign": "BMLmAt/1Bd9uqxCK8zI2pZeDxEX4qGjuZqnC3pceOCAvUX1jhCcymhCtwoQ2GbLigafQ/Ewgj5VNkY2B2kOnMLc=",
+        "agree": "BOq5slvPN5fZazKY0EtivUfLjDP5HXzzQiD8szSg/0ebw3TzLPLJcxyh/JP2bwOLcJyTyeqk2EJkJXRe+FaFYRA=",
+        "epoch": 1,
+        "agreeSig": "jlEXqMKWakUjTk7LWHhZG8G12ZMubKXASHNze2beM9OLqgb6zeGgofSY5Y+mR5Wy+lQDq/pRQPAOh+Y5+6KNIw=="
+      }
+    },
+    "padhu": {
+      "bundle": {
+        "v": 2,
+        "uid": "uidPadhu",
+        "id": {
+          "priv": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWxY9JgVmCiXMf6N8NL7n9d8LVyLtQM5wx2zWwWILCjOhRANCAAQLEHw6WT8rBJINSGZ7RR3jftkMpP8qSKrDJZkTCHaNjvHMIR8d6IZjOsQ84IhMtos+2TcJNa7hwhsBlSy9BQGQ",
+          "pub": "BAsQfDpZPysEkg1IZntFHeN+2Qyk/ypIqsMlmRMIdo2O8cwhHx3ohmM6xDzgiEy2iz7ZNwk1ruHCGwGVLL0FAZA="
+        },
+        "avk": "FikCd5lappmw+TBa/bQyZQTeyKMIadmQ2OrrxEztiZQ=",
+        "cache": "Ilf2x7rxSJh0oQ2dNbOD6UTo1rEtcVw9QuwCer0yxtU=",
+        "epochs": {
+          "1": {
+            "priv": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgrCpZW7RaRFMULowLdXPnFfGMTEwPDvm1/ij6SE8sysOhRANCAARSH7eqg0fUnztwyiA32yyJXoT4EER8R2JYF0CCAhoh2nSSSpHfUwLNFcFbPdQp6ZywTneXSEuTHXzL1s8EcYVb",
+            "pub": "BFIft6qDR9SfO3DKIDfbLIlehPgQRHxHYlgXQIICGiHadJJKkd9TAs0VwVs91CnpnLBOd5dIS5MdfMvWzwRxhVs=",
+            "at": 1790812800000,
+            "sig": "m2v/aLor1E1dugIdEGcnmEaJsrMq83EoBY89da+1ZOl5kNFP6L4AApjO7C0+OaPxOKq1bXnAZzpkc8jIuYJ27Q=="
+          }
+        },
+        "pendingCode": "QE77MR09ZM1WQGZ4YPJEZ8A9"
+      },
+      "directory": {
+        "v": 2,
+        "sign": "BAsQfDpZPysEkg1IZntFHeN+2Qyk/ypIqsMlmRMIdo2O8cwhHx3ohmM6xDzgiEy2iz7ZNwk1ruHCGwGVLL0FAZA=",
+        "agree": "BFIft6qDR9SfO3DKIDfbLIlehPgQRHxHYlgXQIICGiHadJJKkd9TAs0VwVs91CnpnLBOd5dIS5MdfMvWzwRxhVs=",
+        "epoch": 1,
+        "agreeSig": "m2v/aLor1E1dugIdEGcnmEaJsrMq83EoBY89da+1ZOl5kNFP6L4AApjO7C0+OaPxOKq1bXnAZzpkc8jIuYJ27Q=="
+      }
+    },
+    "pair": "uidPadhu_uidRavi",
+    "from": "uidRavi",
+    "id": "m1",
+    "text": "Biryani at 8? 🍛 హాయ్",
+    "sealed": {
+      "v": 2,
+      "iv": "xPWSuouvHis0755P",
+      "ct": "Zf2kcXpJQJsSWSHE64iyyBKGCZGwctZFiwDwvyyl3n+40of/fZ7Odr2mtHirj4n6aXrvzXQ4t0hJBvXsJ06PN8Z1nh5vs4du1NOHtyvIlSB6gPHv9yuDWW5RTB26j9k=",
+      "epk": "BO9tN648rOu7c0dDnfm2q/RMePr/RdAXeLOjU+r9R3DOQzs0i9W9/krmlr0hJRkT3kLISn2QURw0efM6GlkrTTc=",
+      "spk": "BOq5slvPN5fZazKY0EtivUfLjDP5HXzzQiD8szSg/0ebw3TzLPLJcxyh/JP2bwOLcJyTyeqk2EJkJXRe+FaFYRA=",
+      "se": 1,
+      "ss": "jlEXqMKWakUjTk7LWHhZG8G12ZMubKXASHNze2beM9OLqgb6zeGgofSY5Y+mR5Wy+lQDq/pRQPAOh+Y5+6KNIw==",
+      "w": [
+        {
+          "k": "3ff9b5363ae46173",
+          "iv": "ARQrxOXaXy39UsVg",
+          "c": "l1DD22lCPcY2xwAtcj0aLEtJpQsw1en6R5EGulB9Q2dB8u0DyPGOYK8ZxPJ9we7j"
+        },
+        {
+          "k": "5046528e0e4afd57",
+          "iv": "MBYdP8hcr7oat92s",
+          "c": "aCbwSOjfV11NWvk6WLPMR8JO9gSItthLd9+Z6WIr+WpNZTohAGGqo6sUyZB+QpNX"
+        }
+      ]
+    },
+    "code": "812357639199185480813924092616798458590724684921478631600442"
+  }
 }

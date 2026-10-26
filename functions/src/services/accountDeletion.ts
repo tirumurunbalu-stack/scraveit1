@@ -214,6 +214,10 @@ export async function deleteCustomerAccount(uid: string, now = Date.now()): Prom
     firestoreDb.collection("accountAges").doc(uid),
     firestoreDb.collection("chatProfiles").doc(uid),
     firestoreDb.collection("chatAvatars").doc(uid),
+    // Chat encryption: public keys, the locked key vault and any phone-linking requests.
+    firestoreDb.collection("chatKeys").doc(uid),
+    firestoreDb.collection("chatVault").doc(uid),
+    firestoreDb.collection("chatLinks").doc(uid),
     firestoreDb.collection("parentRequests").doc(uid),
     firestoreDb.collection("feeds").doc(uid),
     firestoreDb.collection("notifications").doc(uid),

@@ -534,13 +534,20 @@ export async function onChatMessage(pairId: string, messageId: string, message: 
     .catch((error) => logger.warn("CHAT_PUSH_FAILED", {pairId, error: String(error)}));
 }
 
-/** A message's end-to-end lock, if it has a well-formed one. */
-function sealedOf(value: unknown): {v: 1; iv: string; ct: string; spk: string; rpk: string} | null {
+type Sealed = {v: 1; iv: string; ct: string; spk: string; rpk: string} |
+  {v: 2; iv: string; ct: string; epk: string; spk: string; se: number; ss: string; w: Array<{k: string; iv: string; c: string}>};
+
+/** A message's end-to-end lock (version 1 or 2), if it has a well-formed one. */
+function sealedOf(value: unknown): Sealed | null {
   const e = value as Rec | null;
-  if (!e || typeof e !== "object" || e.v !== 1) return null;
-  const str = (k: string, max: number) => typeof e[k] === "string" && (e[k] as string).length > 0 && (e[k] as string).length <= max;
-  if (!str("iv", 16) || !str("ct", 8000) || !str("spk", 88) || !str("rpk", 88)) return null;
-  return {v: 1, iv: String(e.iv), ct: String(e.ct), spk: String(e.spk), rpk: String(e.rpk)};
+  if (!e || typeof e !== "object") return null;
+  const str = (x: unknown, max: number) => typeof x === "string" && x.length > 0 && x.length <= max;
+  if (!str(e.iv, 16) || !str(e.ct, 8000) || !str(e.spk, 88)) return null;
+  if (e.v === 1) return str(e.rpk, 88) ? {v: 1, iv: String(e.iv), ct: String(e.ct), spk: String(e.spk), rpk: String(e.rpk)} : null;
+  if (e.v !== 2 || !str(e.epk, 88) || !str(e.ss, 120) || !Number.isInteger(e.se) || !Array.isArray(e.w) || e.w.length < 1 || e.w.length > 4) return null;
+  const w = (e.w as Rec[]).map((x) => ({k: String(x?.k ?? ""), iv: String(x?.iv ?? ""), c: String(x?.c ?? "")}));
+  if (w.some((x) => !str(x.k, 16) || !str(x.iv, 16) || !str(x.c, 100))) return null;
+  return {v: 2, iv: String(e.iv), ct: String(e.ct), epk: String(e.epk), spk: String(e.spk), se: Number(e.se), ss: String(e.ss), w};
 }
 
 /** 0:07 style length for a voice message preview. */

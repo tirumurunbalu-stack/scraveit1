@@ -9,11 +9,8 @@ import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.PrivateKey;
-import java.security.spec.ECGenParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 
 import javax.crypto.Cipher;
@@ -22,10 +19,10 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 /**
- * This phone's chat encryption keys, one set per account: a P-256 key for working out each chat's
- * key and one for signing calls. Made the first time chat opens and kept on this phone only,
- * encrypted with an Android Keystore key (so a copied app backup can't use them). The page gets
- * them to lock and unlock messages; the push service uses them to show messages in notifications.
+ * Chat encryption keys on this phone, kept encrypted with an Android Keystore key (so a copied app
+ * backup can't use them). Version 2: the account's shared key set, made and synced by the page
+ * (chat-e2e.js) and stored here; version 1: the first release's per-phone keys, kept to read old
+ * messages. The push service uses them to show messages in notifications.
  */
 final class ChatE2eKeys {
   private static final String KEYSTORE = "AndroidKeyStore";
@@ -38,24 +35,12 @@ final class ChatE2eKeys {
     return uid != null && uid.matches("[A-Za-z0-9]{10,128}");
   }
 
-  /** {agreePriv, agreePub, signPriv, signPub} for this account, made on first use. */
-  static synchronized JSONObject keysFor(Context context, String uid) throws Exception {
-    JSONObject existing = stored(context, uid);
-    if (existing != null) return existing;
-    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
-    generator.initialize(new ECGenParameterSpec("secp256r1"));
-    KeyPair agree = generator.generateKeyPair();
-    KeyPair sign = generator.generateKeyPair();
-    JSONObject keys = new JSONObject();
-    keys.put("agreePriv", ChatE2eCrypto.b64encode(agree.getPrivate().getEncoded()));
-    keys.put("agreePub", ChatE2eCrypto.rawFromPublic(agree.getPublic()));
-    keys.put("signPriv", ChatE2eCrypto.b64encode(sign.getPrivate().getEncoded()));
-    keys.put("signPub", ChatE2eCrypto.rawFromPublic(sign.getPublic()));
-    prefs(context).edit().putString(uid, wrap(keys.toString().getBytes(StandardCharsets.UTF_8))).commit();
-    return keys;
+  /** The first release's per-phone keys for this account, if this phone made some (old messages). */
+  static synchronized JSONObject v1Keys(Context context, String uid) {
+    return stored(context, uid);
   }
 
-  /** This account's private key for working out chat keys, if its public key is rawPub. */
+  /** The first release's private key for working out chat keys, if its public key is rawPub. */
   static synchronized PrivateKey agreeKeyFor(Context context, String uid, String rawPub) throws Exception {
     JSONObject keys = stored(context, uid);
     if (keys == null || rawPub == null || !rawPub.equals(keys.optString("agreePub", ""))) return null;
@@ -63,8 +48,48 @@ final class ChatE2eKeys {
         new PKCS8EncodedKeySpec(ChatE2eCrypto.b64decode(keys.getString("agreePriv"))));
   }
 
+  /**
+   * The account's shared key set on this phone (version 2), as the page keeps it:
+   * {v: 2, uid, id, avk, cache, epochs: {n: {priv, pub, at, sig, until?}}, pendingCode?}.
+   */
+  static synchronized JSONObject v2Bundle(Context context, String uid) {
+    return stored(context, "v2_" + uid);
+  }
+
+  static synchronized void putV2Bundle(Context context, String uid, JSONObject bundle) throws Exception {
+    if (!validUid(uid) || bundle == null || bundle.optInt("v", 0) != 2 || !uid.equals(bundle.optString("uid", ""))) {
+      throw new IllegalArgumentException("E2E_BUNDLE_INVALID");
+    }
+    byte[] plain = bundle.toString().getBytes(StandardCharsets.UTF_8);
+    if (plain.length > 256 * 1024) throw new IllegalArgumentException("E2E_BUNDLE_TOO_LARGE");
+    prefs(context).edit().putString("v2_" + uid, wrap(plain)).commit();
+  }
+
+  /** Forgets the account's key set on this phone (signed out of chat by another phone, or starting over). */
+  static synchronized void forgetV2Bundle(Context context, String uid) {
+    if (validUid(uid)) prefs(context).edit().remove("v2_" + uid).commit();
+  }
+
+  /** This account's chat keys on this phone, each by its key id, for unlocking notifications. */
+  static synchronized java.util.Map<String, Object[]> v2EpochKeys(Context context, String uid) throws Exception {
+    java.util.Map<String, Object[]> out = new java.util.HashMap<>();
+    JSONObject bundle = v2Bundle(context, uid);
+    JSONObject epochs = bundle == null ? null : bundle.optJSONObject("epochs");
+    if (epochs == null) return out;
+    long now = System.currentTimeMillis();
+    java.util.Iterator<String> names = epochs.keys();
+    while (names.hasNext()) {
+      JSONObject epoch = epochs.getJSONObject(names.next());
+      if (epoch.has("until") && epoch.optLong("until", 0) < now) continue;
+      String pub = epoch.getString("pub");
+      PrivateKey priv = KeyFactory.getInstance("EC").generatePrivate(new PKCS8EncodedKeySpec(ChatE2eCrypto.b64decode(epoch.getString("priv"))));
+      out.put(ChatE2eCrypto.keyId(pub), new Object[]{priv, pub});
+    }
+    return out;
+  }
+
   private static JSONObject stored(Context context, String uid) {
-    if (!validUid(uid)) return null;
+    if (!validUid(uid.startsWith("v2_") ? uid.substring(3) : uid)) return null;
     String packed = prefs(context).getString(uid, "");
     if (packed == null || packed.isEmpty()) return null;
     try {
