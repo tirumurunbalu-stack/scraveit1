@@ -106,6 +106,14 @@ async function cityRiderSurgeFee(settings: RiderSurgeSettings, city: unknown): P
   }
 }
 
+/** Base fee plus a per-km rate, or null when Admin has not set per-km pricing. */
+export function distanceDeliveryFee(settings: UnknownRecord, distanceKm: number): number | null {
+  const base = Number(settings.deliveryBaseFee);
+  const perKm = Number(settings.deliveryPerKm);
+  if (!Number.isFinite(base) || !Number.isFinite(perKm) || base < 0 || perKm < 0 || base + perKm <= 0) return null;
+  return Math.round(base + perKm * Math.max(0, distanceKm));
+}
+
 export async function loadServerFees(
   restaurant: CatalogRestaurant,
   address: Address,
@@ -169,6 +177,10 @@ export async function loadServerFees(
     .sort((a, b) => Number(a.maxKm) - Number(b.maxKm));
   const matchingSlab = slabs.find((entry) => distanceKm <= Number(entry.maxKm));
   if (matchingSlab) deliveryFee = Number(matchingSlab.fee);
+  // Per-km pricing (Admin: base fee + per-km rate) replaces the slabs when set. Part kilometres
+  // are charged pro rata (0.7 km at ₹2/km is ₹1.40) and the total is rounded to the rupee.
+  const perKmFee = distanceDeliveryFee(settings, distanceKm);
+  if (perKmFee !== null) deliveryFee = perKmFee;
   if (finite(settings.freeDeliveryAbove) > 0 && subtotal >= finite(settings.freeDeliveryAbove)) deliveryFee = 0;
 
   const hour = Number(new Intl.DateTimeFormat("en-US", {
