@@ -18,11 +18,11 @@ import * as mealSuggestionService from "./services/mealSuggestions";
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
 import {setGlobalOptions} from "firebase-functions/v2";
-import {onValueWritten} from "firebase-functions/v2/database";
-import {onDocumentCreated, onDocumentDeleted, onDocumentUpdated, onDocumentWritten} from "firebase-functions/v2/firestore";
+import * as databaseTriggers from "firebase-functions/v2/database";
+import * as firestoreTriggers from "firebase-functions/v2/firestore";
 import {onCall, onRequest} from "firebase-functions/v2/https";
-import {onSchedule} from "firebase-functions/v2/scheduler";
-import {onTaskDispatched} from "firebase-functions/v2/tasks";
+import * as scheduler from "firebase-functions/v2/scheduler";
+import * as tasks from "firebase-functions/v2/tasks";
 import {z} from "zod";
 import {auth, db, firestoreDb} from "./admin";
 import {DATABASE_INSTANCE, DATABASE_REGION, REGION, ROOT} from "./config";
@@ -274,6 +274,21 @@ import type {SavrivoOrder} from "./types";
 // for roughly 8,000 simultaneous requests per function. Instances only exist
 // (and cost) while traffic needs them; idle functions scale to zero.
 setGlobalOptions({maxInstances: 100});
+
+// Timers and triggers run on a small CPU share ("gcf_gen1": a sixth of a CPU at 256MiB). With a full CPU each,
+// idle background instances used up the region's Cloud Run CPU quota and app requests failed with 500/503.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lightCpu<F extends (...args: any[]) => any>(trigger: F): F {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((options: any, handler: any) => trigger(typeof options === "object" && options ? {cpu: "gcf_gen1", ...options} : options, handler)) as F;
+}
+const onValueWritten = lightCpu(databaseTriggers.onValueWritten);
+const onDocumentCreated = lightCpu(firestoreTriggers.onDocumentCreated);
+const onDocumentDeleted = lightCpu(firestoreTriggers.onDocumentDeleted);
+const onDocumentUpdated = lightCpu(firestoreTriggers.onDocumentUpdated);
+const onDocumentWritten = lightCpu(firestoreTriggers.onDocumentWritten);
+const onSchedule = lightCpu(scheduler.onSchedule);
+const onTaskDispatched = lightCpu(tasks.onTaskDispatched);
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
@@ -1208,6 +1223,7 @@ export const cashfreeCheckout = onRequest({
 });
 
 export const dispatchOfferTimeout = onTaskDispatched({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   region: REGION,
   retryConfig: {maxAttempts: 5, minBackoffSeconds: 5, maxBackoffSeconds: 60, maxDoublings: 3},
   rateLimits: {maxConcurrentDispatches: 50, maxDispatchesPerSecond: 20},
@@ -1427,6 +1443,7 @@ export const settleWeeklyFinancePayouts = onSchedule({
 /** Every persisted claim lease gets its own recovery task. Trigger retry
  * guarantees scheduling even if the rider callable exits after reservation. */
 export const onDispatchClaimWritten = onDocumentWritten({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   document: "dispatchQueue/{orderId}",
   region: REGION,
   retry: true,
@@ -1460,6 +1477,7 @@ export const onDispatchClaimWritten = onDocumentWritten({
 });
 
 export const onOrderCreated = onDocumentCreated({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   document: "orders/{orderId}",
   region: REGION,
   retry: true,
@@ -1506,6 +1524,7 @@ export const callIceServers = onCall({
 
 /** A call started or stopped: ring the friend's phone, stop the ringing, log the call in the chat. */
 export const onCallWritten = onDocumentWritten({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   document: "calls/{callId}",
   region: REGION,
   retry: false,
@@ -1582,6 +1601,7 @@ export const voiceAgent = onRequest({
 });
 
 export const onOrderUpdated = onDocumentUpdated({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   document: "orders/{orderId}",
   region: REGION,
   retry: true,
@@ -2024,6 +2044,7 @@ export const onReviewCreated = onDocumentCreated({
 // trackingProximity/{orderId} once within 1.2 km of the customer, so the arrival
 // check no longer runs for every location update of the whole ride.
 export const onTrackingUpdated = onValueWritten({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   ref: `/${ROOT}/trackingProximity/{orderId}`,
   instance: DATABASE_INSTANCE,
   region: DATABASE_REGION,
@@ -2371,6 +2392,7 @@ export const recordRiderPanCheck = onCall({
 /** Recompute a rider's identity checks when their PAN, face scan or name changes. */
 export const onRiderIdentitySourceWritten = onDocumentWritten({
   document: "riders/{riderId}", region: REGION, maxInstances: 5, retry: false, timeoutSeconds: 60, memory: "512MiB",
+  cpu: 1, // rarely runs; at 512MiB a small CPU share would exceed the region quota (Cloud Run keeps maxScale 100)
   secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY],
 }, async (event) => {
   const after = event.data?.after?.data() as Record<string, unknown> | undefined;
@@ -2468,6 +2490,7 @@ export const resolveChatReport = economicsCallable("resolveChatReport", resolveC
 
 /** A new chat message: hide phone numbers, update the chat list, push to the friend. */
 export const onChatMessageCreated = onDocumentCreated({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   document: "chats/{pairId}/messages/{messageId}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB",
 }, async (event) => {
   const data = event.data?.data() as Record<string, unknown> | undefined;
@@ -2539,7 +2562,7 @@ export const updateMealSubscription = economicsCallable("updateMealSubscription"
   (uid, _token, input) => mealPlans.updateMealSubscription(uid, input));
 
 /** Every 5 minutes: place today's meal-plan orders ahead of each delivery window. */
-export const placeMealPlanOrders = onSchedule({schedule: "every 5 minutes", region: REGION, timeoutSeconds: 300, memory: "512MiB"}, async () => {
+export const placeMealPlanOrders = onSchedule({schedule: "every 5 minutes", region: REGION, timeoutSeconds: 300, memory: "256MiB"}, async () => {
   await mealPlans.placeDueMealOrders();
 });
 
