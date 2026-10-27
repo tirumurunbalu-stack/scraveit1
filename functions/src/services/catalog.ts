@@ -158,7 +158,7 @@ export async function loadServerFees(
     .map((doc) => normalizeCheckoutCampaign(doc.id, doc.data()))
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   const distanceKm = haversineKm(restaurant, address);
-  const maxDeliveryKm = finite(settings.maxDeliveryKm, 15);
+  const maxDeliveryKm = finite(settings.maxDeliveryKm, 7);
   if (maxDeliveryKm > 0 && distanceKm > maxDeliveryKm) {
     throw new DomainError("out-of-range", "Delivery address is outside the service radius.");
   }

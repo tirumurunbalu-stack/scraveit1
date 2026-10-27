@@ -51,10 +51,10 @@ export const GEO_PRECISION = 9;
  *
  * - A level-5 cell is roughly 4.7km square. Its neighbourhood only guarantees
  *   about 4.7km of coverage in every direction - well short of the platform's
- *   15km default delivery radius (`maxDeliveryKm`) - but in a dense city it
+ *   7km default delivery radius (`maxDeliveryKm`) - but in a dense city it
  *   stays properly selective: a handful of nearby restaurants, not the city.
  * - A level-4 cell is roughly 19.5km by 38km. Its neighbourhood comfortably
- *   exceeds the 15km default in every direction, but in a city no larger than
+ *   exceeds the 7km default in every direction, but in a city no larger than
  *   that itself, "the neighbourhood" is indistinguishable from "the city" -
  *   exactly the unbounded read this index exists to avoid.
  *
