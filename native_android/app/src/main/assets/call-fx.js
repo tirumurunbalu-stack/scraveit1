@@ -23,6 +23,8 @@
 
   const rnd = (a, b) => a + Math.random() * (b - a);
   const pick = (list) => list[(Math.random() * list.length) | 0];
+  /** Repeatable random numbers from a seed, so both phones in a call draw the same show. */
+  const seeded = (seed) => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = Math.imul(a ^ a >>> 15, a | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; };
   const sprites = new Map();
   /**
    * Phones with little memory (a Galaxy M12) can't draw full-resolution effects at full speed: they
@@ -367,20 +369,22 @@
    * and they can get neon glasses, a mic, hearts or a sparkle halo. Everything behind them is cut
    * around them, so they stay in front. The laser reaction and the story camera lenses both use it.
    * o: { dim, room, spots, beams, dust, glasses ("shades" | "hearts" | "visor" | "random"), mic,
-   *      hearts, halo, spotlight }.
+   *      hearts, halo, spotlight, seed }. With the same seed, two phones get the same colours and glasses.
    */
   function partyScene(o) {
-    const beat = 60 / BPM, bar = beat * 4, hue0 = rnd(0, 360), back = document.createElement("canvas"), bx = back.getContext("2d"), tint = document.createElement("canvas");
+    const R = o.seed != null ? seeded(o.seed) : Math.random, rnd = (a, b) => a + R() * (b - a), pick = (list) => list[(R() * list.length) | 0];
+    // Colours and glasses first: low-end phones make fewer particles, which would shift the rest.
+    const hue0 = rnd(0, 360), p0 = (R() * 4) | 0, look = o.glasses === "random" ? pick(["shades", "shades", "hearts", "visor", "visor"]) : o.glasses;
+    const beat = 60 / BPM, bar = beat * 4, back = document.createElement("canvas"), bx = back.getContext("2d"), tint = document.createElement("canvas");
     const N = LOW_END ? 9 : 12, beams = [];
     for (let i = 0; i < N; i++) beams.push({ base: -Math.PI * .97 + i / (N - 1) * Math.PI * .94, grp: i % 2, hue: hue0 + i * 37 });
-    const dust = Array.from({ length: many(46) }, () => ({ x: Math.random(), y: Math.random(), v: rnd(.015, .05), s: rnd(.002, .0055), ph: rnd(0, 6), hue: rnd(0, 360) }));
-    const spots = Array.from({ length: many(70) }, () => ({ x: Math.random() * 1.3 - .15, y: Math.pow(Math.random(), 1.4) * .62, v: rnd(.05, .11), s: rnd(.006, .014), ph: rnd(0, 6) }));
+    const dust = Array.from({ length: many(46) }, () => ({ x: R(), y: R(), v: rnd(.015, .05), s: rnd(.002, .0055), ph: rnd(0, 6), hue: rnd(0, 360) }));
+    const spots = Array.from({ length: many(70) }, () => ({ x: R() * 1.3 - .15, y: Math.pow(R(), 1.4) * .62, v: rnd(.05, .11), s: rnd(.006, .014), ph: rnd(0, 6) }));
     const floaters = Array.from({ length: many(26) }, () => ({ a: rnd(-Math.PI, 0), r: rnd(.8, 2.1), v: rnd(.12, .3), s: rnd(.12, .3), ph: rnd(0, 1), col: pick([["#ff6b8a", "#e0154d"], ["#ff9ec0", "#ff4f8b"], ["#ff4d6d", "#b5003a"], ["#c084fc", "#9333ea"]]) }));
     const stars = Array.from({ length: many(40) }, () => ({ a: rnd(-Math.PI * 1.1, Math.PI * .1), r: rnd(.75, 1.25), s: rnd(.03, .08), ph: rnd(0, 6), sp: rnd(2, 5) }));
     // Party-room colours, changing every bar: blue, magenta, green, cyan.
-    const PAL = [[70, 80, 255], [255, 50, 210], [50, 255, 120], [40, 220, 255]], p0 = (Math.random() * 4) | 0;
+    const PAL = [[70, 80, 255], [255, 50, 210], [50, 255, 120], [40, 220, 255]];
     const roomAt = (t) => { const i = Math.floor(t / bar), k = Math.min(1, (t - i * bar) / .35), a = PAL[(p0 + i + 3) % 4], b = PAL[(p0 + i) % 4]; return a.map((v, j) => Math.round(v + (b[j] - v) * k)); };
-    const look = o.glasses === "random" ? pick(["shades", "shades", "hearts", "visor", "visor"]) : o.glasses;
     let ox = 0, oy = 0, placed = false;
     return {
       look,
@@ -493,7 +497,7 @@
   ];
   // ---- the reactions ----
   const SPAWN = {
-    thumbs(L, o, down) {
+    thumbs(L, o, _video, _seed, down) {
       const ch = down ? "👎" : "👍", S = L.M * .32, sprite = emojiSprite(ch, 160);
       const ox = (o ? o.x : .5) * L.W, oy = (o ? o.y : .62) * L.H;
       L.parts.push({ t: 0, update(dt) { this.t += dt; return this.t < 2.3; }, draw(x) {
@@ -508,7 +512,7 @@
           draw(x) { if (this.t < this.d) return; x.save(); x.globalAlpha = Math.max(0, 1 - (this.t - this.d) / 1.4); x.drawImage(sp, this.x - s / 2, this.y - s / 2, s, s); x.restore(); } });
       }
     },
-    thumbsdown(L, o) { SPAWN.thumbs(L, o, true); },
+    thumbsdown(L, o) { SPAWN.thumbs(L, o, null, null, true); },
     hearts(L, o) {
       const cols = [["#ff6b8a", "#e0154d"], ["#ff9ec0", "#ff4f8b"], ["#ff4d6d", "#b5003a"], ["#ffd1dc", "#ff7aa2"], ["#c084fc", "#9333ea"]];
       const ox = (o ? o.x : .5) * L.W, oy = (o ? o.y : .7) * L.H;
@@ -585,10 +589,10 @@
     /**
      * A laser show from behind the head of the person on the big video, to a K-pop beat: the room
      * goes dark and coloured, beams fan out from behind their head and scissor on the beat, and they
-     * get glowing neon party glasses and a retro mic at their mouth.
+     * get glowing neon visor glasses and a retro mic at their mouth. seed: the same on both phones.
      */
-    lasers(L, o, video) {
-      const life = 4.8, person = video ? personTracker(video) : null, scene = partyScene({ dim: .7, room: true, spots: true, beams: true, dust: true, glasses: "random", mic: true });
+    lasers(L, o, video, seed) {
+      const life = 4.8, person = video ? personTracker(video) : null, scene = partyScene({ dim: .7, room: true, spots: true, beams: true, dust: true, glasses: "visor", mic: true, seed });
       partyBeat(life);
       L.parts.push({ t: 0, update(dt) { this.t += dt; return this.t < life; }, draw(x) {
         const view = person && person.update(performance.now()) ? coverRect(video, L) : null;
@@ -600,12 +604,13 @@
   const layers = new WeakMap();
   /**
    * Plays a reaction over `canvas`. origin {x,y} 0..1 places hand-based ones near the hand; video is
-   * the full-screen video under the canvas, so lasers can go behind the person in it.
+   * the full-screen video under the canvas, so lasers can go behind the person in it. seed: send the
+   * same one to the other phone so it draws the same show.
    */
-  function play(canvas, id, origin, video) {
+  function play(canvas, id, origin, video, seed) {
     if (!canvas || !SPAWN[id]) return;
     let L = layers.get(canvas); if (!L) { L = new Layer(canvas); layers.set(canvas, L); }
-    L.size(); SPAWN[id](L, origin || null, video || null); L.loop();
+    L.size(); SPAWN[id](L, origin || null, video || null, typeof seed === "number" ? seed : null); L.loop();
     playingUntil = Math.max(playingUntil, performance.now() + (DURATION[id] || 3) * 1000);
     try { navigator.vibrate && navigator.vibrate(id === "fireworks" ? [20, 60, 20, 60, 20] : 18); } catch (_) { }
   }
@@ -891,12 +896,13 @@
             }
           }
         } catch (_) { }
-        timer = setTimeout(tick, 70);
+        // A low-end phone reads hands half as often, so the call video stays smooth.
+        timer = setTimeout(tick, LOW_END ? 150 : 70);
       };
       tick();
     }).catch(() => { if (!stopped) onState && onState("off"); });
     return { stop() { stopped = true; clearTimeout(timer); } };
   }
 
-  window.ScraveitCallFx = { REACTIONS, play, clear, watchGestures, preload() { recognizer().catch(() => { }); }, debug(fn) { debugHook = fn || null; }, status: () => Object.assign({ lowEnd: LOW_END }, status), lens, LENSES: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })) };
+  window.ScraveitCallFx = { REACTIONS, lowEnd: LOW_END, play, clear, watchGestures, preload() { recognizer().catch(() => { }); }, debug(fn) { debugHook = fn || null; }, status: () => Object.assign({ lowEnd: LOW_END }, status), lens, LENSES: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })) };
 })();

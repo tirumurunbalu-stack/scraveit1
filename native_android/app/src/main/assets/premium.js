@@ -5074,7 +5074,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(video&&p.video!==true){toast("Allow the camera for video calls (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}
     catch(e){toast(chatError(e),"danger");return false}}
   async function callMedia(){const video=call.kind==="video";
-    call.local=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:video?{facingMode:"user",width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}}:false});
+    call.local=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:video?callCamera("user"):false});
     const self=document.querySelector("#call-ui .call-self");if(self){self.srcObject=call.local;self.play().catch(()=>{})}}
   function callSendCand(c){if(!call||!c)return;if(!call.docReady||!call.ref){call.pendingCands.push(c);return}
     const j=c.toJSON?c.toJSON():c,body={};["candidate","sdpMid","sdpMLineIndex","usernameFragment"].forEach(k=>{if(j[k]!=null)body[k]=j[k]});
@@ -5083,11 +5083,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // The other phone's network candidates wait until this phone has their offer/answer to match them to.
   function callAddRemoteCand(c){if(!call||!c)return;if(!call.pc||!call.pc.remoteDescription){call.remoteCands.push(c);return}call.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{})}
   function callFlushRemote(){if(!call)return;const q=call.remoteCands.splice(0);q.forEach(callAddRemoteCand)}
+  // Low-end phones (little memory or few cores, like a Galaxy M12) struggle to film, send, show and read
+  // hands all at once: they film at 480p and 20 fps, and ask the other phone to send them 20 fps too.
+  function callLowEnd(){return!!(window.ScraveitCallFx&&ScraveitCallFx.lowEnd)}
+  function callCamera(facing){return callLowEnd()?{facingMode:facing,width:{ideal:640},height:{ideal:480},frameRate:{ideal:20,max:24}}:{facingMode:facing,width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}}}
   // Video data cap, about WhatsApp's level: 1 Mbps on Wi-Fi, 600 kbps on mobile data, 350 kbps on a slow
   // network. Without it a 720p call used 25–35 MB a minute. Re-applied when the network changes.
   function callCapVideo(pc){try{const s=pc&&pc.getSenders().find(x=>x.track&&x.track.kind==="video");if(!s||!s.getParameters)return;
-    const nc=navigator.connection||{},slow=/(^|-)(2g|3g)$/.test(nc.effectiveType||""),cell=nc.type==="cellular",p=s.getParameters();if(!p.encodings||!p.encodings.length)return;
-    p.encodings[0].maxBitrate=slow?350000:cell?600000:1000000;p.encodings[0].maxFramerate=slow||cell?24:30;s.setParameters(p).catch(()=>{})}catch(_){}}
+    const nc=navigator.connection||{},slow=/(^|-)(2g|3g)$/.test(nc.effectiveType||""),cell=nc.type==="cellular",lite=callLowEnd()||!!(call&&call.peerLite),p=s.getParameters();if(!p.encodings||!p.encodings.length)return;
+    p.encodings[0].maxBitrate=slow?350000:cell||lite?600000:1000000;p.encodings[0].maxFramerate=lite?20:slow||cell?24:30;s.setParameters(p).catch(()=>{})}catch(_){}}
   if(navigator.connection&&navigator.connection.addEventListener)navigator.connection.addEventListener("change",()=>{if(call&&call.pc)callCapVideo(call.pc)});
   /** Data used by the current call so far, for checking a phone over USB: await ScraveitCallStats(). */
   window.ScraveitCallStats=async()=>{if(!call||!call.pc)return null;let sent=0,got=0,pair=null;(await call.pc.getStats()).forEach(r=>{if(r.type==="transport"){sent+=r.bytesSent||0;got+=r.bytesReceived||0}if(r.type==="candidate-pair"&&r.nominated&&r.state==="succeeded")pair=r});
@@ -5104,10 +5108,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       else if(st==="failed"){callEnd("Call dropped. Check your connection.")}};
     return pc}
   function callWireData(dc){if(!call)return;call.dc=dc;dc.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(_){return}if(!call)return;
-      if(m.t==="fx"&&typeof m.id==="string")callPlayFx(m.id,null);
+      if(m.t==="fx"&&typeof m.id==="string")callPlayFx(m.id,null,m.seed);
       else if(m.t==="cam"){call.remoteCamOff=!!m.off;callUpdate()}
-      else if(m.t==="mute"){call.remoteMuted=!!m.on;callUpdate()}};
-    dc.onopen=()=>{if(call&&call.camOff)callSendData({t:"cam",off:true});if(call&&call.muted)callSendData({t:"mute",on:true})}}
+      else if(m.t==="mute"){call.remoteMuted=!!m.on;callUpdate()}
+      else if(m.t==="lite"){call.peerLite=true;callCapVideo(call.pc)}};
+    dc.onopen=()=>{if(call&&call.camOff)callSendData({t:"cam",off:true});if(call&&call.muted)callSendData({t:"mute",on:true});if(callLowEnd())callSendData({t:"lite"})}}
   function callSendData(m){try{if(call&&call.dc&&call.dc.readyState==="open")call.dc.send(JSON.stringify(m))}catch(_){}}
   function callWatchDoc(){const ref=call.ref,me=call;
     call.unsubs.push(ref.onSnapshot(async d=>{if(call!==me)return;const v=d.data();if(!v)return;
@@ -5202,8 +5207,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       ring();ringback={ctx,t:setInterval(ring,3000)}}catch(_){}}
 
   // ---- reactions ----
-  function callPlayFx(id,origin){const fx=window.ScraveitCallFx,cv=document.querySelector("#call-ui .call-fx"),rv=document.querySelector("#call-ui .call-remote");if(fx&&cv)fx.play(cv,id,origin,call&&call.kind==="video"&&!call.remoteCamOff?rv:null)}
-  function callReact(id,origin){callPlayFx(id,origin);callSendData({t:"fx",id})}
+  function callPlayFx(id,origin,seed){const fx=window.ScraveitCallFx,cv=document.querySelector("#call-ui .call-fx"),rv=document.querySelector("#call-ui .call-remote");if(fx&&cv)fx.play(cv,id,origin,call&&call.kind==="video"&&!call.remoteCamOff?rv:null,seed)}
+  // Both phones get the same seed, so they draw the same show.
+  function callReact(id,origin){const seed=(Math.random()*2147483647)|0;callPlayFx(id,origin,seed);callSendData({t:"fx",id,seed})}
   function callStartGestures(){const me=call,fx=window.ScraveitCallFx,self=document.querySelector("#call-ui .call-self");if(!me||me.kind!=="video"||!fx||!self||me.gestures)return;
     me.gestures=fx.watchGestures(self,(id,origin)=>{if(call===me&&!me.camOff)callReact(id,origin)},st=>{if(call===me){me.gestureState=st;callUpdate()}})}
 
@@ -5255,7 +5261,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const hint=o.querySelector(".call-hint"),ht=video&&live&&!c.camOff?(c.gestureState==="ready"?"Try 👍  ✌️  🫶  🤟 — or two hands for more":c.gestureState==="loading"?"Getting hand reactions ready…":""):"";
     if(hint.textContent!==ht){hint.textContent=ht;hint.classList.remove("fade");if(ht&&c.gestureState==="ready"){void hint.offsetWidth;hint.classList.add("fade")}}}
   async function callFlip(){const c=call;if(!c||!c.local||c.kind!=="video"||!c.pc)return;const want=c.facing==="user"?"environment":"user";
-    try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:want,width:{ideal:1280},height:{ideal:720}}}),track=s.getVideoTracks()[0];
+    try{const s=await navigator.mediaDevices.getUserMedia({video:callCamera(want)}),track=s.getVideoTracks()[0];
       const sender=c.pc.getSenders().find(x=>x.track&&x.track.kind==="video");if(sender)await sender.replaceTrack(track);
       c.local.getVideoTracks().forEach(t=>{c.local.removeTrack(t);t.stop()});c.local.addTrack(track);track.enabled=!c.camOff;c.facing=want;
       const self=document.querySelector("#call-ui .call-self");if(self){self.srcObject=null;self.srcObject=c.local;self.play().catch(()=>{})}callUpdate()}
