@@ -1851,7 +1851,7 @@ function formatBytes(n){n=Number(n||0);if(!Number.isFinite(n)||n<=0)return"0 B";
     if(!d)body=state.insightsError&&!state.insightsLoading?'<div class="notice danger">'+icon("warning","small")+'<span>Insights didn\'t load. '+h(state.insightsError)+'</span></div><button class="button tonal full" data-action="insights-refresh">Try again</button>':loading("Working out your insights…");
     else body=insightsSummary(d)+'<div class="ins-tabs" role="tablist">'+INSIGHT_TABS.map(t=>'<button role="tab" aria-selected="'+(tab===t[0])+'" class="'+(tab===t[0]?'on':'')+'" data-action="insights-tab" data-value="'+t[0]+'">'+t[1]+'</button>').join("")+'</div>'
       +({people:insightsPeople,places:insightsPlaces,dishes:insightsDishes,stores:insightsStores,timing:insightsTiming,offers:insightsOffers}[tab]||insightsPeople)(d)
-      +'<p class="caption" style="text-align:center">Updated '+new Date(d.generatedAt).toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"})+(state.insightsLoading?' · refreshing…':'')+'</p>';
+      +'<p class="caption" style="text-align:center">Updated '+new Date(d.generatedAt).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})+(state.insightsLoading?' · refreshing…':'')+'</p>';
     return'<main class="screen"><div class="content page">'+banner()+head+body+'</div>'+nav()+'</main>'}
   function insightsSummary(d){const s=d.summary,c=d.coverage;return'<div class="big-grid">'
     +bigTile("Customers",String(s.customers),'<span class="caption">'+s.newCustomers+' new · '+s.returningCustomers+' came back</span>')

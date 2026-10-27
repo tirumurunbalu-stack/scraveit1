@@ -399,7 +399,8 @@ html{overscroll-behavior-y:none}
 .photo-tile strong{display:block;font-size:16px}
 .menu-price-big{font-size:22px !important;font-weight:850}
 .diet-seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.diet-seg input{position:absolute;opacity:0;pointer-events:none}
+.diet-seg label{position:relative}
+.diet-seg input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;pointer-events:none}
 .diet-seg span{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;border:1.5px solid var(--border);border-radius:14px;background:var(--surface);font-weight:800;cursor:pointer}
 .diet-seg i{width:14px;height:14px;border:2px solid currentColor;border-radius:3px;background:radial-gradient(circle,currentColor 0 3px,transparent 3.5px)}
 .diet-veg span{color:#127a42}.diet-nonveg span{color:#a32c3b}.diet-egg span{color:#b7791f}
