@@ -47,6 +47,16 @@ async function canUseRestaurantApp(uid: string, token: DecodedIdToken): Promise<
   return memberships.some((member) => member?.active === true);
 }
 
+/**
+ * Someone who has applied to sell on Scraveit and isn't approved yet: the Restaurant app registers
+ * their phone too, so they hear when Scraveit confirms their rate, asks for changes or approves them.
+ */
+export async function hasStoreApplication(uid: string, database: FirestoreLike = firestoreDb): Promise<boolean> {
+  const snapshots = await Promise.all([uid, `${uid}_grocery`, `${uid}_dairy`]
+    .map((id) => database.collection("restaurantApplications").doc(id).get()));
+  return snapshots.some((snapshot) => snapshot.exists && String((snapshot.data() as {uid?: string} | undefined)?.uid ?? "") === uid);
+}
+
 async function authorizeDeviceApp(
   uid: string,
   token: DecodedIdToken,
@@ -58,8 +68,8 @@ async function authorizeDeviceApp(
     throw new DomainError("permission-denied", "Admin notification registration requires an admin role.");
   }
   if (app === "restaurant") {
-    if (await canUseRestaurantApp(uid, token)) return;
-    throw new DomainError("permission-denied", "Restaurant notification registration requires an active membership.");
+    if (await canUseRestaurantApp(uid, token) || await hasStoreApplication(uid)) return;
+    throw new DomainError("permission-denied", "Restaurant notification registration requires an active membership or a store application.");
   }
   const riderSnapshot = await riderRef(firestoreDb, uid).get();
   const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as {status?: string} | null;

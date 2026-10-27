@@ -1,6 +1,7 @@
 // Store sign-up, both sides. Restaurant app: the registration screen follows the application live,
 // so the rate Scraveit confirms (or a request for changes) shows without the owner doing anything,
-// and Check status says where things really stand. Admin app: document links are fetched again
+// Check status says where things really stand, and the phone registers for notifications so the
+// owner also hears about it with the app closed. Admin app: document links are fetched again
 // when they are older than 4 minutes, so a review screen left open for hours still opens them.
 // The code under test is cut from each app's premium.js.
 const assert = require("node:assert/strict");
@@ -27,11 +28,12 @@ function docRef(p) {
 async function restaurantSide() {
   const cut = cutter(read("restaurant"), "restaurant");
   const code = cut("  // A forced load starts again", "  function agreementSheet2(")
-    + cut("  async function checkApprovalStatus(", "  function openGoogleSignIn(");
+    + cut("  async function checkApprovalStatus(", "  function openGoogleSignIn(")
+    + cut("  window.SavrivoNativePushBatch=", "\n");
   const UID = "ownerPizzaaaaaaa", APP = "restaurantApplications/" + UID;
   store.set(APP, {uid: UID, status: "submitted", restaurantName: "Pizza and burgers"});
   const toasts = [];
-  let failNext = false, renders = 0;
+  let failNext = false, renders = 0, pushRegistrations = 0;
   const ctx = {
     console, setTimeout, clearTimeout, Date, JSON,
     state: {session: {uid: UID}, route: "pending", application: clone(store.get(APP))},
@@ -42,6 +44,7 @@ async function restaurantSide() {
     restaurantApplicationDoc: (uid) => docRef("restaurantApplications/" + uid),
     renderSheet() {}, resolveMember: async () => { throw new Error("NOT_A_MEMBER"); },
     sync: async () => {}, startRealtime() {}, ensureNativePushRegistered() {}, routeToPendingOrderIfIdle() {},
+    registerNativePush: async () => { pushRegistrations++; }, unregisterNativePush: async () => {}, window: {},
     // What getRestaurantAgreement answers, from the application as it is now.
     async econCall(fn, input) {
       assert.equal(fn, "getRestaurantAgreement"); assert.equal(input.appId, UID);
@@ -62,6 +65,9 @@ async function restaurantSide() {
   assert.match(ctx.html, /We're checking your details/);
   assert.match(ctx.html, /Standard rate/);
   assert.doesNotMatch(ctx.html, /Read and sign the agreement/);
+  assert.equal(pushRegistrations, 1, "the applicant's phone registers for notifications");
+  ctx.render(); ctx.render();
+  assert.equal(pushRegistrations, 1, "once per sign-in, not on every redraw");
 
   // Scraveit confirms 20% in the Admin app: the owner's open screen updates by itself.
   const before = renders;
@@ -71,6 +77,13 @@ async function restaurantSide() {
   assert.match(ctx.html, /Your rate is confirmed/);
   assert.match(ctx.html, /Your rate<\/span><strong class="ob-rate-n">20%/);
   assert.match(ctx.html, /Read and sign the agreement/);
+
+  // The notification arriving with the app open: the screen refreshes and says what happened.
+  ctx.window.SavrivoNativePushBatch([{type: "STORE_APPLICATION", title: "Your rate is confirmed", receivedAt: Date.now()}]);
+  assert.deepEqual(toasts.pop(), ["Your rate is confirmed", "success"]);
+  ctx.window.SavrivoNativePushBatch([{type: "STORE_APPLICATION", title: "Your rate is confirmed", receivedAt: Date.now() - 3600000}]);
+  assert.equal(toasts.length, 0, "an old notification handed over later isn't shown again");
+  await settle();
 
   // Check status says what is really going on (it used to say "Still pending Admin review").
   await ctx.checkApprovalStatus();
@@ -103,7 +116,7 @@ async function restaurantSide() {
   await docRef(APP).set({status: "submitted"});
   await settle();
   assert.equal(listeners.size, 0, "no listener left after leaving the registration screen");
-  console.log("Restaurant app: rate confirmed shows live, Check status tells the truth, load errors show, changes requested opens the form.");
+  console.log("Restaurant app: rate confirmed shows live, Check status tells the truth, load errors show, changes requested opens the form, the phone registers for notifications.");
 }
 
 async function adminSide() {

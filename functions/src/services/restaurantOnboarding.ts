@@ -327,6 +327,35 @@ export async function requestRestaurantApplicationChanges(
   }, {merge: true});
 }
 
+/**
+ * What to tell the owner when Scraveit acts on their application (notifyStoreApplicant): the rate
+ * confirmed or changed, changes asked for, or approval. Null when there's nothing new for them.
+ */
+export function applicantUpdate(appId: string, before: Rec | null, after: Rec | null):
+  {uid: string; key: string; title: string; body: string} | null {
+  const uid = str(after?.uid, 128);
+  if (!after || !uid) return null;
+  const name = str(after.restaurantName, 80) || "Your store";
+  if (after.status === "approved") {
+    if (before?.status === "approved") return null;
+    return {uid, key: `approved:${appId}`, title: "You're approved!",
+      body: `${name} is on Scraveit. Open the app to switch on your ${sellsGoods(after) ? "store" : "restaurant"}.`};
+  }
+  if (after.status === "changes_requested" && before?.status !== "changes_requested") {
+    return {uid, key: `changes:${appId}:${Number(after.reviewedAt ?? 0)}`, title: "Scraveit asked for a few changes",
+      body: str(after.reviewMessage, 200) || "Open the app to see what to change."};
+  }
+  const was = rec(before?.terms), now = rec(after.terms);
+  if (!Number.isFinite(Number(now.commissionBps))) return null;
+  if (Number(was.commissionBps) === Number(now.commissionBps) && Number(was.termMonths) === Number(now.termMonths)) return null;
+  const first = !Number.isFinite(Number(was.commissionBps));
+  const resign = rec(before?.agreement).status === "signed";
+  return {uid, key: `rate:${appId}:${Number(now.commissionBps)}:${Number(now.termMonths)}:${Number(now.setAt ?? 0)}`,
+    title: first ? "Your rate is confirmed" : "Your rate was updated",
+    body: `${Number(now.commissionBps) / 100}% commission for ${Number(now.termMonths ?? 12)} months. ` +
+      (resign ? "Open the app to sign your agreement again." : "Open the app to read and sign your agreement.")};
+}
+
 const mediaBucket = () => storage.bucket();
 
 /** Short-lived links to the documents, for the admin review screen only. */

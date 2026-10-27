@@ -636,6 +636,23 @@ export async function notifyRestaurantDineIn(input: {restaurantId: string; key: 
   });
 }
 
+/** To someone who applied to sell on Scraveit: rate confirmed, changes asked for, approved. */
+export async function notifyStoreApplicant(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "STORE_APPLICATION",
+    aggregateType: "store_application",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `store-applicant:${input.key}`,
+    recipient: {kind: "user", id: input.uid, app: "restaurant"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "STORE_APPLICATION"},
+      android: {priority: "high", notification: {channelId: "savrivo_order_status", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
 /** Friends & chat: a new message, friend request or parent decision to one customer. */
 export async function notifyUserChat(input: {uid: string; key: string; title: string; body: string; data?: Record<string, string>}): Promise<void> {
   await enqueueAndAttempt({

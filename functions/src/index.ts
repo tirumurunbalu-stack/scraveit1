@@ -204,6 +204,7 @@ import {
   notifyCustomerRiderAssigned,
   notifyCustomerStatus,
   notifyRestaurantNewOrder,
+  notifyStoreApplicant,
   stopRiderOffers,
   stopRestaurantAlarm,
 } from "./services/notifications";
@@ -2579,14 +2580,18 @@ export const getAdminAnalytics = onCall({region: REGION, enforceAppCheck: true, 
     }
   });
 
-/** Tell the owner when a store applies, and when it signs and is ready to approve. */
+/**
+ * Tell Scraveit's admins when a store applies, and when it signs and is ready to approve; tell the
+ * store's owner when Scraveit confirms their rate, asks for changes or approves them.
+ */
 export const onRestaurantApplicationWritten = onDocumentWritten({
   document: "restaurantApplications/{appId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
 }, async (event) => {
   const before = (event.data?.before?.data() ?? null) as Record<string, unknown> | null;
   const after = (event.data?.after?.data() ?? null) as Record<string, unknown> | null;
   const alert = applicationAlert(event.params.appId, before, after);
-  if (alert) await alarmAdmins(alert);
+  const update = onboarding.applicantUpdate(event.params.appId, before, after);
+  await Promise.all([alert ? alarmAdmins(alert) : null, update ? notifyStoreApplicant(update) : null]);
 });
 
 /** Ring the admin app when a rider sends their application. */
