@@ -600,6 +600,13 @@ export const getPlatformConfiguration = onCall({
  * means no feePreview is attached, same "fail closed" idiom used everywhere
  * else these dynamic fees are computed.
  */
+const TAX_BREAKDOWN_LABELS: Record<string, string> = {
+  restaurant_service: "GST on item total", food: "GST on item total", packaging: "GST on packaging",
+  delivery_fee: "GST on delivery fee", platform_fee: "GST on platform fee", small_order_fee: "GST on small-order fee",
+  late_night_fee: "GST on late-night fee", surge_fee: "GST on demand fee", rain_fee: "GST on rain fee",
+  rider_incentive_fee: "GST on rider fees",
+};
+
 export const getCheckoutConfiguration = onCall({
   region: REGION,
   secrets: CASHFREE_SECRETS,
@@ -668,6 +675,18 @@ export const getCheckoutConfiguration = onCall({
       let tax = checkoutTax(control, plan, fees, subtotal, now);
       const lawTax = await lawBasedCheckoutTax({restaurant, items: pricedItems, menuById, plan, fees, subtotal, at: now});
       if (lawTax) tax = lawTax.tax;
+      // What the customer's GST is made of, for the "GST & charges" line in the bill.
+      const taxParts = !tax ? [] : lawTax ?
+        lawTax.orderTax.services.filter((line) => line.chargedTo === "customer").map((line) => ({component: line.component, paise: line.gstPaise})) :
+        tax.lines.filter((line) => !line.inclusive && line.component !== "commission").map((line) => ({component: line.component, paise: line.taxPaise}));
+      const taxBreakdown: {label: string; amount: number}[] = [];
+      for (const part of taxParts) {
+        if (part.paise <= 0) continue;
+        const label = TAX_BREAKDOWN_LABELS[part.component] ?? `GST on ${part.component.replace(/_/g, " ")}`;
+        const row = taxBreakdown.find((entry) => entry.label === label);
+        if (row) row.amount = Math.round((row.amount + part.paise / 100) * 100) / 100;
+        else taxBreakdown.push({label, amount: part.paise / 100});
+      }
       const feeInput = {
         subtotal,
         discount: (plan.discount.restaurantDiscountPaise + plan.discount.platformDiscountPaise) / 100,
@@ -701,6 +720,7 @@ export const getCheckoutConfiguration = onCall({
         walletMaxForOrder: (wallet?.maxForOrderPaise ?? 0) / 100,
         cashbackEstimate: cashback,
         taxVersionId: tax?.versionId ?? "",
+        taxBreakdown,
       };
       return {
         ...config,

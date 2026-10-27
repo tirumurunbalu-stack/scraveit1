@@ -5872,7 +5872,46 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function limitedOfferNote(){return'<p class="caption">This offer is capped on this order. The discount shown is exactly what you will get.</p>'}
   /** "Estimated …" until the server has priced this exact cart. */
   function feeLabel(name){return serverCheckout()?name.charAt(0).toUpperCase()+name.slice(1):"Estimated "+name}
-  function priceBreakdown(includeTotal){return'<div class="stack"><div class="price-row"><span>Item subtotal</span><span>'+money(cartSubtotal())+'</span></div>'+(discount()?discountRows():'')+'<div class="price-row"><span>'+feeLabel("delivery fee")+'</span><span>'+(deliveryFee()?money(deliveryFee()):'<span class="success-text">Free</span>')+'</span></div>'+(rainFee()>0?'<div class="price-row"><span>Verified rain fee</span><span>'+money(rainFee())+'</span></div>':'')+(surgeFee()>0?'<div class="price-row"><span>Demand surge fee</span><span>'+money(surgeFee())+'</span></div>':'')+riderIncentiveItems().map(item=>'<div class="price-row"><span>'+h(item.label)+'</span><span>'+money(item.amount)+'</span></div>').join("")+(smallOrderFee()>0?'<div class="price-row"><span>'+feeLabel("small-order fee")+'</span><span>'+money(smallOrderFee())+'</span></div>':'')+(lateNightFee()>0?'<div class="price-row"><span>'+feeLabel("late-night fee")+'</span><span>'+money(lateNightFee())+'</span></div>':'')+'<div class="price-row"><span>Platform fee</span><span>'+money(platformFee())+'</span></div>'+(tax()?'<div class="price-row"><span>'+feeLabel("taxes")+'</span><span>'+money(tax())+'</span></div>':'')+(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption" style="display:block">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')+walletRows()+(includeTotal?'<div class="price-row total"><span>'+(serverCheckout()?'To pay':'Estimated total')+'</span><span>'+money(orderTotal())+'</span></div>'+cashbackRow():'')+'</div>'}
+  /** Bill lines Zomato-style: the coupon folds into the item total; delivery, platform fee and GST open a small explainer. */
+  function deliveryGroupFee(){return deliveryFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()}
+  /** The distance fee before any free-delivery rule, to show what free delivery saved. */
+  function deliverySlabFee(){const r=cartRestaurant();return r?deliveryFeeForRestaurant(r,0):0}
+  function billTapRow(key,label,value){return'<button type="button" class="price-row bill-tap" data-action="bill-info" data-key="'+key+'"><span class="bill-dotted">'+label+'</span><span>'+value+'</span></button>'}
+  function priceBreakdown(includeTotal){
+    const sub=cartSubtotal(),off=discount(),code=state.coupon&&state.coupon.code,server=serverOffer(),slab=deliverySlabFee(),group=deliveryGroupFee();
+    const freeDelivery=deliveryFee()===0&&slab>0;
+    return'<div class="stack">'
+      +'<div class="price-row"><span>Item total'+(off>0&&code?'<small class="caption bill-sub success-text">'+h(code)+' applied</small>':'')+'</span><span>'+(off>0?'<s class="bill-was">'+money(sub)+'</s> ':'')+money(Math.max(0,sub-off))+'</span></div>'
+      +(server&&server.limited?limitedOfferNote():'')
+      +billTapRow("delivery",feeLabel("delivery fee"),(freeDelivery?'<s class="bill-was">'+money(slab)+'</s> ':'')+(group?money(group):'<span class="success-text">Free</span>'))
+      +billTapRow("platform","Platform fee",money(platformFee()))
+      +(tax()?billTapRow("tax",serverCheckout()?"GST &amp; charges":"Estimated GST",money(tax())):'')
+      +(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption bill-sub">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')
+      +walletRows()
+      +(includeTotal?'<div class="price-row total"><span>'+(serverCheckout()?'To pay':'Estimated total')+'</span><span>'+money(orderTotal())+'</span></div>'+cashbackRow():'')
+      +'</div>'}
+  function billInfoPop(){
+    const key=state.billInfo;if(!key)return'';
+    const row=(label,value,cls)=>'<div class="bill-pop-row'+(cls?' '+cls:'')+'"><span>'+label+'</span><span>'+value+'</span></div>';
+    let body="";
+    if(key==="delivery"){
+      const r=cartRestaurant(),km=r?restaurantDistanceKm(r):null,slab=deliverySlabFee(),free=deliveryFee()===0&&slab>0,threshold=Number(state.settings.freeDeliveryAbove||0);
+      body=row('Base fee'+(km!=null?' for '+(Math.round(km*10)/10)+' km':'')+'<small>Based on distance from the restaurant</small>',money(free?slab:deliveryFee()))
+        +(smallOrderFee()>0?row('Small-order fee<small>On orders below '+money(Number(state.settings.smallOrderThreshold||149))+'</small>',money(smallOrderFee())):'')
+        +(lateNightFee()>0?row('Late-night fee',money(lateNightFee())):'')
+        +(rainFee()>0?row('Rain fee<small>Verified rain on the route</small>',money(rainFee())):'')
+        +(surgeFee()>0?row('Demand fee<small>Many orders nearby right now</small>',money(surgeFee())):'')
+        +riderIncentiveItems().map(x=>row(h(x.label),money(x.amount))).join("")
+        +(free?row('Free delivery'+(threshold>0?'<small>On orders above '+money(threshold)+'</small>':''),'− '+money(slab),'gold'):'');
+    }else if(key==="platform"){
+      body='<p class="bill-pop-copy"><strong>Platform fee</strong>This small fee helps us run Scraveit: secure payments, order support and a fast, reliable app.</p>';
+    }else{
+      const c=serverCheckout(),parts=c&&Array.isArray(c.taxBreakdown)?c.taxBreakdown.filter(x=>Number(x.amount)>0):[];
+      body='<p class="bill-pop-note">Taxes are set by the government. Scraveit only collects them.</p>'
+        +(parts.length?parts.map(x=>row(h(x.label),money(Number(x.amount)))).join(""):row("GST",money(tax())))
+        +row("<strong>Total</strong>","<strong>"+money(tax())+"</strong>","total");
+    }
+    return'<div class="bill-pop-scrim" data-action="bill-info" data-key=""><div class="bill-pop" role="dialog" aria-modal="true" data-action="bill-pop-stay">'+body+'<button type="button" class="bill-pop-ok" data-action="bill-info" data-key="">OKAY</button></div></div>'}
   function screenCart() {
     const r=cartRestaurant();
     if(state.cart.length&&!r){
@@ -5975,7 +6014,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return '<section class="stack tip-block"><div><h2 class="section-title">Tip your delivery partner</h2><p class="supporting">Choose an optional amount for your Scraveit Partner.</p></div><div class="segmented"><button class="segment '+(Number(state.tip||0)===0?'active':'')+'" data-action="set-tip" data-value="0">No tip</button><button class="segment '+(Number(state.tip)===20?'active':'')+'" data-action="set-tip" data-value="20">₹20</button><button class="segment '+(Number(state.tip)===30?'active':'')+'" data-action="set-tip" data-value="30">₹30</button><button class="segment '+(Number(state.tip)===50?'active':'')+'" data-action="set-tip" data-value="50">₹50</button></div><div class="cluster"><input id="custom-tip" class="input grow" type="number" min="0" max="1000" step="1" placeholder="Custom tip"><button class="button secondary" data-action="apply-custom-tip">Apply</button></div></section>';
   }
   function billSheet(){
-    return sheetShell("Bill summary","",'<div class="stack-lg"><section class="bill-card">'+priceBreakdown(true)+'</section>'+(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')+tipChooserMarkup()+'<p class="caption">The secure Scraveit server checks menu prices, discounts, distance and any weather or demand fee. The confirmed total replaces this estimate on your receipt.</p></div>');
+    const saved=discount()+(deliveryFee()===0?deliverySlabFee():0);
+    return sheetShell("Bill summary","",'<div class="stack-lg">'+(saved>0?'<div class="saved-banner">🎉 You saved '+money(saved)+' on this order</div>':'')+'<section class="bill-card">'+priceBreakdown(true)+'</section>'+tipChooserMarkup()+'<p class="caption">The secure Scraveit server checks menu prices, discounts, distance and any weather or demand fee. The confirmed total replaces this estimate on your receipt.</p></div>')+billInfoPop();
   }
   function upiAppOption(app){
     const on=state.checkout.payment==="upi"&&state.checkout.upiApp===app.appId;
@@ -7923,7 +7963,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(control.classList.contains("sheet-backdrop")&&event.target.closest("[data-sheet-surface]"))return;
       closeSheet();return;
     }
-    if(action==="open-bill"){setSheet({type:"bill"});return;}
+    if(action==="open-bill"){state.billInfo="";setSheet({type:"bill"});return;}
+    if(action==="bill-info"){state.billInfo=String(control.dataset.key||"");renderSheet();return;}
+    if(action==="bill-pop-stay")return;
     if(action==="mascot-tap"){mascotTap();return;}
     if(action==="open-wheel"){openWheel();return;}
     if(action==="spin-wheel"){spinWheel();return;}

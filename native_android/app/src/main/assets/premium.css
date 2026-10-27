@@ -2823,3 +2823,21 @@ body:has(.kind-nav):has(.floating-cart) .toast-region, body:has(.kind-nav):has(.
 .ix-dish { display: flex; align-items: center; gap: .55em; padding: .5em .8em; border-radius: .8em; border: 0; background: #111827; color: #fff; text-align: left; box-shadow: 0 .3em .9em rgba(0,0,0,.3); font: 700 .95em/1.15 var(--font-body, sans-serif); }
 .ix-dish b { display: block; font-weight: 800; }
 .ix-dish small { display: block; color: rgba(255,255,255,.7); margin: .15em 0 0; }
+
+/* ---- Bill summary: tappable fee lines and explainer pop-ups ---- */
+.price-row.bill-tap { width: 100%; background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.bill-dotted { text-decoration: underline dashed var(--ink-faint); text-underline-offset: 5px; text-decoration-thickness: 1px; }
+.bill-sub { display: block; margin-top: 2px; font-weight: 600; }
+.bill-pop-scrim { position: fixed; inset: 0; z-index: 400; display: flex; align-items: center; justify-content: center; padding: 24px 16px; background: rgba(0,0,0,.55); animation: bill-pop-fade .16s ease-out; }
+.bill-pop { width: 100%; max-width: 420px; background: var(--surface-raised); color: var(--ink); border-radius: 18px; padding: 18px 20px 6px; box-shadow: var(--shadow); animation: bill-pop-in .18s ease-out; }
+.bill-pop-row { display: flex; justify-content: space-between; gap: 14px; padding: 12px 0; font-size: 15px; font-weight: 650; border-bottom: 1px solid var(--border); }
+.bill-pop-row small { display: block; margin-top: 3px; color: var(--ink-soft); font-size: 13px; font-weight: 500; }
+.bill-pop-row > span:last-child { white-space: nowrap; }
+.bill-pop-row.gold { color: var(--warning); }
+.bill-pop-row.total { border-bottom: 0; }
+.bill-pop-note { margin: 0; padding-bottom: 12px; font-size: 14px; color: var(--ink-soft); border-bottom: 1px solid var(--border); }
+.bill-pop-copy { margin: 0; padding: 4px 0 14px; font-size: 15px; line-height: 1.45; color: var(--ink-soft); }
+.bill-pop-copy strong { display: block; margin-bottom: 8px; font-size: 17px; color: var(--ink); }
+.bill-pop-ok { display: block; width: 100%; padding: 14px 0; background: none; border: 0; color: var(--brand); font: inherit; font-size: 15px; font-weight: 800; letter-spacing: .06em; cursor: pointer; }
+@keyframes bill-pop-fade { from { opacity: 0; } }
+@keyframes bill-pop-in { from { opacity: 0; transform: scale(.96); } }
