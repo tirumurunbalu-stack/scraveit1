@@ -54,6 +54,7 @@
     star: '<path d="m12 2.5 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.1l6.2-.9z"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+    menuBook: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3M9 7.5h6M9 11h6"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
     eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
     eyeOff: '<path d="m3 3 18 18M10.6 6.2A10.7 10.7 0 0 1 12 6c6.5 0 10 6 10 6a15 15 0 0 1-2.1 2.8M6.6 6.6C3.7 8.4 2 12 2 12s3.5 6 10 6c1.6 0 3-.4 4.2-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
@@ -241,7 +242,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const value = themeValue();
     document.documentElement.dataset.theme = value;
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = value === "dark" ? "#071426" : "#FFFFFF";
+    if (meta) meta.content = value === "dark" ? "#0A0B0F" : "#FFFFFF";
   }
 
   function persistProfile() { saveJSON("savrivo.customer.profile", state.profile); }
@@ -754,6 +755,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     full.menuIndex=discoveryIndex(full.menu);
     full.menu=existing&&existing.menuLoaded?(existing.menu||[]):(saved||[]);
     full.menuLoaded=full.menu.length>0;
+    full.menuFetchedAt=existing&&existing.menuLoaded?Number(existing.menuFetchedAt||0):0;
     return full;
   }
 
@@ -1106,7 +1108,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const restaurant=state.catalog[restaurantId];
     const force=!!(options&&options.force),throwOnError=!!(options&&options.throwOnError);
     if(!restaurant)return [];
-    if(!force&&restaurant.menuLoaded)return restaurant.menu||[];
+    // A cached menu shows at once, but is refreshed from the server unless it was fetched in the last minute.
+    const fresh=Date.now()-Number(restaurant.menuFetchedAt||0)<60000;
+    if(!force&&restaurant.menuLoaded&&fresh)return restaurant.menu||[];
+    if(!force&&restaurant.menuLoaded&&!state.menuRequests[restaurantId]){ensureRestaurantMenu(restaurantId,{force:true});return restaurant.menu||[];}
     if(state.menuRequests[restaurantId])return state.menuRequests[restaurantId];
     const saved=cachedMenu(restaurantId);
     if(!force&&saved&&saved.length){restaurant.menu=saved;restaurant.menuLoaded=true;render({preserveScroll:true})}
@@ -1117,7 +1122,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         const menuSnap=await menuItemsCollectionRef(restaurantId).get();
         const map=recordsFromSnapshot(menuSnap);
         const items=Object.keys(map||{}).map(itemId=>{const item=Object.assign({id:itemId},map[itemId]||{});item.image=item.imageUrl||item.image;item.imageThumb=item.imageThumbUrl||item.imageThumb||item.image;return item}).filter(item=>item.archived!==true);
-        restaurant.menu=items;restaurant.menuIndex=discoveryIndex(items);restaurant.menuLoaded=true;saveMenuCache(restaurantId,items);
+        restaurant.menu=items;restaurant.menuIndex=discoveryIndex(items);restaurant.menuLoaded=true;restaurant.menuFetchedAt=Date.now();saveMenuCache(restaurantId,items);
         perfLog("RESTAURANT_MENU_LOADED",started,{restaurantId,items:items.length,forced:force});
         return items;
       } catch (error) {
@@ -1316,7 +1321,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.syncError=Object.keys(state.catalog).length?"Live catalogue refresh failed. Showing saved restaurants.":"Restaurants could not be loaded. Check your connection and retry.";
       perfLog("REMOTE_CATALOG_FAILED",started,{sequence,cacheRetained:Object.keys(state.catalog).length>0,code:String(error&&error.message||"unknown")});
     } finally {
-      if(sequence===state.catalogRequestSequence&&["home","search","restaurant"].includes(state.route)&&!skipRender)render({preserveScroll:true});
+      if(sequence===state.catalogRequestSequence&&["home","search","restaurant","deals"].includes(state.route)&&!skipRender)render({preserveScroll:true});
     }
   }
 
@@ -2077,7 +2082,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       addOnIds:addOns.map(x=>String(x.id||x.name||"")).filter(Boolean),
       addOnTotal:addOns.reduce((sum,x)=>sum+Number(x.priceDelta!=null?x.priceDelta:x.price||0),0), note:custom&&custom.note||""
     });
-    persistCart(); closeSheet(); toast(item.name+" added to cart.","success"); render({preserveScroll:true}); cartWin();
+    persistCart(); closeSheet(); if(!(custom&&custom.quiet))toast(item.name+" added to cart.","success"); render({preserveScroll:true}); cartWin();
   }
   function updateCart(key, delta) {
     const item = state.cart.find(x=>x.key===key); if(!item)return;
@@ -2276,7 +2281,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function parentTab() {
-    if(["home","search","restaurant","cart","checkout","addresses","favourites"].includes(state.route))return"home";
+    if(["home","search","restaurant","deals","cart","checkout","addresses","favourites"].includes(state.route))return"home";
     if(["orders","order","tracking","review"].includes(state.route))return"orders";
     if(state.route==="offers")return"offers";return"account";
   }
@@ -2451,7 +2456,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // the keyboard handling depends on), so web content cannot be drawn under
   // the status bar. Colour the bar to match the screen instead: the seam
   // disappears without touching the keyboard behaviour.
-  const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#F6F9FD", STATUS_BAR_HERO_LIGHT="#FFFFFF", STATUS_BAR_CANVAS_LIGHT="#FFFFFF";
+  const STATUS_BAR_HERO="#0B3F96", STATUS_BAR_CANVAS="#0A0B0F", STATUS_BAR_HERO_LIGHT="#FFFFFF", STATUS_BAR_CANVAS_LIGHT="#FFFFFF";
   let statusBarApplied="";
   // The live map (restaurant, home, dotted plan line, then the partner) shows
   // from the moment an order is placed, not only once a partner is assigned.
@@ -2470,12 +2475,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     let darkIcons=!dark;
     let color=dark?(hero?STATUS_BAR_HERO:STATUS_BAR_CANVAS):(hero?STATUS_BAR_HERO_LIGHT:STATUS_BAR_CANVAS_LIGHT);
     // Home 2.0: the sky runs up under the clock, so the bar takes its colour.
-    const sky=state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2"))||(state.route==="welcome"&&document.querySelector(".welcome2")));
-    if(sky){color=state.heroTheme.top;darkIcons=!state.heroTheme.dark;}
+    // ...until the sticky search bar slides over it; then the bar's colour leads.
+    // The deals page's warm hero does the same.
+    const pinned=!!document.querySelector(".sticky-bar.on");
+    const sky=state.route==="deals"&&!pinned?{top:"#ff9a1f",dark:true}:state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2")&&!pinned)||(state.route==="welcome"&&document.querySelector(".welcome2")))?state.heroTheme:null;
+    if(sky){color=sky.top;darkIcons=!sky.dark;}
     // A story or a full-screen photo is black edge to edge, clock included.
     const black=!!(state.sheet&&["friendStory","photo","compose"].includes(state.sheet.type));
     if(black){color="#05080F";darkIcons=false;}
-    const scrim=statusScrimElement();if(scrim){scrim.style.background=sky?state.heroTheme.top:"";scrim.style.visibility=black?"hidden":"";}
+    const scrim=statusScrimElement();if(scrim){scrim.style.background=sky?sky.top:"";scrim.style.visibility=black?"hidden":"";}
     const next=color+(darkIcons?":dark":":light");
     updateStatusScrim(hero);
     if(next===statusBarApplied)return;
@@ -2484,22 +2492,30 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // A blurred strip behind the status bar that fades in once the page is
   // scrolled, so the clock and battery never sit on top of moving content.
-  let statusScrimHero=false, statusScrimFrame=0;
+  let statusScrimHero=false, statusScrimFrame=0, statusScrollEl=null, statusBarPinned=false;
   function statusScrimElement(){
     let el=document.getElementById("status-scrim");
     if(!el&&document.body){
       el=document.createElement("div");el.id="status-scrim";el.setAttribute("aria-hidden","true");document.body.appendChild(el);
-      window.addEventListener("scroll",()=>{if(!statusScrimFrame)statusScrimFrame=requestAnimationFrame(()=>{statusScrimFrame=0;updateStatusScrim(statusScrimHero)})},{passive:true});
     }
     return el;
   }
+  // Pages scroll inside their own panel (main.screen), not the window: listen in the capture phase to catch both.
+  // Sideways carousels also send scroll events; only vertical scrollers count.
+  document.addEventListener("scroll",event=>{const t=event.target;if(!t||t.nodeType!==1)statusScrollEl=null;else if(t.scrollHeight>t.clientHeight+1)statusScrollEl=t;else return;if(!statusScrimFrame)statusScrimFrame=requestAnimationFrame(()=>{statusScrimFrame=0;updateStatusScrim(statusScrimHero)})},{passive:true,capture:true});
   function updateStatusScrim(hero){
     statusScrimHero=!!hero;
     const el=statusScrimElement();
     if(!el)return;
-    const y=window.scrollY||(document.documentElement&&document.documentElement.scrollTop)||0;
+    const y=Math.max(statusScrollEl&&statusScrollEl.isConnected?statusScrollEl.scrollTop:0,window.scrollY||(document.documentElement&&document.documentElement.scrollTop)||0);
     el.classList.toggle("hero",statusScrimHero);
     el.classList.toggle("visible",y>12);
+    // A sticky bar slides in once its anchor (the store name, the home search) has scrolled under it.
+    const bar=document.querySelector(".sticky-bar"),anchor=bar&&document.querySelector(bar.dataset.anchor);
+    const pinned=!!(bar&&anchor&&anchor.getBoundingClientRect().bottom<bar.offsetHeight);
+    if(bar)bar.classList.toggle("on",pinned);
+    el.classList.toggle("under-bar",pinned);
+    if(pinned!==statusBarPinned){statusBarPinned=pinned;try{syncStatusBar()}catch(_){}}
   }
   function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
 
@@ -2550,15 +2566,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function homeHeader() {
-    const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
+    const address=currentAddress(),cart=cartCount();
     const loadingAddress=!address&&state.profileSyncPending===true;
     const title=address?(address.label||address.area||"Delivery address"):loadingAddress?"Finding your address":"Choose a location";
     const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":loadingAddress?"Loading your saved addresses":"Select a saved address";
-    const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
     return '<header class="home-header hh2"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
-      +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
-      +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
-      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></header>';
+      // Chats, offers and orders live in Your people and Account, so the top stays clean.
+      +'<div class="hh2-actions"><button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></header>';
   }
   function orderProgress(order) { const progress=Math.min(100,Math.max(6,(statusIndex(order.status)+1)/ORDER_FLOW.length*100)); return progress; }
   function audienceMatch(record){
@@ -2589,8 +2603,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function activeLocalAd(){ return activeLocalAds()[0]||null; }
   /** Every live ad as one swipeable row (left/right), dots below; falls back to the brand card. */
   function adRailMarkup(trackId){
-    const ads=activeLocalAds();
-    if(!ads.length)return localAdMarkup();
+    // The campaign at the top of home is not repeated down here.
+    const hero=trackId==="home-ad-track"&&heroCampaign(),ads=activeLocalAds().filter(ad=>!hero||ad.id!==hero.id);
+    if(!ads.length)return hero&&hero.id?promiseCardMarkup():localAdMarkup();
     return '<section class="ad-rail" aria-label="Offers"><div class="ad-rail-track" id="'+h(trackId)+'">'
       +ads.map(ad=>'<button type="button" class="ad-rail-slide" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'
         +((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async">':'')
@@ -2716,7 +2731,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(e.type!=="pointercancel"&&Math.abs(d.dx)>Math.min(100,d.el.offsetWidth*.28))slideCapsuleAway(d.el,d.dx);
     else{d.el.style.transition="transform .2s ease, opacity .2s ease";d.el.style.transform="";d.el.style.opacity=""}}
   document.addEventListener("pointerup",endCapsuleDrag);document.addEventListener("pointercancel",endCapsuleDrag);
-  function localAdMarkup(){const ad=activeLocalAd();if(!ad)return'<button type="button" class="promise-card" data-action="go" data-route="offers"><span class="promise-copy"><span class="promise-eyebrow">The Scraveit promise</span><strong>No surprise charges.</strong><span>Every rupee is shown before you pay.</span><span class="ad-rail-cta">See today’s offers</span></span><span class="promise-art" aria-hidden="true"><i>₹</i><b>✓</b></span></button>';return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
+  function promiseCardMarkup(){return'<button type="button" class="promise-card" data-action="go" data-route="offers"><span class="promise-copy"><span class="promise-eyebrow">The Scraveit promise</span><strong>No surprise charges.</strong><span>Every rupee is shown before you pay.</span><span class="ad-rail-cta">See today’s offers</span></span><span class="promise-art" aria-hidden="true"><i>₹</i><b>✓</b></span></button>'}
+  function localAdMarkup(){const ad=activeLocalAd();if(!ad)return promiseCardMarkup();return'<button class="card local-ad" data-action="open-ad" data-ad-id="'+h(ad.id)+'">'+((ad.image||ad.imageUrl)?'<img src="'+h(safeUrl(ad.image||ad.imageUrl,"restaurant-placeholder.svg"))+'" alt="">':'')+'<div class="local-ad-copy"><span class="sponsored-label">Sponsored · '+h(ad.area||ad.city||"Local")+'</span><h2 class="section-title" style="font-size:25px">'+h(ad.title||"Nearby offer")+'</h2><p>'+h(ad.message||"")+'</p><strong>'+h(ad.cta||"Explore")+' →</strong></div></button>'}
   function latestDeliveredNeedingReview(){if(!reviewStateReady())return null;return state.orders.find(o=>o.status==="Delivered"&&!isGuestOrder(o)&&!state.reviews[o.id])||null}
 
   function activeOrderCard(order) {
@@ -2986,7 +3002,118 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<div class="photo-track" data-rid="'+h(r.id)+'">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||thumbs[0]||url):(thumbs[i]||url),"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
       +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===cur?' class="on"':'')+'><b></b></span>').join("")+'</div>';
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · ");return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button><span class="rc2-eta">'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed')+'</span></div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating">'+h(ratingText)+' ★</span></div><p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+(cuisines?' · ':'')+(fee===0?'Free delivery':money(fee)+' delivery')+'</p></div></article>'}
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · "),km=restaurantDistanceKm(r),kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button>'+(r.open?'':'<span class="rc2-eta">Closed</span>')+'</div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+h(ratingText):'New')+'</span></div><p class="rc2-meta">'+icon("clock","small")+'<span>'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins':'Closed now')+'</span>'+(kmText?'<i></i><span>'+h(kmText)+'</span>':'')+'<i></i><span>'+(fee===0?'Free delivery':money(fee)+' delivery')+'</span></p>'+(cuisines||isPureVegRestaurant(r)?'<p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+'</p>':'')+'</div></article>'}
+  // ===== Campaign banner: the top of home becomes an animated ad =====
+  // Only for a real campaign: an ad the admin published with a discount in its
+  // title ("Items at 50% OFF"), or else the best offer that is live right now.
+  // Otherwise the usual greeting and rider stay. The dishes are stock cut-outs
+  // bundled with the app (campaign/), so the ad looks the same for everyone.
+  const CAMPAIGN_DISHES=[["biryani","curry"],["noodles","penne"],["pizza","burger"]];
+  function heroCampaign(){
+    if(homeMode()!=="delivery")return null;
+    const ad=activeLocalAds().find(x=>/\d+\s*%/.test(String(x.title||"")));
+    if(ad){
+      const m=/^(.*?)(\d+\s*%.*)$/.exec(String(ad.title).trim());
+      return{id:ad.id,line1:m[1].trim()||"Up to",line2:m[2].trim(),cta:ad.cta&&ad.cta!=="Explore"?ad.cta:"Order now",action:ad.restaurantId?' data-action="open-ad" data-ad-id="'+h(ad.id)+'"':' data-action="go" data-route="deals"'};
+    }
+    const deals=topOfferRestaurants().filter(r=>r.open!==false&&storeKind(r)==="restaurant");
+    const pct=Math.max(0,...deals.map(r=>Math.round(restaurantOfferPercent(r)||0)));
+    return pct>0?{id:"",line1:"Up to",line2:pct+"% OFF",cta:"Order now",action:' data-action="go" data-route="deals"'}:null;
+  }
+  // The headline sits centred, then its two lines part to let three pairs of
+  // dishes pop in one after another, then it closes again and coupon tickets
+  // burst out from behind it. One loop is 5 seconds.
+  function campaignStage(c){
+    const dish=(name,cls)=>'<img class="camp-dish '+cls+'" src="campaign/'+name+'.webp" alt="" decoding="async">';
+    return'<button type="button" class="camp"'+c.action+' aria-label="'+h(c.line1+" "+c.line2+". "+c.cta)+'"><span class="camp-stage" aria-hidden="true">'
+      +'<i class="camp-glow"></i>'+["leaf","chili","chili","leaf","leaf","chili"].map((k,i)=>'<i class="camp-bit '+k+' g'+i+'"></i>').join("")
+      +[0,1,2,3,4,5].map(i=>'<i class="camp-tkt k'+i+'">%</i>').join("")
+      +'<span class="camp-l1">'+h(c.line1)+'</span><span class="camp-l2">'+h(c.line2)+'</span>'
+      +CAMPAIGN_DISHES.map((pair,i)=>'<span class="camp-pair q'+i+'">'+dish(pair[1],"b")+dish(pair[0],"a")+'<span class="camp-steam"><i></i><i></i><i></i></span></span>').join("")
+      +'</span><span class="camp-cta">'+h(c.cta)+' <span aria-hidden="true">›</span></span></button>';
+  }
+  // ===== Deals page: where the campaign's "Order now" lands =====
+  // Every price here is real: a dish shows a cut price only when the store's
+  // live offer applies to that dish ordered on its own (minimum order and cap
+  // included); otherwise it shows its normal price.
+  const DEAL_CATS=[["all","All",null],["biryani","Biryani",/biryan/i],["pizza","Pizza",/pizza/i],["burger","Burger",/burger/i],["noodles","Noodles",/noodle|chow ?mein|hakka|ramen/i],["curry","Curries",/curry|masala|korma|tikka|butter|paneer|kadai|gravy/i],["penne","Pasta",/pasta|penne|spaghetti|macaroni|alfredo/i]];
+  const DEAL_SORTS=[["relevance","Relevance"],["rating","Rating"],["distance","Distance"],["priceLow","Price: low"]];
+  function dealStores(){
+    const open=Object.values(state.catalog||{}).filter(r=>r.archived!==true&&r.open!==false&&storeKind(r)==="restaurant");
+    const ids=new Set(open.map(r=>r.id)),deals=topOfferRestaurants().filter(r=>ids.has(r.id));
+    return{deals,stores:deals.length?deals:open.slice().sort((a,b)=>Number(ratingForRestaurant(b).value||0)-Number(ratingForRestaurant(a).value||0))};
+  }
+  function dealBest(r){const offers=liveOffersFor(r,true);return offers.length?OM.offerScore(offers).best:null}
+  function dealDishes(r,best){
+    const cat=DEAL_CATS.find(c=>c[0]===state.dealCat),veg=state.dealVeg||state.profile.preferences.vegetarian===true;
+    return discoveryItems(r).filter(i=>i&&i.available!==false&&Number(i.price)>0)
+      .filter(i=>!veg||i.diet==="veg")
+      .filter(i=>!cat||!cat[2]||cat[2].test(i.name+" "+(i.category||"")))
+      .filter(i=>state.dealPrice==="u200"?Number(i.price)<200:state.dealPrice==="200to400"?Number(i.price)>=200&&Number(i.price)<=400:true)
+      .map(i=>({i,save:best?OM.discountPaise(best,Math.round(Number(i.price)*100))/100:0}))
+      .sort((a,b)=>state.dealSort==="priceLow"?Number(a.i.price)-Number(b.i.price):(b.i.popular===true)-(a.i.popular===true)||b.save-a.save||Number(a.i.price)-Number(b.i.price))
+      .slice(0,10);
+  }
+  function dealDishCard(r,x,best){
+    const i=x.i,after=Math.round((Number(i.price)-x.save)*100)/100,code=best&&best.code?String(best.code).toUpperCase():"";
+    const inCart=state.cart.filter(c=>c.restaurantId===r.id&&c.itemId===i.id).reduce((n,c)=>n+c.quantity,0);
+    return'<article class="deal-dish"><div class="deal-dish-copy"><span class="diet-mark'+(i.diet==="nonveg"||i.diet==="egg"?' nonveg':'')+'" aria-label="'+(i.diet==="veg"?'Vegetarian':'Non-vegetarian')+'"></span><h4>'+h(i.name)+'</h4>'
+      +(i.popular?'<span class="deal-pop"><i></i>Popular here</span>':'')
+      +'<p class="deal-price">'+(x.save>0?'<s>'+money(i.price)+'</s> <strong>'+money(after)+'</strong>':'<strong>'+money(i.price)+'</strong>')+'</p>'
+      +(x.save>0&&code?'<span class="deal-code">with '+h(code)+'</span>':'')+'</div>'
+      +'<div class="menu-media deal-dish-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(i.id)+'" src="'+h(safeUrl(i.imageThumb||i.imageUrl||i.image,r.imageThumb||r.image))+'" alt="'+h(i.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,i,inCart)+'</div></article>';
+  }
+  function dealStoreBlock(r){
+    const best=dealBest(r),loading=!r.menuLoaded,dishes=loading?[]:dealDishes(r,best);
+    if(!loading&&!dishes.length)return"";
+    const rating=ratingForRestaurant(r),km=restaurantDistanceKm(r),code=best&&best.code?String(best.code).toUpperCase():"";
+    const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase()===code;
+    return'<section class="deal-store"><button type="button" class="deal-store-head" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><span class="grow"><strong>'+h(r.name)+'</strong><span class="deal-store-meta"><b>⚡ '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins</b>'+(Number.isFinite(km)?'<i></i>'+(km<1?Math.max(50,Math.round(km*1000/50)*50)+' m':(Math.round(km*10)/10)+' km'):'')+'</span></span><span class="deal-store-rating'+(rating.value?'':' new')+'">★ '+(rating.value?rating.value.toFixed(1):'New')+'</span></button>'
+      +(best?'<div class="deal-store-offer"><span class="deal-store-offer-icon" aria-hidden="true">%</span><span class="grow">'+h(OM.offerLabel(best))+(code?' · code '+h(code):'')+'</span>'+(code?'<button class="deal-apply'+(applied?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(applied?'✓ Applied':'Apply')+'</button>':'')+'</div>':'')
+      +'<div class="deal-dish-rail">'+(loading?'<div class="deal-dish skeleton-card"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div>'.repeat(2):dishes.map(x=>dealDishCard(r,x,best)).join(""))+'</div>'
+      +'<button type="button" class="deal-store-more" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">View full menu <span aria-hidden="true">→</span></button></section>';
+  }
+  function screenDeals(){
+    const c=heroCampaign()||{line1:"Top",line2:"deals"},{deals,stores}=dealStores(),title=(c.line1+" "+c.line2).replace(/\s+/g," ").trim();
+    // Menus load on demand, so fetch the ones this page needs, then draw again.
+    const need=stores.slice(0,8).filter(r=>!r.menuLoaded&&!(state.dealMenusAsked||(state.dealMenusAsked={}))[r.id]);
+    if(need.length){need.forEach(r=>state.dealMenusAsked[r.id]=true);Promise.all(need.map(r=>Promise.resolve(ensureRestaurantMenu(r.id)).catch(()=>[]))).then(()=>{if(state.route==="deals")render({preserveScroll:true})})}
+    const pool=stores.slice(0,8),haystack=pool.map(r=>discoveryItems(r).map(i=>i.name+" "+(i.category||"")).join(" ")).join(" ");
+    const cats=DEAL_CATS.filter(x=>!x[2]||x[2].test(haystack));
+    let list=pool.slice();
+    if(state.dealSort==="rating")list.sort((a,b)=>Number(ratingForRestaurant(b).value||0)-Number(ratingForRestaurant(a).value||0));
+    if(state.dealSort==="distance")list.sort((a,b)=>(restaurantDistanceKm(a)??999)-(restaurantDistanceKm(b)??999));
+    const blocks=list.map(dealStoreBlock).join("");
+    const sortLabel=(DEAL_SORTS.find(x=>x[0]===state.dealSort)||DEAL_SORTS[0])[1];
+    const chip=(key,value,label)=>'<button class="chip'+(state[key]===value?' active':'')+'" data-action="deal-filter" data-key="'+key+'" data-value="'+value+'">'+label+'</button>';
+    const dish=(name,cls)=>'<img class="deals-dish '+cls+'" src="campaign/'+name+'.webp" alt="" decoding="async">';
+    return'<main class="screen flush deals-page'+(dockSlides().length?' has-floating-cart':'')+'">'
+      +'<div class="sticky-bar deals-sticky" data-anchor=".deals-title"><button class="icon-button flat" data-action="back" aria-label="Go back">'+icon("back")+'</button><div class="grow sticky-copy"><strong>'+h(title)+'</strong></div></div>'
+      +'<div class="screen-content"><header class="deals-hero"><span class="camp-rays" aria-hidden="true"></span><button class="deals-back" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +'<span class="deals-plates" aria-hidden="true">'+dish("biryani","l")+dish("penne","r")+'<i class="camp-tkt-static t0">%</i><i class="camp-tkt-static t1">%</i></span>'
+      +'<h1 class="deals-title"><span class="camp-l1 still">'+h(c.line1)+'</span><span class="camp-l2 still">'+h(c.line2)+'</span></h1></header>'
+      +'<div class="deals-body">'
+      +(deals.length?'<section class="stack"><h2 class="deals-kicker"><span>Top deals near you</span></h2><div class="reco-grid deals-rail">'+deals.slice(0,10).map(recoCard).join("")+'</div></section>'
+        :'<div class="notice info">'+icon("info","small")+'<span>No offers are live near you right now. These are the most loved places nearby, at their usual prices.</span></div>')
+      +(cats.length>2?'<div class="deal-cats" role="tablist">'+cats.map(([k,label])=>'<button class="deal-cat'+((state.dealCat||"all")===k?' active':'')+'" role="tab" aria-selected="'+((state.dealCat||"all")===k)+'" data-action="deal-filter" data-key="dealCat" data-value="'+k+'"><span class="deal-cat-img">'+(k==="all"?'<img src="campaign/pizza.webp" alt=""><img src="campaign/burger.webp" alt="">':'<img src="campaign/'+k+'.webp" alt="">')+'</span><span>'+label+'</span></button>').join("")+'</div>':'')
+      +'<div class="chip-row deal-filters"><button class="chip" data-action="deal-sort">'+icon("filter","small")+' '+h(state.dealSort&&state.dealSort!=="relevance"?sortLabel:"Sort")+'</button>'+chip("dealPrice","u200","Under ₹200")+chip("dealPrice","200to400","₹200 – ₹400")+'<button class="chip diet-chip'+(state.dealVeg?' active':'')+'" data-action="deal-filter" data-key="dealVeg" data-value="1"><span class="diet-mark" aria-hidden="true"></span>Veg</button></div>'
+      +(blocks||emptyState("search","Nothing matches these filters","Try another dish or price range.","deal-clear","Clear filters"))
+      +'</div></div>'+bottomDock()+'</main>';
+  }
+  // Recommended: a shelf you swipe sideways, two rows once there are enough
+  // places. Each card's last line takes turns between the delivery time and
+  // one more fact (free delivery, or how far away it is).
+  function recommendedRail(list){
+    const picks=(list||[]).slice(0,12);if(!picks.length)return"";
+    return'<section class="stack reco"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div><div class="reco-grid'+(picks.length>3?' two-rows':'')+'">'+picks.map(recoCard).join("")+'</div></section>';
+  }
+  function recoCard(r){
+    const rating=ratingForRestaurant(r),offer=restaurantOfferLabel(r),km=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0);
+    const photo=r.imageThumb||(Array.isArray(r.coverThumbs)&&r.coverThumbs[0])||r.image;
+    const eta=icon("clock","small")+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed now');
+    const second=!r.open?'':fee===0?icon("bike","small")+'Free delivery':Number.isFinite(km)?icon("pin","small")+(km<1?Math.max(50,Math.round(km*1000/50)*50)+' m':(Math.round(km*10)/10)+' km')+' away':'';
+    return'<button type="button" class="reco-card'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" aria-label="Open '+h(r.name)+'"><span class="reco-media"><img src="'+h(safeUrl(photo,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'+(offer?'<span class="reco-offer">'+h(offer)+'</span>':'')+'<span class="reco-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+rating.value.toFixed(1):'New')+'</span></span><strong class="reco-name">'+h(r.name)+'</strong><span class="reco-sub'+(second?' flip':'')+'"><span>'+eta+'</span>'+(second?'<span>'+second+'</span>':'')+'</span></button>';
+  }
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenStoreKind(kind) {
@@ -3122,7 +3249,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(/CLOUD|OVERCAST|FOG|MIST|HAZE/.test(t))return"cloudy";
     return"clear";
   }
+  // In the dark theme a daytime sky is drawn as its own deep, dusky version, so the header
+  // never glows light blue on a black page. The colours mix towards the dark canvas.
   function skyTheme(){
+    const t=skyThemeBase();
+    if(t.dark||document.documentElement.dataset.theme!=="dark")return t;
+    const mix=(hex,keep)=>{const v=String(hex||"").replace("#","");if(!/^[0-9a-f]{6}$/i.test(v))return"#14161c";const c=[0,2,4].map(i=>parseInt(v.slice(i,i+2),16)),base=[11,12,16];return"#"+c.map((x,i)=>Math.round(x*keep+base[i]*(1-keep)).toString(16).padStart(2,"0")).join("")};
+    return Object.assign({},t,{top:mix(t.top,.36),bottom:mix(t.bottom,.1),dark:true,dusk:true});
+  }
+  function skyThemeBase(){
     // Clouds are left out on purpose: a "cloudy" reading often comes while the
     // sun is out, and saying "cloudy" then is plainly wrong. Only rain and storms,
     // which change delivery, change the header.
@@ -3144,9 +3279,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function skyDecor(theme){
     const w=theme.weather||"clear",wet=w==="rain"||w==="heavy_rain"||w==="thunder",grey=w==="cloudy"||wet,dim=w==="thunder"||theme.dark?' dark':'';
     let html="";
-    if(theme.dark&&!grey){for(let i=0;i<28;i++){const x=(i*37)%100,y=(i*53)%62;html+='<i class="sky-star" style="left:'+x+'%;top:'+(6+y)+'%;animation-delay:'+((i%7)*0.4)+'s"></i>';}}
+    if(theme.dark&&!grey&&!theme.dusk){for(let i=0;i<28;i++){const x=(i*37)%100,y=(i*53)%62;html+='<i class="sky-star" style="left:'+x+'%;top:'+(6+y)+'%;animation-delay:'+((i%7)*0.4)+'s"></i>';}}
     if(theme.id==="day"&&!grey)html+='<i class="sky-cloud c1"></i><i class="sky-cloud c2"></i>';
-    if(!theme.dark&&theme.kind==="slot"&&!grey)html+='<i class="sky-sun"></i>';
+    if((!theme.dark||theme.dusk)&&theme.kind==="slot"&&!grey)html+='<i class="sky-sun'+(theme.dusk?' dusk':'')+'"></i>';
     // Low, slow grey clouds before and during rain; darker in a storm or at night.
     if(grey)html+='<i class="sky-deck'+dim+'"></i><i class="sky-cloud grey g1'+dim+'"></i><i class="sky-cloud grey g2'+dim+'"></i><i class="sky-cloud grey g3'+dim+'"></i>';
     // Three depths of slanted drops at different speeds, so it reads as rain, not a pattern.
@@ -3171,26 +3306,32 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function homeHero(){
     const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};state.heroThemeKind=theme.kind;
-    const address=currentAddress(),orders=activeOrders().length,cart=cartCount();
+    const address=currentAddress(),cart=cartCount();
     const loadingAddress=!address&&state.profileSyncPending===true;
     const title=address?(address.label||address.area||"Delivery address"):loadingAddress?"Finding your address":"Choose a location";
     const sub=address?[address.area,address.city].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(", ")||"Add a location pin":loadingAddress?"Loading your saved addresses":"Select a saved address";
-    const badge=n=>n?'<span class="hh2-badge">'+h(n)+'</span>':'';
-    const hints=searchHints(),name=firstName();
+    const hints=searchHints(),name=firstName(),campaign=heroCampaign();
     // "theme-", not "sky-": a "sky-rain" class on the header collided with the
     // rain-streak layer's own .sky-rain style and pulled the whole header over the page.
+    const topRow='<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
+      // Chats, offers and orders live in Your people and Account, so the top stays clean.
+      +'<div class="hh2-actions"><button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></div>';
+    const searchRow='<div class="hero2-search-row"><button class="hero2-search" data-action="go" data-route="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'+vegModeToggle()+'</div>';
+    // A campaign takes the whole top: location, then search, then the animated ad.
+    if(campaign){state.heroTheme={top:"#ff9a1f",dark:true};state.heroThemeKind="campaign";
+      return '<header class="hero2 dark campaign" style="--sky-top:#ff9a1f;--sky-bottom:#c3141a"><span class="camp-rays" aria-hidden="true"></span>'+topRow+searchRow+campaignStage(campaign)+'</header>';}
     return '<header class="hero2'+(theme.dark?' dark':'')+' theme-'+h(theme.id)+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
-      +'<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
-      +'<div class="hh2-actions">'+chatHeaderButton()+'<button class="hh2-icon" data-action="go" data-route="offers" aria-label="Offers">'+icon("offers")+'</button>'
-      +'<button class="hh2-icon" data-action="go" data-route="orders" aria-label="Your orders">'+icon("orders")+badge(orders)+'</button>'
-      +'<button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></div>'
+      +topRow
       +'<div class="hero2-body"><div class="hero2-copy"><p class="hero2-greet">'+h(theme.greet+(name?", "+name:""))+'</p><h1 class="hero2-head">'+h(theme.head)+'</h1>'
       +(theme.sub?'<p class="hero2-sub">'+h(theme.sub)+'</p>':'')
       +'</div>'
       +'<div class="hero2-stage"><div id="hero-rider-slot" class="hero2-rider" data-action="mascot-tap" role="button" tabindex="0" aria-label="'+h(mascot?"Today’s rider, "+mascot.rider+". Tap to say hi":"Scraveit rider")+'"></div><div class="hero2-road"><span></span></div></div></div>'
-      +'<button class="hero2-search" data-action="go" data-route="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'
+      +searchRow
       +'</header>';
   }
+  function vegModeToggle(){const on=state.profile.preferences.vegetarian===true;return'<button class="veg-mode'+(on?' on':'')+'" data-action="toggle-preference" data-key="vegetarian" role="switch" aria-checked="'+on+'" aria-label="Veg mode"><span class="veg-mode-label">VEG</span><span class="veg-mode-track"><i></i></span></button>'}
+  // Once the hero's search scrolls away, a slim copy of it stays pinned at the top.
+  function homeStickyBar(){return'<div class="sticky-bar home-sticky" data-anchor=".hero2-search"><button class="sticky-search" data-action="go" data-route="search">'+icon("search")+'<span>Search dishes or restaurants</span></button>'+vegModeToggle()+'</div>'}
   function mascotTap(){
     const mascot=todaysMascot();haptic(15);
     if(window.HeroRider)HeroRider.hop();
@@ -3713,7 +3854,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function otherOf(p){return(p.members||[]).find(m=>m!==myUid())||""}
   function nameOf(p,uid){return(p.names&&p.names[uid])||"Friend"}
   function chatUnread(){const uid=myUid();return chatState().pairs.filter(p=>p.status==="accepted").reduce((n,p)=>n+Number(p.unread&&p.unread[uid]||0),0)+chatState().pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid).length}
-  function chatTime(ms){if(!ms)return"";const d=new Date(ms),now=new Date();return d.toDateString()===now.toDateString()?d.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"}):d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
+  function chatTime(ms){if(!ms)return"";const d=new Date(ms),now=new Date();return d.toDateString()===now.toDateString()?d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}):d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
   function msgTime(m){const at=m&&m.at;return at&&typeof at.toMillis==="function"?at.toMillis():Number(at||Date.now())}
   function avatar(name,tone,uid){const t=tone||0,img=uid&&chatState().avatars[uid];if(img)return'<img class="chat-avatar photo" src="'+h(img)+'" alt="">';return'<span class="chat-avatar tone'+(t%3)+'" aria-hidden="true">'+h(String(name||"?").trim().charAt(0).toUpperCase()||"?")+'</span>'}
   // Profile photos: fetched once per person (refreshed after 10 minutes); only friends and pending requests can read them.
@@ -3796,7 +3937,6 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       haptic(25);toast(method==="upi"?"Order placed. Finish the payment in your UPI app.":"Order placed. Cash is paid to the rider at the door.","success");
       if(method==="upi"&&res&&res.order){c.payBusy="";await startOnlinePayment(res.order)}}
     catch(e){toast(chatError(e),"danger")}finally{c.payBusy="";render({preserveScroll:true})}}
-  function chatHeaderButton(){if(!state.session)return"";ensureChatSync();const n=chatUnread();return'<button class="hh2-icon" data-action="go" data-route="chats" aria-label="Chats'+(n?', '+n+' new':'')+'">'+icon("chat")+(n?'<span class="hh2-badge">'+h(n)+'</span>':'')+'</button>'}
   // Inbox: search, a row of friends, then conversations with the last message and time.
   function agoShort(ms){if(!ms)return"";const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return"now";if(s<3600)return Math.floor(s/60)+"m";if(s<86400)return Math.floor(s/3600)+"h";if(s<604800)return Math.floor(s/86400)+"d";return new Date(ms).toLocaleDateString("en-IN",{day:"numeric",month:"short"})}
   function convoLine(p,uid){const other=otherOf(p),n=Number(p.unread&&p.unread[uid]||0),t=agoShort(p.lastAt);
@@ -3912,6 +4052,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function seEffect(id){return SE_EFFECTS.find(f=>f.id===id)||SE_EFFECTS[0]}
   function seFont(id){return SE_FONTS.find(f=>f.id===id)||SE_FONTS[0]}
   function seId(){return"i"+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36)}
+  /** "22:00" -> "10:00 PM"; anything that isn't a 24-hour time is shown as typed. */
+  function time12(v){const m=/^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v||"").trim());if(!m)return String(v||"");const H=Number(m[1]);return(H%12||12)+":"+m[2]+" "+(H<12?"AM":"PM")}
   function seStamp(){const n=new Date();return{time:n.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\s*(am|pm)$/i,(m,p)=>" "+p.toUpperCase()),date:n.toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}}
   function seDefaults(d){if(d.adj)return;Object.assign(d,{filter:"none",amount:100,fx:"none",fxAmount:100,adj:SE_FX.adjDefaults(),items:[],strokes:[],mode:"",tab:"filters",adjKey:"exposure",draft:null,brush:{tool:"pen",color:"#ffffff",size:4},seed:Math.floor(Math.random()*1e9),stamp:seStamp()})}
   function seAdjusted(d){return Object.keys(d.adj||{}).some(k=>d.adj[k])}
@@ -5550,7 +5692,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const [fh,fm]=settings.openFrom.split(":").map(Number),[th,tmm]=settings.openTo.split(":").map(Number),out=[];
     for(let m=fh*60+fm;m<=th*60+tmm-settings.slotMinutes;m+=settings.slotMinutes){
       const d=new Date(dayAt);d.setHours(0,m,0,0);if(d.getTime()<Date.now()+15*60000)continue;
-      out.push({at:d.getTime(),label:d.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"})});
+      out.push({at:d.getTime(),label:d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})});
     }
     return out;
   }
@@ -5597,7 +5739,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function upcomingBookings(){return(state.dineBookings||[]).filter(b=>["requested","confirmed"].includes(b.status)&&b.slotAt>Date.now()-15*60000);}
   function bookingCard(b){
     const when=new Date(b.slotAt),soon=b.slotAt-Date.now()<60*60000,label={requested:"Waiting for the restaurant",confirmed:"Confirmed"}[b.status]||b.status;
-    return'<section class="booking-card"><div class="booking-date"><strong>'+when.getDate()+'</strong><span>'+h(when.toLocaleDateString("en-IN",{month:"short"}))+'</span></div><div class="grow"><p class="eyebrow">'+h(label)+'</p><strong>'+h(b.restaurantName)+'</strong><span>'+h(when.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"}))+' · '+b.party+(b.party===1?' person':' people')+'</span></div>'
+    return'<section class="booking-card"><div class="booking-date"><strong>'+when.getDate()+'</strong><span>'+h(when.toLocaleDateString("en-IN",{month:"short"}))+'</span></div><div class="grow"><p class="eyebrow">'+h(label)+'</p><strong>'+h(b.restaurantName)+'</strong><span>'+h(when.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}))+' · '+b.party+(b.party===1?' person':' people')+'</span></div>'
       +'<div class="booking-actions">'+(soon&&b.status==="confirmed"?'<button class="wheel-spin-pill" data-action="scan-table">Scan table</button>':'')+'<button class="text-button" data-action="dine-cancel" data-booking-id="'+h(b.id)+'">Cancel</button></div></section>';
   }
   async function cancelDineBooking(id){
@@ -5701,7 +5843,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function restaurantDineCard(r){
     const settings=dineSettings(r);if(!settings)return"";
     if(tableHere(r.id))return'<button class="squad-banner live" data-action="go" data-route="table"><span aria-hidden="true">🍽️</span><span class="grow"><strong>You’re at '+h(state.table.data.tableLabel)+'</strong><small>Add dishes, then Send to kitchen</small></span>'+icon("chevron","small")+'</button>';
-    return'<section class="dine-card"><span aria-hidden="true">🍽️</span><div class="grow"><strong>Dine-in here</strong><small>'+settings.tables.length+' tables · '+h(settings.openFrom)+'–'+h(settings.openTo)+'</small></div><button class="wheel-spin-pill" data-action="dine-book" data-restaurant-id="'+h(r.id)+'">Book</button><button class="wheel-spin-pill ghost" data-action="scan-table">At a table?</button></section>';
+    return'<section class="dine-card"><span aria-hidden="true">🍽️</span><div class="grow"><strong>Dine-in here</strong><small>'+settings.tables.length+' tables · '+h(time12(settings.openFrom))+' – '+h(time12(settings.openTo))+'</small></div><button class="wheel-spin-pill" data-action="dine-book" data-restaurant-id="'+h(r.id)+'">Book</button><button class="wheel-spin-pill ghost" data-action="scan-table">At a table?</button></section>';
   }
   function dineInHome(){
     const list=dineRestaurants(),bookings=upcomingBookings();
@@ -5729,10 +5871,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!state.catalogLoaded)return '<main class="screen"><div class="screen-content page-stack">'+homeHeader()+homeSkeletonMarkup()+'</div>'+nav()+'</main>';
     if(state.homeStatus==="errorWithoutCache")return'<main class="screen"><div class="screen-content page-stack">'+homeHeader()+emptyState("warning","Restaurants could not be loaded","Check your connection and try again. Your saved address is still selected.","refresh","Retry")+'</div>'+nav()+'</main>';
     if(state.homeKind==="grocery"||state.homeKind==="dairy")return screenStoreKind(state.homeKind);
-    const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),recommended=restaurants.slice(0,3),address=currentAddress();
+    const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
     if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
-    return '<main class="screen home2 '+(dockSlides().length?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+homeHero()+networkBanner()+homePeople()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
+    return '<main class="screen home2 '+(dockSlides().length?'has-floating-cart':'')+'">'+homeStickyBar()+'<div class="screen-content page-stack">'+homeHero()+networkBanner()+homePeople()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
       +homeModeSwitch()
       +(homeMode()==="dinein"?dineInHome():''
@@ -5740,6 +5882,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
       +'<div class="play-row">'+wheelCard()+squadHomeCard()+mealPlanHomeCard()+'</div>'
       +moodSection()
+      +recommendedRail(restaurants)
       +topOffersShelf()
       +nearbyRestaurantsMarkup()
       +'<section class="stack">'
@@ -5748,10 +5891,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +(categoryChipsHtml()?'<div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div>'+categoryChipsHtml():'')
       // Filters live in search now; one that is still on is shown here so it never hides restaurants silently.
       +(state.homeFilter&&state.homeFilter!=="all"?'<div class="chip-row"><button class="chip active" data-action="home-filter" data-value="all">Filter on · Clear</button></div>':'')+'</section>'
-      +'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div>'+(recommended.length?'<div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No matches in this city","Try another address, category or filter.","open-filters","Change filters"))+'</section>'
       +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All restaurants</h2><p class="supporting">'+restaurants.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch restaurant rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
       +(restaurants.length?'<div class="restaurant-list">'+restaurants.map(r=>restaurantCard(r,true)).join("")+'</div>':emptyState("search","No restaurants are live","Choose another saved address or clear the filters.","open-filters","Change filters"))
-      +((state.homeStatus==="refreshing"||state.loading)&&restaurants.length?loadingRow("Refreshing restaurants in the background…"):"")
       // Only offered when the server actually has another page for this city,
       // so it never appears at the end of a short catalogue.
       +(state.catalogHasMore?(state.catalogLoadingMore
@@ -5796,8 +5937,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<div id="search-results" class="stack-lg">'+searchContentMarkup()+'</div></div>'+nav()+'</main>';
   }
 
-  function restaurantMenu(r) {
-    let items=(r.menu||[]).filter(item=>state.selectedMenuCategory==="All"||item.category===state.selectedMenuCategory);
+  function menuItemsFiltered(r,everyCategory) {
+    let items=(r.menu||[]).filter(item=>everyCategory||state.selectedMenuCategory==="All"||item.category===state.selectedMenuCategory);
     if(state.diet==="veg"||state.profile.preferences.vegetarian)items=items.filter(x=>x.diet==="veg");
     if(state.diet==="nonveg")items=items.filter(x=>x.diet==="nonveg"||x.diet==="egg");
     if(state.menuPrice==="under150")items=items.filter(x=>Number(x.price)<=150);
@@ -5806,16 +5947,33 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(state.menuSort==="priceLow")items.sort((a,b)=>Number(a.price)-Number(b.price));
     if(state.menuSort==="priceHigh")items.sort((a,b)=>Number(b.price)-Number(a.price));
     if(state.menuSort==="rating")items.sort((a,b)=>Number(b.rating||b.popular||0)-Number(a.rating||a.popular||0));
+    return items;
+  }
+  function itemCustomisable(item){return(Array.isArray(item.variants)&&item.variants.length>0)||(Array.isArray(item.addOns)&&item.addOns.length>0)}
+  // Plain dishes go straight into the cart and turn into a − n + stepper;
+  // dishes with sizes or add-ons open the sheet to choose first.
+  function menuAddControl(r,item,inCart){
+    if(item.available===false)return"";
+    const ids=' data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'"';
+    if(!itemCustomisable(item)){
+      const line=state.cart.find(x=>x.key===r.id+"::"+item.id+"::::");
+      if(line)return'<div class="add-button add-stepper"><button type="button" data-action="cart-quantity" data-key="'+h(line.key)+'" data-delta="-1" aria-label="Remove one '+h(item.name)+'">−</button><span>'+line.quantity+'</span><button type="button" data-action="quick-add"'+ids+' aria-label="Add one more '+h(item.name)+'">+</button></div>';
+      if(!inCart)return'<button class="add-button" data-action="quick-add"'+ids+'>ADD</button>';
+    }
+    return'<button class="add-button" data-action="open-item"'+ids+'>'+(inCart?inCart+' added · Edit':'ADD<sup>+</sup>')+'</button><span class="menu-custom">customisable</span>';
+  }
+  function restaurantMenu(r) {
+    const items=menuItemsFiltered(r);
     const grouped={};items.forEach(item=>(grouped[item.category||"Menu"]||(grouped[item.category||"Menu"]=[])).push(item));
     // Categories fold open and shut. A short menu, or one narrowed by a filter,
     // shows everything; otherwise the first category starts open.
     const narrowed=state.selectedMenuCategory!=="All"||state.diet!=="all"||(state.menuPrice&&state.menuPrice!=="all");
     const showAll=narrowed||items.length<=8,toggled=(state.menuOpen&&state.menuOpen[r.id])||{};
     return Object.keys(grouped).map((category,index)=>{const open=showAll||(category in toggled?toggled[category]:index===0),count=grouped[category].length;
-      return '<section class="menu-cat'+(open?' open':'')+'">'+(showAll?'<div class="menu-cat-head static"><h2 class="section-title">'+h(category)+'</h2><span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></div>':'<button type="button" class="menu-cat-head" data-action="menu-cat-toggle" data-restaurant-id="'+h(r.id)+'" data-value="'+h(category)+'" aria-expanded="'+open+'"><span class="grow"><span class="section-title">'+h(category)+'</span> <span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>')
+      return '<section class="menu-cat'+(open?' open':'')+'" data-cat="'+h(category)+'">'+(showAll?'<div class="menu-cat-head static"><h2 class="section-title">'+h(category)+'</h2><span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></div>':'<button type="button" class="menu-cat-head" data-action="menu-cat-toggle" data-restaurant-id="'+h(r.id)+'" data-value="'+h(category)+'" aria-expanded="'+open+'"><span class="grow"><span class="section-title">'+h(category)+'</span> <span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>')
       +(open?'<div class="menu-list">'+grouped[category].map(item=>{
       const inCart=state.cart.filter(x=>x.restaurantId===r.id&&x.itemId===item.id).reduce((n,x)=>n+x.quantity,0);
-      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+(item.available===false?'':inCart?'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">'+inCart+' in cart · Edit</button>':'<button class="add-button" data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'">ADD +</button>')+'</div></article>';
+      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,item,inCart)+'</div></article>';
     }).join("")+'</div>':'')+'</section>'}).join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
   }
   /** Calories per serving, when the store gives them (FSS Labelling and Display Regulations 2020, reg. 9). */
@@ -5848,16 +6006,37 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return '<div class="ad-rail-track cover-track" id="cover-track-'+h(r.id)+'">'+photos.map(img).join("")+'</div>'
       +'<div class="ad-rail-dots cover-dots" data-dots-for="cover-track-'+h(r.id)+'">'+photos.map((_,i)=>'<span class="ad-dot'+(i===0?' active':'')+'"></span>').join("")+'</div>';
   }
+  /** Store details under the cover: name, rating, distance, hours and quick facts. */
+  function restaurantInfoMarkup(r,rating,pureVeg){
+    const km=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0),count=Math.max(0,Number(r.ratingCount||0));
+    const kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";
+    const place=String(r.address||"").trim()||"Location provided by the restaurant",until=r.opensUntil?time12(r.opensUntil):"";
+    const by=state.ratingView==="mine"?rating.label:count>0?"By "+(count>=1000?(Math.round(count/100)/10)+"K+":count):"No ratings yet";
+    return '<section class="store-info">'+(pureVeg?'<span class="store-veg">🌿 Pure Veg</span>':'')
+      +'<div class="store-title-row"><div class="grow"><h1 class="store-name">'+h(r.name)+'</h1>'+((r.cuisines||[]).length?'<p class="store-cuisine">'+h(r.cuisines.join(" · "))+'</p>':'')+'</div>'
+      +'<div class="store-rating"><span class="store-rating-pill'+(rating.value?'':' new')+'">★ '+(rating.value?rating.value.toFixed(1):'New')+'</span><span class="store-rating-by">'+h(by)+'</span></div></div>'
+      +'<p class="store-line">'+icon("pin","small")+'<span>'+(kmText?'<strong>'+h(kmText)+'</strong> · ':'')+h(place)+'</span></p>'
+      +'<p class="store-line">'+icon("clock","small")+'<span><strong>'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins</strong>'+(r.open?(until?' · Open until '+h(until):' · Open now'):' · <span class="danger-text">Closed now</span>')+'</span></p>'
+      +'<div class="store-chips"><span class="store-chip">✓ '+(fee===0?'Free delivery':h(money(fee))+' delivery fee')+'</span>'+(r.open?'<span class="store-chip">✓ Accepting orders</span>':'<span class="store-chip closed">Currently closed</span>')+'</div></section>';
+  }
   function screenRestaurant() {
     const r=restaurant();if(!r)return'<main class="screen"><div class="screen-content">'+topbar("Restaurant unavailable","This restaurant is no longer in the live catalogue.")+emptyState("search","Restaurant unavailable","Return home to find another restaurant.","go-home","Back to home")+'</div>'+nav()+'</main>';
     const categories=["All",...new Set(discoveryItems(r).map(x=>x.category||"Menu"))],pureVeg=isPureVegRestaurant(r);const liked=(state.profile.favourites||[]).includes(r.id),rating=ratingForRestaurant(r);
     const menuContent=state.menuLoading[r.id]&&!r.menuLoaded?menuSkeletonMarkup():state.menuErrors[r.id]&&!r.menuLoaded?emptyState("warning","Menu could not be loaded","The restaurant is visible, but its menu refresh failed.","retry-menu","Retry menu"):restaurantMenu(r);
-    return '<main class="screen flush '+(cartCount()?'has-floating-cart':'')+'"><div class="screen-content"><section class="restaurant-hero">'+restaurantCoverMarkup(r)+'<div class="restaurant-hero-actions"><button class="icon-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><button class="icon-button '+(liked?'active':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div><div class="restaurant-hero-copy"><h1 class="page-title" style="font-size:30px">'+h(r.name)+'</h1><p class="supporting">'+h((r.cuisines||[]).join(" · "))+'</p></div></section>'
-      +'<div class="restaurant-body">'+networkBanner()+'<section class="service-strip"><div class="service-stat"><strong>'+h(rating.value?rating.value.toFixed(1):"New")+' ★</strong><span>'+h(rating.label)+'</span></div><div class="service-stat"><strong>'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</strong><span>Delivery</span></div><div class="service-stat"><strong>'+(deliveryFeeForRestaurant(r,0)===0?'Free':money(deliveryFeeForRestaurant(r,0)))+'</strong><span>Delivery fee</span></div></section>'
-      +'<div class="notice '+(r.open?'success':'warning')+'">'+icon(r.open?'check':'clock',"small")+'<div><strong>'+(r.open?'Accepting orders':'Currently closed')+'</strong><div class="caption">'+h(r.address||"Location provided by the restaurant")+(r.opensUntil?' · Until '+h(r.opensUntil):'')+'</div></div></div>'+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)
-      +'<section class="stack menu-discovery"><div class="cluster between"><div><h2 class="section-title">Menu</h2><p class="supporting">Choose items and customise before adding.</p></div>'+(pureVeg?'<span class="pure-veg-badge large">Pure vegetarian</span>':'')+'</div><div class="chip-row menu-primary-filters"><button class="chip" data-action="open-menu-filters">'+icon("filter","small")+' Filters</button>'+(!pureVeg?'<button class="chip '+(state.diet==="all"?'active':'')+'" data-action="menu-diet" data-value="all">All</button><button class="chip '+(state.diet==="veg"?'active':'')+'" data-action="menu-diet" data-value="veg">Veg</button><button class="chip '+(state.diet==="nonveg"?'active':'')+'" data-action="menu-diet" data-value="nonveg">Non-veg</button>':'')+'</div><div class="chip-row menu-categories">'+categories.map(c=>'<button class="chip '+(state.selectedMenuCategory===c?'active':'')+'" data-action="menu-category" data-value="'+h(c)+'">'+h(c)+'</button>').join("")+'</div></section>'+menuContent
+    const jump=r.menuLoaded&&categories.length>2;
+    return '<main class="screen flush store-page '+(cartCount()?'has-floating-cart':'')+'">'
+      +'<div class="sticky-bar store-sticky" data-anchor=".store-name"><button class="icon-button flat" data-action="back" aria-label="Go back">'+icon("back")+'</button><div class="grow sticky-copy"><strong>'+h(r.name)+'</strong><small>'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins':'Closed now')+(rating.value?' · ★ '+rating.value.toFixed(1):'')+'</small></div>'+(jump?'<button class="icon-button flat" data-action="open-menu-jump" aria-label="Jump to a menu section">'+icon("menuBook")+'</button>':'')+'</div>'
+      +'<div class="screen-content"><section class="restaurant-hero">'+restaurantCoverMarkup(r)+'<div class="restaurant-hero-actions"><button class="icon-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><button class="icon-button '+(liked?'active':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div></section>'
+      +'<div class="restaurant-body">'+networkBanner()+restaurantInfoMarkup(r,rating,pureVeg)+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)
+      +'<section class="stack menu-discovery"><div class="cluster between"><div><h2 class="section-title">Menu</h2><p class="supporting">Choose items and customise before adding.</p></div>'+(pureVeg?'<span class="pure-veg-badge large">Pure vegetarian</span>':'')+'</div><div class="chip-row menu-primary-filters"><button class="chip" data-action="open-menu-filters">'+icon("filter","small")+' Filters</button>'+(!pureVeg?dietChip("veg","Veg")+(state.profile.preferences.vegetarian?'':dietChip("nonveg","Non-veg")):'')+(state.selectedMenuCategory!=="All"?'<button class="chip active" data-action="menu-category" data-value="All" aria-label="Show the full menu">'+h(state.selectedMenuCategory)+' ✕</button>':'')+'</div></section>'+menuContent
       +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div>'+'</section>'+restaurantMenuFooter(r)+'</div></div>'
-      +(cartCount()?(tableHere(r.id)?'<div class="floating-cart"><button class="button primary full" data-action="table-round"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>Send to kitchen · '+money(cartSubtotal())+'</span></button></div>':'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>'):'')+nav()+'</main>';
+      +(cartCount()?(tableHere(r.id)?'<div class="floating-cart"><button class="button primary full" data-action="table-round"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>Send to kitchen · '+money(cartSubtotal())+'</span></button></div>':'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>View cart · '+money(orderTotal())+'</span></button></div>'):'')+(jump?'<button class="menu-fab" data-action="open-menu-jump">'+icon("menuBook","small")+'<span>Menu</span></button>':'')+'</main>';
+  }
+  function dietChip(value,label){const on=state.diet===value;return'<button class="chip diet-chip'+(on?' active':'')+'" data-action="menu-diet" data-value="'+(on?'all':value)+'" aria-pressed="'+on+'"><span class="diet-mark'+(value==="nonveg"?' nonveg':'')+'" aria-hidden="true"></span>'+label+'</button>'}
+  function menuJumpSheet(){
+    const r=restaurant();if(!r)return"";
+    const groups={};menuItemsFiltered(r,true).forEach(i=>{const c=i.category||"Menu";groups[c]=(groups[c]||0)+1});
+    return sheetShell("Jump to","Pick a section of "+r.name+"’s menu.",'<div class="menu-jump">'+Object.keys(groups).map(c=>'<button class="menu-jump-row" data-action="menu-jump" data-value="'+h(c)+'"><span>'+h(c)+'</span><span class="menu-jump-count">'+groups[c]+'</span></button>').join("")+'</div>');
   }
 
   function cartItemMarkup(item) {
@@ -6195,7 +6374,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // The restaurant's photo of the sealed packet, taken before handover.
   function showPhotoViewer(src,alt){const viewer=document.createElement("div");viewer.className="photo-viewer";viewer.setAttribute("role","dialog");viewer.setAttribute("aria-label",alt||"Photo");const img=document.createElement("img");img.src=src;img.alt=alt||"";const close=document.createElement("button");close.type="button";close.className="photo-viewer-close";close.setAttribute("aria-label","Close");close.innerHTML=icon("close");viewer.append(img,close);const shut=()=>viewer.remove();viewer.addEventListener("click",shut);document.body.appendChild(viewer);close.focus()}
-  function packedPhotoCard(order){const p=order&&order.packedPhoto;if(!p||!p.url||Number(p.expiresAt||0)<Date.now()||!/^https:\/\/storage\.googleapis\.com\//.test(String(p.url)))return'';const at=new Date(Number(p.at||0));const time=at.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"});
+  function packedPhotoCard(order){const p=order&&order.packedPhoto;if(!p||!p.url||Number(p.expiresAt||0)<Date.now()||!/^https:\/\/storage\.googleapis\.com\//.test(String(p.url)))return'';const at=new Date(Number(p.at||0));const time=at.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true});
     return'<section class="card stack packed-photo-card"><div class="cluster between"><div><p class="eyebrow">Sealed at the restaurant</p><h2 class="section-title">Packed and sealed at '+h(time)+'</h2></div><span class="status success">'+icon("shield","small")+' Sealed</span></div><button type="button" class="packed-photo" data-action="open-packed-photo" data-order-id="'+h(order.id)+'" aria-label="Open the photo of your sealed packet"><img src="'+h(p.url)+'" alt="Your order, sealed by the restaurant" loading="lazy" decoding="async"></button><p class="caption">If the seal is broken or something is missing, tap Help on this order and we’ll sort it out.</p></section>'}
   function screenOrder() {
     const order=orderById();if(!order)return'<main class="screen"><div class="screen-content">'+topbar("Order unavailable","This order is not in your account cache.")+emptyState("orders","Order not found","Refresh your orders and try again.","refresh","Refresh orders")+'</div>'+nav()+'</main>';
@@ -7440,7 +7619,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function screenAccount() {
     return '<main class="screen"><div class="screen-content page-stack">'+networkBanner()+'<header class="account-head"><div><p class="eyebrow">Your account</p><h1 class="page-title">Details, preferences and help.</h1></div>'+accountLangSwitch()+'</header>'
       +'<section class="card brand-card cluster"><span class="avatar" style="width:58px;height:58px;background:rgba(255,255,255,.18);overflow:hidden;padding:0">'+myAvatarFace()+'</span><div class="grow"><h2 class="section-title">'+h(state.profile.name||"Scraveit customer")+'</h2><p class="supporting">'+h(state.profile.email||state.session&&state.session.email||"")+'</p><p class="caption" style="color:rgba(255,255,255,.72)">'+h(state.profile.phone||"Add your mobile number")+'</p></div><button class="icon-button" style="background:rgba(255,255,255,.16);color:white;border:0;box-shadow:none" data-action="edit-profile" aria-label="Edit profile">'+icon("chevron")+'</button></section>'
-      +'<section class="card settings-list">'+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("chat","Friends & chats",chatUnread()?chatUnread()+" new":"Chat with friends, share dishes","chats")+settingsRow("orders","My meal plans",(state.mealSubs||[]).length?(state.mealSubs.length+" active · skip or pause any day"):"Daily lunch or dinner, skip any day","mealPlans")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("account","Date of birth",chatState().account?dobLabel(chatState().account.birthDate)+(chatState().account.minor?" · parent approval "+(chatState().account.parentStatus==="approved"?"done":"needed"):""):"Add it once · you can edit it any time",null,"edit-dob")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
+      +'<section class="card settings-list">'+settingsRow("orders","Your orders",activeOrders().length?activeOrders().length+" in progress":"Track, reorder and get help","orders")+settingsRow("address","Saved addresses",(state.profile.addresses||[]).length+" saved","addresses")+settingsRow("heart","Favourite restaurants",(state.profile.favourites||[]).length+" saved","favourites")+settingsRow("card","Payment methods","Only verified payment options are shown",null,"payment-info")+settingsRow("chat","Friends & chats",chatUnread()?chatUnread()+" new":"Chat with friends, share dishes","chats")+settingsRow("orders","My meal plans",(state.mealSubs||[]).length?(state.mealSubs.length+" active · skip or pause any day"):"Daily lunch or dinner, skip any day","mealPlans")+settingsRow("offers","Offers","Live promotions you can use","offers")+settingsRow("account","Date of birth",chatState().account?dobLabel(chatState().account.birthDate)+(chatState().account.minor?" · parent approval "+(chatState().account.parentStatus==="approved"?"done":"needed"):""):"Add it once · you can edit it any time",null,"edit-dob")+settingsRow("star","About you",state.demographics?"Saved · used for offers made for you":"Optional · get offers made for you",null,"about-you")+settingsRow("wallet","Wallet & rewards",state.walletData?paise(walletBalance())+" balance · invite friends":"Cashback, referral rewards and expiry","wallet")+'</section>'
       +'<section class="card settings-list">'+settingsRow("settings","Preferences","Theme, dietary and notifications","preferences")+settingsRow("help","Help and support","Order issues and account help","support")+settingsRow("shield","Privacy and terms","Data use, rights and service terms","legal")+'</section>'
       +'<section class="card settings-list">'+settingsRow("logout","Sign out","Remove this account from this device",null,"confirm-signout")+settingsRow("trash","Delete account","Withdraw consent and erase your data",null,"request-deletion",'<span class="danger-text">'+icon("chevron","small")+'</span>')+'</section>'
       +'<p class="caption" style="text-align:center">Scraveit Customer<br>Your account and orders sync securely across sessions.</p></div>'+nav()+'</main>';
@@ -7611,6 +7790,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="menuReport")html=menuReportSheet(sheet);
     else if(sheet.type==="filters")html=filterSheet();
     else if(sheet.type==="menuFilters")html=menuFilterSheet();
+    else if(sheet.type==="menuJump")html=menuJumpSheet();
     else if(sheet.type==="item")html=itemSheet(sheet);
     else if(sheet.type==="replaceCart")html=replaceCartSheet(sheet);
     else if(sheet.type==="address")html=addressFormSheet(sheet);
@@ -7911,7 +8091,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   Object.assign(SCREENS, {
     launch:screenLaunch, welcome:screenWelcome, table:screenTable, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
-    order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, account:screenAccount,
+    order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, deals:screenDeals, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
     support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, feed:screenFeed, friends:screenFriends, dm:screenDm
   });
@@ -8071,6 +8251,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="open-menu-filters"){setSheet({type:"menuFilters"});return;}
     if(action==="menu-price"){state.menuPrice=control.dataset.value||"all";renderSheet();return;}
     if(action==="apply-menu-filters"){const select=document.getElementById("menu-sort-select");if(select)state.menuSort=select.value;closeSheet();render({preserveScroll:true});return;}
+    if(action==="deal-filter"){const k=control.dataset.key,v=control.dataset.value;if(k==="dealVeg")state.dealVeg=!state.dealVeg;else state[k]=state[k]===v&&k!=="dealCat"?"":v;render({preserveScroll:true});return;}
+    if(action==="deal-sort"){const i=DEAL_SORTS.findIndex(x=>x[0]===(state.dealSort||"relevance"));state.dealSort=DEAL_SORTS[(i+1)%DEAL_SORTS.length][0];toast("Sorted by "+DEAL_SORTS[(i+1)%DEAL_SORTS.length][1].toLowerCase()+".");render({preserveScroll:true});return;}
+    if(action==="deal-clear"){state.dealCat="all";state.dealPrice="";state.dealVeg=false;render({preserveScroll:true});return;}
+    if(action==="quick-add"){haptic(10);addCartItem(control.dataset.restaurantId,control.dataset.itemId,{quiet:true});return;}
+    if(action==="open-menu-jump"){setSheet({type:"menuJump"});return;}
+    if(action==="menu-jump"){const r=restaurant(),cat=control.dataset.value;if(!r)return;state.selectedMenuCategory="All";state.menuOpen=state.menuOpen||{};(state.menuOpen[r.id]||(state.menuOpen[r.id]={}))[cat]=true;closeSheet();render({preserveScroll:true});requestAnimationFrame(()=>{const el=Array.from(document.querySelectorAll(".menu-cat")).find(x=>x.dataset.cat===cat);if(el)el.scrollIntoView({block:"start",behavior:"smooth"})});return;}
     if(action==="menu-category"){state.selectedMenuCategory=control.dataset.value||"All";render({preserveScroll:true});return;}
     if(action==="clear-menu-filter"){state.diet="all";state.menuPrice="all";state.menuSort="recommended";state.selectedMenuCategory="All";render({preserveScroll:true});return;}
     if(action==="open-item"){setSheet({type:"item",restaurantId:control.dataset.restaurantId,itemId:control.dataset.itemId});return;}
