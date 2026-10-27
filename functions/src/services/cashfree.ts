@@ -29,7 +29,7 @@ export interface CashfreeConfig {
   appId: string;
   secretKey: string;
   env: "sandbox" | "production";
-  /** Base URL of the cashfreeCheckout function (our checkout and return pages). */
+  /** URL of our checkout and return pages (the cashfreeCheckout function). */
   checkoutUrl: string;
   /** URL of the cashfreeWebhook function. */
   webhookUrl: string;
@@ -52,7 +52,8 @@ export function liveCashfreeConfig(): CashfreeConfig {
     appId: readSecret(CASHFREE_APP_ID),
     secretKey: readSecret(CASHFREE_SECRET_KEY),
     env: env === "production" ? "production" : "sandbox",
-    checkoutUrl: `${base}/cashfreeCheckout`,
+    // Served by the scraveit-in Hosting site (rewrite /pay → cashfreeCheckout) so it sits on our whitelisted domain.
+    checkoutUrl: "https://www.scraveit.in/pay",
     webhookUrl: `${base}/cashfreeWebhook`,
   };
 }

@@ -26,6 +26,7 @@
       {"source": "/index.html", "destination": "/", "type": 301}
     ],
     "rewrites": [
+      {"source": "/pay", "function": {"functionId": "cashfreeCheckout", "region": "asia-south1"}},
       {"source": "/shop/**", "destination": "/shop/index.html"}
     ]
   }

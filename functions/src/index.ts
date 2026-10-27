@@ -1159,6 +1159,7 @@ export const cashfreeWebhook = onRequest({
   region: REGION,
   timeoutSeconds: 30,
   memory: "256MiB",
+  maxInstances: 20,
   invoker: "public",
   secrets: CASHFREE_SECRETS,
 }, async (request, response) => {
