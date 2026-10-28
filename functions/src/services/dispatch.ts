@@ -160,7 +160,7 @@ export async function updateRiderAvailabilityIndex(
     // delete-plus-write pair the RTDB index used to need.
     await ref.set({
       riderId,
-      riderName: String(after.riderName ?? "Savrivo Partner").slice(0, 120),
+      riderName: String(after.riderName ?? "Scraveit Partner").slice(0, 120),
       city: String(after.city ?? "").slice(0, 120),
       cityKey: availabilityCityKey(after.city),
       online: true,
@@ -273,7 +273,7 @@ async function candidatesFor(
     if (!eligibility.workloadEligible) { rejected.busy++; return null; }
     return {
       riderId,
-      riderName: String(eligibility.riderName || presence.riderName || "Savrivo Partner"),
+      riderName: String(eligibility.riderName || presence.riderName || "Scraveit Partner"),
       distanceKm,
       activeLoad: eligibility.activeLoad,
     };
@@ -705,7 +705,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
     const candidate: SavrivoOrder = {
       ...stripPrivateOrderFields(orderValue),
       riderId: uid,
-      riderName: String(rider.fullName ?? presence.riderName ?? "Savrivo Partner"),
+      riderName: String(rider.fullName ?? presence.riderName ?? "Scraveit Partner"),
       ...(rider.phone ? {riderPhone: String(rider.phone).slice(0, 30)} : {}),
       // The avatar customers see riding on the live map (a fixed preset id).
       ...(RIDER_AVATARS.has(String(rider.avatar ?? "")) ? {riderAvatar: String(rider.avatar)} : {}),

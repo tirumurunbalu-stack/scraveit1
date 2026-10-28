@@ -66,7 +66,7 @@ export function riderOfferCollapseKey(orderId: string): string {
  * which would make the app-owned acknowledgement alarm unreliable.
  */
 export function buildRestaurantNewOrderMessage(order: RestaurantNewOrder): TokenlessMulticastMessage {
-  const title = "New Savrivo order";
+  const title = "New Scraveit order";
   const body = `${order.items.length} item(s) · ₹${order.total}`;
   const collapseKey = restaurantOrderCollapseKey(order.id);
 

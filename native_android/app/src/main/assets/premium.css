@@ -3313,3 +3313,6 @@ html.keyboard-open .menu-fab { display: none; }
 .bill-pop-ok { display: block; width: 100%; padding: 14px 0; background: none; border: 0; color: var(--brand); font: inherit; font-size: 15px; font-weight: 800; letter-spacing: .06em; cursor: pointer; }
 @keyframes bill-pop-fade { from { opacity: 0; } }
 @keyframes bill-pop-in { from { opacity: 0; transform: scale(.96); } }
+
+.floating-cart-go { display: inline-flex; align-items: center; gap: 4px; }
+.floating-cart-go .icon { width: 18px; height: 18px; }

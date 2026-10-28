@@ -323,7 +323,7 @@ export interface PlatformDataWorkbookInput {
 
 export async function buildPlatformDataWorkbookBuffer(input: PlatformDataWorkbookInput): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Savrivo Admin";
+  workbook.creator = "Scraveit Admin";
   workbook.created = new Date(input.generatedAt);
 
   addSheet<CustomerExportRow>(workbook, "Customers", [

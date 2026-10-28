@@ -570,7 +570,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     schemaVersion: SCHEMA_VERSION,
     idempotencyKey: input.idempotencyKey,
     customerId: uid,
-    customerName: (String(profile.name ?? "").trim() || "Savrivo customer").slice(0, 120),
+    customerName: (String(profile.name ?? "").trim() || "Scraveit customer").slice(0, 120),
     customerPhone: address.phone,
     // A parent paying for their child's order ("Ask a parent to pay").
     ...(options.payerUid && options.payerUid !== uid ? {payerUid: options.payerUid} : {}),

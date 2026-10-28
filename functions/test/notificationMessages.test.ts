@@ -38,7 +38,7 @@ describe("restaurant operational FCM messages", () => {
       eventId: "NEW_ORDER:SV-ABC123",
       eventAt: "1700000000000",
       status: "Order placed",
-      title: "New Savrivo order",
+      title: "New Scraveit order",
       body: "1 item(s) · ₹373",
       requiresAcknowledgement: "true",
     });

@@ -411,11 +411,11 @@ function statusCopy(order: SavrivoOrder): {title: string; body: string} {
     "Ready for pickup": {title: "Order is ready for pickup", body: order.riderId ? "Your assigned rider can now collect it from the restaurant." : "Your food is ready while we finish assigning the nearest rider."},
     "Assigned": {title: "Delivery partner assigned", body: "Your rider is heading to the restaurant."},
     "Handed to rider": {title: "Order picked up", body: "Your order has left the restaurant."},
-    "Out for delivery": {title: "On the way", body: "Track your rider live in Savrivo."},
+    "Out for delivery": {title: "On the way", body: "Track your rider live in Scraveit."},
     "Near you": {title: "Delivery partner is near you", body: "Please be ready to receive your order."},
     "Arrived": {title: "Delivery partner is at your doorstep", body: "Share the delivery OTP only after receiving the order."},
     "Delivered": {title: "Order delivered", body: "Enjoy your meal. You can now rate the restaurant and rider."},
-    "Cancelled": {title: "Order cancelled", body: "Open Savrivo for the cancellation details."},
+    "Cancelled": {title: "Order cancelled", body: "Open Scraveit for the cancellation details."},
   };
   return copy[status];
 }
@@ -481,7 +481,7 @@ export async function notifyCustomerRiderAssigned(order: SavrivoOrder): Promise<
     message: storedMessage({
       notification: {
         title: "Delivery partner assigned",
-        body: `${order.riderName ?? "A Savrivo Partner"} accepted your delivery. Open Savrivo for details.`,
+        body: `${order.riderName ?? "A Scraveit Partner"} accepted your delivery. Open Scraveit for details.`,
       },
       data: {type: "RIDER_ASSIGNED", orderId: order.id, status: "Assigned", restaurantId: order.restaurantId},
       android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
