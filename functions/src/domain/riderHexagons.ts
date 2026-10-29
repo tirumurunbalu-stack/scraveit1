@@ -62,6 +62,11 @@ export function coveredRadiusKm(point: GeoPoint, origin: string, rings: number):
   return Math.max(0, nearest - 0.05);
 }
 
+/** A hexagon's six corners as [lat, lng], for drawing it on a map. */
+export function hexagonCorners(cell: string): Array<[number, number]> {
+  return cellToBoundary(cell).map(([lat, lng]) => [Math.round(lat * 1e6) / 1e6, Math.round(lng * 1e6) / 1e6]);
+}
+
 export function inQueryBatches(cells: string[]): string[][] {
   const batches: string[][] = [];
   for (let i = 0; i < cells.length; i += HEXAGONS_PER_QUERY) batches.push(cells.slice(i, i + HEXAGONS_PER_QUERY));

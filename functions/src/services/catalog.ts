@@ -2,9 +2,9 @@ import {firestoreDb} from "../admin";
 import {haversineKm, roundMoney} from "../domain/order";
 import {trustedActiveOrderCount} from "../domain/workload";
 import {DomainError} from "../errors";
-import {campaignsCollectionRef, menuItemsCollectionRef, restaurantRef, riderAvailabilityCollectionRef} from "../firestorePaths";
-import {availabilityCityKey} from "../domain/dispatch";
-import {riderSurgeFee, type RiderSurgeSettings} from "../domain/riderSurge";
+import {campaignsCollectionRef, menuItemsCollectionRef, restaurantRef} from "../firestorePaths";
+import type {RiderSurgeSettings} from "../domain/riderSurge";
+import {riderSurgeFeeNear} from "./riderSurgeMap";
 import {
   checkoutEligibleRiderIncentiveCampaigns,
   normalizeCheckoutCampaign,
@@ -90,20 +90,6 @@ export async function loadCustomerAddress(uid: string, addressId: string): Promi
     ...(raw.city ? {city: String(raw.city).slice(0, 120)} : {}),
   };
   return {address, profile};
-}
-
-/** Rider surge for the restaurant's city; a failed read never blocks checkout (no fee). */
-async function cityRiderSurgeFee(settings: RiderSurgeSettings, city: unknown): Promise<number> {
-  if (settings.riderSurgeEnabled !== true) return 0;
-  try {
-    const snapshot = await riderAvailabilityCollectionRef(firestoreDb)
-      .where("cityKey", "==", availabilityCityKey(city)).limit(500).get();
-    const riders = snapshot.docs.map((doc) => doc.data() as {online?: unknown; activeOrderId?: unknown});
-    const online = riders.filter((rider) => rider.online === true);
-    return riderSurgeFee(settings, {onlineRiders: online.length, busyRiders: online.filter((rider) => Boolean(rider.activeOrderId)).length});
-  } catch {
-    return 0;
-  }
 }
 
 /** Base fee plus a per-km rate, or null when Admin has not set per-km pricing. */
@@ -237,7 +223,7 @@ export async function loadServerFees(
     surgeFee: Math.max(0, surgeFee),
     riderIncentiveFee: roundMoney(riderIncentive.amountPaise / 100),
     riderIncentivePay: roundMoney(riderIncentive.riderPaise / 100),
-    riderSurgeFee: await cityRiderSurgeFee(settings as RiderSurgeSettings, restaurant.city),
+    riderSurgeFee: await riderSurgeFeeNear(settings as RiderSurgeSettings, restaurant),
     riderIncentiveCampaignIds: riderIncentive.campaignIds,
     riderIncentiveItems,
     distanceKm,

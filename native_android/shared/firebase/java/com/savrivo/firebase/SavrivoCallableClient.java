@@ -59,7 +59,7 @@ public final class SavrivoCallableClient {
             "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
             "setRestaurantAgreementTerms", "getRestaurantApplicationReview",
             "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue", "getPayoutAutomationStatus", "previewWeeklyPayouts",
-            "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck"));
+            "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck", "getRiderSurgeMap"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement",

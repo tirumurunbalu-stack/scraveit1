@@ -131,6 +131,14 @@ body{font-family:"DM Sans",ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
 .live-dot.free, .live-dot-key.free { background: #1e8e5a; }
 .live-dot-key { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: -1px; }
 .live-dot-key.off { background: #b8c1d1; }
+.live-hex { position: absolute; left: 0; top: 0; pointer-events: none; }
+.live-hex polygon { stroke: rgba(255,255,255,.85); stroke-width: 1; }
+.live-hex text { font: 800 10px/1 system-ui, sans-serif; fill: #3b1100; text-anchor: middle; paint-order: stroke; stroke: rgba(255,255,255,.9); stroke-width: 3px; }
+.hex-l0 { fill: rgba(48,164,108,.16); } .hex-l1 { fill: rgba(255,178,36,.38); }
+.hex-l2 { fill: rgba(247,107,21,.45); } .hex-l3 { fill: rgba(229,72,77,.5); } .hex-ln { fill: rgba(139,149,167,.12); }
+.hex-key { display: inline-block; width: 12px; height: 11px; vertical-align: -1px; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+.hex-key.hex-l0 { background: rgba(48,164,108,.45); } .hex-key.hex-l1 { background: #ffb224; }
+.hex-key.hex-l2 { background: #f76b15; } .hex-key.hex-l3 { background: #e5484d; } .hex-key.hex-ln { background: #c4cad6; }
 .live-map-credit { position: absolute; right: 6px; bottom: 4px; font-size: 10px; color: #55627d; background: rgba(255,255,255,.8); padding: 1px 5px; border-radius: 6px; }
 .live-list { display: grid; gap: 0; padding: 4px 16px; }
 .live-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line, #e3e8f0); }

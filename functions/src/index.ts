@@ -2,6 +2,7 @@ import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_
 import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
+import {readRiderSurgeMap} from "./services/riderSurgeMap";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
 import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPhoto";
@@ -2601,6 +2602,10 @@ export const approveRestaurantApplication = economicsCallable("approveRestaurant
 // ---------------------------------------------------------------------------
 // Admin app 2.0: today at a glance and urgent alerts
 // ---------------------------------------------------------------------------
+/** Admin's Live riders map: hexagons coloured by how busy the riders around them are, with the surge. */
+export const getRiderSurgeMap = economicsCallable("getRiderSurgeMap", z.object({}).strict(),
+  (_uid, token) => readRiderSurgeMap(token));
+
 export const getAdminToday = economicsCallable("getAdminToday", z.object({days: z.number().int().min(1).max(30).default(1)}).strict(),
   (_uid, token, input) => readAdminToday(token, input));
 
