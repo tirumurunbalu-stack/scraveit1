@@ -7,6 +7,7 @@ import {
   ROOT,
 } from "../config";
 import {haversineKm, roundMoney} from "../domain/order";
+import {coveredRadiusKm, hexagonsWithin, inQueryBatches, RIDER_HEX_RINGS, riderHexagon} from "../domain/riderHexagons";
 import {
   buildLifecycleMutation,
   deriveLifecycle,
@@ -158,6 +159,7 @@ export async function updateRiderAvailabilityIndex(
     // One document per rider, not a city-sharded path - a city change is just
     // an overwrite of this same document, replacing the old shard's
     // delete-plus-write pair the RTDB index used to need.
+    const hexCell = riderHexagon(after.lat, after.lng);
     await ref.set({
       riderId,
       riderName: String(after.riderName ?? "Scraveit Partner").slice(0, 120),
@@ -166,6 +168,7 @@ export async function updateRiderAvailabilityIndex(
       online: true,
       lat: Number(after.lat),
       lng: Number(after.lng),
+      ...(hexCell ? {hexCell} : {}),
       ...(Number.isFinite(Number(after.accuracy)) ? {accuracy: Number(after.accuracy)} : {}),
       updatedAt: Number(after.updatedAt ?? Date.now()),
       ...(after.activeOrderId ? {activeOrderId: String(after.activeOrderId)} : {}),
@@ -194,6 +197,55 @@ export async function scheduleDispatchClaimRecovery(
   );
 }
 
+// How many of the nearest riders are looked at closely (eligibility, workload) for each order.
+const NEAREST_RIDERS = 100;
+
+export interface HexagonSearch {
+  presences: Record<string, Presence>;
+  /** True when every rider who could be among the nearest NEAREST_RIDERS has been read. */
+  complete: boolean;
+  rings: number;
+  hexagons: number;
+  coveredKm: number;
+}
+
+/**
+ * Reads riders ring by ring of hexagons around the restaurant (domain/riderHexagons.ts) until the
+ * nearest NEAREST_RIDERS usable riders are certain - every rider farther out than the rings
+ * reach is farther than all of them - or the rings reach the dispatch radius. A busy city stops
+ * after a ring or two, reading a few dozen riders instead of every rider in it.
+ */
+export async function ridersInHexagons(
+  point: {lat: number; lng: number},
+  maxRadiusKm: number,
+  usableDistanceKm: (riderId: string, presence: Presence) => number | null,
+  database: FirestoreLike = firestoreDb,
+): Promise<HexagonSearch> {
+  const search: HexagonSearch = {presences: {}, complete: false, rings: 0, hexagons: 0, coveredKm: 0};
+  const origin = riderHexagon(point.lat, point.lng);
+  if (!origin) return search;
+  const read = new Set<string>();
+  for (const rings of RIDER_HEX_RINGS) {
+    const fresh = hexagonsWithin(origin, rings).filter((cell) => !read.has(cell));
+    fresh.forEach((cell) => read.add(cell));
+    const snapshots = await Promise.all(inQueryBatches(fresh).map((cells) =>
+      riderAvailabilityCollectionRef(database).where("hexCell", "in", cells).limit(1000).get()));
+    for (const snapshot of snapshots) for (const doc of snapshot.docs) search.presences[doc.id] = doc.data() as Presence;
+    search.rings = rings;
+    search.hexagons = read.size;
+    search.coveredKm = Math.min(maxRadiusKm, coveredRadiusKm(point, origin, rings));
+    const near = Object.entries(search.presences).filter(([riderId, presence]) => {
+      const distanceKm = usableDistanceKm(riderId, presence);
+      return distanceKm !== null && distanceKm <= search.coveredKm;
+    }).length;
+    if (near >= NEAREST_RIDERS || search.coveredKm >= maxRadiusKm) {
+      search.complete = true;
+      break;
+    }
+  }
+  return search;
+}
+
 async function candidatesFor(
   order: SavrivoOrder,
   policy: DispatchPolicy,
@@ -202,20 +254,40 @@ async function candidatesFor(
   const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
   const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as CatalogRestaurant : null;
   const cityKey = availabilityCityKey(restaurant?.city);
-  const presenceSnapshot = await riderAvailabilityCollectionRef(firestoreDb).where("cityKey", "==", cityKey).limit(500).get();
-  let presences: Record<string, Presence> = {};
-  for (const doc of presenceSnapshot.docs) presences[doc.id] = doc.data() as Presence;
-  // Compatibility fallback while the index is being populated by rider
-  // heartbeats after first deployment. It is hard-capped and should disappear
-  // after the rollout/backfill is complete. Still reads RTDB directly: the
-  // raw per-rider presence record itself (written straight from the rider
-  // app) has not migrated off RTDB yet.
-  if (presenceSnapshot.empty) {
-    const fallbackSnapshot = await db.ref(`${ROOT}/riderPresence`).limitToFirst(500).get();
-    presences = objectMap<Presence>(fallbackSnapshot.val());
+  const now = Date.now();
+  // The quick checks, without the database: online, recent, a real location close enough, and
+  // not offered this order a moment ago. The distance when a rider passes them, else null.
+  const usableDistanceKm = (riderId: string, presence: Presence): number | null => {
+    const lat = Number(presence?.lat);
+    const lng = Number(presence?.lng);
+    if (presence?.online !== true || now - Number(presence.updatedAt ?? 0) > policy.presenceFreshMs) return null;
+    if (!isValidDispatchCoordinate(lat, lng)) return null;
+    if (!isDispatchPresenceEligible({...presence, activeOrderId: undefined}, now, {
+      presenceFreshMs: policy.presenceFreshMs,
+      maxLocationAccuracyMeters: policy.maxLocationAccuracyMeters,
+    })) return null;
+    if (wasRecentlyOffered(attemptedRiders[riderId], now, policy.reofferCooldownMs)) return null;
+    const distanceKm = haversineKm({lat, lng}, order.restaurantLocation);
+    return Number.isFinite(distanceKm) && distanceKm <= policy.maxRadiusKm ? distanceKm : null;
+  };
+  const hexagons = await ridersInHexagons(order.restaurantLocation ?? {lat: NaN, lng: NaN}, policy.maxRadiusKm, usableDistanceKm);
+  let presences: Record<string, Presence> = {...hexagons.presences};
+  if (!hexagons.complete) {
+    // Few riders nearby (a small town), a restaurant without a usable location, or riders the
+    // hexagon index hasn't filed yet: also read the city's riders, as dispatch always did.
+    const presenceSnapshot = await riderAvailabilityCollectionRef(firestoreDb).where("cityKey", "==", cityKey).limit(500).get();
+    for (const doc of presenceSnapshot.docs) presences[doc.id] ??= doc.data() as Presence;
+    // Compatibility fallback while the index is being populated by rider
+    // heartbeats after first deployment. It is hard-capped and should disappear
+    // after the rollout/backfill is complete. Still reads RTDB directly: the
+    // raw per-rider presence record itself (written straight from the rider
+    // app) has not migrated off RTDB yet.
+    if (presenceSnapshot.empty && Object.keys(presences).length === 0) {
+      const fallbackSnapshot = await db.ref(`${ROOT}/riderPresence`).limitToFirst(500).get();
+      presences = objectMap<Presence>(fallbackSnapshot.val());
+    }
   }
   const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
-  const now = Date.now();
   const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0};
   let eligibilityProjectionHits = 0;
   let eligibilityProjectionFallbacks = 0;
@@ -241,7 +313,7 @@ async function candidatesFor(
       return [];
     }
     return [{riderId, presence, distanceKm}];
-  }).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 100);
+  }).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, NEAREST_RIDERS);
   // Eligibility for just these nearest riders, not the first 500 riders of
   // the whole platform. The cache must never become a dispatch dependency:
   // a failed read falls back to authoritative per-rider hydration below.
@@ -290,6 +362,8 @@ async function candidatesFor(
     restaurantId: order.restaurantId,
     cityKey,
     indexedPresenceCount: Object.keys(presences).length,
+    hexagonSearch: {rings: hexagons.rings, hexagons: hexagons.hexagons, coveredKm: Number(hexagons.coveredKm.toFixed(2)),
+      complete: hexagons.complete, riders: Object.keys(hexagons.presences).length},
     eligibleCount: ranked.length,
     policyVersion: policy.version,
     policyMode: policy.mode,
