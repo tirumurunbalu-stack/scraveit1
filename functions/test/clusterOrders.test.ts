@@ -39,6 +39,7 @@ import {
   pickupOrder,
 } from "../src/domain/clusterOrder";
 import {calculateRiderTripPay, clusterStopTripPayPolicy, DEFAULT_RIDER_TRIP_PAY_POLICY} from "../src/domain/riderTripPay";
+import {deriveLifecycleFromCanonicalState} from "../src/domain/lifecycle";
 import type {SavrivoOrder} from "../src/types";
 const {firestoreDb} = await import("../src/admin");
 const clusters = await import("../src/services/clusterOrders");
@@ -74,6 +75,11 @@ const input = (places: Place[], key = "family-order-key-0001") =>
   ({idempotencyKey: key, addressId: "home", parts: places.map((p) => part(p)), couponCode: "", tip: 0, useWallet: false,
     deliveryMode: "asap" as const, instructions: "", contactless: false, paymentMethod: "cod" as const});
 const order = async (id: string) => (await db.collection("orders").doc(id).get()).data() as SavrivoOrder;
+// Moves an order on as the real flow would, keeping its lifecycle fields in step.
+async function setOrder(id: string, patch: Partial<SavrivoOrder>) {
+  const next = {...(await order(id)), ...patch, updatedAt: Date.now()} as SavrivoOrder;
+  await db.collection("orders").doc(id).set({...next, ...deriveLifecycleFromCanonicalState(next)});
+}
 
 beforeEach(async () => {
   (db as unknown as {store: Map<string, unknown>}).store.clear();
@@ -184,10 +190,7 @@ describe("placing a family order", () => {
 describe("one rider for the whole order", () => {
   async function placedAndAccepted() {
     const placed = await clusters.createClusterOrder(UID, input(["icecream", "cafe", "biryani"], "family-order-key-0002"));
-    for (const o of placed.orders) {
-      const current = await order(o.id);
-      await db.collection("orders").doc(o.id).set({...current, status: "Accepted", updatedAt: Date.now()});
-    }
+    for (const o of placed.orders) await setOrder(o.id, {status: "Accepted"});
     await db.collection("riders").doc("riderRaju00000001").set({fullName: "Raju", phone: "9000000001", status: "approved"});
     return placed;
   }
@@ -199,7 +202,7 @@ describe("one rider for the whole order", () => {
     expect(await beginSequentialDispatch(await order(icecream!.id))).toBeNull();
     expect((await db.collection("dispatchQueue").doc(icecream!.id).get()).exists).toBe(false);
     // The rider takes the first pickup; the other parts follow them.
-    await db.collection("orders").doc(lead!.id).set({...(await order(lead!.id)), riderId: "riderRaju00000001", status: "Accepted"});
+    await setOrder(lead!.id, {riderId: "riderRaju00000001", status: "Accepted"});
     await assignClusterPart(cafe!.id, "riderRaju00000001");
     expect(await beginSequentialDispatch(await order(icecream!.id))).toBeNull();
     for (const o of [cafe!, icecream!]) {
@@ -231,6 +234,21 @@ describe("one rider for the whole order", () => {
     expect(promoted?.id).toBe(cafe!.id);
     expect((await order(cafe!.id)).cluster?.leadSince).toBeGreaterThan(0);
     expect(clusters.leadsCluster(await order(cafe!.id))).toBe(true);
+  });
+
+  it("brings every part in the bag to the door when the tracked part arrives", async () => {
+    const placed = await placedAndAccepted();
+    for (const o of placed.orders) await setOrder(o.id, {riderId: "riderRaju00000001", status: "Out for delivery"});
+    const [lead, cafe, icecream] = placed.orders;
+    const before = await order(lead!.id);
+    await setOrder(lead!.id, {status: "Arrived"});
+    await clusters.onClusterPartStatus(before, {...before, status: "Arrived"});
+    expect((await order(cafe!.id)).status).toBe("Arrived");
+    expect((await order(icecream!.id)).status).toBe("Arrived");
+    // A part with another rider, or not yet out for delivery, is left alone.
+    await setOrder(cafe!.id, {status: "Out for delivery", riderId: "someoneElse0000001"});
+    await clusters.onClusterPartStatus(before, {...before, status: "Arrived"});
+    expect((await order(cafe!.id)).status).toBe("Out for delivery");
   });
 
   it("sends the customer trip updates once, from the part leading the trip", async () => {

@@ -27,6 +27,7 @@ fi
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_support_alarm_ack.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/onboarding_live_status.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/admin_surge_map.js"
+"$NODE_EXECUTABLE" "$TEST_DIR/together_order.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_review_state.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_contained_reliability.js"
 "$NODE_EXECUTABLE" "$TEST_DIR/customer_search_reliability.js"

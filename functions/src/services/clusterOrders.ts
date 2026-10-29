@@ -13,13 +13,14 @@ import {
   type ClusterSettings,
 } from "../domain/clusterOrder";
 import {deterministicOrderId, priceCart} from "../domain/order";
+import {riderOfferPayout, riderPayoutBreakdown} from "../domain/riderJob";
 import {DomainError} from "../errors";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {orderRef} from "../firestorePaths";
 import type {CatalogRestaurant, OrderCluster, OrderClusterStop, SavrivoOrder} from "../types";
 import {loadRestaurantAndMenu} from "./catalog";
 import {notifyRestaurantClusterPack} from "./notifications";
-import {cancelClusterPart, createAuthoritativeOrder} from "./orders";
+import {cancelClusterPart, createAuthoritativeOrder, followClusterArrival} from "./orders";
 import type {ClusterOrderInput, ClusterPreviewInput, CreateOrderInput} from "./serviceTypes";
 
 /**
@@ -318,6 +319,7 @@ export function leadsCluster(order: SavrivoOrder): boolean {
 /**
  * Status changes on a cluster part (from onOrderUpdated):
  * - the first pickup cancelled before a rider was found: the next live part takes over finding one;
+ * - the tracked part near or at the customer: the other parts in the rider's bag are too;
  * - a part handed to the rider: the next restaurant is told to pack now, so what melts or goes
  *   soggy is packed just before the rider arrives.
  * Returns the part that took over finding the rider, for the caller to dispatch.
@@ -340,6 +342,12 @@ export async function onClusterPartStatus(before: SavrivoOrder, order: SavrivoOr
     }
     return null;
   }
+  if ((order.status === "Near you" || order.status === "Arrived") && order.riderId) {
+    await Promise.all(cluster.stops.filter((stop) => stop.orderId !== order.id).map((stop) =>
+      followClusterArrival(stop.orderId, order.riderId!, order.status as "Near you" | "Arrived", order.id)
+        .catch((error) => logger.warn("CLUSTER_ARRIVAL_FOLLOW_FAILED", {orderId: stop.orderId, error: String(error)}))));
+    return null;
+  }
   if (order.status !== "Cancelled" || !leadsCluster(order)) return null;
   const parts = await partsOf(cluster);
   if (parts.some((part) => LIVE(part) && part.riderId)) return null;
@@ -356,6 +364,31 @@ export async function onClusterPartStatus(before: SavrivoOrder, order: SavrivoOr
   });
   if (promoted) logger.info("CLUSTER_LEAD_PROMOTED", {clusterId: cluster.id, from: order.id, to: promoted.id});
   return promoted;
+}
+
+/**
+ * What a rider is offered for a cluster's trip: every live pickup in order and the pay for all of
+ * them together (the first pickup's trip pay plus each stop's), so the offer shows the whole job.
+ */
+export async function clusterTripOffer(order: SavrivoOrder): Promise<{
+  pickups: number;
+  restaurants: string[];
+  payout: number;
+  payoutBreakdown: {tripPay: number; incentives: number; tip: number; total: number};
+} | null> {
+  if (!order.cluster) return null;
+  const parts = (await partsOf(order.cluster)).map((part, index) => part?.id === order.id ? order : part)
+    .filter((part): part is SavrivoOrder => LIVE(part));
+  if (parts.length < 2) return null;
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const pay = parts.map((part) => riderPayoutBreakdown(part));
+  const add = (key: "tripPay" | "incentives" | "tip" | "total") => round(pay.reduce((sum, entry) => sum + entry[key], 0));
+  return {
+    pickups: parts.length,
+    restaurants: parts.map((part) => String(part.restaurant ?? "Restaurant").slice(0, 80)),
+    payout: round(parts.reduce((sum, part) => sum + riderOfferPayout(part), 0)),
+    payoutBreakdown: {tripPay: add("tripPay"), incentives: add("incentives"), tip: add("tip"), total: add("total")},
+  };
 }
 
 /** The rider carrying this cluster: the rider of any live part that has one. */

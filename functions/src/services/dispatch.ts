@@ -82,7 +82,7 @@ import {loadDispatchPolicy} from "./platformConfig";
 import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 import {riderPublicStats} from "./riderDeliveryCount";
-import {clusterRiderId, leadsCluster} from "./clusterOrders";
+import {clusterRiderId, clusterTripOffer, leadsCluster} from "./clusterOrders";
 import {riderRegistrationRequired} from "./taxEngine";
 
 /** Map avatars the customer and rider apps can draw. */
@@ -133,6 +133,9 @@ type QueueWithOfferData = DispatchQueueRecord & {
   offeredRiderId?: string;
   distanceKm?: number;
   distanceSource?: "gps_straight_line";
+  /** Cluster orders: every pickup on the trip, in order (the payout covers all of them). */
+  clusterPickups?: number;
+  clusterRestaurants?: string[];
 };
 
 // Start reserving a rider as soon as the restaurant accepts the order. The
@@ -447,6 +450,7 @@ function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<st
     approximateDropZone: queue.approximateDropZone,
     itemCount: queue.itemCount,
     payout: queue.payout,
+    ...(queue.clusterPickups ? {clusterPickups: queue.clusterPickups, clusterRestaurants: queue.clusterRestaurants ?? []} : {}),
     ...(queue.payoutBreakdown ? {payoutBreakdown: queue.payoutBreakdown} : {}),
     estimatedMinutes: queue.estimatedMinutes,
     kitchenStatus: queue.kitchenStatus,
@@ -491,7 +495,7 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
   const previous = previousSnapshot.exists ? previousSnapshot.data() as QueueWithOfferData : null;
   const priorAttempts = previous?.attemptedRiders ?? {};
   const policy = previous?.policySnapshot ? policyForQueue(previous) : await loadDispatchPolicy();
-  const candidates = await candidatesFor(order, policy, priorAttempts);
+  const [candidates, trip] = await Promise.all([candidatesFor(order, policy, priorAttempts), clusterTripOffer(order)]);
   const now = Date.now();
   const wave = findNextDispatchWave(candidates, priorAttempts, policy, 0);
   const selected = wave?.candidates ?? [];
@@ -535,8 +539,9 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     restaurantLng: order.restaurantLocation.lng,
     approximateDropZone: order.address.area || order.address.city || "Service area",
     itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    payout: riderOfferPayout(order),
-    payoutBreakdown: riderPayoutBreakdown(order),
+    payout: trip ? trip.payout : riderOfferPayout(order),
+    payoutBreakdown: trip ? trip.payoutBreakdown : riderPayoutBreakdown(order),
+    ...(trip ? {clusterPickups: trip.pickups, clusterRestaurants: trip.restaurants} : {}),
     estimatedMinutes: order.etaMax,
     kitchenStatus: order.status,
     ...(first ? {offeredRiderId: first.riderId} : {}),

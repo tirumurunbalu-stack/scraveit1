@@ -81,6 +81,17 @@ export function buildRiderJobProjection(
     phase: phaseFor(order, existing),
   };
   if (order.restaurantPhone) projection.restaurantPhone = order.restaurantPhone;
+  // Cluster orders: the whole trip, so the rider app shows every pickup in order as one job.
+  if (order.cluster) {
+    projection.cluster = {
+      id: order.cluster.id,
+      leg: order.cluster.leg,
+      size: order.cluster.size,
+      stops: order.cluster.stops.map((stop) => ({
+        orderId: stop.orderId, restaurant: stop.restaurant, careLabel: stop.careLabel, lat: stop.lat, lng: stop.lng,
+      })),
+    };
+  }
   if (existingBelongsToAssignment(order, existing) && Number.isFinite(Number(existing?.arrivedRestaurantAt))) {
     projection.arrivedRestaurantAt = Number(existing?.arrivedRestaurantAt);
   }

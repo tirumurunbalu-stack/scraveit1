@@ -8185,7 +8185,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'</ol></section>'}
   function clusterCaption(order){const c=order&&order.cluster;return c&&c.size>1?'Together order · '+c.leg+' of '+c.size:''}
   function handleTogetherClick(action,control){
-    if(action==="together-pick"){const rid=control.dataset.restaurantId,list=togetherPicked();state.togetherPick=list.includes(rid)?list.filter(x=>x!==rid):list.concat(rid).slice(0,3);state.together=null;render({preserveScroll:true});return true}
+    if(action==="together-pick"){const rid=control.dataset.restaurantId,list=togetherPicked();if(!list.includes(rid)&&!togetherSavedCarts().includes(rid))return true;state.togetherPick=list.includes(rid)?list.filter(x=>x!==rid):list.concat(rid).slice(0,3);state.together=null;render({preserveScroll:true});return true}
     if(action==="together-retry"){loadTogetherPreview(true);render({preserveScroll:true});return true}
     if(action==="together-place"){submitTogether();return true}
     if(action==="go-cart"){go("cart");return true}

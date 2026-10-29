@@ -429,3 +429,7 @@ html{overscroll-behavior-y:none}
 .live-agree-card .grow{display:grid;gap:2px}
 .live-agree-card strong{font-size:16px;font-weight:850}
 .live-agree-card .grow span{font-size:13.5px;color:var(--muted)}
+
+/* Together orders: this restaurant's place in a multi-restaurant pickup (premium.js togetherNote). */
+.together-note.notice { display: flex; flex-direction: column; gap: 2px; }
+p.together-note { color: #075985; font-weight: 600; }

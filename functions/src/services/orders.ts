@@ -787,6 +787,27 @@ export async function cancelClusterPart(orderId: string, reason: string): Promis
 }
 
 /**
+ * Cluster orders: GPS tracking follows one part of the trip, and the other parts in the rider's
+ * bag arrive with it. Moves a part with the same rider to the arrival status the tracked part
+ * reached. Returns whether it moved.
+ */
+export async function followClusterArrival(orderId: string, riderId: string, target: "Near you" | "Arrived", trackedOrderId: string): Promise<boolean> {
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!before?.cluster || !riderId || before.riderId !== riderId || !canTransition(before.status, target, "system")) return false;
+  await commitAuthoritativeTransition({
+    before,
+    toStatus: target,
+    actorId: riderId,
+    actorRole: "system",
+    proof: `cluster:${trackedOrderId}`.slice(0, 180),
+    detail: "arrived with the rest of the order",
+    expectedRiderId: riderId,
+  });
+  return true;
+}
+
+/**
  * The customer said "cancel" on the COD confirmation call. Only an order the
  * kitchen hasn't started (placed or just accepted) is cancelled; anything
  * further along is left for a person to sort out. Returns whether it cancelled.
