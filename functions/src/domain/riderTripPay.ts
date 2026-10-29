@@ -207,6 +207,20 @@ function slotMatches(slot: RiderTripPaySlotAddon, minute: number): boolean {
     : minute >= slot.startMinute || minute < slot.endMinute;
 }
 
+/**
+ * A later pickup of a cluster order (domain/clusterOrder.ts): the rider is already on the trip,
+ * so a stop pays the base pickup pay, the ride from the previous restaurant and any waiting there,
+ * without a second minimum trip, time-slot pay or drop (the first pickup's pay covers the drop).
+ */
+export function clusterStopTripPayPolicy(policy: RiderTripPayPolicy, pickupMeters: number): RiderTripPayPolicy {
+  return {
+    ...policy,
+    expectedPickupMeters: Math.max(0, Math.round(Number(pickupMeters) || 0)),
+    minimumTripPaise: 0,
+    slotAddons: [],
+  };
+}
+
 export function calculateRiderTripPay(policy: RiderTripPayPolicy, input: RiderTripPayInput): RiderTripPayBreakdown {
   const pickupMeters = Math.max(0, Math.round(Number(input.pickupMeters) || 0));
   const dropMeters = Math.max(0, Math.round(Number(input.dropMeters) || 0));

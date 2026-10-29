@@ -2,6 +2,8 @@ import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_
 import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
+import * as clusterOrders from "./services/clusterOrders";
+import {clusterCellsFor} from "./domain/clusterOrder";
 import {readRiderSurgeMap} from "./services/riderSurgeMap";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
@@ -62,6 +64,8 @@ import {
   financeStatementQuerySchema,
   adminRiderRewardsDashboardQuerySchema,
   checkoutPricingPreviewSchema,
+  clusterOrderSchema,
+  clusterPreviewSchema,
   cityEconomicsQuerySchema,
   restaurantOfferSchema,
   restaurantOffersQuerySchema,
@@ -375,6 +379,30 @@ export const createOrder = onCall({
     };
   } catch (error) {
     logger.warn("createOrder rejected", {uid: request.auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
+/**
+ * Cluster orders (services/clusterOrders.ts): one checkout across restaurants in one area, one
+ * rider. The preview prices it exactly as placing it will; placing makes one order per restaurant.
+ */
+export const previewClusterOrder = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to see your bill."));
+  try {
+    return await clusterOrders.previewClusterOrder(request.auth.uid, parse(clusterPreviewSchema, request.data));
+  } catch (error) {
+    logger.warn("previewClusterOrder rejected", {uid: request.auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
+export const createClusterOrder = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "256MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
+  try {
+    return await clusterOrders.createClusterOrder(request.auth.uid, parse(clusterOrderSchema, request.data));
+  } catch (error) {
+    logger.warn("createClusterOrder rejected", {uid: request.auth.uid, error});
     throw asHttpsError(error);
   }
 });
@@ -1378,6 +1406,11 @@ export const reconcileExpiredDispatchClaims = onSchedule({
 }, async () => {
   const summary = await recoverExpiredDispatchClaims(100);
   logger.info("RIDER_CLAIM_RECOVERY_RUN_COMPLETED", summary);
+  // Multi-restaurant orders interrupted while being placed: withdraw the parts already placed.
+  await clusterOrders.sweepUnfinishedClusterOrders()
+    .catch((error) => logger.warn("CLUSTER_ORDER_SWEEP_FAILED", {error: String(error)}));
+  await clusterOrders.refreshRestaurantClusterCells()
+    .catch((error) => logger.warn("RESTAURANT_CLUSTER_CELLS_FILL_FAILED", {error: String(error)}));
 });
 
 /** Expires unspent wallet money (cashback / referral credit) past its date. */
@@ -1679,6 +1712,13 @@ export const onOrderUpdated = onDocumentUpdated({
     });
   }
   if (before.status === order.status) return;
+  // Cluster orders: the next restaurant packs when the rider leaves the previous one, and if the
+  // first pickup is cancelled before a rider is found, the next part takes over finding one.
+  if (order.cluster) {
+    const promoted = await clusterOrders.onClusterPartStatus(before, order)
+      .catch((error) => { logger.warn("CLUSTER_PART_STATUS_FAILED", {orderId: order.id, error: String(error)}); return null; });
+    if (promoted) await beginSequentialDispatch(promoted);
+  }
   logger.info("ORDER_STATUS_CHANGED", {
     orderId: order.id,
     fromStatus: before.status,
@@ -1803,7 +1843,8 @@ export const onOrderUpdated = onDocumentUpdated({
   // Early dispatch can assign a rider while the kitchen is still preparing;
   // when Ready later advances to Assigned, routing through the generic status
   // notifier used to send the same "Delivery partner assigned" message again.
-  const customerNotification = order.status === "Assigned" && order.riderId
+  const customerNotification = clusterOrders.quietClusterTripUpdate(order) ? Promise.resolve()
+    : order.status === "Assigned" && order.riderId
     ? notifyCustomerRiderAssigned(order)
     : sideEffectLease(`customer-status:${order.id}:${order.status}`, () => notifyCustomerStatus(order));
   const notifications: Promise<void>[] = [customerNotification];
@@ -1894,6 +1935,7 @@ export const onCatalogRestaurantWritten = onDocumentWritten({
   const restaurant = after as {
     name?: unknown; city?: unknown; lat?: unknown; lng?: unknown;
     citySort?: unknown; geoSort?: unknown; geoSortGlobal?: unknown;
+    clusterCell?: unknown; clusterCells?: unknown;
   };
   const source = {id: restaurantId, name: restaurant.name, city: restaurant.city};
   const geoSource = {id: restaurantId, city: restaurant.city, lat: restaurant.lat, lng: restaurant.lng};
@@ -1911,6 +1953,14 @@ export const onCatalogRestaurantWritten = onDocumentWritten({
   }
   if (geoSortGlobalNeedsUpdate(geoSource, restaurant.geoSortGlobal)) {
     fields.geoSortGlobal = geoSortGlobalValue(geoSource) || FieldValue.delete();
+  }
+  // Its hexagon and the 6 around it: the app offers restaurants in the same area for one
+  // multi-restaurant order (domain/clusterOrder.ts) by comparing these.
+  const cells = clusterCellsFor(restaurant.lat, restaurant.lng);
+  if ((cells?.clusterCell ?? null) !== (restaurant.clusterCell ?? null) ||
+    JSON.stringify(cells?.clusterCells ?? null) !== JSON.stringify(restaurant.clusterCells ?? null)) {
+    fields.clusterCell = cells?.clusterCell ?? FieldValue.delete();
+    fields.clusterCells = cells?.clusterCells ?? FieldValue.delete();
   }
   if (Object.keys(fields).length === 0) return;
 

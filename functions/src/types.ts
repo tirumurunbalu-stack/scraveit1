@@ -79,6 +79,34 @@ export interface CartSelection {
   note?: string;
 }
 
+export interface OrderClusterStop {
+  orderId: string;
+  restaurantId: string;
+  restaurant: string;
+  lat: number;
+  lng: number;
+  /** 0 keeps well, 1 best fresh, 2 drinks, 3 melts (domain/clusterOrder.ts). */
+  care: number;
+  careLabel: string;
+}
+
+/** Saved on each restaurant's order: the whole trip, in pickup order. */
+export interface OrderCluster {
+  id: string;
+  /** 1 is collected first. */
+  leg: number;
+  size: number;
+  /** The first pickup carries the delivery fee and is the order the rider is found for. */
+  role: "anchor" | "stop";
+  stops: OrderClusterStop[];
+  /** Straight-line km from the previous pickup (stops only): what the rider is paid to ride. */
+  stopKm?: number;
+  /** What this part pays for its stop, in rupees (stops only). */
+  stopFee?: number;
+  /** Set when the first pickup was cancelled and this part took over finding the rider. */
+  leadSince?: number;
+}
+
 export interface PricedOrderItem {
   itemId: string;
   name: string;
@@ -205,6 +233,8 @@ export interface SavrivoOrder {
   riderAvatar?: string;
   /** Set when a parent pays for their child's order; they may start its online payment. */
   payerUid?: string;
+  /** Cluster orders (domain/clusterOrder.ts): this restaurant's part of a multi-restaurant order. */
+  cluster?: OrderCluster;
   /** Squad orders: the squad's code and everyone who put picks in (host included). */
   squadCode?: string;
   squadMemberUids?: string[];

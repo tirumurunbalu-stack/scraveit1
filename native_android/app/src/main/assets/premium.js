@@ -487,6 +487,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
           FeastlyNative.pickChatPhoto(requestId);
         } else if (operation === "invokeSocial") {
           FeastlyNative.invokeSocial(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
+        } else if (operation === "invokeOrder") {
+          FeastlyNative.invokeOrder(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "invokeMealPlan") {
           FeastlyNative.invokeMealPlan(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "scanTableQr") {
@@ -6103,7 +6105,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +'<button class="button tonal full" data-action="go-home">Browse live restaurants</button></div>'+nav()+'</main>';
     }
     return '<main class="screen"><div class="screen-content page-stack">'+topbar("Your cart",r?r.name:"Ready when you are")+networkBanner()
-      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+billSummaryRow()+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
+      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section>'+togetherCard()+'<section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+billSummaryRow()+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
   }
 
   function addressSummary(address) {
@@ -6269,7 +6271,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return (order.items||[]).map(item=>'<div class="price-row"><span>'+h(item.quantity||1)+' × '+h(item.name)+(item.variant?' · '+h(item.variant):'')+'</span><span>'+money((Number(item.price||0)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||1))+'</span></div>').join("");
   }
   function orderCard(order) {
-    return '<article class="card order-card" data-action="open-order" data-order-id="'+h(order.id)+'" tabindex="0" role="button"><div class="cluster between"><span class="status-pill '+statusTone(order.status)+'">'+h(order.status||"Order placed")+'</span><strong>'+money(order.total)+'</strong></div><div><h2 class="card-title">'+h(order.restaurant||"Restaurant")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div><div class="cluster between caption"><span>'+h(order.id)+' · '+h(timeAgo(order.createdAt))+'</span><span>'+icon("chevron","small")+'</span></div></article>';
+    return '<article class="card order-card" data-action="open-order" data-order-id="'+h(order.id)+'" tabindex="0" role="button"><div class="cluster between"><span class="status-pill '+statusTone(order.status)+'">'+h(order.status||"Order placed")+'</span><strong>'+money(order.total)+'</strong></div><div><h2 class="card-title">'+h(order.restaurant||"Restaurant")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div><div class="cluster between caption"><span>'+h(order.id)+' · '+h(timeAgo(order.createdAt))+(clusterCaption(order)?' · '+h(clusterCaption(order)):'')+'</span><span>'+icon("chevron","small")+'</span></div></article>';
   }
   function screenOrders() {
     const active=state.orders.filter(o=>!TERMINAL_STATES.has(o.status)),past=state.orders.filter(o=>TERMINAL_STATES.has(o.status));
@@ -6392,7 +6394,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const foodSum=(order.squadMembers||[]).reduce((a,m)=>a+Number(m.subtotal||0),0)||1;
     const squadNote=order.squadCode?'<section class="squad-order-note"><span aria-hidden="true">👥</span><div class="grow"><strong>'+(guest?'Squad order by '+h(host?host.name:"your friend"):'Your squad order')+'</strong><span>'+(guest?'You’re following along live'+(me?' · your share about '+money(Number(order.total||0)*Number(me.subtotal||0)/foodSum):''):(order.squadMembers||[]).length+' people are following this order')+'</span></div></section>':'';
     return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
-      +orderLiveModule(order,live,canTrack)+squadNote
+      +orderLiveModule(order,live,canTrack)+squadNote+clusterTripCard(order)
       +(!guest&&orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
       +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
       +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
@@ -8090,7 +8092,106 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return head+balance+lots+offers+refCard+history+'</div>'+nav()+'</main>'}
   async function applyReferral(form){const code=String(new FormData(form).get("code")||"").trim();if(!code)return;try{const res=await nativeInvoke("applyCustomerReferral",{code,installId:installId()},{timeoutMs:15000});toast(res&&res.status==="review"?"Code linked. Scraveit will check it before rewarding.":"Code linked. Your reward arrives after your first delivered order.","success");await loadWallet(true)}catch(e){toast(friendlyError(e),"danger")}}
   function shareReferral(){const ref=state.walletData&&state.walletData.referral;if(!ref)return;const text=ref.shareText;if(navigator.share){navigator.share({text}).catch(()=>{});return}try{navigator.clipboard.writeText(text);toast("Invite copied. Paste it in any chat.","success")}catch(_){toast(text,"info")}}
+  // ---- Order together: restaurants in one area, one rider (functions/src/services/clusterOrders.ts) ----
+  // A family wants biryani, veg meals, coffee and ice cream from different places nearby. Each
+  // restaurant keeps its own cart (parkedCarts); carts from places within about 2 km of each other
+  // (the same cluster hexagons, set on each listing by the server) can be checked out together.
+  // The server works out who the rider collects from first: what keeps well first, what melts last.
+  function sameArea(a,b){return!!(a&&b&&a.clusterCell&&b.clusterCell&&Array.isArray(a.clusterCells)&&a.clusterCells.includes(b.clusterCell))}
+  function togetherSavedCarts(){const r=cartRestaurant();if(!r||!state.cart.length)return[];return Object.keys(parkedCarts()).filter(rid=>{const x=restaurant(rid);return x&&x.open&&sameArea(r,x)})}
+  function togetherPicked(){const saved=togetherSavedCarts();state.togetherPick=(state.togetherPick||[]).filter(rid=>saved.includes(rid)).slice(0,3);return state.togetherPick}
+  function togetherNearby(r){const parked=parkedCarts();return Object.values(state.catalog||{}).filter(x=>x&&x.id!==r.id&&x.open&&!parked[x.id]&&sameArea(r,x)).slice(0,8)}
+  function togetherCard(){
+    const r=cartRestaurant();if(!r||!r.clusterCell||!state.cart.length)return"";
+    const saved=togetherSavedCarts(),near=togetherNearby(r),picked=togetherPicked();
+    if(!saved.length&&!near.length)return"";
+    return'<section class="card stack together-card"><div><p class="eyebrow">Order together</p><h2 class="section-title">One rider, more places nearby</h2><p class="supporting">Add from restaurants within about 2 km of '+h(r.name)+'. One delivery fee and a small fee for each extra restaurant. Drinks and ice cream are picked up last, so they arrive fresh.</p></div>'
+      +saved.map(rid=>{const s=cartSummary({rid,items:parkedCarts()[rid],current:false}),on=picked.includes(rid);return'<button type="button" class="settings-row" data-action="together-pick" data-restaurant-id="'+h(rid)+'" aria-pressed="'+on+'"><span class="grow"><strong>'+h(s.name)+'</strong><span class="supporting">'+s.count+' item'+(s.count===1?'':'s')+' · '+money(s.subtotal)+'</span></span><span class="switch '+(on?'on':'')+'" aria-hidden="true"></span></button>'}).join("")
+      +(near.length?'<div class="together-near">'+near.map(x=>'<button type="button" class="chip" data-action="open-restaurant" data-restaurant-id="'+h(x.id)+'">+ '+h(x.name)+'</button>').join("")+'</div>':'')
+      +(picked.length?'<button type="button" class="button primary full" data-action="go" data-route="together">Order '+(picked.length+1)+' restaurants together</button>':'<p class="caption">'+(saved.length?'Switch on a cart to order it with this one.':'Add items from these places, then come back to your cart.')+'</p>')
+      +'</section>'}
+  function togetherParts(){if(!state.cart.length)return[];return[{rid:state.cart[0].restaurantId,items:state.cart}].concat(togetherPicked().map(rid=>({rid,items:parkedCarts()[rid]||[]})))}
+  function togetherLines(items){return items.map(item=>{const line={itemId:String(item.itemId||""),quantity:Math.max(1,Math.floor(Number(item.quantity||1))),addOnIds:Array.isArray(item.addOnIds)?item.addOnIds.map(String):(item.addOns||[]).map(x=>String(x.id||x.name||"")).filter(Boolean),note:String(item.note||"").slice(0,200)};const variantId=String(item.variantId||item.variant||"").trim();if(variantId)line.variantId=variantId;return line})}
+  function togetherPayload(){return togetherParts().map(p=>({restaurantId:p.rid,items:togetherLines(p.items)}))}
+  function togetherKey(){const existing=String(state.checkout.pendingTogetherKey||"");if(/^[A-Za-z0-9_-]{16,70}$/.test(existing))return existing;const key=("tog_"+Date.now().toString(36)+"_"+uid("").replace(/[^A-Za-z0-9_-]/g,"")).slice(0,70);state.checkout.pendingTogetherKey=key;persistCheckout();return key}
+  async function orderCall(fn,data,timeoutMs){if(!nativeAvailable("invokeOrder"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to order from several restaurants together."});await ensureSession();return nativeInvoke("invokeOrder",{fn,data},{idToken:state.session.idToken,timeoutMs:timeoutMs||30000})}
+  async function loadTogetherPreview(force){
+    const address=currentAddress(),parts=togetherPayload();if(!address||parts.length<2)return;
+    const t=state.together||(state.together={}),key=JSON.stringify([parts,address.id,Number(state.tip||0)]);
+    if(t.loading||(!force&&t.key===key&&(t.preview||t.error)))return;
+    t.key=key;t.loading=true;t.error="";
+    try{t.preview=await orderCall("previewClusterOrder",{parts,addressId:address.id,tip:Number(state.tip||0)})}
+    catch(e){t.preview=null;t.error=friendlyError(e)}
+    finally{t.loading=false;if(state.route==="together")render({preserveScroll:true})}
+  }
+  function togetherBill(p){
+    const sum=k=>p.parts.reduce((n,x)=>n+Number(x.pricing&&x.pricing[k]||0),0),first=p.parts[0].pricing||{};
+    const rows=[["Item total",p.subtotal],["Delivery fee",Number(first.deliveryFee||0)],[(p.parts.length-1)+" extra restaurant"+(p.parts.length>2?"s":""),p.parts.slice(1).reduce((n,x)=>n+Number(x.pricing&&x.pricing.deliveryFee||0),0)],["Platform fee",sum("platformFee")],["GST and charges",sum("tax")]];
+    const discount=sum("discount"),tip=Number(first.tip||0),shown=rows.reduce((n,r)=>n+r[1],0)-discount+tip,other=Math.round((p.total-shown)*100)/100;
+    return rows.filter(r=>r[1]>0||r[0]==="Item total").map(r=>'<div class="price-row"><span>'+h(r[0])+'</span><span>'+money(r[1])+'</span></div>').join("")
+      +(discount>0?'<div class="price-row"><span>Discount</span><span>−'+money(discount)+'</span></div>':'')+(tip>0?'<div class="price-row"><span>Rider tip</span><span>'+money(tip)+'</span></div>':'')
+      +(Math.abs(other)>=0.01?'<div class="price-row"><span>Other charges</span><span>'+money(other)+'</span></div>':'')
+      +'<div class="price-row total"><strong>To pay</strong><strong>'+money(p.total)+'</strong></div>'}
+  function screenTogether(){
+    const address=currentAddress(),parts=togetherParts(),t=state.together||{},p=t.preview;
+    if(parts.length<2)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Order together","Pick carts to combine")+emptyState("cart","Nothing to combine yet","Switch on a cart from a nearby restaurant in your cart.","go-cart","Back to cart")+'</div>'+nav()+'</main>';
+    setTimeout(()=>loadTogetherPreview(false),0);
+    const canPlace=!!(p&&address&&state.online&&!state.loading&&!t.loading),n=p?p.parts.length:parts.length;
+    const plan=p?'<ol class="together-plan">'+p.parts.map((x,i)=>'<li><span class="together-n">'+(i+1)+'</span><div class="grow"><strong>'+h(x.restaurant)+'</strong><span class="caption">'+h(x.careLabel+(i===0?' · picked up first':i===n-1?' · picked up last':''))+'</span></div><strong>'+money(x.subtotal)+'</strong></li>').join("")+'</ol><p class="caption">One rider collects in this order and brings everything together. Each restaurant gets its own order, and you rate them separately.</p>'
+      :t.error?'<div class="notice warning">'+icon("warning","small")+'<span>'+h(t.error)+'</span></div><button type="button" class="button tonal full" data-action="together-retry">Try again</button>'
+      :'<div class="notice info"><span class="spinner"></span><span>Working out the best pickup order…</span></div>';
+    return'<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar("Order together",n+" restaurants, one rider"+(p?" · "+p.etaMin+"–"+p.etaMax+" min":""))+networkBanner()
+      +'<section class="card stack"><h2 class="section-title">Pickup order</h2>'+plan+'</section>'
+      +'<section class="card checkout-card"><button type="button" class="checkout-line" data-action="go" data-route="addresses">'+addressSummary(address)+icon("chevron","small")+'</button><div class="checkout-divider"></div>'
+      +'<label class="field compact"><span>Instructions for your delivery partner</span><textarea id="together-instructions" class="textarea" maxlength="180" rows="2" placeholder="Landmark, gate or delivery note">'+h(state.checkout.instructions||"")+'</textarea></label>'
+      +'<button type="button" class="settings-row" data-action="toggle-contactless"><span class="settings-icon">'+icon("shield")+'</span><span class="grow"><strong>Contactless delivery</strong><span class="supporting">Leave at the door and notify me.</span></span><span class="switch '+(state.checkout.contactless?'on':'')+'" aria-hidden="true"></span></button>'
+      +(p?'<div class="checkout-divider"></div><div class="stack">'+togetherBill(p)+'</div>':'')+'</section>'
+      +'<div class="notice info">'+icon("wallet","small")+'<span>Pay cash or UPI to the rider at your door. Paying online for orders from several restaurants is coming soon.</span></div>'
+      +'</div><div class="floating-cart pay-dock"><span class="pay-using"><span class="caption">PAY ON DELIVERY</span><strong>Cash or UPI</strong></span>'
+      +'<button type="button" class="button primary pay-cta" data-action="together-place" '+(canPlace?'':'disabled')+'>'+(state.loading?'<span class="spinner"></span> Placing…':'<span class="pay-cta-total"><strong>'+(p?money(p.total):"…")+'</strong><small>TOTAL</small></span><span>Place order</span>')+'</button></div>'
+      +nav()+'</main>'}
+  async function submitTogether(){
+    if(state.loading)return;const address=currentAddress(),t=state.together||{};
+    if(!address){toast("Choose a delivery address first.","danger");go("addresses");return}
+    if(!validPhone(address.phone||state.profile.phone)){toast("Add a reachable mobile number to the delivery address.","danger");go("addresses");return}
+    if(!Number.isFinite(Number(address.lat))||!Number.isFinite(Number(address.lng))){toast("Use your current location to attach a delivery pin before checkout.","danger");go("addresses");return}
+    if(!state.online){toast("Reconnect to place this order safely.","danger");return}
+    if(!t.preview){toast("Wait for the bill to load.","danger");return}
+    state.checkout.instructions=(document.getElementById("together-instructions")||{}).value||state.checkout.instructions||"";
+    const rids=togetherParts().map(p=>p.rid),data={idempotencyKey:togetherKey(),addressId:address.id,parts:togetherPayload(),tip:Number(state.tip||0),
+      instructions:String(state.checkout.instructions||"").slice(0,500),contactless:state.checkout.contactless===true,paymentMethod:"cod"};
+    state.loading=true;render({preserveScroll:true});
+    try{
+      const result=await orderCall("createClusterOrder",data,45000);
+      if(!result||!Array.isArray(result.orders)||!result.orders.length)throw new Error("INVALID_SERVER_RESPONSE");
+      result.orders.slice().reverse().forEach(o=>{state.orders=[o].concat(state.orders.filter(x=>x.id!==o.id));if(result.deliveryOtp)state.deliveryOtps[o.id]=String(result.deliveryOtp)});persistOrders();
+      rids.forEach(rid=>{if(state.cart.length&&state.cart[0].restaurantId===rid)state.cart=[];else delete parkedCarts()[rid]});
+      state.togetherPick=[];state.together=null;state.tip=0;state.coupon=null;state.checkout.pendingTogetherKey="";persistCart();persistCheckout();
+      state.selectedOrderId=result.orders[0].id;
+      toast(result.recovered?"Your existing order was restored safely.":"Order placed with "+result.orders.length+" restaurants. One rider brings it all.","success");
+      go("order",{orderId:result.orders[0].id});
+    }catch(e){
+      // Nothing was placed: the next try starts a fresh order. Otherwise it retries the same one.
+      if(/didn.t go through|too far|switched off|up to \d+ restaurants/i.test(String(e&&e.userMessage||e&&e.message||friendlyError(e)))){state.checkout.pendingTogetherKey="";persistCheckout()}
+      toast("Order was not placed. "+friendlyError(e),"danger");
+    }finally{state.loading=false;render({preserveScroll:true})}
+  }
+  // On the tracking screen: every restaurant in the order, in pickup order, with how far each has got.
+  function clusterTripCard(order){
+    const c=order.cluster;if(!c||!Array.isArray(c.stops)||c.stops.length<2)return"";
+    const part=id=>state.orders.find(x=>x.id===id)||(id===order.id?order:null);
+    return'<section class="card stack together-trip"><div><p class="eyebrow">Order together</p><h2 class="section-title">'+c.stops.length+' restaurants, one rider</h2><p class="supporting">Collected in this order. One delivery code for all of it.</p></div><ol class="together-plan">'
+      +c.stops.map((s,i)=>{const o=part(s.orderId),st=o&&o.status||"Order placed";return'<li'+(s.orderId===order.id?' class="current"':'')+'><span class="together-n">'+(i+1)+'</span><div class="grow"><strong>'+h(s.restaurant)+'</strong><span class="caption">'+h(s.careLabel||"")+'</span></div><span class="status-pill '+statusTone(st)+'">'+h(st)+'</span></li>'}).join("")
+      +'</ol></section>'}
+  function clusterCaption(order){const c=order&&order.cluster;return c&&c.size>1?'Together order · '+c.leg+' of '+c.size:''}
+  function handleTogetherClick(action,control){
+    if(action==="together-pick"){const rid=control.dataset.restaurantId,list=togetherPicked();state.togetherPick=list.includes(rid)?list.filter(x=>x!==rid):list.concat(rid).slice(0,3);state.together=null;render({preserveScroll:true});return true}
+    if(action==="together-retry"){loadTogetherPreview(true);render({preserveScroll:true});return true}
+    if(action==="together-place"){submitTogether();return true}
+    if(action==="go-cart"){go("cart");return true}
+    return false}
   Object.assign(SCREENS, {
+    together:screenTogether,
     launch:screenLaunch, welcome:screenWelcome, table:screenTable, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
     restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, deals:screenDeals, account:screenAccount,
@@ -8137,6 +8238,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(handleChatClick(action,control))return;
     if(handleWheelClick(action,control))return;
     if(handleFeedClick(action,control))return;
+    if(handleTogetherClick(action,control))return;
     if(action==="confirm-yes"){settleConfirm(true);return;}
     if(action==="menu-cat-toggle"){const rid=control.dataset.restaurantId;state.menuOpen=state.menuOpen||{};const open=state.menuOpen[rid]||(state.menuOpen[rid]={});open[control.dataset.value]=control.getAttribute("aria-expanded")!=="true";render({preserveScroll:true});return;}
     if(action==="report-menu"){setSheet({type:"menuReport",restaurantId:control.dataset.restaurantId});return;}

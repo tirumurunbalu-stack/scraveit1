@@ -100,10 +100,24 @@ export function distanceDeliveryFee(settings: UnknownRecord, distanceKm: number)
   return Math.round(base + perKm * Math.max(0, distanceKm));
 }
 
+/**
+ * One restaurant's part of a cluster order (domain/clusterOrder.ts). The first pickup pays the
+ * delivery and the order-level fees; each later stop pays only a stop fee and its own kitchen's
+ * busy fee. The minimum order, small-order fee and free delivery look at the whole order.
+ */
+export interface ClusterFeeContext {
+  role: "anchor" | "stop";
+  clusterSubtotal: number;
+  stopFee: number;
+  /** Stops: metres from the previous pickup, for the rider's stop pay. */
+  pickupMeters: number;
+}
+
 export async function loadServerFees(
   restaurant: CatalogRestaurant,
   address: Address,
   subtotal: number,
+  cluster?: ClusterFeeContext,
 ): Promise<{
   deliveryFee: number;
   platformFee: number;
@@ -122,7 +136,10 @@ export async function loadServerFees(
   distanceKm: number;
   activeOrders: number;
   pricingScopes: string[];
+  /** A cluster stop: the rider is paid for the ride from the previous pickup, not a whole trip. */
+  clusterStop?: {pickupMeters: number};
 }> {
+  const orderSubtotal = cluster ? cluster.clusterSubtotal : subtotal;
   const [settingsSnapshot, loadSnapshot, signalSnapshot, campaignsSnapshot] = await Promise.all([
     firestoreDb.collection("settings").doc("customer").get(),
     restaurantWorkloadRef(firestoreDb, restaurant.id).get(),
@@ -143,7 +160,7 @@ export async function loadServerFees(
     (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as UnknownRecord,
     pricing.override,
   );
-  if (finite(settings.minimumOrder) > 0 && subtotal < finite(settings.minimumOrder)) {
+  if (finite(settings.minimumOrder) > 0 && orderSubtotal < finite(settings.minimumOrder)) {
     throw new DomainError("failed-precondition", `The minimum order here is ₹${finite(settings.minimumOrder)}.`);
   }
   const load = (loadSnapshot.exists ? loadSnapshot.data() : {}) as UnknownRecord;
@@ -167,7 +184,7 @@ export async function loadServerFees(
   // are charged pro rata (0.7 km at ₹2/km is ₹1.40) and the total is rounded to the rupee.
   const perKmFee = distanceDeliveryFee(settings, distanceKm);
   if (perKmFee !== null) deliveryFee = perKmFee;
-  if (finite(settings.freeDeliveryAbove) > 0 && subtotal >= finite(settings.freeDeliveryAbove)) deliveryFee = 0;
+  if (finite(settings.freeDeliveryAbove) > 0 && orderSubtotal >= finite(settings.freeDeliveryAbove)) deliveryFee = 0;
 
   const hour = Number(new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata", hour: "2-digit", hourCycle: "h23",
@@ -212,7 +229,7 @@ export async function loadServerFees(
     .map((item) => ({label: item.label, amount: roundMoney(item.amountPaise / 100)}))
     .filter((item) => item.amount > 0);
 
-  return {
+  const fees = {
     deliveryFee: roundMoney(Math.max(0, deliveryFee)),
     platformFee: roundMoney(Math.max(0, finite(settings.platformFee, finite(restaurant.platformFee, 9)))),
     taxRate: Math.min(100, Math.max(0, finite(settings.taxRate))),
@@ -223,12 +240,30 @@ export async function loadServerFees(
     surgeFee: Math.max(0, surgeFee),
     riderIncentiveFee: roundMoney(riderIncentive.amountPaise / 100),
     riderIncentivePay: roundMoney(riderIncentive.riderPaise / 100),
-    riderSurgeFee: await riderSurgeFeeNear(settings as RiderSurgeSettings, restaurant),
+    riderSurgeFee: cluster?.role === "stop" ? 0 : await riderSurgeFeeNear(settings as RiderSurgeSettings, restaurant),
     riderIncentiveCampaignIds: riderIncentive.campaignIds,
     riderIncentiveItems,
     distanceKm,
     activeOrders,
     pricingScopes: pricing.scopes,
+  };
+  if (!cluster) return fees;
+  // The small-order fee is for a small order, and a cluster order is judged as a whole.
+  if (cluster.clusterSubtotal >= fees.smallOrderThreshold) fees.smallOrderThreshold = 0;
+  if (cluster.role === "anchor") return fees;
+  return {
+    ...fees,
+    deliveryFee: roundMoney(Math.max(0, cluster.stopFee)),
+    platformFee: 0,
+    smallOrderThreshold: 0,
+    smallOrderFee: 0,
+    lateNightFee: 0,
+    rainFee: 0,
+    riderIncentiveFee: 0,
+    riderIncentivePay: 0,
+    riderIncentiveCampaignIds: [],
+    riderIncentiveItems: [],
+    clusterStop: {pickupMeters: Math.max(0, Math.round(cluster.pickupMeters))},
   };
 }
 

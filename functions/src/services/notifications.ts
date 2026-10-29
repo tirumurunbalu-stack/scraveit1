@@ -636,6 +636,26 @@ export async function notifyRestaurantDineIn(input: {restaurantId: string; key: 
   });
 }
 
+/**
+ * Cluster orders: the rider has left the previous restaurant and is coming here next, so pack now.
+ * Sent to everyone running the restaurant, once per order.
+ */
+export async function notifyRestaurantClusterPack(input: {restaurantId: string; orderId: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "RESTAURANT_CLUSTER_PACK",
+    aggregateType: "order",
+    aggregateId: input.orderId,
+    deduplicationKey: `restaurant-cluster-pack:${input.orderId}`,
+    recipient: {kind: "restaurant", id: input.restaurantId, app: "restaurant"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "CLUSTER_PACK", orderId: input.orderId, restaurantId: input.restaurantId},
+      android: {priority: "high", notification: {channelId: "savrivo_order_status", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
 /** To someone who applied to sell on Scraveit: rate confirmed, changes asked for, approved. */
 export async function notifyStoreApplicant(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
   await enqueueAndAttempt({

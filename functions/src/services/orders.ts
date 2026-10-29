@@ -29,10 +29,10 @@ import type {TransactionLike} from "../firestoreTypes";
 import {FieldValue} from "../firestoreTypes";
 import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef, riderWalletRef} from "../firestorePaths";
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
-import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
+import type {ActorRole, OrderCluster, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
 import {authorizeTransition} from "./authz";
 import {assertMayOrder} from "./accountAge";
-import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
+import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees, type ClusterFeeContext} from "./catalog";
 import {
   checkoutTax,
   finalizeOrderEconomics,
@@ -130,10 +130,11 @@ interface PrivateOtpRecord {
   migratedFromLegacy?: boolean;
 }
 
-async function reserveDeliveryOtp(customerId: string, orderId: string): Promise<PrivateOtpRecord> {
+async function reserveDeliveryOtp(customerId: string, orderId: string, presetOtp?: string): Promise<PrivateOtpRecord> {
   const ref = deliveryOtpRef(firestoreDb, orderId);
   const now = Date.now();
-  const otp = String(randomInt(1000, 10_000));
+  // A cluster order's parts share one code, so the customer reads out a single number at the door.
+  const otp = presetOtp && /^\d{4}$/.test(presetOtp) ? presetOtp : String(randomInt(1000, 10_000));
   const salt = randomBytes(16).toString("hex");
   const candidate: PrivateOtpRecord = {
     customerId,
@@ -396,15 +397,27 @@ async function promoteReadyOrderToAssigned(before: SavrivoOrder): Promise<Savriv
   }
 }
 
-export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput, options: {payerUid?: string} = {}): Promise<{
+/** One restaurant's part of a cluster order (services/clusterOrders.ts). */
+export interface ClusterPartOptions {
+  order: OrderCluster;
+  fees: ClusterFeeContext;
+  /** The first part's delivery code, shared by every part. */
+  otp?: string;
+}
+
+/**
+ * Prices and places one order. With dryRun it stops before anything is saved and returns the
+ * order as it would be (no delivery code): a preview priced exactly as the real order will be.
+ */
+export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput, options: {payerUid?: string; cluster?: ClusterPartOptions; dryRun?: boolean} = {}): Promise<{
   order: SavrivoOrder;
   deliveryOtp: string;
   recovered: boolean;
 }> {
   const orderId = deterministicOrderId(uid, input.idempotencyKey);
   const ref = orderRef(firestoreDb, orderId);
-  const existingSnapshot = await ref.get();
-  const existing = existingSnapshot.exists ? existingSnapshot.data() as SavrivoOrder : null;
+  const existingSnapshot = options.dryRun ? null : await ref.get();
+  const existing = existingSnapshot?.exists ? existingSnapshot.data() as SavrivoOrder : null;
   if (existing) {
     if (existing.customerId !== uid || existing.idempotencyKey !== input.idempotencyKey) {
       throw new DomainError("already-exists", "Order idempotency conflict.");
@@ -422,7 +435,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   const {items, subtotal} = priceCart(input.items, menuById);
   const pricedAt = Date.now();
   const [fees, promotion, economicsControl, availableRiders] = await Promise.all([
-    loadServerFees(restaurant, address, subtotal),
+    loadServerFees(restaurant, address, subtotal, options.cluster?.fees),
     resolveCheckoutPromotion(input.couponCode, {
       subtotalPaise: rupeesToPaise(subtotal),
       restaurantId: restaurant.id,
@@ -559,11 +572,6 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     availableRiders,
     occurredAt: now,
   });
-  // Reserve the OTP before committing the canonical order. A process failure
-  // can leave a harmless private reservation, but can never leave a live order
-  // whose customer OTP is unrecoverable.
-  const otpRecord = await reserveDeliveryOtp(uid, orderId);
-  const deliveryOtp = String(otpRecord.otp);
   const event: StatusEvent = {status: "Order placed", at: now, actorId: uid, actorRole: "customer"};
   const orderBase: SavrivoOrder = {
     id: orderId,
@@ -574,6 +582,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     customerPhone: address.phone,
     // A parent paying for their child's order ("Ask a parent to pay").
     ...(options.payerUid && options.payerUid !== uid ? {payerUid: options.payerUid} : {}),
+    ...(options.cluster ? {cluster: options.cluster.order} : {}),
     restaurantId: restaurant.id,
     restaurant: restaurant.name,
     restaurantLocation: {address: restaurant.address, lat: Number(restaurant.lat), lng: Number(restaurant.lng)},
@@ -610,6 +619,12 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     ...(economicsPlan.offer ? {appliedOffer: economicsPlan.offer} : {}),
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
+  if (options.dryRun) return {order: stripPrivateOrderFields(order), deliveryOtp: "", recovered: false};
+  // Reserve the OTP before committing the canonical order. A process failure
+  // can leave a harmless private reservation, but can never leave a live order
+  // whose customer OTP is unrecoverable.
+  const otpRecord = await reserveDeliveryOtp(uid, orderId, options.cluster?.otp);
+  const deliveryOtp = String(otpRecord.otp);
 
   let created = false;
   const reservationRefs = economicsPlan.engineEnabled ?
@@ -750,6 +765,25 @@ export async function transitionOrder(
     order = await promoteReadyOrderToAssigned(order);
   }
   return {order, actorRole, idempotent: false};
+}
+
+/**
+ * Cancels a part of a cluster order that can't go ahead: the order couldn't be placed in full,
+ * so the parts already placed are withdrawn before the kitchens start. Returns whether it cancelled.
+ */
+export async function cancelClusterPart(orderId: string, reason: string): Promise<boolean> {
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!before || !before.cluster || !["Order placed", "Accepted"].includes(before.status)) return false;
+  await commitAuthoritativeTransition({
+    before,
+    toStatus: "Cancelled",
+    actorId: "cluster-order",
+    actorRole: "system",
+    reason,
+    detail: `cluster ${before.cluster.id}`,
+  });
+  return true;
 }
 
 /**

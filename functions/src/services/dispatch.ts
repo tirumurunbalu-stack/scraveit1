@@ -64,6 +64,7 @@ import {
   riderAvailabilityRef,
   riderJobRef,
   riderJobsCollectionRef,
+  riderRef,
   riderWalletRef,
 } from "../firestorePaths";
 import type {
@@ -81,6 +82,7 @@ import {loadDispatchPolicy} from "./platformConfig";
 import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 import {riderPublicStats} from "./riderDeliveryCount";
+import {clusterRiderId, leadsCluster} from "./clusterOrders";
 import {riderRegistrationRequired} from "./taxEngine";
 
 /** Map avatars the customer and rider apps can draw. */
@@ -477,6 +479,13 @@ function allOfferedRiderIds(queue: QueueWithOfferData | null | undefined): strin
 
 export async function beginSequentialDispatch(order: SavrivoOrder): Promise<QueueWithOfferData | null> {
   if (!DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) return null;
+  // A later pickup of a cluster order isn't offered on its own: it goes with the rider found for
+  // the first pickup, now if they're already found, or when they are (finalizeRiderAssignment).
+  if (order.cluster && !leadsCluster(order)) {
+    const riderId = await clusterRiderId(order);
+    if (riderId) await assignClusterPart(order.id, riderId);
+    return null;
+  }
   const ref = dispatchQueueRef(firestoreDb, order.id);
   const previousSnapshot = await ref.get();
   const previous = previousSnapshot.exists ? previousSnapshot.data() as QueueWithOfferData : null;
@@ -891,7 +900,65 @@ async function finalizeRiderAssignment(
     .catch((error) => logger.warn("Assigned rider offer removal failed", {orderId: order.id, riderId: uid, error}));
   await notifyCustomerRiderAssigned(order)
     .catch((error) => logger.warn("Customer rider-assigned notification failed", {orderId: order.id, riderId: uid, error}));
+  // Cluster order: the same rider collects every other restaurant's part that is already accepted;
+  // parts accepted later join them from beginSequentialDispatch.
+  if (order.cluster) {
+    await Promise.all(order.cluster.stops.filter((stop) => stop.orderId !== order.id).map((stop) =>
+      assignClusterPart(stop.orderId, uid).catch((error) =>
+        logger.warn("CLUSTER_PART_ASSIGN_FAILED", {clusterId: order.cluster?.id, orderId: stop.orderId, riderId: uid, error}))));
+  }
   return order;
+}
+
+/**
+ * Gives one part of a cluster order to the rider already collecting the others: the same
+ * assignment a claim makes (rider on the order, rider job, live-location permission, restaurant
+ * card), without an offer of its own. Leaves a part that already has a rider, or isn't accepted
+ * yet, alone. Safe to repeat.
+ */
+export async function assignClusterPart(orderId: string, riderId: string): Promise<SavrivoOrder | null> {
+  const ref = orderRef(firestoreDb, orderId);
+  const [riderSnapshot, presenceSnapshot] = await Promise.all([
+    riderRef(firestoreDb, riderId).get(),
+    db.ref(`${ROOT}/riderPresence/${riderId}`).get(),
+  ]);
+  const rider = (riderSnapshot.exists ? riderSnapshot.data() : {}) as {fullName?: string; phone?: string; avatar?: string};
+  const presence = presenceSnapshot.val() as Presence | null;
+  const at = Date.now();
+  const event: StatusEvent = {status: "Assigned", at, actorId: riderId, actorRole: "rider"};
+  const eventId = `e_${at}_${riderId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30)}`;
+  let assigned = false;
+  const order = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+    if (!current?.cluster || current.riderId || !DISPATCH_ELIGIBLE_STATUSES.has(current.status)) return current;
+    const ready = current.status === "Ready for pickup";
+    const candidate: SavrivoOrder = {
+      ...stripPrivateOrderFields(current),
+      riderId,
+      riderName: String(rider.fullName ?? presence?.riderName ?? "Scraveit Partner"),
+      ...(rider.phone ? {riderPhone: String(rider.phone).slice(0, 30)} : {}),
+      ...(RIDER_AVATARS.has(String(rider.avatar ?? "")) ? {riderAvatar: String(rider.avatar)} : {}),
+      ...riderPickupEta(presence, current.restaurantLocation, at),
+      riderAssignedAt: at,
+      status: ready ? "Assigned" : current.status,
+      updatedAt: at,
+      statusHistory: ready ? {...(current.statusHistory ?? {}), [eventId]: event} : current.statusHistory,
+    };
+    const next = {...candidate, ...buildLifecycleMutation(deriveLifecycle(current), deriveLifecycleFromCanonicalState(candidate), at).patch};
+    transaction.set(ref, next);
+    assigned = true;
+    return next;
+  });
+  if (!assigned || !order) return order ?? null;
+  const finalOrder = stripPrivateOrderFields(order);
+  await Promise.all([
+    riderJobRef(firestoreDb, riderId, orderId).set(buildRiderJobProjection(finalOrder)),
+    db.ref(`${ROOT}/trackingAssignments/${orderId}`).set({riderId, customerId: finalOrder.customerId, assignedAt: at}),
+  ]);
+  await reconcileRestaurantOrderProjection(finalOrder);
+  logger.info("CLUSTER_PART_ASSIGNED", {clusterId: finalOrder.cluster?.id, orderId, riderId, leg: finalOrder.cluster?.leg});
+  return finalOrder;
 }
 
 export interface DispatchClaimRecoverySummary {

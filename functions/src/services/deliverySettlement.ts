@@ -128,7 +128,9 @@ export async function finalizeRiderTripPay(
   const deliveredAt = Number(order.deliveredAt ?? order.updatedAt) || Date.now();
   const breakdown = calculateRiderTripPay(policy, {
     pickupMeters,
-    dropMeters: estimate?.dropMeters ?? Math.round(Number(order.pricingContext?.distanceKm ?? 0) * 1_000),
+    // A cluster stop that took over the trip when the first pickup was cancelled also rides to the customer.
+    dropMeters: order.cluster?.leadSince ? Math.round(Number(order.pricingContext?.distanceKm ?? 0) * 1_000) :
+      estimate?.dropMeters ?? Math.round(Number(order.pricingContext?.distanceKm ?? 0) * 1_000),
     waitMinutes,
     minuteOfDay: minuteOfDayInTimeZone(deliveredAt),
     vehicleType,

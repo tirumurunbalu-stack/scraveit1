@@ -155,7 +155,8 @@ final class FirebaseCallableClient {
         // own allow-lists (DINE_IN_FUNCTIONS, MEAL_PLAN_FUNCTIONS).
         || MainActivity.DINE_IN_FUNCTIONS.contains(name)
         || MainActivity.MEAL_PLAN_FUNCTIONS.contains(name)
-        || MainActivity.SOCIAL_FUNCTIONS.contains(name);
+        || MainActivity.SOCIAL_FUNCTIONS.contains(name)
+        || MainActivity.ORDER_FUNCTIONS.contains(name);
   }
 
   private String normalizeCode(String value) {

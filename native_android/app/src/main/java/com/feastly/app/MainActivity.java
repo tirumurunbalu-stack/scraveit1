@@ -559,6 +559,9 @@ public class MainActivity extends ComponentActivity {
       "dineInBookTable", "dineInCancelBooking", "dineInOpenTable", "dineInPlaceRound", "dineInTableRequest"));
   static final java.util.Set<String> MEAL_PLAN_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
       "subscribeMealPlan", "updateMealSubscription"));
+  /** Ordering from several restaurants in one area at once, collected by one rider. */
+  static final java.util.Set<String> ORDER_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
+      "previewClusterOrder", "createClusterOrder"));
   static final java.util.Set<String> SOCIAL_FUNCTIONS = new java.util.HashSet<>(java.util.Arrays.asList(
       "callIceServers", "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
       "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
@@ -624,6 +627,15 @@ public class MainActivity extends ComponentActivity {
         return;
       }
       invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Chat isn’t available right now.");
+    }
+
+    @JavascriptInterface public void invokeOrder(String requestId, String firebaseIdToken, String function, String payloadJson) {
+      if (function == null || !ORDER_FUNCTIONS.contains(function)) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "invokeOrder", "INVALID_ARGUMENT", "That action isn’t available."));
+        return;
+      }
+      // A cart from each restaurant can be larger than the usual 8 KB.
+      invokeSimpleCallable(requestId, function, firebaseIdToken, payloadJson, "Ordering isn’t available right now.", 48_000);
     }
 
     /** Scan a table's QR code with Google's scanner (no camera permission needed). */
@@ -873,10 +885,15 @@ public class MainActivity extends ComponentActivity {
 
     private void invokeSimpleCallable(String requestId, String operation, String firebaseIdToken, String payloadJson,
                                       String failureMessage) {
+      invokeSimpleCallable(requestId, operation, firebaseIdToken, payloadJson, failureMessage, 8_000);
+    }
+
+    private void invokeSimpleCallable(String requestId, String operation, String firebaseIdToken, String payloadJson,
+                                      String failureMessage, int maxChars) {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
         try {
-          if (payloadJson != null && payloadJson.length() > 8_000) throw new IllegalArgumentException("PAYLOAD_TOO_LARGE");
+          if (payloadJson != null && payloadJson.length() > maxChars) throw new IllegalArgumentException("PAYLOAD_TOO_LARGE");
           JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
           invokeCallable(requestId, operation, firebaseIdToken, payload, null);
         } catch (Exception error) {

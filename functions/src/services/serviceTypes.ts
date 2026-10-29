@@ -1,6 +1,8 @@
 import type {z} from "zod";
 import {
   claimOrderSchema,
+  clusterOrderSchema,
+  clusterPreviewSchema,
   createOrderSchema,
   createCodOrderSchema,
   initiatePaymentSchema,
@@ -16,3 +18,5 @@ export type ClaimOrderInput = z.infer<typeof claimOrderSchema>;
 export type InitiatePaymentInput = z.infer<typeof initiatePaymentSchema>;
 export type RegisterDeviceTokenInput = z.infer<typeof registerDeviceTokenSchema>;
 export type UnregisterDeviceTokenInput = z.infer<typeof unregisterDeviceTokenSchema>;
+export type ClusterPreviewInput = z.infer<typeof clusterPreviewSchema>;
+export type ClusterOrderInput = z.infer<typeof clusterOrderSchema>;

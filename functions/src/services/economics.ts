@@ -27,6 +27,7 @@ import {
 } from "../domain/economicsControl";
 import {
   calculateRiderTripPay,
+  clusterStopTripPayPolicy,
   minuteOfDayInTimeZone,
   resolveRiderTripPayPolicy,
   type RiderTripPayBreakdown,
@@ -343,6 +344,8 @@ export interface ServerFees {
   riderIncentiveCampaignIds?: string[];
   /** Restaurant-to-customer straight-line distance, for rider drop pay. */
   distanceKm?: number;
+  /** A later stop of a cluster order: rider pay is for the ride from the previous pickup only. */
+  clusterStop?: {pickupMeters: number};
 }
 
 export interface CheckoutEconomicsPlan {
@@ -411,11 +414,14 @@ export function planCheckoutEconomics(input: {
   const deliveryFeePaise = rupeesToPaise(input.fees.deliveryFee);
   // Rider pay comes from the rider trip-pay policy, never from what the
   // customer was charged for delivery. The difference is shown, not hidden.
-  const tripPayPolicy = engineEnabled ?
+  const basePolicy = engineEnabled ?
     resolveRiderTripPayPolicy(input.control.riderTripPay, {cityKey, zoneKey}, input.now) : null;
+  // A cluster stop is a short extra ride, not a second trip (domain/clusterOrder.ts).
+  const tripPayPolicy = basePolicy && input.fees.clusterStop ?
+    clusterStopTripPayPolicy(basePolicy, input.fees.clusterStop.pickupMeters) : basePolicy;
   const tripPay = tripPayPolicy ? calculateRiderTripPay(tripPayPolicy, {
     pickupMeters: tripPayPolicy.expectedPickupMeters,
-    dropMeters: Math.round(Math.max(0, Number(input.fees.distanceKm ?? 0)) * 1_000),
+    dropMeters: input.fees.clusterStop ? 0 : Math.round(Math.max(0, Number(input.fees.distanceKm ?? 0)) * 1_000),
     waitMinutes: 0,
     minuteOfDay: minuteOfDayInTimeZone(input.now, input.control.cities[cityKey]?.timezone ?? "Asia/Kolkata"),
   }) : null;

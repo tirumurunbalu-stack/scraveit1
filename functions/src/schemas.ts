@@ -45,6 +45,31 @@ export const createOrderSchema = createOrderBaseSchema.extend({
   }
 });
 
+// A cluster order: one checkout across restaurants in one area (services/clusterOrders.ts). Each
+// part becomes an order with key `${idempotencyKey}-c${n}`, so the key leaves room for that.
+const clusterPartSchema = z.object({
+  restaurantId: identifier,
+  items: z.array(cartLineSchema).min(1).max(MAX_CART_LINES),
+}).strict();
+
+export const clusterPreviewSchema = z.object({
+  parts: z.array(clusterPartSchema).min(2).max(5),
+  addressId: identifier,
+  couponCode: z.string().trim().toUpperCase().max(30).default(""),
+  tip: z.number().finite().min(0).max(10_000).default(0),
+  useWallet: z.boolean().default(false),
+}).strict();
+
+export const clusterOrderSchema = clusterPreviewSchema.extend({
+  idempotencyKey: z.string().trim().min(16).max(70).regex(/^[A-Za-z0-9_-]+$/),
+  deliveryMode: z.literal("asap").default("asap"),
+  instructions: z.string().trim().max(500).default(""),
+  contactless: z.boolean().default(false),
+  // Paid at the door for now: the parts are separate orders, and one online payment for several
+  // orders isn't supported by the payment records yet.
+  paymentMethod: z.literal("cod").default("cod"),
+}).strict();
+
 export const recoverDeliveryOtpSchema = z.object({
   orderId: identifier,
 }).strict();
