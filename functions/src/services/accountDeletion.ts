@@ -1,7 +1,7 @@
 import {logger} from "firebase-functions";
 import {FieldValue} from "firebase-admin/firestore";
 import type {DocumentReference, DocumentSnapshot, QueryDocumentSnapshot} from "firebase-admin/firestore";
-import {auth, firestoreDb} from "../admin";
+import {auth, firestoreDb, storage} from "../admin";
 import {alertAdmins} from "./adminAlerts";
 import {accountParentRevoke} from "./accountAge";
 
@@ -11,7 +11,8 @@ import {accountParentRevoke} from "./accountAge";
  * privacyRequests/{id} for the signed-in person only (Firestore rules), and
  * the onPrivacyRequestCreated trigger runs this.
  *
- * Erased: the profile, addresses, preferences, date of birth, "About you",
+ * Erased: the profile, addresses (and the photos of the customer's place),
+ * preferences, date of birth, "About you",
  * Friends & chat (profile, username, friend code, friendships, both sides of
  * the chats, posts, stories and comments), parent links, squads hosted,
  * meal subscriptions, notification tokens, the order chats and the account
@@ -57,6 +58,18 @@ async function recursive(ref: DocumentReference): Promise<number> {
 const refsOf = (docs: QueryDocumentSnapshot[]) => docs.map((d) => d.ref);
 
 /** What keeps the account from being deleted right now, or "" if nothing. */
+/** Photos of the customer's gate or building, taken so riders can find the place. */
+async function deleteAddressPhotos(uid: string): Promise<number> {
+  try {
+    const [files] = await storage.bucket().getFiles({prefix: `addressPhotos/${uid}/`});
+    await Promise.all(files.map((file) => file.delete({ignoreNotFound: true})));
+    return files.length;
+  } catch (error) {
+    logger.warn("ACCOUNT_DELETION_ADDRESS_PHOTOS_FAILED", {uid, error: String(error)});
+    return 0;
+  }
+}
+
 export async function deletionBlocker(uid: string): Promise<string> {
   const [orders, meals, bookings] = await Promise.all([
     firestoreDb.collection("orders").where("customerId", "==", uid).get(),
@@ -169,6 +182,11 @@ export async function deleteCustomerAccount(uid: string, now = Date.now()): Prom
   // Posts and stories (their trigger removes the feed cards, comments and photo), then comments left on others' posts.
   const posts = await firestoreDb.collection("posts").where("from", "==", uid).get();
   for (const post of posts.docs) add("posts", await recursive(post.ref));
+  // Public reels (their trigger removes the video and picture) and the likes they gave.
+  const reelDocs = await firestoreDb.collection("reels").where("from", "==", uid).get();
+  for (const reel of reelDocs.docs) add("reels", await recursive(reel.ref));
+  const reelLikes = await firestoreDb.collectionGroup("likes").where("from", "==", uid).get();
+  add("reelLikes", await deleteDocs(refsOf(reelLikes.docs.filter((d) => d.ref.parent.parent?.parent.id === "reels"))));
   const comments = await firestoreDb.collectionGroup("comments").where("from", "==", uid).get();
   add("comments", await deleteDocs(refsOf(comments.docs)));
   const media = await firestoreDb.collection("postMedia").where("from", "==", uid).get();
@@ -180,6 +198,9 @@ export async function deleteCustomerAccount(uid: string, now = Date.now()): Prom
   add("highlights", await deleteDocs(refsOf(highlights.docs)));
   const storyPrefs = firestoreDb.collection("storyPrefs").doc(uid);
   if ((await storyPrefs.get()).exists) { await storyPrefs.delete(); add("storyPrefs", 1); }
+  // A delivery partner's planned shifts.
+  const shifts = firestoreDb.collection("riderShifts").doc(uid);
+  if ((await shifts.get()).exists) { await shifts.delete(); add("riderShifts", 1); }
 
   // Parent links: a parent leaving withdraws their approval; a child's own request goes.
   const children = await firestoreDb.collection("parentRequests").where("parentUid", "==", uid).get();
@@ -227,6 +248,7 @@ export async function deleteCustomerAccount(uid: string, now = Date.now()): Prom
   if (profile.username) own.push(firestoreDb.collection("usernames").doc(String(profile.username)));
   if (profile.code) own.push(firestoreDb.collection("friendCodes").doc(String(profile.code)));
   for (const ref of own) add("ownDocs", await recursive(ref));
+  add("addressPhotos", await deleteAddressPhotos(uid));
 
   // Consent record: kept as proof, marked withdrawn.
   await firestoreDb.collection("privacyConsents").doc(`${uid}_customer`).set({withdrawnAt: now}, {merge: true}).catch(() => undefined);

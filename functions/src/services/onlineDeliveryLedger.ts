@@ -174,5 +174,6 @@ export async function persistOnlineOrderDeliveryLedger(
     occurredAt: Number(order.deliveredAt ?? order.updatedAt),
     paymentProvider: provider,
     providerTransactionId,
+    ...(order.selfDelivery === true ? {storeDelivered: true} : {}),
   }), database);
 }

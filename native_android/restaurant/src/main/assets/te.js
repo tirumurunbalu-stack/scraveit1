@@ -1,5 +1,5 @@
 /*
- * Telugu for the Scraveit Restaurant, Grocery and Dairy apps.
+ * Telugu for the Scraveit Restaurant, Grocery, Dairy and Health care apps.
  *
  * The screens are built in English. When the owner picks Telugu, this swaps
  * every on-screen English phrase it knows for its Telugu version as screens
@@ -15,6 +15,37 @@
   "use strict";
   var LANG_KEY = "scraveit.store.lang";
   var TE = {
+"8 am to 10 pm": "ఉదయం 8 నుంచి రాత్రి 10",
+"8 am to 11 pm": "ఉదయం 8 నుంచి రాత్రి 11",
+"9 am to 9 pm": "ఉదయం 9 నుంచి రాత్రి 9",
+"Add a photo of the drug licence": "డ్రగ్ లైసెన్స్ ఫోటో జోడించండి",
+"Add your drug licence number": "మీ డ్రగ్ లైసెన్స్ నంబర్ జోడించండి",
+"Add your pharmacy name": "మీ ఫార్మసీ పేరు పెట్టండి",
+"As printed on the licence": "లైసెన్స్‌పై ఉన్నట్లే",
+"Baby care": "బేబీ కేర్",
+"Cold and cough": "జలుబు, దగ్గు",
+"Confirm you'll list only items that need no prescription": "ప్రిస్క్రిప్షన్ అవసరం లేని వస్తువులు మాత్రమే పెడతానని నిర్ధారించండి",
+"Drug licence": "డ్రగ్ లైసెన్స్",
+"Drug licence added": "డ్రగ్ లైసెన్స్ జోడించబడింది",
+"Drug licence number": "డ్రగ్ లైసెన్స్ నంబర్",
+"Everyday": "రోజువారీ",
+"FSSAI (optional)": "FSSAI (అవసరమైతేనే)",
+"First aid": "ప్రథమ చికిత్స",
+"Health care": "హెల్త్ కేర్",
+"I'll list only items that need no prescription": "ప్రిస్క్రిప్షన్ అవసరం లేని వస్తువులు మాత్రమే పెడతాను",
+"Medical store": "మెడికల్ స్టోర్",
+"No Schedule H, H1 or X medicines. Customers can't upload prescriptions on Scraveit.": "షెడ్యూల్ H, H1, X మందులు వద్దు. Scraveitలో కస్టమర్లు ప్రిస్క్రిప్షన్ అప్‌లోడ్ చేయలేరు.",
+"Only if you sell food such as baby food or nutrition drinks.": "బేబీ ఫుడ్, న్యూట్రిషన్ డ్రింక్స్ లాంటి ఆహారం అమ్మితేనే.",
+"Open your pharmacy and take orders": "మీ ఫార్మసీ తెరిచి ఆర్డర్లు తీసుకోండి",
+"Pharmacies": "ఫార్మసీలు",
+"Pharmacy": "ఫార్మసీ",
+"Pharmacy name": "ఫార్మసీ పేరు",
+"Register your pharmacy": "మీ ఫార్మసీని నమోదు చేయండి",
+"Surgical store": "సర్జికల్ స్టోర్",
+"Tell us about your pharmacy": "మీ ఫార్మసీ గురించి చెప్పండి",
+"Women care": "మహిళల సంరక్షణ",
+"Your pharmacy": "మీ ఫార్మసీ",
+"Your retail drug licence (Form 20 and 21).": "మీ రిటైల్ డ్రగ్ లైసెన్స్ (ఫారం 20, 21).",
 "1 hour": "1 గంట",
 "1. Scraveit checks your documents. 2. We confirm your commission (standard rate 30%). 3. You sign the partner agreement with Aadhaar eSign, in the app. 4. You go live.": "1. Scraveit మీ పత్రాలు చెక్ చేస్తుంది. 2. మీ కమిషన్ నిర్ణయిస్తాం (సాధారణ రేటు 30%). 3. యాప్‌లోనే ఆధార్ ఈ-సైన్‌తో పార్ట్‌నర్ అగ్రిమెంట్‌పై సంతకం చేస్తారు. 4. మీరు లైవ్ అవుతారు.",
 "11 am to 11 pm": "ఉదయం 11 నుంచి రాత్రి 11",
@@ -545,6 +576,9 @@
 "e.g. Gandhi Nagar": "ఉదా. గాంధీ నగర్",
 "e.g. Masala dosa": "ఉదా. Masala dosa",
 "e.g. The Waffle Spot": "ఉదా. The Waffle Spot",
+"e.g. Sri Lakshmi Kirana": "ఉదా. శ్రీ లక్ష్మి కిరాణా",
+"e.g. Sai Milk Point": "ఉదా. సాయి మిల్క్ పాయింట్",
+"e.g. Sri Sai Medicals": "ఉదా. శ్రీ సాయి మెడికల్స్",
 "for packed products": "ప్యాక్ వస్తువులకు",
 "last step": "చివరి దశ",
 "or": "లేదా",

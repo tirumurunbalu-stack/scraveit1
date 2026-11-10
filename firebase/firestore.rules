@@ -84,17 +84,15 @@ service cloud.firestore {
         (normalizedMemberGrants(restaurantId, permission) || legacyStaffGrants(restaurantId, permission));
     }
 
-    function isRestaurantOwnerStaff(restaurantId) {
-      return isRestaurantStaff(restaurantId, 'ownership') ||
-        (signedIn() && restaurantId != null && (
-          (exists(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)) &&
-            get(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)).data.active == true &&
-            get(/databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid)).data.role == 'restaurant_owner') ||
-          (exists(/databases/$(database)/documents/staff/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.restaurantId == restaurantId &&
-            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.active == true &&
-            get(/databases/$(database)/documents/staff/$(request.auth.uid)).data.role == 'restaurant_owner')
-        ));
+    // The outlet's owner only - not managers, whom memberGrants() lets
+    // through for every permission name.
+    function isRestaurantOwner(restaurantId) {
+      let member = /databases/$(database)/documents/restaurantMembers/$(restaurantId + '_' + request.auth.uid);
+      let legacy = /databases/$(database)/documents/staff/$(request.auth.uid);
+      return signedIn() && restaurantId != null && (
+        (exists(member) && get(member).data.active == true && get(member).data.role == 'restaurant_owner') ||
+        (exists(legacy) && get(legacy).data.restaurantId == restaurantId &&
+          get(legacy).data.active == true && get(legacy).data.role == 'restaurant_owner'));
     }
 
     function canManageRestaurant(restaurantId, permission) {
@@ -123,17 +121,18 @@ service cloud.firestore {
         // Removing them (the one-time clean-up) is the only allowed change.
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['payoutProfile'])
           || !('payoutProfile' in request.resource.data))
-        // Restaurant, grocery store or dairy is set by Scraveit at approval,
+        // Restaurant, grocery store, dairy or pharmacy is set by Scraveit at approval,
         // and so is the commission rate the restaurant agreed to.
-        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery', 'deliveryTaxTreatment', 'commissionBps', 'commissionTermMonths', 'agreementVersion', 'agreementSignedAt', 'fssaiNumber', 'fssaiKind', 'fssaiExpiresOn',
+        && (isPrivileged() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['storeType', 'selfDelivery', 'deliveryTaxTreatment', 'commissionBps', 'pricingModel', 'markupBps', 'commissionTermMonths', 'agreementVersion', 'agreementSignedAt', 'fssaiNumber', 'fssaiKind', 'fssaiExpiresOn', 'drugLicenceNumber', 'drugLicenceExpiresOn',
           'compositeTreatmentApproved', 'compositeTreatmentEffectiveFrom', 'principalSupplyTaxCode', 'principalSupplyType',
           'principalSupplyGstRateBps']));
     }
 
     // A restaurant's bank account, IFSC, UPI, PAN and GSTIN: only its
     // bank-permitted staff and Scraveit admins can read or change them.
+    // Managers run the outlet but don't see or change where the money goes.
     match /restaurantPayoutProfiles/{restaurantId} {
-      allow read, write: if canManageRestaurant(restaurantId, 'bank');
+      allow read, write: if isPrivileged() || isRestaurantOwner(restaurantId);
     }
 
     // menus/{restaurantId} is a document (not itself readable content - the
@@ -165,33 +164,45 @@ service cloud.firestore {
     // header comment). A membership record's own uid is its document id
     // suffix, not a stored field, so ownership reads compare on the id.
     // ---------------------------------------------------------------
+    // Owners add, change and remove staff through the restaurantStaff
+    // callables (services/restaurantStaff.ts), which make the sign-in and the
+    // membership together; a client write here could hand out any role.
     match /restaurantMembers/{memberKey} {
       allow read: if isPrivileged() ||
         memberKey == resource.data.restaurantId + '_' + request.auth.uid ||
-        isRestaurantOwnerStaff(resource.data.restaurantId);
-      allow write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+        isRestaurantOwner(resource.data.restaurantId);
+      allow write: if isPrivileged();
     }
 
     match /staff/{uid} {
-      allow read: if isPrivileged() || isOwnUser(uid) || isRestaurantOwnerStaff(resource.data.restaurantId);
-      allow write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+      allow read: if isPrivileged() || isOwnUser(uid) || isRestaurantOwner(resource.data.restaurantId);
+      allow write: if isPrivileged();
     }
 
+    // Old "ask Scraveit to add staff" requests; owners now add staff themselves.
     match /restaurantStaffInvites/{inviteId} {
-      allow read, write: if isPrivileged() || isRestaurantOwnerStaff(resource.data.restaurantId);
+      allow read: if isPrivileged() || isRestaurantOwner(resource.data.restaurantId);
+      allow write: if isPrivileged();
     }
 
-    // Restaurant applications use the applicant's uid; grocery and dairy
-    // applications use "<uid>_grocery" / "<uid>_dairy" with a matching storeType.
+    // Retry guard for createRestaurantStaff. Server only.
+    match /restaurantStaffRequests/{requestId} {
+      allow read, write: if false;
+    }
+
+    // Restaurant applications use the applicant's uid; grocery, dairy and
+    // pharmacy (Health care) applications use "<uid>_grocery" / "<uid>_dairy" /
+    // "<uid>_pharmacy" with a matching storeType.
     match /restaurantApplications/{appId} {
       allow read: if isPrivileged() || (signedIn() &&
-        appId in [request.auth.uid, request.auth.uid + '_grocery', request.auth.uid + '_dairy']);
+        appId in [request.auth.uid, request.auth.uid + '_grocery', request.auth.uid + '_dairy', request.auth.uid + '_pharmacy']);
       allow create: if signedIn() && request.resource.data.uid == request.auth.uid
         && !request.resource.data.keys().hasAny(['terms', 'agreement', 'reviewedAt', 'reviewedBy', 'restaurantId', 'approvedAt'])
         && request.resource.data.get('status', 'submitted') in ['draft', 'submitted'] && (
         (appId == request.auth.uid && request.resource.data.get('storeType', 'restaurant') == 'restaurant')
         || (appId == request.auth.uid + '_grocery' && request.resource.data.storeType == 'grocery')
-        || (appId == request.auth.uid + '_dairy' && request.resource.data.storeType == 'dairy'));
+        || (appId == request.auth.uid + '_dairy' && request.resource.data.storeType == 'dairy')
+        || (appId == request.auth.uid + '_pharmacy' && request.resource.data.storeType == 'pharmacy'));
       // The applicant fills and edits their own application until it is
       // approved; the agreed terms, the signed agreement and the review are
       // written only by Scraveit (Admin app or Cloud Functions).
@@ -255,6 +266,7 @@ service cloud.firestore {
         || canManageRestaurant(resource.data.restaurantId, 'orders')
         || canManageRestaurant(resource.data.restaurantId, 'handover')
         || canManageRestaurant(resource.data.restaurantId, 'tracking')
+        || canManageRestaurant(resource.data.restaurantId, 'analytics')
         // Friends in a squad order follow it on their own phones (read only).
         || (signedIn() && resource.data.get('squadMemberUids', []) is list
             && request.auth.uid in resource.data.get('squadMemberUids', []));
@@ -274,7 +286,8 @@ service cloud.firestore {
         || (isApprovedRider() && resource.data.riderId == request.auth.uid)
         || canManageRestaurant(resource.data.restaurantId, 'orders')
         || canManageRestaurant(resource.data.restaurantId, 'handover')
-        || canManageRestaurant(resource.data.restaurantId, 'tracking');
+        || canManageRestaurant(resource.data.restaurantId, 'tracking')
+        || canManageRestaurant(resource.data.restaurantId, 'analytics');
       allow write: if isPrivileged(); // Cloud Functions only (orderProjection.ts).
     }
 
@@ -358,6 +371,12 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avatar', 'avatarUpdatedAt'])
         && request.resource.data.avatar in ['bloom', 'lilac', 'mint', 'classic', 'midnight', 'forest', 'blue']
         && request.resource.data.avatarUpdatedAt is int;
+      // A rider can fix their own mobile number (and nothing else) from Profile.
+      allow update: if isOwnUser(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['phone', 'updatedAt'])
+        && request.resource.data.phone is string
+        && request.resource.data.phone.matches('^[6-9][0-9]{9}$')
+        && request.resource.data.updatedAt is int;
       allow update: if isPrivileged() || (
         isOwnUser(uid)
         && request.resource.data.status == 'submitted'
@@ -369,7 +388,9 @@ service cloud.firestore {
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['taxClassification',
           'legalEntityType', 'panEntityType', 'panVerified', 'riderGstRegistered', 'riderGstin', 'riderRegistrationLiable',
           // Identity results are written only by the verification functions.
-          'identity', 'aadhaarLast4', 'identityConsentVersion', 'identityConsentAt'])
+          'identity', 'aadhaarLast4', 'identityConsentVersion', 'identityConsentAt',
+          // The Play review account flag skips the login face scan; admin only.
+          'playReviewAccount'])
         // Who referred a rider can be set once and never switched later (the
         // referral itself is frozen server-side in riderReferrals/{uid}).
         && (!('referredByCode' in resource.data)
@@ -390,6 +411,19 @@ service cloud.firestore {
 
     match /riderDocuments/{uid} {
       allow read, write: if isPrivileged() || isOwnUser(uid);
+    }
+
+    // Shifts a delivery partner plans to work: {days: {"YYYY-MM-DD": [slotId, ...]}}.
+    // A plan only; dispatch and pay never read it.
+    match /riderShifts/{riderId} {
+      allow read: if isPrivileged() || isOwnUser(riderId);
+      allow create, update: if isOwnUser(riderId) && isApprovedRider()
+        && request.resource.data.keys().hasOnly(['riderId', 'days', 'updatedAt'])
+        && request.resource.data.riderId == riderId
+        && request.resource.data.days is map
+        && request.resource.data.days.size() <= 8
+        && request.resource.data.updatedAt is int;
+      allow delete: if isPrivileged() || isOwnUser(riderId);
     }
 
     // Still RTDB-authoritative (native apps write raw GPS presence directly
@@ -440,6 +474,71 @@ service cloud.firestore {
     match /localAds/{adId} {
       allow read: if true;
       allow write: if isPrivileged();
+    }
+
+    // Top placement (Ad) that a store paid for: which store is listed first in
+    // which city, from when to when. Public so the customer app can sort and
+    // label it. Bookings, prices paid and the per-day slot counts stay
+    // server-only; all of it is written by the sponsored-listing callables.
+    match /sponsoredListings/{bookingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /sponsoredBookings/{bookingId} {
+      allow read, write: if false;
+    }
+    // Learning (functions/src/services/learning.ts). All of it is written by Cloud Functions only.
+    // A customer reads their own taste profile (the app ranks "For you" and picks brand ads with
+    // it); signed-in customers read their city's ranking memory (the app samples from it);
+    // restaurants read their own insights; staff read the models and the supervisor's reports.
+    match /customerInterests/{uid} {
+      allow read: if isPrivileged() || isOwnUser(uid);
+      allow write: if false;
+    }
+    match /rankModels/{cityKey} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+    match /restaurantInsights/{restaurantId} {
+      allow read: if canManageRestaurant(restaurantId, 'menu') || canManageRestaurant(restaurantId, 'orders')
+        || canManageRestaurant(restaurantId, 'analytics');
+      allow write: if false;
+    }
+    match /mlReports/{reportId} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
+    match /mlModels/{modelId} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
+    match /mlSamples/{orderId} {
+      allow read, write: if false;
+    }
+    match /rankDaily/{dayId} {
+      allow read, write: if false;
+    }
+    match /adEvents/{eventId} {
+      allow read, write: if false;
+    }
+    match /adStatsDaily/{dayId} {
+      allow read, write: if false;
+    }
+    match /adConversions/{orderId} {
+      allow read, write: if false;
+    }
+    match /brandAdStatsDaily/{dayId} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
+    match /sponsoredSlotDays/{slotId} {
+      allow read, write: if false;
+    }
+
+    // TDS a restaurant deducted on SCRAVEIT's commission, sent for refund.
+    // Read and written only through the TDS-claim callables.
+    match /tdsCommissionClaims/{claimId} {
+      allow read, write: if false;
     }
 
     match /customerBroadcasts/{id} {
@@ -622,6 +721,33 @@ service cloud.firestore {
               && e.epk is string && e.epk.size() == 88 && e.se is int && e.ss is string && e.ss.size() <= 120
               && e.w is list && e.w.size() >= 1 && e.w.size() <= 4));
     }
+    // Typing: each friend in an accepted chat marks only themself as typing; only the two of them read it.
+    match /chats/{pairId}/typing/{uid} {
+      function typingPair() { return get(/databases/$(database)/documents/friendships/$(pairId)).data; }
+      allow read: if request.auth != null && request.auth.uid in typingPair().members && typingPair().status == "accepted";
+      allow create, update: if isOwnUser(uid) && request.auth.uid in typingPair().members && typingPair().status == "accepted"
+        && request.resource.data.keys().hasOnly(["at"]) && request.resource.data.at == request.time;
+      allow delete: if isOwnUser(uid);
+    }
+    // Activity status ("Active now"): off until the person turns it on, never for under-18s
+    // (DPDP Act: no tracking of children), and readable only by an accepted friend who shares theirs too.
+    match /presence/{uid} {
+      function presencePair() {
+        return request.auth.uid < uid ? request.auth.uid + "_" + uid : uid + "_" + request.auth.uid;
+      }
+      function myPresence() { return /databases/$(database)/documents/presence/$(request.auth.uid); }
+      allow read: if request.auth != null && (request.auth.uid == uid || (
+        resource.data.show == true
+        && exists(/databases/$(database)/documents/friendships/$(presencePair()))
+        && get(/databases/$(database)/documents/friendships/$(presencePair())).data.status == "accepted"
+        && exists(myPresence()) && get(myPresence()).data.show == true));
+      allow create, update: if isOwnUser(uid)
+        && ((request.resource.data.keys().hasOnly(["show", "at"]) && request.resource.data.show == true
+              && request.resource.data.at == request.time
+              && get(/databases/$(database)/documents/chatProfiles/$(uid)).data.get("minor", false) != true)
+            || (request.resource.data.keys().hasOnly(["show"]) && request.resource.data.show == false));
+      allow delete: if isOwnUser(uid);
+    }
     match /chats/{pairId}/messages/{messageId} {
       function pair() { return get(/databases/$(database)/documents/friendships/$(pairId)).data; }
       function me() { return get(/databases/$(database)/documents/chatProfiles/$(request.auth.uid)).data; }
@@ -632,7 +758,10 @@ service cloud.firestore {
       allow read: if request.auth != null && (isPrivileged() || request.auth.uid in pair().members);
       allow create: if request.auth != null
         && request.auth.uid in pair().members && pair().status == "accepted" && mayChat()
-        && request.resource.data.keys().hasOnly(["from", "text", "card", "at", "e2e"])
+        && request.resource.data.keys().hasOnly(["from", "text", "card", "at", "e2e", "replyTo"])
+        // A reply names the earlier message's id only; its words stay in that message (and its lock).
+        && (!("replyTo" in request.resource.data) || (request.resource.data.replyTo is string
+              && request.resource.data.replyTo.size() > 0 && request.resource.data.replyTo.size() <= 64))
         && request.resource.data.from == request.auth.uid
         && request.resource.data.at == request.time
         && request.resource.data.text is string && request.resource.data.text.size() <= 1000
@@ -771,6 +900,37 @@ service cloud.firestore {
       allow read: if request.auth != null && request.auth.uid == uid;
       allow write: if false;
     }
+    // Public reels. Only the server creates them (it checks the poster's age, the video and a daily
+    // limit). Anyone signed in reads a live reel; the poster also sees their own while it is checked.
+    match /reels/{reelId} {
+      function likeDoc() { return /databases/$(database)/documents/reels/$(reelId)/likes/$(request.auth.uid); }
+      allow read: if request.auth != null && (resource.data.status == "live" || resource.data.from == request.auth.uid || isPrivileged());
+      allow create: if false;
+      // A like or unlike moves likeCount by exactly one, together with the person's own like record.
+      allow update: if request.auth != null && resource.data.status == "live"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["likeCount"])
+        && ((request.resource.data.likeCount == resource.data.likeCount + 1 && !exists(likeDoc()) && existsAfter(likeDoc()))
+          || (request.resource.data.likeCount == resource.data.likeCount - 1 && exists(likeDoc()) && !existsAfter(likeDoc())));
+      allow delete: if request.auth != null && resource.data.from == request.auth.uid;
+      match /likes/{uid} {
+        function reelNow() { return get(/databases/$(database)/documents/reels/$(reelId)).data; }
+        function reelAfter() { return getAfter(/databases/$(database)/documents/reels/$(reelId)).data; }
+        allow read: if isOwnUser(uid);
+        allow create: if isOwnUser(uid) && reelNow().status == "live"
+          && request.resource.data.keys().hasOnly(["from", "at"]) && request.resource.data.from == uid && request.resource.data.at == request.time
+          && reelAfter().likeCount == reelNow().likeCount + 1;
+        allow delete: if isOwnUser(uid) && reelAfter().likeCount == reelNow().likeCount - 1;
+      }
+      // Reports go through the server (reportReel); only admins read them.
+      match /reports/{uid} {
+        allow read: if isPrivileged();
+        allow write: if false;
+      }
+    }
+    match /reelModeration/{entry} {
+      allow read: if isPrivileged();
+      allow write: if false;
+    }
     match /posts/{postId} {
       allow read: if request.auth != null && (isPrivileged() || resource.data.from == request.auth.uid || inMyFeed(postId));
       // A story may also go to Close Friends only ("to"), be a video (its clip in Storage,
@@ -900,7 +1060,7 @@ service cloud.firestore {
     // themselves can give it, only for themselves, and only with the fields
     // the apps send; admins can read it as proof of consent.
     match /privacyConsents/{consentId} {
-      allow read: if isPrivileged() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow read: if isPrivileged() || (signedIn() && consentId in [request.auth.uid + '_customer', request.auth.uid + '_store', request.auth.uid + '_rider']);
       allow create, update: if isOwnUser(request.resource.data.uid)
         && consentId == request.resource.data.uid + '_' + request.resource.data.audience
         && request.resource.data.audience in ['customer', 'store', 'rider']
@@ -943,7 +1103,8 @@ service cloud.firestore {
     }
 
     match /restaurantLoad/{restaurantId} {
-      allow read: if isPrivileged() || canManageRestaurant(restaurantId, 'orders');
+      // Approved riders see live order counts only, for the zone map's busy pins.
+      allow read: if isPrivileged() || canManageRestaurant(restaurantId, 'orders') || isApprovedRider();
       allow write: if false; // Server-computed only.
     }
 

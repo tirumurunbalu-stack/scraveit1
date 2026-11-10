@@ -5,6 +5,9 @@ const db = new InMemoryFirestore();
 const authUsers = new Map<string, {customClaims?: Record<string, unknown>}>();
 const deleted: string[] = [];
 const alerts: string[] = [];
+// Storage: the files under each prefix, and the ones deleted.
+const storedFiles: string[] = [];
+const deletedFiles: string[] = [];
 
 vi.mock("../src/admin", () => ({
   firestoreDb: db,
@@ -15,7 +18,9 @@ vi.mock("../src/admin", () => ({
     },
     deleteUser: async (uid: string) => { deleted.push(uid); authUsers.delete(uid); },
   },
-  storage: {}, messaging: {}, db: {},
+  storage: {bucket: () => ({getFiles: async ({prefix}: {prefix: string}) => [storedFiles.filter((name) => name.startsWith(prefix))
+    .map((name) => ({delete: async () => { deletedFiles.push(name); }}))]})},
+  messaging: {}, db: {},
 }));
 vi.mock("../src/services/adminAlerts", () => ({
   alertAdmins: async (_key: string, title: string) => { alerts.push(title); },
@@ -28,6 +33,7 @@ const A = "custA", B = "custB", CHILD = "kidC";
 function seedWorld(): void {
   for (const path of db.paths()) db.read(path) && void db.recursiveDelete(db.doc(path));
   authUsers.clear(); deleted.length = 0; alerts.length = 0;
+  storedFiles.splice(0, storedFiles.length, `addressPhotos/${A}/place_1.jpg`, `addressPhotos/${B}/place_2.jpg`); deletedFiles.length = 0;
   for (const uid of [A, B, CHILD]) authUsers.set(uid, {});
   db.seed(`users/${A}`, {name: "Asha", email: "asha@example.com", phone: "9000000001"});
   db.seed(`users/${A}/addresses/home`, {address: "12 Balaji Nagar", lat: 14.4, lng: 79.9});
@@ -78,6 +84,12 @@ describe("deleting a customer account", () => {
       expect(db.read(path), path).toBeNull();
     }
     expect(deleted).toEqual([A]);
+  });
+
+  it("deletes the photos of the customer's place, and only theirs", async () => {
+    const result = await deleteCustomerAccount(A, 1000);
+    expect(deletedFiles).toEqual([`addressPhotos/${A}/place_1.jpg`]);
+    expect(result.counts.addressPhotos).toBe(1);
   });
 
   it("keeps the order for tax law with the contact details removed", async () => {

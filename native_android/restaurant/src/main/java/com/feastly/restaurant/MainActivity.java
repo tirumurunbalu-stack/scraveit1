@@ -126,7 +126,8 @@ public class MainActivity extends ComponentActivity {
     settings.setAllowUniversalAccessFromFileURLs(false);
     settings.setJavaScriptCanOpenWindowsAutomatically(false);
     settings.setSupportMultipleWindows(false);
-    settings.setMediaPlaybackRequiresUserGesture(true);
+    // The bundled "Your order is getting late" reminder plays without a tap.
+    settings.setMediaPlaybackRequiresUserGesture(false);
     settings.setSaveFormData(false);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
       settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
@@ -177,7 +178,7 @@ public class MainActivity extends ComponentActivity {
 
     FrameLayout splash = new FrameLayout(this);
     ImageView logo = new ImageView(this);
-    // This app's own icon (orange cloche for Restaurant, green for Grocery, blue for Dairy),
+    // This app's own icon (orange cloche for Restaurant, green for Grocery, blue for Dairy, violet for Health care),
     // drawn in the phone's icon shape, so the loading screen matches the home-screen icon.
     logo.setImageResource(com.feastly.restaurant.R.mipmap.ic_launcher);
     logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -189,7 +190,7 @@ public class MainActivity extends ComponentActivity {
     splash.addView(logo, logoParams);
 
     TextView title = new TextView(this);
-    // The logo spells out Scraveit; the line under it names this app (Restaurant, Grocery or Dairy).
+    // The logo spells out Scraveit; the line under it names this app (Restaurant, Grocery, Dairy or Health care).
     String storeKind = getString(R.string.app_name).replace("Scraveit", "").trim().toUpperCase(java.util.Locale.ROOT);
     title.setText(storeKind);
     title.setTextColor(getColor(com.feastly.restaurant.R.color.splash_title));
@@ -202,7 +203,8 @@ public class MainActivity extends ComponentActivity {
     splash.addView(title, titleParams);
 
     TextView tag = new TextView(this);
-    tag.setText("DAIRY".equals(storeKind) ? "RUN YOUR DAIRY" : "GROCERY".equals(storeKind) ? "RUN YOUR STORE" : "RUN YOUR RESTAURANT");
+    tag.setText("DAIRY".equals(storeKind) ? "RUN YOUR DAIRY" : "GROCERY".equals(storeKind) ? "RUN YOUR STORE"
+        : "HEALTH CARE".equals(storeKind) ? "RUN YOUR PHARMACY" : "RUN YOUR RESTAURANT");
     tag.setTextColor(getColor(com.feastly.restaurant.R.color.splash_tag));
     tag.setTextSize(9);
     tag.setGravity(Gravity.CENTER);

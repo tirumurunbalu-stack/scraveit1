@@ -1,0 +1,2832 @@
+{
+ "Spicy Box": {
+  "cuisines": [
+   "Fried Chicken",
+   "Burgers",
+   "Fast Food"
+  ],
+  "items": [
+   {
+    "category": "Grilled Wings",
+    "name": "6 Spicy Grill Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Grilled Wings",
+    "name": "6 BBQ Grill Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Grilled Wings",
+    "name": "6 Lemon Grill Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Grilled Wings",
+    "name": "6 Schezwan Grill Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Grilled Wings",
+    "name": "6 Creamy Grill Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 Lemon Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 Fire Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 Schezwan Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 Chilly Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 Curry Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Saucy Wings",
+    "name": "6 BBQ Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Curry & 3 BBQ Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Fiery & 3 Crispy Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Fiery & 3 Lemon Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Crispy & 3 BBQ Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Crispy & 3 Lemon Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "3/3 Wings",
+    "name": "3 Crispy & 3 Creamy Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "5 Wings",
+    "price": 160,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "6 Trio Wings",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "4 Crispy Strips",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "4 Lemon Strips",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "4 Fire Strips",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Box",
+    "name": "Trio Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": "Crispy, firey and lemon chicken popcorn"
+   },
+   {
+    "category": "Crispy Box",
+    "name": "Creamy Pops",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Crispy Box",
+    "name": "Box 1",
+    "price": 250,
+    "diet": "nonveg",
+    "description": "1 pc chicken leg, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Crispy Box",
+    "name": "Box 2",
+    "price": 230,
+    "diet": "nonveg",
+    "description": "3 pcs wings, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Crispy Box",
+    "name": "Box 3",
+    "price": 280,
+    "diet": "nonveg",
+    "description": "2 chicken strips, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Crispy Box",
+    "name": "Box 4",
+    "price": 270,
+    "diet": "nonveg",
+    "description": "Mini chicken popcorn, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Firey Box",
+    "name": "Box 5",
+    "price": 260,
+    "diet": "nonveg",
+    "description": "1 pc firey chicken leg, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Firey Box",
+    "name": "Box 6",
+    "price": 270,
+    "diet": "nonveg",
+    "description": "3 pcs firey wings, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Firey Box",
+    "name": "Box 7",
+    "price": 280,
+    "diet": "nonveg",
+    "description": "2 firey chicken strips, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Firey Box",
+    "name": "Box 8",
+    "price": 280,
+    "diet": "nonveg",
+    "description": "Firey chicken popcorn, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Creamy Box",
+    "name": "Box 9",
+    "price": 260,
+    "diet": "nonveg",
+    "description": "1 pc creamy chicken leg, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Creamy Box",
+    "name": "Box 10",
+    "price": 270,
+    "diet": "nonveg",
+    "description": "3 pcs creamy wings, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Creamy Box",
+    "name": "Box 11",
+    "price": 280,
+    "diet": "nonveg",
+    "description": "2 creamy chicken strips, 4 rolls, drink"
+   },
+   {
+    "category": "Mini Creamy Box",
+    "name": "Box 12",
+    "price": 290,
+    "diet": "nonveg",
+    "description": "Creamy chicken popcorn, 4 rolls, drink"
+   },
+   {
+    "category": "Burger Box",
+    "name": "Box 13",
+    "price": 320,
+    "diet": "egg",
+    "description": "Egg burger, 4 rolls, drink"
+   },
+   {
+    "category": "Burger Box",
+    "name": "Box 14",
+    "price": 410,
+    "diet": "nonveg",
+    "description": "Chicken burger, 4 rolls, drink"
+   },
+   {
+    "category": "Burger Box",
+    "name": "Box 15",
+    "price": 420,
+    "diet": "nonveg",
+    "description": "Creamy burger, 4 rolls, drink"
+   },
+   {
+    "category": "Burger Box",
+    "name": "Box 16",
+    "price": 420,
+    "diet": "nonveg",
+    "description": "Creamy burger, 4 rolls, drink"
+   },
+   {
+    "category": "50-50 Wings",
+    "name": "5 Crispy - 5 Firey Wings",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "50-50 Wings",
+    "name": "5 Crispy - 5 Lemony Wings",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "50-50 Wings",
+    "name": "5 Crispy - 5 BBQ Wings",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "50-50 Wings",
+    "name": "5 Crispy - 5 Creamy Wings",
+    "price": 430,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Egg Burger",
+    "price": 200,
+    "diet": "egg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Chicken Burger",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Creamy Burger",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "BBQ Burger",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "15 Wings Bucket",
+    "price": 480,
+    "diet": "nonveg",
+    "description": "Chicken wings 15 pcs, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "6 Strips Bucket",
+    "price": 440,
+    "diet": "nonveg",
+    "description": "Chicken strips 6 pcs, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "Pops & Coke",
+    "price": 550,
+    "diet": "nonveg",
+    "description": "Chicken popcorn, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "4 Legs Bucket",
+    "price": 480,
+    "diet": "nonveg",
+    "description": "Chicken legs 4 pcs, Coke free"
+   },
+   {
+    "category": "Firey Buckets",
+    "name": "4 Fire Legs Bucket",
+    "price": 480,
+    "diet": "nonveg",
+    "description": "Fire legs 4 pcs, Coke free"
+   },
+   {
+    "category": "Firey Buckets",
+    "name": "10 Fire Wings Bucket",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Fire wings 10 pcs, Coke free"
+   },
+   {
+    "category": "Firey Buckets",
+    "name": "Fire Pops & Coke",
+    "price": 550,
+    "diet": "nonveg",
+    "description": "Fire chicken popcorn, Coke free"
+   },
+   {
+    "category": "Firey Buckets",
+    "name": "6 Fire Strips Bucket",
+    "price": 440,
+    "diet": "nonveg",
+    "description": "Fire strips 6 pcs, Coke free"
+   },
+   {
+    "category": "Creamy Buckets",
+    "name": "4 Creamy Legs",
+    "price": 480,
+    "diet": "nonveg",
+    "description": "Creamy legs 4 pcs, Coke free"
+   },
+   {
+    "category": "Creamy Buckets",
+    "name": "10 Creamy Wings",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Creamy wings 10 pcs, Coke free"
+   },
+   {
+    "category": "Creamy Buckets",
+    "name": "Creamy Pops & Coke",
+    "price": 550,
+    "diet": "nonveg",
+    "description": "Creamy chicken popcorn, Coke free"
+   },
+   {
+    "category": "Creamy Buckets",
+    "name": "6 Creamy Strips",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Creamy strips 6 pcs, Coke free"
+   },
+   {
+    "category": "Trio Buckets",
+    "name": "9 Trio Wings",
+    "price": 370,
+    "diet": "nonveg",
+    "description": "3 crispy + 3 firey + 3 lemon, Coke free"
+   },
+   {
+    "category": "Trio Buckets",
+    "name": "6 Trio Strips",
+    "price": 410,
+    "diet": "nonveg",
+    "description": "2 crispy + 2 firey + 2 lemon, Coke free"
+   },
+   {
+    "category": "Trio Buckets",
+    "name": "3 Trio Legs",
+    "price": 360,
+    "diet": "nonveg",
+    "description": "1 crispy + 1 firey + 1 lemon, Coke free"
+   },
+   {
+    "category": "Trio Buckets",
+    "name": "Mini Trio Chick Pops",
+    "price": 600,
+    "diet": "nonveg",
+    "description": "Firey + crispy + creamy, Coke free"
+   },
+   {
+    "category": "Mini Families",
+    "name": "Creamy Family",
+    "price": 370,
+    "diet": "nonveg",
+    "description": "2 creamy wings, mini popcorn, 4 rolls, Coke free"
+   },
+   {
+    "category": "Mini Families",
+    "name": "Crispy Family",
+    "price": 310,
+    "diet": "nonveg",
+    "description": "2 crispy wings, mini popcorn, 4 rolls, Coke free"
+   },
+   {
+    "category": "Mini Families",
+    "name": "Fire Family",
+    "price": 350,
+    "diet": "nonveg",
+    "description": "2 fire wings, mini popcorn, 4 rolls, Coke free"
+   },
+   {
+    "category": "Mini Families",
+    "name": "Lemon Family",
+    "price": 350,
+    "diet": "nonveg",
+    "description": "2 lemon wings, mini popcorn, 4 rolls, Coke free"
+   }
+  ]
+ },
+ "Sea Box": {
+  "cuisines": [
+   "Seafood",
+   "Fast Food"
+  ],
+  "items": [
+   {
+    "category": "Family Combo",
+    "name": "Fisherman Family",
+    "price": 1300,
+    "diet": "nonveg",
+    "description": "Fish & chips, fish pop, prawn pop, 3 pcs crab lollipop, Coke free"
+   },
+   {
+    "category": "Fish Buckets",
+    "name": "Fish Popcorn Bucket",
+    "price": 550,
+    "diet": "nonveg",
+    "description": "Fish popcorn, Coke free"
+   },
+   {
+    "category": "Fish Buckets",
+    "name": "8 Fish Strips Bucket",
+    "price": 590,
+    "diet": "nonveg",
+    "description": "Fish strips 8 pcs, Coke free"
+   },
+   {
+    "category": "Fish Buckets",
+    "name": "10 Fish Lollipops Bucket",
+    "price": 500,
+    "diet": "nonveg",
+    "description": "Fish lollipops, Coke free"
+   },
+   {
+    "category": "Fish Buckets",
+    "name": "Fish Family",
+    "price": 580,
+    "diet": "nonveg",
+    "description": "3 fish fingers, popcorn, fries, Coke free"
+   },
+   {
+    "category": "Prawn Buckets",
+    "name": "Prawns Pop Bucket",
+    "price": 550,
+    "diet": "nonveg",
+    "description": "Prawns popcorn, Coke free"
+   },
+   {
+    "category": "Prawn Buckets",
+    "name": "Creamy Prawns Bucket",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Fried prawns, Coke free"
+   },
+   {
+    "category": "Prawn Buckets",
+    "name": "15 Prawns Lollipops Bucket",
+    "price": 430,
+    "diet": "nonveg",
+    "description": "Prawn lollipops, Coke free"
+   },
+   {
+    "category": "Prawn Buckets",
+    "name": "Prawns Family",
+    "price": 580,
+    "diet": "nonveg",
+    "description": "3 crab lollipop, popcorn, fries, Coke free"
+   },
+   {
+    "category": "Fish Snacks",
+    "name": "5 Fish Sheek Kebab",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fish Snacks",
+    "name": "20 Fish Moons",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fish Snacks",
+    "name": "5 Fish Sticks",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fish Snacks",
+    "name": "5 Fish Lollipops",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fish Snacks",
+    "name": "Creamy Fish",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Prawn Snacks",
+    "name": "8 Pcs Prawn Lollipop",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Prawn Snacks",
+    "name": "6 Pcs Prawn Rolls",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Prawn Snacks",
+    "name": "6 Pcs Prawn Samosa",
+    "price": 260,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Prawn Snacks",
+    "name": "25 Pcs Prawn Balls",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Prawn Snacks",
+    "name": "15 Lobster Popcorn",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Strips",
+    "name": "4 Pcs Crispy Fish Strips",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Strips",
+    "name": "4 Pcs Fire Fish",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Strips",
+    "name": "4 Pcs Lemon Fish",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Mahi Fish Burger",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Fish Burger",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burgers",
+    "name": "Prawn Burger",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Fish & Chips",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Big fish, fries, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Fire Fish",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Fire fish, lemon, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Lemon Fish",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Lemon fish, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Seer Fish",
+    "price": 430,
+    "diet": "nonveg",
+    "description": "2 seer fish slices, Coke, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Salmon Slice",
+    "price": 650,
+    "diet": "nonveg",
+    "description": "Salmon slice, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Pepper Fish",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Pepper fish, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Pomfret",
+    "price": 1000,
+    "diet": "nonveg",
+    "description": "Pomfret, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Trio Fish",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "Crispy, firey, lemony, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Fried Lobster",
+    "price": 2000,
+    "diet": "nonveg",
+    "description": "Fried lobster, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "3 Trio Crab",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "3 pcs crispy crab, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "8 Crab Lollipop",
+    "price": 530,
+    "diet": "nonveg",
+    "description": "8 pcs crab lollipop, Coke, spicy dip, mayo dip"
+   },
+   {
+    "category": "Sea Specials",
+    "name": "Murrel Fish",
+    "price": 1100,
+    "diet": "nonveg",
+    "description": "Murrel fish, spicy dip, mayo dip"
+   }
+  ]
+ },
+ "Firezza": {
+  "cuisines": [
+   "Pizza",
+   "Fast Food"
+  ],
+  "items": [
+   {
+    "category": "Veg Pizza",
+    "name": "Cheese Pizza",
+    "price": 390,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Veg Pizza",
+    "name": "Veg Pizza",
+    "price": 410,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Veg Pizza",
+    "name": "Veg Shot Pizza",
+    "price": 410,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Veg Pizza",
+    "name": "Paneer Pizza",
+    "price": 410,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Veg Pizza",
+    "name": "Mushroom Pizza",
+    "price": 410,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Veg Pizza",
+    "name": "Babycorn Pizza",
+    "price": 410,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Tandoori Paneer Pizza",
+    "price": 420,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Egg Pizza",
+    "price": 420,
+    "diet": "egg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Cashewnut Pizza",
+    "price": 420,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Chicken Pizza",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Fish Pizza",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Crispy Pizza",
+    "name": "Prawn Pizza",
+    "price": 450,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Veg Shot Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Paneer Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Mushroom Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Chicken Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Fish Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Fire Pizza",
+    "name": "Fire Prawn Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Veg Shot Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Paneer Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Mushroom Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Chicken Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Fish Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "Lemon Pizza",
+    "name": "Lemon Prawn Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Veg Shot Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Paneer Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Mushroom Pizza",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Chicken Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Fish Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "BBQ Pizza",
+    "name": "BBQ Prawn Pizza",
+    "price": 470,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Cheese Pizza 50/50 (Crispy + Firey)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Veg Shot Pizza 50/50 (Crispy + Firey)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Paneer Pizza 50/50 (BBQ + Firey)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Mushroom Pizza 50/50 (Firey + BBQ)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Mushroom Pizza 50/50 (Crispy + Firey)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Babycorn Pizza 50/50 (Crispy + Firey)",
+    "price": 430,
+    "diet": "veg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Chicken Pizza 50/50 (Crispy + Firey)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Chicken Pizza 50/50 (BBQ + Firey)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Fish Pizza 50/50 (Crispy + Firey)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Fish Pizza 50/50 (Firey + BBQ)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Prawn Pizza 50/50 (Crispy + Firey)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   },
+   {
+    "category": "50/50 Pizzas",
+    "name": "Prawn Pizza 50/50 (Firey + BBQ)",
+    "price": 490,
+    "diet": "nonveg",
+    "description": "Coke free"
+   }
+  ]
+ },
+ "Popsters": {
+  "cuisines": [
+   "Snacks",
+   "Fast Food"
+  ],
+  "items": [
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Veg Popcorn",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Paneer Popcorn",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Mushroom Popcorn",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Chicken Popcorn",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Fish Popcorn",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Crispy Popcorn",
+    "name": "Crispy Prawn Popcorn",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Veg Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Paneer Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Mushroom Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Chicken Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Fish Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Popcorn",
+    "name": "Fire Prawn Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Veg Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Paneer Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Mushroom Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Chicken Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Fish Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemon Popcorn",
+    "name": "Lemon Prawn Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Veg Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Paneer Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Mushroom Popcorn",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Chicken Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Fish Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "BBQ Popcorn",
+    "name": "BBQ Prawn Popcorn",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   }
+  ]
+ },
+ "AromorA": {
+  "cuisines": [
+   "Fast Food",
+   "Continental"
+  ],
+  "items": [
+   {
+    "category": "Nest",
+    "name": "Veg Nest",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Nest",
+    "name": "Paneer Nest",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Nest",
+    "name": "Mushroom Nest",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Nest",
+    "name": "Chicken Nest",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Nest",
+    "name": "Fish Nest",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Nest",
+    "name": "Prawn Nest",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Veg Wrap",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Paneer Wrap",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Mushroom Wrap",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Chicken Wrap",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Fish Wrap",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Wrap",
+    "name": "Prawn Wrap",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Veg Burub",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Paneer Burub",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Mushroom Burub",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Chicken Burub",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Fish Burub",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Burub (Burger)",
+    "name": "Prawn Burub",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Veg Pyramid",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Paneer Pyramid",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Mushroom Pyramid",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Chicken Pyramid",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Fish Pyramid",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pyramid",
+    "name": "Prawn Pyramid",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Veg Pizzip",
+    "price": 350,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Paneer Pizzip",
+    "price": 350,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Mushroom Pizzip",
+    "price": 350,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Chicken Pizzip",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Fish Pizzip",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pizzip (Pizza)",
+    "name": "Prawn Pizzip",
+    "price": 390,
+    "diet": "nonveg",
+    "description": ""
+   }
+  ]
+ },
+ "Veg Box": {
+  "cuisines": [
+   "Pure Veg",
+   "Snacks",
+   "Fast Food"
+  ],
+  "pureVeg": true,
+  "items": [
+   {
+    "category": "Veg Families",
+    "name": "Veg Family",
+    "price": 280,
+    "diet": "veg",
+    "description": "2 corn samosa, 2 corn rolls, fries, Coke free"
+   },
+   {
+    "category": "Veg Families",
+    "name": "Paneer Family",
+    "price": 320,
+    "diet": "veg",
+    "description": "2 paneer samosa, paneer pops, fries, Coke free"
+   },
+   {
+    "category": "Veg Families",
+    "name": "Mushroom Family",
+    "price": 330,
+    "diet": "veg",
+    "description": "5 mini samosa, mushroom pops, fries, Coke free"
+   },
+   {
+    "category": "Veg Families",
+    "name": "Veg Super Family",
+    "price": 360,
+    "diet": "veg",
+    "description": "2 corn samosa, 2 corn rolls, 2 paneer samosa, fries, Coke free"
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "Fries",
+    "price": 110,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "Masala Fries",
+    "price": 150,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "10 Cheese Sticks",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "Veg Burger",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "Paneer Burger",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Burgers & Fries",
+    "name": "Mushroom Burger",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "6 Pizza Pockets",
+    "price": 240,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "10 Cheese Balls",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "7 Pizza Samosa",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "7 Veg Biscuits",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "12 Jalapeno Poppers",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Bites",
+    "name": "8 Onion Rings",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "15 Veg Wedges",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "8 Veg Strips",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "15 Veg Nuggets",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "6 Veg Bags",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "10 Veg Smiles",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Tasty",
+    "name": "7 Veg Tikkis",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "6 Corn Samosa",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "6 Schezwan Rolls",
+    "price": 180,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "4 Paneer Strips",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "6 Corn Rolls",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "6 Paneer Samosa",
+    "price": 180,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Crispy",
+    "name": "10 Mini Samosa",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Veg Buckets",
+    "name": "Corn Samosa Bucket",
+    "price": 330,
+    "diet": "veg",
+    "description": "Corn samosa 12 pcs, Coke free"
+   },
+   {
+    "category": "Veg Buckets",
+    "name": "Corn Rolls Bucket",
+    "price": 330,
+    "diet": "veg",
+    "description": "Corn rolls 12 pcs, Coke free"
+   },
+   {
+    "category": "Veg Buckets",
+    "name": "Pizza Pockets Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Pizza pockets 10 pcs, Coke free"
+   },
+   {
+    "category": "Veg Buckets",
+    "name": "Veg Popcorn Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Veg popcorn, fries, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "Fire Cheese Balls Bucket",
+    "price": 330,
+    "diet": "veg",
+    "description": "15 fire cheese balls, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "Mini Samosa Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Mini samosa 15 pcs, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "Mushroom Popcorn Bucket",
+    "price": 330,
+    "diet": "veg",
+    "description": "Mushroom popcorn, Coke free"
+   },
+   {
+    "category": "Crispy Buckets",
+    "name": "Paneer Samosa Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Paneer samosa 10 pcs, Coke free"
+   },
+   {
+    "category": "Fire Buckets",
+    "name": "Schezwan Rolls Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Schezwan rolls 10 pcs, Coke free"
+   },
+   {
+    "category": "Fire Buckets",
+    "name": "Paneer Popcorn Bucket",
+    "price": 350,
+    "diet": "veg",
+    "description": "Paneer popcorn, Coke free"
+   },
+   {
+    "category": "Fire Buckets",
+    "name": "Jalapeno Poppers Bucket",
+    "price": 330,
+    "diet": "veg",
+    "description": "Jalapeno poppers 30 pcs, Coke free"
+   },
+   {
+    "category": "Fire Buckets",
+    "name": "Veg Cheese Balls Bucket",
+    "price": 300,
+    "diet": "veg",
+    "description": "Cheese balls 15 pcs, fries, Coke free"
+   }
+  ]
+ },
+ "Momorio": {
+  "cuisines": [
+   "Momos",
+   "Chinese"
+  ],
+  "items": [
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Veg Momos (6 pcs)",
+    "price": 190,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Paneer Momos (6 pcs)",
+    "price": 190,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Mushroom Momos (6 pcs)",
+    "price": 190,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Chicken Momos (6 pcs)",
+    "price": 210,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Fish Momos (6 pcs)",
+    "price": 210,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Steamed Momos",
+    "name": "Steamed Prawn Momos (6 pcs)",
+    "price": 210,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Veg Momos (6 pcs)",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Paneer Momos (6 pcs)",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Mushroom Momos (6 pcs)",
+    "price": 200,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Chicken Momos (6 pcs)",
+    "price": 220,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Fish Momos (6 pcs)",
+    "price": 220,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Fried Momos",
+    "name": "Fried Prawn Momos (6 pcs)",
+    "price": 220,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Veg Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Paneer Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Mushroom Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Chicken Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Fish Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Firey Momos",
+    "name": "Firey Prawn Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Veg Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Paneer Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Mushroom Momos (6 pcs)",
+    "price": 210,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Chicken Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Fish Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Lemony Momos",
+    "name": "Lemony Prawn Momos (6 pcs)",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Veg Momos (6 pcs)",
+    "price": 230,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Paneer Momos (6 pcs)",
+    "price": 230,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Mushroom Momos (6 pcs)",
+    "price": 230,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Chicken Momos (6 pcs)",
+    "price": 240,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Fish Momos (6 pcs)",
+    "price": 240,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Creamy Momos",
+    "name": "Creamy Prawn Momos (6 pcs)",
+    "price": 240,
+    "diet": "nonveg",
+    "description": ""
+   }
+  ]
+ },
+ "Mixture Bandi": {
+  "cuisines": [
+   "Street Food",
+   "Chaat",
+   "Snacks"
+  ],
+  "items": [
+   {
+    "category": "Atukulu Mixture",
+    "name": "Veg Atukulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Atukulu Mixture",
+    "name": "Mushroom Atukulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Atukulu Mixture",
+    "name": "Paneer Atukulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Atukulu Mixture",
+    "name": "Chicken Atukulu Mixture",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Kerala Mixture",
+    "name": "Veg Kerala Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kerala Mixture",
+    "name": "Mushroom Kerala Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kerala Mixture",
+    "name": "Paneer Kerala Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kerala Mixture",
+    "name": "Chicken Kerala Mixture",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Borugulu Mixture",
+    "name": "Veg Borugulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Borugulu Mixture",
+    "name": "Mushroom Borugulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Borugulu Mixture",
+    "name": "Paneer Borugulu Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Borugulu Mixture",
+    "name": "Chicken Borugulu Mixture",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Feiry Bajji's (Onion Stuffed)",
+    "name": "Feiry Bajji Shots (5 pcs)",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Feiry Bajji's (Onion Stuffed)",
+    "name": "Veg Pocket Feiry Bajji (5 pcs)",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Feiry Bajji's (Onion Stuffed)",
+    "name": "Veg Samosa Feiry Bajji (5 pcs)",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Feiry Bajji's (Onion Stuffed)",
+    "name": "Paneer Samosa Feiry Bajji (5 pcs)",
+    "price": 160,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chit Chaats",
+    "name": "Veg Pops Chit Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chit Chaats",
+    "name": "Mushroom Chit Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chit Chaats",
+    "name": "Paneer Chit Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chit Chaats",
+    "name": "Chicken Chit Chaat",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Peanuts Mixture",
+    "name": "Tomato Peanuts Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Peanuts Mixture",
+    "name": "Carrot Peanuts Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Peanuts Mixture",
+    "name": "Mango Peanuts Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Peanuts Mixture",
+    "name": "Paneer Peanuts Mixture",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Mixture Salads",
+    "name": "Veg Mixture Salad",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Mixture Salads",
+    "name": "Mushroom Mixture Salad",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Mixture Salads",
+    "name": "Paneer Mixture Salad",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Mixture Salads",
+    "name": "Chicken Mixture Salad",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Corn Flakes Mixture",
+    "name": "Veg Corn Flakes Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Corn Flakes Mixture",
+    "name": "Mushroom Corn Flakes Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Corn Flakes Mixture",
+    "name": "Paneer Corn Flakes Mixture",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Corn Flakes Mixture",
+    "name": "Chicken Corn Flakes Mixture",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Kaju Mixture",
+    "name": "Kaju Mixture",
+    "price": 250,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kaju Mixture",
+    "name": "Mushroom Kaju Mixture",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kaju Mixture",
+    "name": "Paneer Kaju Mixture",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Kaju Mixture",
+    "name": "Chicken Kaju Mixture",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Dahi Chaats",
+    "name": "Veg Dahi Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Dahi Chaats",
+    "name": "Mushroom Dahi Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Dahi Chaats",
+    "name": "Paneer Dahi Chaat",
+    "price": 220,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Dahi Chaats",
+    "name": "Chicken Dahi Chaat",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   }
+  ]
+ },
+ "Salad Chaat.Co": {
+  "cuisines": [
+   "Salads",
+   "Chaat",
+   "Healthy"
+  ],
+  "items": [
+   {
+    "category": "Salads",
+    "name": "Veg Salad",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Paneer Salad",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Mushroom Salad",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Egg Salad",
+    "price": 270,
+    "diet": "egg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Chicken Salad",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Fish Salad",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Salads",
+    "name": "Prawn Salad",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Veg Chaat",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Paneer Chaat",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Mushroom Chaat",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Egg Chaat",
+    "price": 270,
+    "diet": "egg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Chicken Chaat",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Fish Chaat",
+    "price": 270,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chaats",
+    "name": "Prawn Chaat",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Veg Pita Bread",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Paneer Pita Bread",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Mushroom Pita Bread",
+    "price": 270,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Egg Pita Bread",
+    "price": 270,
+    "diet": "egg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Chicken Pita Bread",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Fish Pita Bread",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pita Breads",
+    "name": "Prawn Pita Bread",
+    "price": 280,
+    "diet": "nonveg",
+    "description": ""
+   }
+  ]
+ },
+ "Rice Wok": {
+  "cuisines": [
+   "Biryani",
+   "Andhra",
+   "Chinese"
+  ],
+  "items": [
+   {
+    "category": "Pickle Rice",
+    "name": "Chicken Pickle Rice",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pickle Rice",
+    "name": "Fish Pickle Rice",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pickle Rice",
+    "name": "Prawn Pickle Rice",
+    "price": 290,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pickle Rice",
+    "name": "Veg Pickle Rice",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pickle Rice",
+    "name": "Paneer Pickle Rice",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pickle Rice",
+    "name": "Mushroom Pickle Rice",
+    "price": 260,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Chicken Rice Box",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Fish Rice Box",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Prawn Rice Box",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Veg Rice Box",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Paneer Rice Box",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Rice Box",
+    "name": "Mushroom Rice Box",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Chicken Fried Rice",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Fish Fried Rice",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Prawn Fried Rice",
+    "price": 300,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Egg Fried Rice",
+    "price": 280,
+    "diet": "egg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Paneer Fried Rice",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pepper Fried Rice",
+    "name": "Mushroom Fried Rice",
+    "price": 280,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Chicken Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Fish Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Prawn Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Veg Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Paneer Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Pulao",
+    "name": "Gongura Mushroom Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Chicken Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Fish Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Prawn Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Veg Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Paneer Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Pulao",
+    "name": "Pandu Mirchi Mushroom Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Chicken Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Fish Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Prawn Pulao",
+    "price": 350,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Veg Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Paneer Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Pulao",
+    "name": "Chinta Thokku Mushroom Pulao",
+    "price": 300,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Biryani",
+    "name": "White Chicken Biryani Full",
+    "price": 400,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Biryanis",
+    "name": "Mini Chick Biryani",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Biryanis",
+    "name": "Mini Wings Biryani",
+    "price": 230,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Biryanis",
+    "name": "Mini Fish Strips Biryani",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Biryanis",
+    "name": "Mini Prawns Biryani",
+    "price": 250,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Mini Biryanis",
+    "name": "Mini Mushroom Biryani",
+    "price": 240,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Chicken Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Fish Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Prawn Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Veg Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Paneer Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Gongura Starters",
+    "name": "Gongura Mushroom Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Chicken Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Fish Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Prawn Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Veg Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Paneer Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Pandu Mirchi Starters",
+    "name": "Pandu Mirchi Mushroom Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Chicken Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Fish Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Prawn Starter",
+    "price": 320,
+    "diet": "nonveg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Veg Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Paneer Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   },
+   {
+    "category": "Chinta Thokku Starters",
+    "name": "Chinta Thokku Mushroom Starter",
+    "price": 290,
+    "diet": "veg",
+    "description": ""
+   }
+  ]
+ }
+}

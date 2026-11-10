@@ -8,6 +8,7 @@ import type {CatalogItem, CatalogRestaurant} from "../types";
 import {canManageRestaurantOrders} from "./authz";
 import {loadCustomerAddress} from "./catalog";
 import {createAuthoritativeOrder} from "./orders";
+import {markedUpPrice, markupBpsOf} from "../domain/markupPricing";
 
 /**
  * Daily meal plans (tiffin): a restaurant offers one dish as a lunch, dinner
@@ -107,6 +108,12 @@ async function loadRestaurantMenuItem(restaurantId: string, menuItemId: string):
 
 // ---------------------------------------------------------------- restaurant
 
+/** What a customer pays per meal: markup restaurants' prices plus the markup, GST included. */
+function customerPrice(restaurant: {pricingModel?: unknown; markupBps?: unknown}, price: number): number {
+  const bps = markupBpsOf(restaurant);
+  return bps === null ? price : markedUpPrice(price, bps);
+}
+
 export async function saveMealPlan(uid: string, token: DecodedIdToken, input: MealPlanInput, now = Date.now()) {
   if (!await canManageRestaurantOrders(uid, token, input.restaurantId)) {
     throw new DomainError("permission-denied", "Only this restaurant's staff can manage its meal plans.");
@@ -126,7 +133,7 @@ export async function saveMealPlan(uid: string, token: DecodedIdToken, input: Me
   const plan = {
     id: ref.id, restaurantId: input.restaurantId, restaurantName: String(restaurant.name ?? ""), area: String(r.area ?? restaurant.city ?? ""),
     city: String(restaurant.city ?? ""), name: input.name.trim().slice(0, 60), description: input.description.trim().slice(0, 240), meal: input.meal,
-    menuItemId: item.id, menuItemName: String(item.name ?? ""), price: Number(item.price ?? 0), veg: it.veg === true || it.isVeg === true,
+    menuItemId: item.id, menuItemName: String(item.name ?? ""), price: customerPrice(restaurant, Number(item.price ?? 0)), veg: it.veg === true || it.isVeg === true,
     imageUrl: String(it.imageUrl ?? it.image ?? ""), days: [...new Set(input.days)].sort(), windowStart: input.windowStart,
     windowEnd: input.windowEnd, weeklyMenu, maxPerDay: input.maxPerDay, active: input.active, updatedAt: now, updatedBy: uid,
     ...(input.planId ? {} : {createdAt: now}),
@@ -259,7 +266,8 @@ export async function placeDueMealOrders(now = Date.now()): Promise<{placed: num
           instructions: `Meal plan: ${String(plan.name ?? "")}`.slice(0, 500),
           paymentMethod: "cod",
         });
-        const {order} = await createAuthoritativeOrder(String(sub.customerId), input);
+        // Scheduled meals are placed ahead; a delivery partner is found as usual afterwards.
+        const {order} = await createAuthoritativeOrder(String(sub.customerId), input, {skipDeliveryPartnerCheck: true});
         await orderRef(firestoreDb, order.id).set({mealPlan: {planId: planDoc.id, subscriptionId: subDoc.id, date, name: String(plan.name ?? "")}}, {merge: true});
         await subDoc.ref.set({lastOrderDate: date, lastOrderId: order.id, delivered: Number(sub.delivered ?? 0) + 1, lastError: "", updatedAt: now}, {merge: true});
         placed++;

@@ -269,7 +269,8 @@ function hashKey(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function itemId(entityType: FinanceAutomationEntityType, entityId: string): string {
+/** Id of an entity's row in a weekly run (weeklyRuns/{periodKey}/items/{id}). */
+export function itemId(entityType: FinanceAutomationEntityType, entityId: string): string {
   return `${entityType}_${hashKey(`${entityType}:${entityId}`).slice(0, 24)}`;
 }
 

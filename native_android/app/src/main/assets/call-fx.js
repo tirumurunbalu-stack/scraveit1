@@ -103,34 +103,115 @@
     return { x: (vr.left - cr.left + (vr.width - dw) / 2) * k, y: (vr.top - cr.top + (vr.height - dh) / 2) * k, w: dw * k, h: dh * k };
   }
   const lerp = (a, b, k) => a + (b - a) * k;
+  // Which way the phone is held, from its motion sensor: world-up in the phone's own axes
+  // (x to its right edge, y to its top), as the sensor reports the push against gravity.
+  let gravity = null;
+  try { window.addEventListener("devicemotion", (e) => { const a = e.accelerationIncludingGravity; if (a && Number.isFinite(a.x) && Number.isFinite(a.y)) gravity = { x: a.x, y: a.y, at: performance.now() }; }, { passive: true }); } catch (_) { }
+  let held = null;
+  /**
+   * Quarter turns (clockwise) that stand a camera frame upright, guessing the person stands like
+   * the room around them; null when unsure (phone lying flat, no sensor). The app is held in
+   * portrait, so the phone's axes are the screen's; a mirrored (front) camera's frame is flipped
+   * left to right from what the screen shows.
+   */
+  function heldTurn(mirrored) {
+    const angle = (screen.orientation && screen.orientation.angle) || 0;
+    if (!gravity || angle || performance.now() - gravity.at > 1500) return (held = null);
+    const ux = mirrored ? -gravity.x : gravity.x, uy = -gravity.y;
+    // Tipped back nearly flat, the sensor can't tell which edge is up.
+    if (Math.hypot(ux, uy) < 2.5) return (held = null);
+    const deg = -90 - Math.atan2(uy, ux) * 57.3;
+    // Held near a diagonal, stay with the current turn until clearly past it.
+    if (held != null) { const off = ((deg - held * 90) % 360 + 540) % 360 - 180; if (Math.abs(off) < 60) return held; }
+    return (held = ((Math.round(deg / 90) % 4) + 4) % 4);
+  }
   /**
    * Follows the person in a video while an effect plays, in 0–1 video coordinates: their face and
    * eyes (for the glasses and where the show starts) and a soft cut-out mask (so beams go behind them).
+   * hint: optional, the turn heldTurn() gives for this camera.
    */
-  function personTracker(video) {
+  function personTracker(video, hint) {
     const st = { seg: null, finder: null, mask: null, segOk: false, head: null, face: null, eyes: null, faceAt: 0, last: 0, src: document.createElement("canvas"), out: document.createElement("canvas"), faceOut: document.createElement("canvas") };
     faceFinder().then(f => { st.finder = f; }).catch(() => { });
     segmenter().then(s => { st.seg = s; }).catch(() => { });
-    function readFace(res, w, h, now) {
+    // The phone may be held sideways. The face finder works on roughly upright faces, and it finds
+    // a face in a sideways or upside-down picture too, with eyes and mouth placed as if upright (its
+    // score barely tells them apart). So which way is up comes from how the phone is held (hint):
+    // the frame is turned that many quarter turns, looked at, and what it finds is turned back.
+    // st.turn is the turn used last; st.roll the head's tilt (0 upright, + clockwise) from the eye line.
+    st.turn = 0; st.roll = 0; st.up = { x: 0, y: -1 }; st.goodAt = 0; st.tryAt = 0; st.hint = hint || null;
+    const turned = document.createElement("canvas");
+    function look(src, w, h, q) {
+      let frame = src, sw = w, sh = h, back = (X, Y) => ({ x: X, y: Y });
+      if (q) {
+        sw = q % 2 ? h : w; sh = q % 2 ? w : h; frame = turned;
+        if (turned.width !== sw || turned.height !== sh) { turned.width = sw; turned.height = sh; }
+        const g = turned.getContext("2d"), th = q * Math.PI / 2, cs = Math.round(Math.cos(th)), sn = Math.round(Math.sin(th));
+        g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, sw, sh); g.translate(sw / 2, sh / 2); g.rotate(th); g.drawImage(src, -w / 2, -h / 2); g.setTransform(1, 0, 0, 1, 0, 0);
+        // Turned-frame pixels back to frame pixels: undo the turn about the two centres.
+        back = (X, Y) => { const dx = X - sw / 2, dy = Y - sh / 2; return { x: dx * cs + dy * sn + w / 2, y: -dx * sn + dy * cs + h / 2 }; };
+      }
+      const res = st.finder.detect(frame);
       let best = null;
-      for (const d of (res && res.detections) || []) { const b = d.boundingBox; if (b && d.keypoints && d.keypoints.length > 1 && (!best || b.width * b.height > best.boundingBox.width * best.boundingBox.height)) best = d; }
-      if (!best) { if (now - st.faceAt > 600) { st.face = null; st.eyes = null; st.parts = null; } return; }
-      const b = best.boundingBox, k = best.keypoints, k1 = st.face ? .5 : 1;
-      const face = { x: b.originX / w, y: b.originY / h, w: b.width / w, h: b.height / h };
-      // The eyes and mouth must sit where a face has them inside its box; if they don't (some phones'
-      // live feeds gave points well below the eyes), they're placed from the box instead.
-      const inBox = (p, y0, y1) => p && p.x > face.x - face.w * .15 && p.x < face.x + face.w * 1.15 && p.y > face.y + face.h * y0 && p.y < face.y + face.h * y1;
-      const good = k.length > 3 && inBox(k[0], .05, .6) && inBox(k[1], .05, .6) && inBox(k[3], .45, 1.05) && k[3].y > Math.max(k[0].y, k[1].y);
-      const P = (u, v) => ({ x: face.x + face.w * u, y: face.y + face.h * v });
-      const e0 = good ? k[0] : P(.3, .38), e1 = good ? k[1] : P(.7, .38), mo = good ? k[3] : P(.5, .76);
-      const eyes = { ax: e0.x, ay: e0.y, bx: e1.x, by: e1.y };
-      const parts = { mx: mo.x, my: mo.y, ex: e0.x, ey: e0.y };
-      status.points = good ? "face" : "box";
-      st.parts = parts && st.parts ? { mx: lerp(st.parts.mx, parts.mx, k1), my: lerp(st.parts.my, parts.my, k1), ex: lerp(st.parts.ex, parts.ex, k1), ey: lerp(st.parts.ey, parts.ey, k1) } : parts;
-      st.face = st.face ? { x: lerp(st.face.x, face.x, k1), y: lerp(st.face.y, face.y, k1), w: lerp(st.face.w, face.w, k1), h: lerp(st.face.h, face.h, k1) } : face;
-      st.eyes = st.eyes ? { ax: lerp(st.eyes.ax, eyes.ax, k1), ay: lerp(st.eyes.ay, eyes.ay, k1), bx: lerp(st.eyes.bx, eyes.bx, k1), by: lerp(st.eyes.by, eyes.by, k1) } : eyes;
+      for (const d of (res && res.detections) || []) { const b = d.boundingBox; if (b && d.keypoints && d.keypoints.length > 3 && (!best || b.width * b.height > best.boundingBox.width * best.boundingBox.height)) best = d; }
+      if (!best) return null;
+      const b = best.boundingBox, k = best.keypoints.map(p => ({ x: p.x * sw, y: p.y * sh }));
+      // The eyes and mouth must sit where an upright face has them inside its box; if they don't
+      // (some phones' live feeds gave points well below the eyes), they're placed from the box.
+      const inBox = (p, y0, y1) => p.x > b.originX - b.width * .15 && p.x < b.originX + b.width * 1.15 && p.y > b.originY + b.height * y0 && p.y < b.originY + b.height * y1;
+      // A face a quarter turn off in this frame often comes back squashed: eyes too close for the
+      // box, or tipped steeply.
+      const ed = Math.hypot(k[1].x - k[0].x, k[1].y - k[0].y), tip = Math.abs(k[1].y - k[0].y) / (ed || 1);
+      const good = inBox(k[0], .05, .6) && inBox(k[1], .05, .6) && inBox(k[3], .45, 1.05) && k[3].y > Math.max(k[0].y, k[1].y) && ed > b.width * .28 && ed < b.width * .65 && tip < .85;
+      const P = (u, v) => ({ x: b.originX + b.width * u, y: b.originY + b.height * v });
+      // Screen-left eye first, in the looked-at frame (where the face is upright).
+      let e0 = good ? k[0] : P(.3, .38), e1 = good ? k[1] : P(.7, .38); if (e0.x > e1.x) { const t = e0; e0 = e1; e1 = t; }
+      const mo = good ? k[3] : P(.5, .76);
+      const corners = [back(b.originX, b.originY), back(b.originX + b.width, b.originY + b.height)];
+      const x0 = Math.min(corners[0].x, corners[1].x), y0 = Math.min(corners[0].y, corners[1].y);
+      return { q, good, score: (best.categories && best.categories[0] && best.categories[0].score) || 0, box: { x: x0, y: y0, w: Math.abs(corners[1].x - corners[0].x), h: Math.abs(corners[1].y - corners[0].y) }, e0: back(e0.x, e0.y), e1: back(e1.x, e1.y), mo: back(mo.x, mo.y) };
+    }
+    /**
+     * Looks the way the phone is held first. If that finds no proper face, the person is probably
+     * turned with the phone (lying down), so upright to the phone comes next. With no reading (no
+     * sensor, or the phone lying flat) it looks upright, else a quarter turn each way, keeping the
+     * likelier one (higher score) while it keeps finding the face.
+     */
+    function findFace(src, w, h, now) {
+      const hinted = st.hint ? st.hint() : null;
+      if (hinted != null) {
+        const f = look(src, w, h, hinted);
+        if ((f && f.good) || hinted === 0) return f;
+        const g = look(src, w, h, 0);
+        return g && (g.good || !f) ? g : f;
+      }
+      const f = look(src, w, h, 0);
+      if (f && f.good) return f;
+      if (st.turn % 2 && now - st.goodAt < 1500) { const g = look(src, w, h, st.turn); if (g && g.good) return g; }
+      if (now - st.tryAt < 300) return f;
+      st.tryAt = now;
+      return [look(src, w, h, 1), look(src, w, h, 3)].filter(g => g && g.good).sort((a, b) => b.score - a.score)[0] || f;
+    }
+    function readFace(f, w, h, now) {
+      if (!f) { if (now - st.faceAt > 600) { st.face = null; st.eyes = null; st.parts = null; } return; }
+      // A read without a face's points between good ones (common with a turned head) would drag the
+      // glasses to the box's guess: keep the last good face for a moment instead.
+      if (!f.good && st.eyes && now - st.goodAt < 1000) return;
+      if (f.good) st.goodAt = now;
+      // A new turn starts afresh rather than sliding across from the old one.
+      const k1 = st.face && f.q === st.turn ? .5 : 1; st.turn = f.q;
+      const face = { x: f.box.x / w, y: f.box.y / h, w: f.box.w / w, h: f.box.h / h };
+      const eyes = { ax: f.e0.x / w, ay: f.e0.y / h, bx: f.e1.x / w, by: f.e1.y / h };
+      const parts = { mx: f.mo.x / w, my: f.mo.y / h, ex: f.e0.x / w, ey: f.e0.y / h };
+      status.points = (f.good ? "face" : "box") + (f.q ? " turned " + f.q : "");
+      st.parts = st.parts && k1 < 1 ? { mx: lerp(st.parts.mx, parts.mx, k1), my: lerp(st.parts.my, parts.my, k1), ex: lerp(st.parts.ex, parts.ex, k1), ey: lerp(st.parts.ey, parts.ey, k1) } : parts;
+      st.face = st.face && k1 < 1 ? { x: lerp(st.face.x, face.x, k1), y: lerp(st.face.y, face.y, k1), w: lerp(st.face.w, face.w, k1), h: lerp(st.face.h, face.h, k1) } : face;
+      st.eyes = st.eyes && k1 < 1 ? { ax: lerp(st.eyes.ax, eyes.ax, k1), ay: lerp(st.eyes.ay, eyes.ay, k1), bx: lerp(st.eyes.bx, eyes.bx, k1), by: lerp(st.eyes.by, eyes.by, k1) } : eyes;
+      // The tilt is the eye line's (eyes are the surest points); up is square to it.
+      const ex = (st.eyes.bx - st.eyes.ax) * w, ey = (st.eyes.by - st.eyes.ay) * h, el = Math.hypot(ex, ey) || 1;
+      st.roll = Math.atan2(ey, ex); st.up = { x: ey / el, y: -ex / el };
       st.faceAt = now;
-      status.face = { w, h, box: [face.x, face.y, face.w, face.h].map(v => +v.toFixed(3)), kp: k.slice(0, 4).map(p => [+p.x.toFixed(3), +p.y.toFixed(3)]), vid: [video.videoWidth, video.videoHeight] };
+      status.face = { w, h, turn: f.q, roll: +(st.roll * 57.3).toFixed(1), box: [face.x, face.y, face.w, face.h].map(v => +v.toFixed(3)), vid: [video.videoWidth, video.videoHeight] };
     }
     function readMask(res) {
       const masks = (res && res.confidenceMasks) || [], m = masks[masks.length - 1]; if (!m) return;
@@ -165,10 +246,12 @@
       const f = st.face, c = st.faceOut, w = 96, h = Math.max(24, Math.round(w * video.videoHeight / video.videoWidth));
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
       const g = c.getContext("2d"); g.clearRect(0, 0, w, h); g.filter = "blur(" + Math.max(1, Math.round(w * .02)) + "px)"; g.fillStyle = "#000";
-      const cx = (f.x + f.w / 2) * w, fw = f.w * w, fh = f.h * h, top = f.y * h;
+      // Drawn upright about the face's centre, then turned the way the head is.
+      const sideways = Math.abs(st.up.x) > Math.abs(st.up.y), cx = (f.x + f.w / 2) * w, cy = (f.y + f.h / 2) * h, fw = (sideways ? f.h * h : f.w * w), fh = (sideways ? f.w * w : f.h * h), top = cy - fh / 2;
+      g.translate(cx, cy); g.rotate(st.roll); g.translate(-cx, -cy);
       g.beginPath(); g.ellipse(cx, top + fh * .38, fw * .64, fh * .86, 0, 0, 7); g.fill();
-      g.beginPath(); g.moveTo(cx - fw * .32, top + fh * .9); g.lineTo(cx + fw * .32, top + fh * .9); g.quadraticCurveTo(cx + fw * 1.45, top + fh * 1.15, cx + fw * 1.55, h + 4); g.lineTo(cx - fw * 1.55, h + 4); g.quadraticCurveTo(cx - fw * 1.45, top + fh * 1.15, cx - fw * .32, top + fh * .9); g.fill();
-      g.filter = "none"; status.mask = "face";
+      g.beginPath(); g.moveTo(cx - fw * .32, top + fh * .9); g.lineTo(cx + fw * .32, top + fh * .9); g.quadraticCurveTo(cx + fw * 1.45, top + fh * 1.15, cx + fw * 1.55, top + Math.hypot(w, h) + 4); g.lineTo(cx - fw * 1.55, top + Math.hypot(w, h) + 4); g.quadraticCurveTo(cx - fw * 1.45, top + fh * 1.15, cx - fw * .32, top + fh * .9); g.fill();
+      g.setTransform(1, 0, 0, 1, 0, 0); g.filter = "none"; status.mask = "face";
       return c;
     }
     st.update = (now) => {
@@ -178,7 +261,7 @@
         if (src.width !== w || src.height !== h) { src.width = w; src.height = h; }
         try {
           src.getContext("2d").drawImage(video, 0, 0, w, h);
-          if (st.finder) try { readFace(st.finder.detect(src), w, h, now); } catch (e) { note("face", e); }
+          if (st.finder) try { readFace(findFace(src, w, h, now), w, h, now); } catch (e) { note("face", e); }
           if (st.seg) try { readMask(st.seg.segment(src)); } catch (e) { st.segOk = false; note("segment", e); }
         } catch (_) { }
         st.mask = st.segOk ? st.out : st.face ? faceMask() : null;
@@ -187,7 +270,11 @@
     };
     /** Where the show starts: behind the head (hidden by the cut-out), or just above it without one. */
     st.origin = () => {
-      if (st.face) return { x: st.face.x + st.face.w / 2, y: st.mask ? st.face.y + st.face.h * .15 : st.face.y - st.face.h * .25 };
+      if (st.face) {
+        // From the face's centre toward the top of the head (frame pixels, so turned heads work too).
+        const vw = video.videoWidth || 1, vh = video.videoHeight || 1, size = Math.abs(st.up.x) * st.face.w * vw + Math.abs(st.up.y) * st.face.h * vh, k = st.mask ? .35 : .75;
+        return { x: st.face.x + st.face.w / 2 + st.up.x * size * k / vw, y: st.face.y + st.face.h / 2 + st.up.y * size * k / vh };
+      }
       return st.head;
     };
     return st;
@@ -199,14 +286,15 @@
    * on the face.
    */
   const railTube = document.createElement("canvas"), railCore = document.createElement("canvas");
-  function neonGlasses(x, a, b, t, life, flash, style, rgb) {
+  function neonGlasses(x, a, b, t, life, flash, style, rgb, roll) {
     rgb = rgb || [255, 63, 150];
     const C = (k, al2) => "rgba(" + Math.round(rgb[0] * k + 255 * (1 - k)) + "," + Math.round(rgb[1] * k + 255 * (1 - k)) + "," + Math.round(rgb[2] * k + 255 * (1 - k)) + "," + al2 + ")";
-    let ang = Math.atan2(b.y - a.y, b.x - a.x); if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;
-    // d is the size unit: a little more than the distance between the eyes, so the glasses (arms
-    // included, about 2.3d) come out a bit wider than the face, like real party glasses.
+    // roll: which way the head is turned, when known (a sideways head would otherwise get its glasses upside down).
+    let ang = Math.atan2(b.y - a.y, b.x - a.x); if (Number.isFinite(roll)) ang = roll; else if (ang > Math.PI / 2) ang -= Math.PI; else if (ang < -Math.PI / 2) ang += Math.PI;
+    // d is the size unit: just over the distance between the eyes, so the glasses (arms included,
+    // about 2.3d) come out about as wide as the face.
     const eyes = Math.hypot(b.x - a.x, b.y - a.y); if (eyes < 8) return;
-    const d = eyes * 1.2;
+    const d = eyes * 1.13;
     const k = Math.min(1, t / .45), pop = k < 1 ? 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2) : 1;
     const on = t < .5 ? (t < .12 || (t > .2 && t < .26) || t > .34 ? 1 : .15) : 1, al = (t > life - .5 ? Math.max(0, (life - t) / .5) : 1) * on;
     if (al <= 0) return;
@@ -385,7 +473,7 @@
     // Party-room colours, changing every bar: blue, magenta, green, cyan.
     const PAL = [[70, 80, 255], [255, 50, 210], [50, 255, 120], [40, 220, 255]];
     const roomAt = (t) => { const i = Math.floor(t / bar), k = Math.min(1, (t - i * bar) / .35), a = PAL[(p0 + i + 3) % 4], b = PAL[(p0 + i) % 4]; return a.map((v, j) => Math.round(v + (b[j] - v) * k)); };
-    let ox = 0, oy = 0, placed = false;
+    let ox = 0, oy = 0, placed = false, roll = 0;
     return {
       look,
       /** Draws one frame onto x. L: {W, H, M}; view: where the video sits on x; person: its tracker (or null). */
@@ -396,6 +484,8 @@
         const fade = t < .35 ? t / .35 : t > life - .7 ? Math.max(0, (life - t) / .7) : 1, flash = Math.exp(-((t % beat) / beat) * 4), pulse = .72 + .28 * flash;
         const spot = view && person && person.origin(), face = view && person && person.face;
         if (spot) { const tx = view.x + spot.x * view.w, ty = view.y + spot.y * view.h; ox = placed ? lerp(ox, tx, .3) : tx; oy = placed ? lerp(oy, ty, .3) : ty; placed = true; }
+        // Eased toward the head's tilt the short way round (an upside-down head sits near ±180°).
+        if (face) { const dr = (person.roll || 0) - roll; roll += (Math.atan2(Math.sin(dr), Math.cos(dr))) * .3; }
         const fw = face ? face.w * view.w : M * .3, room = roomAt(t), rc = "rgba(" + room.join(",") + ",", hh = (hue0 + t * 40) % 360;
         bx.setTransform(1, 0, 0, 1, 0, 0); bx.globalCompositeOperation = "source-over"; bx.clearRect(0, 0, W, H);
         if (o.dim) {
@@ -415,7 +505,7 @@
           const reach = Math.hypot(W, H) * Math.min(1, Math.pow(Math.min(1, t / .5), .6)) * 1.1;
           // Two groups scissor against each other, a full swing every bar.
           for (const b of beams) {
-            const ang = b.base + Math.sin(t * Math.PI / (2 * beat) + (b.grp ? 0 : Math.PI)) * .34, h = (b.hue + t * 70) % 360, a = fade * pulse;
+            const ang = b.base + roll + Math.sin(t * Math.PI / (2 * beat) + (b.grp ? 0 : Math.PI)) * .34, h = (b.hue + t * 70) % 360, a = fade * pulse;
             bx.save(); bx.translate(ox, oy); bx.rotate(ang);
             taper(bx, reach, M * .014, M * .32, "hsla(" + h + ",100%,60%,", .11 * a);
             taper(bx, reach, M * .014, M * .07, "hsla(" + h + ",100%,60%,", .45 * a);
@@ -473,7 +563,7 @@
         const e = view && person && person.eyes;
         if (e) {
           const ea = { x: view.x + e.ax * view.w, y: view.y + e.ay * view.h }, eb = { x: view.x + e.bx * view.w, y: view.y + e.by * view.h }, p = person.parts;
-          if (look) neonGlasses(x, ea, eb, t, life, flash, look, look === "visor" ? room : null);
+          if (look) neonGlasses(x, ea, eb, t, life, flash, look, look === "visor" ? room : null, person.roll);
           if (o.mic && p) {
             // Down the face: across the eye line, toward the mouth.
             const ed = Math.hypot(eb.x - ea.x, eb.y - ea.y) || 1, mouth = { x: view.x + p.mx * view.w, y: view.y + p.my * view.h };
@@ -800,7 +890,8 @@
    */
   function lens(canvas, video, opts) {
     const x = canvas.getContext("2d"), S = document.createElement("canvas"), sx = S.getContext("2d");
-    const st = { id: "none", def: LENSES[0], scene: null, t0: 0, raf: 0, mirror: !!(opts && opts.mirror), music: null, mix: null, tracker: personTracker(video), stopped: false };
+    const st = { id: "none", def: LENSES[0], scene: null, t0: 0, raf: 0, mirror: !!(opts && opts.mirror), music: null, mix: null, tracker: null, stopped: false };
+    st.tracker = personTracker(video, () => heldTurn(st.mirror));
     const size = () => {
       const r = canvas.getBoundingClientRect(), d = Math.min(LOW_END ? 1.25 : 2, window.devicePixelRatio || 1), w = Math.max(2, Math.round(r.width * d)), h = Math.max(2, Math.round(r.height * d));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }

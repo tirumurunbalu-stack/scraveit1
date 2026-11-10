@@ -1,9 +1,13 @@
 import {describe, expect, it} from "vitest";
 import {
+  compareSignalFreshness,
   DEFAULT_DISPATCH_POLICY,
   findNextDispatchWave,
+  isUsableBackupSignal,
   normalizeDispatchPolicy,
   radiusForWave,
+  STALE_SIGNAL_MAX_AGE_MS,
+  waveTimeoutSeconds,
 } from "../src/domain/dispatchPolicy";
 import type {RiderCandidate} from "../src/types";
 
@@ -53,5 +57,34 @@ describe("dispatch policy", () => {
   it("rejects candidates beyond the configured service radius", () => {
     const policy = normalizeDispatchPolicy({mode: "waves", initialRadiusKm: 1, maxRadiusKm: 3, maxWaves: 10});
     expect(findNextDispatchWave([candidates[2]!], {}, policy, 0)).toBeNull();
+  });
+});
+
+describe("backup ring for Online riders with an old signal", () => {
+  it("keeps a rider usable for a day after their phone went quiet, then drops them", () => {
+    expect(isUsableBackupSignal(91_000)).toBe(true);
+    expect(isUsableBackupSignal(STALE_SIGNAL_MAX_AGE_MS)).toBe(true);
+    expect(isUsableBackupSignal(STALE_SIGNAL_MAX_AGE_MS + 1)).toBe(false);
+    expect(isUsableBackupSignal(Number.NaN)).toBe(false);
+  });
+
+  it("waits 45 s only when nobody in the wave has a live signal", () => {
+    expect(waveTimeoutSeconds([{staleSignal: true}], 180)).toBe(45);
+    expect(waveTimeoutSeconds([{staleSignal: true}, {staleSignal: true}], 180)).toBe(45);
+    expect(waveTimeoutSeconds([{staleSignal: true}, {}], 180)).toBe(180);
+    expect(waveTimeoutSeconds([{}], 180)).toBe(180);
+    expect(waveTimeoutSeconds([], 180)).toBe(180);
+    expect(waveTimeoutSeconds([{staleSignal: true}], 30)).toBe(30);
+  });
+
+  it("tries every live rider before any old-signal rider, however near", () => {
+    const riders = [
+      {riderId: "near-quiet", distanceKm: 0.5, staleSignal: true},
+      {riderId: "far-live", distanceKm: 9},
+      {riderId: "near-live", distanceKm: 2},
+    ];
+    const order = [...riders].sort((a, b) => compareSignalFreshness(a, b) || a.distanceKm - b.distanceKm)
+      .map((rider) => rider.riderId);
+    expect(order).toEqual(["near-live", "far-live", "near-quiet"]);
   });
 });

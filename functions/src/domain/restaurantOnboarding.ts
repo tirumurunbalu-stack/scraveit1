@@ -19,6 +19,25 @@ export function assessFssai(value: unknown): {ok: boolean; kind: "licence" | "re
   return {ok: true, kind: digits.startsWith("1") ? "licence" : "registration"};
 }
 
+/** Store kinds that sell packed goods rather than cooked food. "pharmacy" is the customer's Health care tab. */
+export const GOODS_STORE_TYPES = ["grocery", "dairy", "pharmacy"] as const;
+export type StoreType = "restaurant" | typeof GOODS_STORE_TYPES[number];
+
+export function storeTypeOf(value: unknown): StoreType {
+  const type = String(value ?? "");
+  return (GOODS_STORE_TYPES as readonly string[]).includes(type) ? type as StoreType : "restaurant";
+}
+
+/**
+ * Retail drug licence (Forms 20 and 21, Drugs Rules, 1945). States number
+ * them differently ("AP/NLR/2021/20B-1234", "20B-21B/NLR/0412"), so only the
+ * shape is checked; the reviewer reads the certificate photo.
+ */
+export function validDrugLicence(value: unknown): boolean {
+  const text = String(value ?? "").toUpperCase().trim();
+  return /^[A-Z0-9][A-Z0-9 /().,-]{3,59}$/.test(text) && /\d/.test(text);
+}
+
 export function validPan(value: unknown): boolean {
   return /^[A-Z]{3}[ABCFGHLJPT][A-Z]\d{4}[A-Z]$/.test(String(value ?? "").toUpperCase().trim());
 }
@@ -85,9 +104,11 @@ export interface AgreementInput {
   gstin: string;
   commissionBps: number;
   termMonths: number;
-  /** "restaurant" (default), "grocery" or "dairy". */
+  /** "restaurant" (default), "grocery", "dairy" or "pharmacy". */
   storeType?: string;
-  /** Grocery and dairy only. */
+  /** Pharmacy only: retail drug licence number. */
+  drugLicenceNumber?: string;
+  /** Goods stores only. */
   gstMode?: GoodsGstMode;
   gstEnrolment?: string;
   /** Day the agreement is offered, YYYY-MM-DD (IST). */
@@ -110,8 +131,9 @@ function percent(bps: number): string {
  */
 export function renderAgreement(input: AgreementInput): AgreementSection[] {
   const rate = percent(input.commissionBps);
-  const goods = input.storeType === "grocery" || input.storeType === "dairy";
-  const seller = goods ? (input.storeType === "dairy" ? "Dairy" : "Store") : "Restaurant";
+  const type = storeTypeOf(input.storeType);
+  const goods = type !== "restaurant", pharmacy = type === "pharmacy";
+  const seller = type === "dairy" ? "Dairy" : pharmacy ? "Pharmacy" : goods ? "Store" : "Restaurant";
   const items = goods ? "products" : "food";
   const business = input.legalName && input.legalName !== input.restaurantName ?
     `${input.legalName}, trading as ${input.restaurantName}` : input.restaurantName;
@@ -128,7 +150,7 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
         (input.gstMode === "enrolment" ? `Under Notification 34/2023-Central Tax the ${seller} sells only within Andhra Pradesh and ` +
           "makes no inter-state supply while it is unregistered, and tells Scraveit at once if it registers for GST or its turnover " +
           "crosses the registration limit." :
-          input.gstMode === "exempt_only" ? `The ${seller} lists only GST-exempt goods (such as fresh milk, fruits and vegetables) ` +
+          input.gstMode === "exempt_only" ? `The ${seller} lists only GST-exempt goods (such as ${pharmacy ? "sanitary pads" : "fresh milk, fruits and vegetables"}) ` +
             "while it is not registered, and tells Scraveit before listing any taxable product." : "")} :
     {heading: "3. Prices and GST on food",
       body: "The Restaurant sets its own menu prices. Menu prices on Scraveit are before GST. For food ordered through the apps, " +
@@ -153,6 +175,15 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
     {heading: "5. Offers",
       body: `Offers the ${seller} creates are paid by the ${seller}, and it sees what it gets on each item before publishing. ` +
         `Offers Scraveit creates are paid by Scraveit, unless the ${seller} agrees in writing to share one.`},
+    pharmacy ? {heading: "6. Drug licence and product safety",
+      body: `The Pharmacy holds a valid retail drug licence, number ${input.drugLicenceNumber ?? ""}, under the Drugs and ` +
+        "Cosmetics Act, 1940, and keeps it valid. Through Scraveit it lists only products that can be sold without a " +
+        "prescription: never a drug in Schedule H, H1 or X of the Drugs Rules, 1945, or any other product that needs a " +
+        "prescription. It sells products within their expiry date and stores them as their labels say" +
+        (input.fssaiNumber ? `, and it holds FSSAI ${input.fssaiNumber.startsWith("1") ? "licence" : "registration"} number ` +
+          `${input.fssaiNumber} for food products such as baby food and nutrition drinks` : "") +
+        ". The Pharmacy is responsible for the quality, safety and description of the products it sells, and the liability " +
+        "for them rests with the Pharmacy. Scraveit shows the drug licence number to customers."} :
     {heading: "6. Food safety",
       body: `The ${seller} holds a valid FSSAI ${input.fssaiNumber.startsWith("1") ? "licence" : "registration"} number ` +
         `${input.fssaiNumber}, keeps it valid, and follows the Food Safety and Standards Act, 2006 and the rules and regulations ` +
@@ -173,7 +204,8 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
         "their orders, and does not keep or share them for any other purpose (Digital Personal Data Protection Act, 2023)."},
     {heading: "10. Ending the agreement",
       body: `Either side may end this agreement with 30 days' written notice, including through the app. Scraveit may pause the ` +
-        `${seller}'s listing at once if its FSSAI licence lapses, if there is a serious food safety risk, or in case of fraud, ` +
+        `${seller}'s listing at once if its ${pharmacy ? "drug licence lapses, if it lists a product that needs a prescription, " +
+          "if there is a serious safety risk" : "FSSAI licence lapses, if there is a serious food safety risk"}, or in case of fraud, ` +
         "and will say why. Money already earned is paid out in full."},
     {heading: "11. Disputes",
       body: "Both sides will first try to settle any dispute by talking. If that fails, the courts at Nellore, Andhra Pradesh " +

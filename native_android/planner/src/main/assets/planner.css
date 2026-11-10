@@ -49,6 +49,11 @@ h2 { font: 800 17px/1.25 var(--display); }
 .answer-big { font: 800 48px/1.05 var(--display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .answer-sub { color: #C9D6F2; font-size: 14px; margin-top: 4px; }
 .answer-sub b { color: #fff; }
+.gst-split { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.gst-split div { background: rgba(255, 255, 255, .08); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; justify-content: space-between; gap: 2px; min-width: 0; }
+.gst-split span { color: #C9D6F2; font-size: 12px; font-weight: 700; }
+.gst-split b { font: 800 16px/1.2 var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gst-split .pays { background: rgba(14, 159, 110, .3); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border: 2px solid var(--line); background: var(--card); border-radius: 999px; padding: 8px 14px; font-weight: 700; font-size: 14px; }

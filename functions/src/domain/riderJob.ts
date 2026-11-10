@@ -1,4 +1,17 @@
-import type {SavrivoOrder} from "../types";
+import type {OrderBatchLink, SavrivoOrder} from "../types";
+
+/** What the rider app reads about a batch on each job (no other customer's details). */
+export function riderBatchProjection(link: OrderBatchLink): Record<string, unknown> {
+  return {
+    id: link.id,
+    orderIds: link.orderIds,
+    leadOrderId: link.leadOrderId,
+    pickupOrder: link.pickupOrder,
+    dropOrder: link.dropOrder,
+    position: link.position,
+    size: link.size,
+  };
+}
 
 type ExistingRiderJob = Record<string, unknown> | null | undefined;
 
@@ -81,6 +94,18 @@ export function buildRiderJobProjection(
     phase: phaseFor(order, existing),
   };
   if (order.restaurantPhone) projection.restaurantPhone = order.restaurantPhone;
+  // One rider, several restaurants, one customer: the app sends the rider to every pickup before the door.
+  if (order.clusterTrip && order.clusterTrip.orderIds.length > 1) {
+    projection.trip = {
+      clusterId: order.clusterTrip.clusterId,
+      orderIds: order.clusterTrip.orderIds,
+      leadOrderId: order.clusterTrip.leadOrderId,
+      stop: order.clusterTrip.stop,
+      stops: order.clusterTrip.orderIds.length,
+    };
+  }
+  // Two customers on one trip: both kitchens first, then the doors in the order they were placed.
+  if (order.batch && order.batch.orderIds.length > 1) projection.batch = riderBatchProjection(order.batch);
   if (existingBelongsToAssignment(order, existing) && Number.isFinite(Number(existing?.arrivedRestaurantAt))) {
     projection.arrivedRestaurantAt = Number(existing?.arrivedRestaurantAt);
   }

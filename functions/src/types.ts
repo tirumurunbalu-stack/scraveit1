@@ -31,6 +31,13 @@ export interface Address extends GeoPoint {
   updatedAt: number;
   details?: string;
   city?: string;
+  /** House / flat number and floor, as the customer typed it. */
+  house?: string;
+  landmark?: string;
+  /** Street line read from the map pin. */
+  street?: string;
+  /** Download link to the customer's photo of their gate or building, for the rider. */
+  photoUrl?: string;
 }
 
 export interface CatalogChoice {
@@ -65,6 +72,11 @@ export interface CatalogRestaurant extends GeoPoint {
   platformFee?: number;
   /** This restaurant's agreed commission, set by Scraveit (1,500 = 15%). */
   commissionBps?: number;
+  /** "markup": menu prices include GST and customers pay them plus markupBps (see domain/markupPricing.ts). Admin only. */
+  pricingModel?: string;
+  markupBps?: number;
+  /** The restaurant's own switch: its menu prices include GST (see domain/markupPricing.ts). */
+  pricesIncludeGst?: boolean;
   etaMin: number;
   etaMax: number;
   phone?: string;
@@ -90,6 +102,13 @@ export interface PricedOrderItem {
   addOnTotal: number;
   note: string;
   diet: string;
+  /** GST-inclusive restaurants only (price fields above are then before food GST): one unit as the customer saw it, GST included. */
+  listPrice?: number;
+  /** GST-inclusive restaurants only: one unit at the restaurant's own price, GST included. */
+  restaurantPrice?: number;
+  /** A restaurant's free-item offer (domain/freebies.ts): always ₹0, `note` is the offer's title. */
+  free?: true;
+  freebieId?: string;
 }
 
 export interface PricingBreakdown {
@@ -114,6 +133,9 @@ export interface PricingBreakdown {
   platformDiscount?: number;
   /** Customer wallet money (cashback / referral credit) used; reduces the total. */
   walletRedeem?: number;
+  /** GST-inclusive restaurants: the bill as the customer saw it (GST-inclusive food) and, under markup, the restaurant's payout.
+   *  subtotal/discount/tax above stay GST-exclusive books. */
+  markup?: import("./domain/markupPricing").MarkupBill;
   currency: "INR";
   source: "catalog_snapshot_v3";
 }
@@ -155,6 +177,8 @@ export interface SavrivoOrder {
   restaurant: string;
   restaurantLocation: {address: string; lat: number; lng: number};
   restaurantPhone?: string;
+  /** The store delivers this order itself; its rider is "store_<restaurantId>". */
+  selfDelivery?: boolean;
   items: PricedOrderItem[];
   pricing: PricingBreakdown;
   pricingContext: {
@@ -205,6 +229,20 @@ export interface SavrivoOrder {
   riderAvatar?: string;
   /** Set when a parent pays for their child's order; they may start its online payment. */
   payerUid?: string;
+  /** Multi-restaurant ("cluster") orders: one cart split into one order per restaurant. */
+  clusterId?: string;
+  clusterIndex?: number;
+  clusterSize?: number;
+  /** Set while the other restaurants' parts are still being created: no restaurant sees it yet. */
+  clusterHold?: boolean;
+  /** When the kitchen should start, so every part of the cluster arrives together. */
+  kitchenStartAt?: number;
+  /** Multi-restaurant parts one rider collects in one trip (see domain/clusterPlan): pickup order. */
+  clusterTrip?: ClusterTripLink;
+  /** Two customers' orders one rider carries together (see domain/orderBatch). */
+  batch?: OrderBatchLink;
+  /** The customer tapped this store's Ad (top placement) at this time, in the 24 hours before ordering. */
+  adClickAt?: number;
   /** Squad orders: the squad's code and everyone who put picks in (host included). */
   squadCode?: string;
   squadMemberUids?: string[];
@@ -239,6 +277,8 @@ export interface RiderCandidate {
   distanceKm: number;
   activeLoad: number;
   score: number;
+  /** Rider is Online but their phone stopped reporting: a backup after every live rider. */
+  staleSignal?: boolean;
 }
 
 export interface DispatchOffer {
@@ -264,6 +304,39 @@ export interface DispatchPolicySnapshot {
   reofferCooldownMs: number;
   fairnessLoadPenaltyKm: number;
   claimLeaseSeconds: number;
+  /** Two-order batching (domain/orderBatch); missing means on. */
+  batchingEnabled?: boolean;
+}
+
+export interface ClusterTripLink {
+  clusterId: string;
+  /** Orders this rider collects, in pickup order; the first is the trip's lead. */
+  orderIds: string[];
+  leadOrderId: string;
+  /** This order's place in the pickup order (0 = lead). */
+  stop: number;
+}
+
+/**
+ * Two orders from different customers carried by one rider: both kitchens first, then the doors,
+ * the earlier-placed order delivered first.
+ */
+export interface OrderBatchLink {
+  id: string;
+  /** The two orders, in the order they were placed. */
+  orderIds: string[];
+  /** The order the rider already had when the second joined. */
+  leadOrderId: string;
+  /** Kitchens in collection order (order ids). */
+  pickupOrder: string[];
+  /** Doors in delivery order (order ids): the earlier-placed order first. */
+  dropOrder: string[];
+  /** This order's place in the delivery order (1 = delivered first). */
+  position: number;
+  size: number;
+  /** How much later the lead customer gets their food because of the second order. */
+  leadExtraMinutes: number;
+  createdAt: number;
 }
 
 export interface DispatchQueueRecord {
@@ -278,6 +351,10 @@ export interface DispatchQueueRecord {
   currentOffer?: DispatchOffer;
   activeOffers?: Record<string, DispatchOffer>;
   attemptedRiders?: Record<string, number>;
+  /** Riders who said no to this order; a missed offer can come back, a refusal doesn't. */
+  declinedRiders?: Record<string, number>;
+  /** Riders last considered on an old signal, kept when a later scan replaces the candidate list. */
+  backupRiders?: string[];
   policySnapshot?: DispatchPolicySnapshot;
   claim?: {
     riderId: string;
@@ -295,6 +372,22 @@ export interface DispatchQueueRecord {
     assignedAt?: number;
   };
   status: "offering" | "assigned" | "exhausted" | "cancelled";
+  /** A later pickup of a shared multi-restaurant trip, offered only to the lead order's rider. */
+  bundle?: {
+    leadOrderId: string;
+    riderId: string;
+    stop: number;
+    stops: number;
+    /** "batch": a second customer's order added to the rider's current trip (domain/orderBatch). */
+    kind?: "trip" | "batch";
+    pickupOrder?: string[];
+    dropOrder?: string[];
+    leadExtraMinutes?: number;
+  };
+  /** On a trip's lead order: how many restaurants the rider collects in this trip. */
+  tripPickups?: number;
+  /** The trip's rider was already offered this pickup (declined or let it expire): any rider now. */
+  bundleTried?: boolean;
   createdAt: number;
   updatedAt: number;
 }

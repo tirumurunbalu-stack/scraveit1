@@ -28,6 +28,8 @@ const createOrderBaseSchema = z.object({
   useWallet: z.boolean().default(false),
   /** Placing a squad order: the squad's code (the caller must be its host). */
   squadCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{6}$/).optional(),
+  /** The total on the customer's screen at the tap: the order is charged this or refused (services/priceQuotes.ts). */
+  quotedTotal: z.number().finite().min(0).max(10_000_000).optional(),
 }).strict();
 
 export const createCodOrderSchema = createOrderBaseSchema;
@@ -45,8 +47,33 @@ export const createOrderSchema = createOrderBaseSchema.extend({
   }
 });
 
+/** One cart, food from two or three restaurants (services/clusterOrders.ts). */
+export const createClusterOrderSchema = z.object({
+  idempotencyKey: z.string().trim().min(16).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  addressId: identifier,
+  parts: z.array(z.object({
+    restaurantId: identifier,
+    items: z.array(cartLineSchema).min(1).max(MAX_CART_LINES),
+    instructions: z.string().trim().max(500).default(""),
+    /** This part's food total on the customer's screen: a changed dish price stops the cart before any order exists. */
+    quotedSubtotal: z.number().finite().min(0).max(10_000_000).optional(),
+  }).strict()).min(2).max(3),
+  tip: z.number().finite().min(0).max(10_000).default(0),
+  contactless: z.boolean().default(false),
+  paymentMethod: z.literal("cod").default("cod"),
+}).strict();
+
 export const recoverDeliveryOtpSchema = z.object({
   orderId: identifier,
+}).strict();
+
+export const checkOrderPaymentSchema = z.object({
+  orderId: identifier,
+}).strict();
+
+export const cancelUnpaidOrderSchema = z.object({
+  orderId: identifier,
+  reason: z.enum(["cod", "cancel"]),
 }).strict();
 
 // Optional cart context for getCheckoutConfiguration's fee-preview fields -
@@ -63,6 +90,13 @@ export const checkoutPricingPreviewSchema = z.object({
   tip: z.number().finite().min(0).max(10_000).default(0),
   paymentMethod: paymentMethodSchema.default("cod"),
   useWallet: z.boolean().default(false),
+}).strict();
+
+// The restaurant page asks getCheckoutConfiguration only this: is a delivery
+// partner free near the store right now?
+export const deliveryPartnerCheckSchema = z.object({
+  restaurantId: identifier,
+  deliveryPartnerCheck: z.literal(true),
 }).strict();
 
 export const statusSchema = z.enum([
@@ -85,6 +119,8 @@ export const transitionOrderSchema = z.object({
   toStatus: statusSchema,
   reason: z.string().trim().max(500).default(""),
   deliveryOtp: z.string().trim().regex(/^\d{4,6}$/).optional(),
+  /** The rider picks up with a photo of the parcel showing the order ID (Storage path). */
+  pickupPhotoPath: z.string().trim().min(1).max(300).optional(),
   cashCollected: z.boolean().default(false),
 }).strict();
 
@@ -811,6 +847,44 @@ export const restaurantOfferSchema = z.object({
 
 export const restaurantOffersQuerySchema = z.object({restaurantId: identifier}).strict();
 
+export const restaurantFreebiesSchema = z.object({
+  restaurantId: identifier,
+  freebies: z.array(z.object({
+    id: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/),
+    title: z.string().trim().max(60).default(""),
+    freeItem: z.string().trim().min(2).max(60),
+    diet: z.enum(["veg", "nonveg", "egg"]).default("veg"),
+    trigger: z.enum(["items", "amount"]),
+    itemIds: z.array(z.string().trim().min(1).max(120)).max(100).default([]),
+    minimumOrder: z.number().int().min(0).max(100_000).default(0),
+    active: z.boolean().default(true),
+  }).strict()).max(6),
+}).strict();
+
+export const restaurantPairingsSchema = z.object({
+  restaurantId: identifier,
+  pairings: z.array(z.object({
+    id: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/),
+    title: z.string().trim().max(60).default(""),
+    suggestIds: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
+    itemIds: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
+    active: z.boolean().default(true),
+  }).strict()).max(10),
+}).strict();
+
+export const dishDescriptionSchema = z.object({
+  restaurantId: identifier,
+  name: z.string().trim().min(1).max(70),
+  category: z.string().trim().max(60).default(""),
+  price: z.number().min(0).max(100_000).default(0),
+  diet: z.string().trim().max(20).default(""),
+  current: z.string().trim().max(500).default(""),
+  instructions: z.string().trim().max(300).default(""),
+  imageUrl: z.string().trim().max(1000).default(""),
+  // A small JPEG preview of a photo the owner has picked but not saved yet.
+  imageData: z.string().max(600_000).default(""),
+}).strict();
+
 export const reviewRestaurantOfferSchema = z.object({
   promotionId: identifier,
   decision: z.enum(["approved", "rejected"]),
@@ -1004,6 +1078,7 @@ const liveAgreementDetailsSchema = z.object({
   ownerName: z.string().trim().max(120).optional(),
   pan: z.string().trim().max(10).optional(),
   fssaiNumber: z.string().trim().max(14).optional(),
+  drugLicenceNumber: z.string().trim().max(60).optional(),
   gstin: z.string().trim().max(15).optional(),
   gstMode: z.enum(["enrolment", "exempt_only"]).optional(),
   gstEnrolment: z.string().trim().max(20).optional(),
@@ -1034,3 +1109,21 @@ export const restaurantApplicationChangesSchema = z.object({
   appId: identifier,
   message: z.string().trim().min(3).max(500),
 }).strict();
+
+// Public reels (services/reels.ts).
+const reelIdSchema = z.string().regex(/^[A-Za-z0-9]{16,40}$/);
+export const createReelSchema = z.object({
+  reelId: reelIdSchema,
+  caption: z.string().trim().max(200).default(""),
+  w: z.number().int().min(1).max(4096),
+  h: z.number().int().min(1).max(4096),
+  dur: z.number().int().min(1000).max(60_500),
+  city: z.string().trim().max(60).default(""),
+  ownWork: z.literal(true),
+});
+export const reportReelSchema = z.object({
+  reelId: reelIdSchema,
+  reason: z.enum(["nudity", "violence", "hate", "harassment", "spam", "copyright", "child-safety", "other"]),
+  note: z.string().trim().max(500).default(""),
+});
+export const reviewReelSchema = z.object({reelId: reelIdSchema, decision: z.enum(["approve", "remove"]), note: z.string().trim().max(500).default("")});

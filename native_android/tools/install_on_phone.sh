@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build one app and install it on the phone plugged in over USB.
-#   native_android/tools/install_on_phone.sh restaurant   (or: customer, partner, admin, grocery, dairy)
+#   native_android/tools/install_on_phone.sh restaurant   (or: customer, partner, admin, grocery, dairy, healthcare)
 # Finds Android Studio's Java and adb by itself. If the phone has the Play
 # version, it offers to uninstall it first (that signs the app out).
 set -euo pipefail
@@ -10,10 +10,11 @@ case "$APP" in
   restaurant) TASK=":restaurant:installRestaurantDebug"; PKG="com.feastly.restaurant" ;;
   grocery)    TASK=":restaurant:installGroceryDebug";    PKG="com.feastly.grocery" ;;
   dairy)      TASK=":restaurant:installDairyDebug";      PKG="com.feastly.dairy" ;;
+  healthcare) TASK=":restaurant:installHealthcareDebug"; PKG="com.feastly.healthcare" ;;
   customer)   TASK=":customer:installDebug";             PKG="" ;;
   partner|rider) TASK=":rider:installDebug";             PKG="" ;;
   admin)      TASK=":admin:installDebug";                PKG="" ;;
-  *) echo "Unknown app: $APP (use restaurant, grocery, dairy, customer, partner or admin)" >&2; exit 2 ;;
+  *) echo "Unknown app: $APP (use restaurant, grocery, dairy, healthcare, customer, partner or admin)" >&2; exit 2 ;;
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

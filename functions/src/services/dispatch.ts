@@ -7,6 +7,16 @@ import {
   ROOT,
 } from "../config";
 import {haversineKm, roundMoney} from "../domain/order";
+import {fallbackPrepMinutes, partTemperature, statedPrepMinutes} from "../domain/clusterPlan";
+import {
+  DEFAULT_BATCH_POLICY,
+  expectedReadyAt,
+  planOrderBatch,
+  statusEventAt,
+  type BatchOrderInput,
+  type BatchPlan,
+  type BatchPolicy,
+} from "../domain/orderBatch";
 import {
   buildLifecycleMutation,
   deriveLifecycle,
@@ -23,7 +33,11 @@ import {
   wasRecentlyOffered,
 } from "../domain/dispatch";
 import {
+  compareSignalFreshness,
   findNextDispatchWave,
+  isUsableBackupSignal,
+  STALE_SIGNAL_MAX_AGE_MS,
+  waveTimeoutSeconds,
   normalizeDispatchPolicy,
   type DispatchPolicy,
 } from "../domain/dispatchPolicy";
@@ -51,7 +65,7 @@ export {
   wasRecentlyOffered,
 } from "../domain/dispatch";
 import {stripPrivateOrderFields} from "../domain/orderSecurity";
-import {buildRiderJobProjection, riderOfferPayout, riderPayoutBreakdown} from "../domain/riderJob";
+import {buildRiderJobProjection, riderBatchProjection, riderOfferPayout, riderPayoutBreakdown} from "../domain/riderJob";
 import {DomainError} from "../errors";
 import type {DocumentReferenceLike, FirestoreLike, TransactionLike, WriteBatchLike} from "../firestoreTypes";
 import {
@@ -69,12 +83,14 @@ import type {
   CatalogRestaurant,
   DispatchOffer,
   DispatchQueueRecord,
+  OrderBatchLink,
   RiderCandidate,
   SavrivoOrder,
   StatusEvent,
 } from "../types";
 import {requireApprovedRider} from "./authz";
-import {notifyCustomerRiderAssigned, notifyRiderOffer, stopRiderOffers} from "./notifications";
+import {learnedPlanInputs} from "./learning";
+import {notifyCustomerRiderAssigned, notifyRiderOffer, notifyRiderWake, stopRiderOffers} from "./notifications";
 import {reconcileRestaurantOrderProjection} from "./orderProjection";
 import {loadDispatchPolicy} from "./platformConfig";
 import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} from "./riderEligibility";
@@ -97,6 +113,14 @@ function riderPickupEta(presence: {lat?: unknown; lng?: unknown} | null | undefi
   return {riderPickupEtaAt: at + minutes * 60_000};
 }
 
+/** When the rider reaches `to` after collecting at `via` first (pickup takes about 3 minutes). */
+function viaPickupEta(presence: {lat?: unknown; lng?: unknown} | null | undefined,
+  via: {lat: number; lng: number} | undefined, to: {lat: number; lng: number} | undefined, at: number): {riderPickupEtaAt?: number} {
+  const first = riderPickupEta(presence, via, at).riderPickupEtaAt;
+  const second = via ? riderPickupEta(via, to, 0).riderPickupEtaAt : undefined;
+  return first && second ? {riderPickupEtaAt: first + 3 * 60_000 + second} : {};
+}
+
 export interface Presence {
   online?: boolean;
   riderId?: string;
@@ -113,6 +137,12 @@ interface RiderJob {
   status?: string;
   orderStatus?: string;
   phase?: string;
+  riderId?: string;
+  orderId?: string;
+  restaurantLat?: number;
+  restaurantLng?: number;
+  trip?: unknown;
+  batch?: unknown;
 }
 
 type QueueWithOfferData = DispatchQueueRecord & {
@@ -175,6 +205,8 @@ export async function updateRiderAvailabilityIndex(
   if (before) await ref.delete();
 }
 
+const RIDER_WAKE_LIMIT = 10;
+
 async function scheduleTimeout(orderId: string, attempt: number, delaySeconds: number): Promise<void> {
   await getFunctions().taskQueue(`locations/${REGION}/functions/dispatchOfferTimeout`).enqueue(
     {orderId, attempt},
@@ -198,6 +230,7 @@ async function candidatesFor(
   order: SavrivoOrder,
   policy: DispatchPolicy,
   attemptedRiders: Record<string, number> = {},
+  previousBackupRiders: ReadonlySet<string> = new Set(),
 ): Promise<RiderCandidate[]> {
   const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
   const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as CatalogRestaurant : null;
@@ -217,6 +250,7 @@ async function candidatesFor(
   const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
   const now = Date.now();
   const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0};
+  let backupSignalCount = 0;
   let eligibilityProjectionHits = 0;
   let eligibilityProjectionFallbacks = 0;
   let eligibilityProjectionMissing = 0;
@@ -225,23 +259,29 @@ async function candidatesFor(
     const lat = Number(presence?.lat);
     const lng = Number(presence?.lng);
     if (presence?.online !== true) { rejected.offline++; return []; }
-    if (now - Number(presence.updatedAt ?? 0) > policy.presenceFreshMs) { rejected.stale++; return []; }
+    // An Online rider stays Online until they toggle off, even when their phone has stopped
+    // reporting. They rank after every live rider, at their last known position.
+    const signalAgeMs = now - Number(presence.updatedAt ?? 0);
+    const staleSignal = signalAgeMs > policy.presenceFreshMs;
+    if (staleSignal && !isUsableBackupSignal(signalAgeMs)) { rejected.stale++; return []; }
     if (!isValidDispatchCoordinate(lat, lng)) { rejected.location++; return []; }
     // Workload is verified from the authoritative riderJobs projection below.
     // A presence activeOrderId alone must not delay the next offer when that
     // delivery has already reached the customer's doorstep.
     if (!isDispatchPresenceEligible({...presence, activeOrderId: undefined}, now, {
-      presenceFreshMs: policy.presenceFreshMs,
+      presenceFreshMs: staleSignal ? signalAgeMs : policy.presenceFreshMs,
       maxLocationAccuracyMeters: policy.maxLocationAccuracyMeters,
     })) { rejected.accuracy++; return []; }
-    if (wasRecentlyOffered(attemptedRiders[riderId], now, policy.reofferCooldownMs)) { rejected.cooldown++; return []; }
+    // A rider who missed a backup ring and is now back on the app gets the order straight away.
+    const backOnline = !staleSignal && previousBackupRiders.has(riderId);
+    if (!backOnline && wasRecentlyOffered(attemptedRiders[riderId], now, policy.reofferCooldownMs)) { rejected.cooldown++; return []; }
     const distanceKm = haversineKm({lat, lng}, order.restaurantLocation);
     if (!Number.isFinite(distanceKm) || distanceKm > policy.maxRadiusKm) {
       rejected.distance++;
       return [];
     }
-    return [{riderId, presence, distanceKm}];
-  }).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 100);
+    return [{riderId, presence, distanceKm, staleSignal}];
+  }).sort((a, b) => compareSignalFreshness(a, b) || a.distanceKm - b.distanceKm).slice(0, 100);
   // Eligibility for just these nearest riders, not the first 500 riders of
   // the whole platform. The cache must never become a dispatch dependency:
   // a failed read falls back to authoritative per-rider hydration below.
@@ -253,7 +293,7 @@ async function candidatesFor(
       logger.warn("RIDER_ELIGIBILITY_PROJECTION_READ_FAILED", {orderId: order.id, riderId, error});
     }
   }));
-  const hydrated = await Promise.all(nearestPresence.map(async ({riderId, presence, distanceKm}) => {
+  const hydrated = await Promise.all(nearestPresence.map(async ({riderId, presence, distanceKm, staleSignal}) => {
     const cachedEligibility = eligibilityByRider[riderId];
     const projectionUsable = isRiderDispatchEligibilityProjectionUsable(cachedEligibility, riderId, now);
     const repairBusyProjection = projectionUsable && shouldForceEligibilityRepair(cachedEligibility, presence);
@@ -276,6 +316,7 @@ async function candidatesFor(
       riderName: String(eligibility.riderName || presence.riderName || "Scraveit Partner"),
       distanceKm,
       activeLoad: eligibility.activeLoad,
+      ...(staleSignal ? {staleSignal: true} : {}),
     };
   }));
   const ranked = hydrated.filter((entry): entry is Omit<RiderCandidate, "score"> => entry !== null)
@@ -283,14 +324,16 @@ async function candidatesFor(
       ...candidate,
       score: roundMoney(candidate.distanceKm + candidate.activeLoad * policy.fairnessLoadPenaltyKm),
     }))
-    .sort((a, b) => a.score - b.score || a.distanceKm - b.distanceKm || a.riderId.localeCompare(b.riderId))
+    .sort((a, b) => compareSignalFreshness(a, b) || a.score - b.score || a.distanceKm - b.distanceKm || a.riderId.localeCompare(b.riderId))
     .slice(0, policy.maxCandidates);
+  backupSignalCount = ranked.filter((candidate) => candidate.staleSignal === true).length;
   logger.info("RIDER_CANDIDATES_RANKED", {
     orderId: order.id,
     restaurantId: order.restaurantId,
     cityKey,
     indexedPresenceCount: Object.keys(presences).length,
     eligibleCount: ranked.length,
+    backupSignalCount,
     policyVersion: policy.version,
     policyMode: policy.mode,
     eligibilityProjectionHits,
@@ -301,6 +344,60 @@ async function candidatesFor(
     ranked: ranked.map(({riderId, distanceKm, activeLoad}) => ({riderId, distanceKm: Number(distanceKm.toFixed(2)), activeLoad})),
   });
   return ranked;
+}
+
+/**
+ * Founder's rule (10 Nov 2026): an order is placed only when a delivery partner
+ * is free near the restaurant right now, like Zomato and Swiggy. "Free" uses the
+ * same checks as a real offer (online, fresh and accurate location, approved,
+ * under the cash limit, not on another delivery) inside the live dispatch radius.
+ * A store that delivers itself skips it, and a failed read never blocks an order.
+ */
+export const DELIVERY_PARTNERS_BUSY_MESSAGE = (restaurantName: string): string =>
+  `All delivery partners near ${restaurantName || "this restaurant"} are busy right now. Please try again in a few minutes.`;
+
+type DeliveryPartnerCheckRestaurant = Pick<CatalogRestaurant, "id" | "name" | "lat" | "lng"> & {selfDelivery?: unknown};
+
+/** Free delivery partners near the store right now; null when it cannot be told (never treated as busy). */
+async function freeDeliveryPartnersNear(restaurant: DeliveryPartnerCheckRestaurant): Promise<{free: number; radiusKm: number} | null> {
+  if (restaurant.selfDelivery === true) return null;
+  const lat = Number(restaurant.lat);
+  const lng = Number(restaurant.lng);
+  if (!isValidDispatchCoordinate(lat, lng)) return null;
+  try {
+    const policy = await loadDispatchPolicy();
+    const probe = {id: `partner-check:${restaurant.id}`, restaurantId: restaurant.id, restaurantLocation: {lat, lng}};
+    const free = (await candidatesFor(probe as unknown as SavrivoOrder, policy)).length;
+    return {free, radiusKm: policy.maxRadiusKm};
+  } catch (error) {
+    logger.warn("DELIVERY_PARTNER_CHECK_FAILED", {restaurantId: restaurant.id, error});
+    return null;
+  }
+}
+
+export async function assertDeliveryPartnerFreeNear(restaurant: DeliveryPartnerCheckRestaurant): Promise<void> {
+  const found = await freeDeliveryPartnersNear(restaurant);
+  if (!found || found.free > 0) return;
+  logger.info("ORDER_BLOCKED_DELIVERY_PARTNERS_BUSY", {restaurantId: restaurant.id, radiusKm: found.radiusKm});
+  throw new DomainError("failed-precondition", DELIVERY_PARTNERS_BUSY_MESSAGE(restaurant.name));
+}
+
+/**
+ * The same answer for the customer app before any order exists, so the
+ * restaurant page can say it as soon as it opens. Same check as Place order.
+ */
+export async function deliveryPartnerStatusForRestaurant(restaurantId: string): Promise<{busy: boolean; message: string}> {
+  try {
+    const snapshot = await restaurantRef(firestoreDb, restaurantId).get();
+    if (!snapshot.exists) return {busy: false, message: ""};
+    const restaurant = {...(snapshot.data() as CatalogRestaurant), id: restaurantId};
+    const found = await freeDeliveryPartnersNear(restaurant);
+    if (!found || found.free > 0) return {busy: false, message: ""};
+    return {busy: true, message: DELIVERY_PARTNERS_BUSY_MESSAGE(restaurant.name)};
+  } catch (error) {
+    logger.warn("DELIVERY_PARTNER_CHECK_FAILED", {restaurantId, error});
+    return {busy: false, message: ""};
+  }
 }
 
 function policyForQueue(queue: QueueWithOfferData | null | undefined): DispatchPolicy {
@@ -352,6 +449,11 @@ function offersForWave(
   }]));
 }
 
+function queueWaveTimeoutSeconds(queue: QueueWithOfferData, policy: DispatchPolicy): number {
+  const offeredIds = new Set(activeOfferEntries(queue).map(([riderId]) => riderId));
+  return waveTimeoutSeconds(queue.candidates.filter((candidate) => offeredIds.has(candidate.riderId)), policy.offerTimeoutSeconds);
+}
+
 function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<string, unknown> {
   const offer = activeOfferForRider(queue, riderId);
   const candidate = queue.candidates.find((entry) => entry.riderId === riderId);
@@ -379,6 +481,12 @@ function riderOfferRecord(queue: QueueWithOfferData, riderId: string): Record<st
     currentOffer: offer ?? queue.currentOffer,
     distanceKm: candidate ? Number(candidate.distanceKm.toFixed(2)) : queue.distanceKm ?? null,
     distanceSource: queue.distanceSource ?? "gps_straight_line",
+    // Multi-restaurant trips: the first pickup says how many restaurants the trip has; a later
+    // pickup is offered to that same rider while they are on it.
+    ...(queue.tripPickups ? {tripPickups: queue.tripPickups} : {}),
+    ...(queue.bundle ? {bundle: {leadOrderId: queue.bundle.leadOrderId, stop: queue.bundle.stop, stops: queue.bundle.stops,
+      ...(queue.bundle.kind === "batch" ? {kind: "batch", pickupOrder: queue.bundle.pickupOrder ?? [],
+        dropOrder: queue.bundle.dropOrder ?? [], leadExtraMinutes: queue.bundle.leadExtraMinutes ?? 0} : {})}} : {}),
     createdAt: queue.createdAt,
     updatedAt: queue.updatedAt,
   };
@@ -401,27 +509,297 @@ function allOfferedRiderIds(queue: QueueWithOfferData | null | undefined): strin
   ].filter(Boolean))];
 }
 
+export type BundleDecision =
+  | {kind: "normal"}
+  | {kind: "wait"}
+  | {kind: "offer"; candidate: RiderCandidate; bundle: NonNullable<DispatchQueueRecord["bundle"]>};
+
+const RIDING_STATUSES = new Set(["Out for delivery", "Near you", "Arrived", "Delivered", "Cancelled"]);
+
+/**
+ * Multi-restaurant trips (services/clusterOrders): the first pickup is dispatched as usual; each
+ * later pickup waits for that rider and is then offered to them alone. It goes to any rider when
+ * the first pickup is cancelled, its rider has already left for the customer, the trip's rider
+ * did not take it, or this kitchen's food is ready while the first pickup still has no rider.
+ */
+async function bundleDecision(order: SavrivoOrder, previous: QueueWithOfferData | null): Promise<BundleDecision> {
+  const trip = order.clusterTrip;
+  if (!trip || trip.leadOrderId === order.id || trip.orderIds.length < 2) return {kind: "normal"};
+  if (previous?.bundle || previous?.bundleTried) return {kind: "normal"};
+  const leadSnapshot = await orderRef(firestoreDb, trip.leadOrderId).get();
+  return planBundle(order, previous, leadSnapshot.exists ? leadSnapshot.data() as SavrivoOrder : null);
+}
+
+/** The decision itself, given the trip's first pickup as it is now. */
+export function planBundle(order: SavrivoOrder, previous: Pick<QueueWithOfferData, "bundle" | "bundleTried"> | null, lead: SavrivoOrder | null): BundleDecision {
+  const trip = order.clusterTrip;
+  if (!trip || trip.leadOrderId === order.id || trip.orderIds.length < 2) return {kind: "normal"};
+  if (previous?.bundle || previous?.bundleTried) return {kind: "normal"};
+  if (!lead || lead.id !== trip.leadOrderId || RIDING_STATUSES.has(lead.status)) return {kind: "normal"};
+  if (!lead.riderId) return order.status === "Ready for pickup" ? {kind: "normal"} : {kind: "wait"};
+  const from = lead.restaurantLocation, to = order.restaurantLocation;
+  const distanceKm = from && to ? haversineKm(from, to) : 0;
+  return {
+    kind: "offer",
+    candidate: {riderId: lead.riderId, riderName: String(lead.riderName ?? "Scraveit Partner"),
+      distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0, activeLoad: 1, score: 0},
+    bundle: {leadOrderId: lead.id, riderId: lead.riderId, stop: trip.stop, stops: trip.orderIds.length},
+  };
+}
+
+/**
+ * A rider on a trip may take that trip's later pickups even though they already carry an order.
+ * A second customer's order (a batch) joins only while the rider still has just that one order and
+ * has not yet left its restaurant.
+ */
+export function bundleClaimAllowed(queue: Pick<QueueWithOfferData, "bundle"> | null, uid: string,
+  jobs: Record<string, {status?: string; orderStatus?: string}>): boolean {
+  const bundle = queue?.bundle;
+  if (!bundle || bundle.riderId !== uid) return false;
+  const lead = jobs[`${uid}_${bundle.leadOrderId}`];
+  if (!lead || lead.status !== "active") return false;
+  if (bundle.kind !== "batch") return true;
+  const activeJobs = Object.values(jobs).filter((job) => job?.status === "active").length;
+  return activeJobs === 1 && BATCH_LEAD_JOB_STATUSES.has(String(lead.orderStatus ?? ""));
+}
+
+/** The rider-facing statuses of an order a second customer's order can still join. */
+const BATCH_LEAD_JOB_STATUSES = new Set(["Assigned", "Handed to rider"]);
+/** Canonical statuses of the rider's order while a batch can still be formed. */
+const BATCH_LEAD_ORDER_STATUSES = new Set(["Accepted", "Preparing", "Ready for pickup", "Assigned", "Handed to rider"]);
+/** How long a mid-trip rider has to answer an added order: the plan is only good for a short while. */
+const BATCH_OFFER_SECONDS = 120;
+/** Riders nearest the restaurant whose current trip is checked for a batch. */
+const BATCH_RIDERS_CHECKED = 5;
+
+function orderItemCount(order: Pick<SavrivoOrder, "items">): number {
+  return (order.items ?? []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+}
+
+/** Never batched: multi-restaurant parts (timed to arrive together), scheduled and already batched orders. */
+function batchLocked(order: SavrivoOrder): boolean {
+  return Boolean(order.clusterTrip || order.clusterId || order.batch || order.deliveryMode === "scheduled");
+}
+
+/** What the batch planner needs to know about one order, now. */
+export function batchOrderInput(order: SavrivoOrder, prepMinutes: number, now: number): BatchOrderInput {
+  const handedAt = order.status === "Handed to rider" ? statusEventAt(order, "Handed to rider") ?? now : null;
+  return {
+    id: order.id,
+    createdAt: Number(order.createdAt),
+    status: order.status,
+    restaurant: {lat: Number(order.restaurantLocation?.lat), lng: Number(order.restaurantLocation?.lng)},
+    drop: {lat: Number(order.address?.lat), lng: Number(order.address?.lng)},
+    readyAt: expectedReadyAt(order, prepMinutes, now),
+    ...(handedAt !== null ? {pickedUpAt: handedAt} : {}),
+    promiseAt: Number(order.createdAt) + Math.max(10, Number(order.etaMax) || 45) * 60_000,
+    temperature: partTemperature((order.items ?? []).map((item) => String(item.name ?? ""))),
+    itemCount: orderItemCount(order),
+    locked: batchLocked(order),
+  };
+}
+
+/** Riders who carry exactly one order, still before its restaurant, picked up within reach of `point`. */
+export function batchLeadsNear(jobs: ReadonlyArray<RiderJob>, point: {lat: number; lng: number}, maxKm: number,
+  limit = BATCH_RIDERS_CHECKED): Array<{riderId: string; leadOrderId: string; restaurantKm: number}> {
+  const byRider = new Map<string, RiderJob[]>();
+  for (const job of jobs) {
+    const riderId = String(job.riderId ?? "");
+    if (!riderId || job.status !== "active") continue;
+    byRider.set(riderId, [...(byRider.get(riderId) ?? []), job]);
+  }
+  return [...byRider].flatMap(([riderId, riderJobs]) => {
+    const job = riderJobs[0];
+    if (riderJobs.length !== 1 || !job || job.trip || job.batch || !job.orderId) return [];
+    if (!BATCH_LEAD_JOB_STATUSES.has(String(job.orderStatus ?? ""))) return [];
+    const restaurantKm = haversineKm({lat: Number(job.restaurantLat), lng: Number(job.restaurantLng)}, point);
+    if (!Number.isFinite(restaurantKm) || restaurantKm > maxKm) return [];
+    return [{riderId, leadOrderId: String(job.orderId), restaurantKm}];
+  }).sort((a, b) => a.restaurantKm - b.restaurantKm || a.riderId.localeCompare(b.riderId)).slice(0, limit);
+}
+
+/**
+ * Two-order batching (domain/orderBatch): a new order is first offered to a rider who is on the way
+ * to a nearby restaurant with one order whose customer lives near this one, when the plan keeps both
+ * customers' delivery times. Otherwise the order is dispatched as usual.
+ */
+async function batchDecision(order: SavrivoOrder, previous: QueueWithOfferData | null): Promise<BundleDecision> {
+  if (batchLocked(order) || previous?.bundle || previous?.bundleTried) return {kind: "normal"};
+  try {
+    const policy = await loadDispatchPolicy();
+    if (policy.batchingEnabled === false) return {kind: "normal"};
+    return await findBatch(order, policy);
+  } catch (error) {
+    logger.warn("BATCH_PLAN_FAILED", {orderId: order.id, error: String(error)});
+    return {kind: "normal"};
+  }
+}
+
+async function findBatch(order: SavrivoOrder, policy: DispatchPolicy): Promise<BundleDecision> {
+  const point = order.restaurantLocation;
+  if (!point || !isValidDispatchCoordinate(Number(point.lat), Number(point.lng))) return {kind: "normal"};
+  const activeJobs = await riderJobsCollectionRef(firestoreDb).where("status", "==", "active").limit(500).get();
+  const leads = batchLeadsNear(activeJobs.docs.map((doc) => doc.data() as RiderJob), point, DEFAULT_BATCH_POLICY.maxRestaurantGapKm);
+  if (!leads.length) return {kind: "normal"};
+  const now = Date.now();
+  const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
+  const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as CatalogRestaurant : null;
+  const learned = await learnedPlanInputs(availabilityCityKey(restaurant?.city), now)
+    .catch(() => ({prepFor: null, minutesPerKm: null}));
+  const restaurants = new Map<string, CatalogRestaurant | null>([[order.restaurantId, restaurant]]);
+  const prepFor = async (target: SavrivoOrder): Promise<number> => {
+    if (!restaurants.has(target.restaurantId)) {
+      const snapshot = await restaurantRef(firestoreDb, target.restaurantId).get();
+      restaurants.set(target.restaurantId, snapshot.exists ? snapshot.data() as CatalogRestaurant : null);
+    }
+    const place = restaurants.get(target.restaurantId);
+    return learned.prepFor ?
+      learned.prepFor(target.restaurantId, orderItemCount(target), statedPrepMinutes(place)) :
+      fallbackPrepMinutes(place);
+  };
+  const batchPolicy: BatchPolicy = learned.minutesPerKm ?
+    {...DEFAULT_BATCH_POLICY, minutesPerStraightKm: learned.minutesPerKm} : DEFAULT_BATCH_POLICY;
+  const next = batchOrderInput(order, await prepFor(order), now);
+  const outcomes: Array<{riderId: string; reason: string}> = [];
+  const plans: Array<{riderId: string; riderName: string; riderKm: number; lead: SavrivoOrder; plan: BatchPlan}> = [];
+  for (const {riderId, leadOrderId} of leads) {
+    const [presenceSnapshot, jobsSnapshot, leadSnapshot, eligibilitySnapshot] = await Promise.all([
+      db.ref(`${ROOT}/riderPresence/${riderId}`).get(),
+      riderJobsCollectionRef(firestoreDb).where("riderId", "==", riderId).get(),
+      orderRef(firestoreDb, leadOrderId).get(),
+      riderDispatchEligibilityCollectionRef(firestoreDb).doc(riderId).get(),
+    ]);
+    const presence = presenceSnapshot.val() as Presence | null;
+    const lat = Number(presence?.lat), lng = Number(presence?.lng);
+    if (presence?.online !== true || now - Number(presence.updatedAt ?? 0) > policy.presenceFreshMs ||
+      !isValidDispatchCoordinate(lat, lng)) { outcomes.push({riderId, reason: "rider_offline"}); continue; }
+    const eligibility = eligibilitySnapshot.exists ? eligibilitySnapshot.data() as RiderDispatchEligibilityProjection : null;
+    if (eligibility && (eligibility.approved === false || eligibility.codBlocked || eligibility.orderBlocked)) {
+      outcomes.push({riderId, reason: "rider_on_hold"}); continue;
+    }
+    const riderJobs = jobsSnapshot.docs.map((doc) => doc.data() as RiderJob).filter((job) => job.status === "active");
+    if (riderJobs.length !== 1 || riderJobs[0]?.orderId !== leadOrderId) { outcomes.push({riderId, reason: "rider_busy"}); continue; }
+    const lead = leadSnapshot.exists ? leadSnapshot.data() as SavrivoOrder : null;
+    if (!lead || lead.riderId !== riderId || !BATCH_LEAD_ORDER_STATUSES.has(lead.status)) {
+      outcomes.push({riderId, reason: "lead_moved_on"}); continue;
+    }
+    const plan = planOrderBatch(batchOrderInput(lead, await prepFor(lead), now), next, {lat, lng}, now, batchPolicy);
+    if (!plan.ok) { outcomes.push({riderId, reason: plan.reason}); continue; }
+    plans.push({riderId, riderName: String(lead.riderName ?? presence.riderName ?? "Scraveit Partner"),
+      riderKm: haversineKm({lat, lng}, point), lead, plan});
+  }
+  // The rider whose first customer is delayed least; then the one nearest this restaurant.
+  const best = plans.sort((a, b) => a.plan.leadExtraMinutes - b.plan.leadExtraMinutes || a.riderKm - b.riderKm)[0];
+  logger.info(best ? "BATCH_PLANNED" : "BATCH_NOT_FOUND", {
+    orderId: order.id,
+    checked: leads.length,
+    rejected: outcomes,
+    ...(best ? {riderId: best.riderId, leadOrderId: best.lead.id, pickupOrder: best.plan.pickupOrder,
+      dropOrder: best.plan.dropOrder, leadExtraMinutes: best.plan.leadExtraMinutes, slackMinutes: best.plan.slackMinutes,
+      restaurantGapKm: best.plan.restaurantGapKm, dropGapKm: best.plan.dropGapKm, learnedTravel: Boolean(learned.minutesPerKm),
+      learnedPrep: Boolean(learned.prepFor)} : {}),
+  });
+  if (!best) return {kind: "normal"};
+  return {
+    kind: "offer",
+    candidate: {riderId: best.riderId, riderName: best.riderName,
+      distanceKm: Number.isFinite(best.riderKm) ? best.riderKm : 0, activeLoad: 1, score: 0},
+    bundle: {kind: "batch", leadOrderId: best.lead.id, riderId: best.riderId, stop: 1, stops: 2,
+      pickupOrder: [...best.plan.pickupOrder], dropOrder: [...best.plan.dropOrder], leadExtraMinutes: best.plan.leadExtraMinutes},
+  };
+}
+
+/** Dispatches a trip's later pickups once its first pickup has a rider (or is cancelled). */
+export async function releaseTripFollowers(lead: SavrivoOrder): Promise<void> {
+  const trip = lead.clusterTrip;
+  if (!trip || trip.leadOrderId !== lead.id) return;
+  for (const followerId of trip.orderIds.filter((id) => id !== lead.id)) {
+    const [orderSnapshot, queueSnapshot] = await Promise.all([
+      orderRef(firestoreDb, followerId).get(),
+      dispatchQueueRef(firestoreDb, followerId).get(),
+    ]);
+    const follower = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
+    if (!follower || follower.riderId || !DISPATCH_ELIGIBLE_STATUSES.has(follower.status)) continue;
+    const queue = queueSnapshot.exists ? queueSnapshot.data() as QueueWithOfferData : null;
+    if (queue && ["offering", "assigned"].includes(queue.status)) continue;
+    await beginSequentialDispatch(follower);
+  }
+}
+
+/** The two orders' shared link, as written on the added order. */
+export function batchLinkFrom(bundle: NonNullable<DispatchQueueRecord["bundle"]>, next: SavrivoOrder, lead: SavrivoOrder,
+  at: number): OrderBatchLink {
+  const placed = [lead, next].sort((a, b) => Number(a.createdAt) - Number(b.createdAt) || a.id.localeCompare(b.id)).map((entry) => entry.id);
+  const pickupOrder = bundle.pickupOrder?.length === 2 && placed.every((id) => bundle.pickupOrder!.includes(id)) ?
+    [...bundle.pickupOrder] : [lead.id, next.id];
+  // Doors always go in the order the customers placed them.
+  return {
+    id: `bt_${lead.id}_${next.id}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 200),
+    orderIds: placed,
+    leadOrderId: lead.id,
+    pickupOrder,
+    dropOrder: placed,
+    position: placed.indexOf(next.id) + 1,
+    size: 2,
+    leadExtraMinutes: Number(bundle.leadExtraMinutes ?? 0),
+    createdAt: at,
+  };
+}
+
+/** The same link as seen from one of its orders. */
+export function batchLinkFor(link: OrderBatchLink, orderId: string): OrderBatchLink {
+  return {...link, position: link.dropOrder.indexOf(orderId) + 1};
+}
+
 export async function beginSequentialDispatch(order: SavrivoOrder): Promise<QueueWithOfferData | null> {
-  if (!DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId) return null;
+  // A self-delivering store takes its own orders (assignStoreAsRider); no rider is ever offered one.
+  if (!DISPATCH_ELIGIBLE_STATUSES.has(order.status) || order.riderId || order.selfDelivery === true) return null;
   const ref = dispatchQueueRef(firestoreDb, order.id);
   const previousSnapshot = await ref.get();
   const previous = previousSnapshot.exists ? previousSnapshot.data() as QueueWithOfferData : null;
   const priorAttempts = previous?.attemptedRiders ?? {};
-  const policy = previous?.policySnapshot ? policyForQueue(previous) : await loadDispatchPolicy();
-  const candidates = await candidatesFor(order, policy, priorAttempts);
+  // A later pickup of a shared multi-restaurant trip goes to the rider who took the first one;
+  // any other order is first offered to a rider already heading nearby, when both customers stay on time.
+  const bundle = order.clusterTrip ? await bundleDecision(order, previous) : await batchDecision(order, previous);
+  if (bundle.kind === "wait") {
+    logger.info("BUNDLE_WAITING_FOR_LEAD", {orderId: order.id, leadOrderId: order.clusterTrip?.leadOrderId});
+    return null;
+  }
+  const basePolicy = previous?.policySnapshot && !previous.bundle ? policyForQueue(previous) : await loadDispatchPolicy();
+  // The trip's rider is mid-trip: give them longer to answer, and only them. An added order's plan
+  // holds only briefly, so that offer is short.
+  const policy: DispatchPolicy = bundle.kind === "offer" ?
+    {...basePolicy, ridersPerWave: 1, offerTimeoutSeconds: bundle.bundle.kind === "batch" ?
+      BATCH_OFFER_SECONDS : Math.max(basePolicy.offerTimeoutSeconds, 300)} : basePolicy;
+  const previousBackupRiders = new Set(previous?.backupRiders ?? []);
+  const candidates = bundle.kind === "offer" ? [bundle.candidate] : await candidatesFor(order, policy, priorAttempts, previousBackupRiders);
   const now = Date.now();
-  const wave = findNextDispatchWave(candidates, priorAttempts, policy, 0);
+  // candidatesFor has already dropped riders still in their cooldown, so a rider it returned may be
+  // asked again after missing an earlier offer. A rider who said no isn't asked again for this order.
+  const declinedRiders = previous?.declinedRiders ?? {};
+  const askableAgain = new Set(candidates.map((candidate) => candidate.riderId)
+    .filter((riderId) => !Object.prototype.hasOwnProperty.call(declinedRiders, riderId)));
+  const standingAttempts = bundle.kind === "offer" ? priorAttempts :
+    Object.fromEntries(Object.entries(priorAttempts).filter(([riderId]) => !askableAgain.has(riderId)));
+  // The trip's rider is asked even if an earlier offer of this order reached them before.
+  const wave = findNextDispatchWave(candidates, bundle.kind === "offer" ? {} : standingAttempts, policy, 0);
+  const trip = order.clusterTrip;
+  const tripPickups = trip && trip.leadOrderId === order.id && trip.orderIds.length > 1 ? trip.orderIds.length : 0;
   const selected = wave?.candidates ?? [];
   const activeOffers = offersForWave(
     selected,
     wave?.wave ?? 0,
     now,
-    policy.offerTimeoutSeconds,
+    waveTimeoutSeconds(selected, policy.offerTimeoutSeconds),
   );
   const first = selected[0];
   const attempt = previous ? Number(previous.attempt ?? -1) + 1 : 0;
-  const attemptedRiders = {...priorAttempts};
+  const attemptedRiders = {...standingAttempts};
   selected.forEach((candidate) => { attemptedRiders[candidate.riderId] = now; });
+  // Asked on a live signal, a rider is an ordinary candidate again and the usual wait applies.
+  const backupRiders = new Set(previousBackupRiders);
+  candidates.forEach((candidate) => { if (candidate.staleSignal === true) backupRiders.add(candidate.riderId); });
+  selected.forEach((candidate) => { if (candidate.staleSignal !== true) backupRiders.delete(candidate.riderId); });
   const queue: QueueWithOfferData = {
     id: order.id,
     orderId: order.id,
@@ -436,6 +814,8 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     policySnapshot: {...policy},
     status: first ? "offering" : "exhausted",
     attemptedRiders,
+    ...(previous?.declinedRiders ? {declinedRiders: previous.declinedRiders} : {}),
+    ...(backupRiders.size ? {backupRiders: [...backupRiders]} : {}),
     metrics: {
       offered: Number(previous?.metrics?.offered ?? 0) + selected.length,
       accepted: Number(previous?.metrics?.accepted ?? 0),
@@ -459,6 +839,9 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     ...(first ? {offeredRiderId: first.riderId} : {}),
     ...(first ? {distanceKm: Number(first.distanceKm.toFixed(2))} : {}),
     ...(first ? {distanceSource: "gps_straight_line" as const} : {}),
+    ...(bundle.kind === "offer" ? {bundle: bundle.bundle} : {}),
+    ...(tripPickups ? {tripPickups} : {}),
+    ...(previous?.bundle || previous?.bundleTried ? {bundleTried: true} : {}),
   };
   let committed = false;
   const activeQueue = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
@@ -484,8 +867,13 @@ export async function beginSequentialDispatch(order: SavrivoOrder): Promise<Queu
     // Enqueuing duplicate timeout tasks is safe: each task carries the expected
     // attempt and the queue transaction rejects stale attempts.
     const activePolicy = policyForQueue(activeQueue);
-    await scheduleTimeout(order.id, activeQueue.attempt, activePolicy.offerTimeoutSeconds);
+    await scheduleTimeout(order.id, activeQueue.attempt, queueWaveTimeoutSeconds(activeQueue, activePolicy));
     if (committed) {
+      // Online riders whose phones went quiet: their Rider app starts itself again, if it can.
+      const quietRiders = activeQueue.candidates.filter((candidate) => candidate.staleSignal === true)
+        .slice(0, RIDER_WAKE_LIMIT).map((candidate) => candidate.riderId);
+      await Promise.all(quietRiders.map((riderId) => notifyRiderWake(riderId)
+        .catch((error) => logger.warn("Rider wake push failed", {orderId: order.id, riderId, error}))));
       await Promise.all(activeOfferEntries(activeQueue).map(async ([riderId, offer]) => {
         await riderOfferRef(firestoreDb, riderId, order.id).set(riderOfferRecord(activeQueue, riderId));
         logger.info("RIDER_OFFER_SENT", {
@@ -546,7 +934,7 @@ export async function advanceDispatchOffer(orderId: string, expectedAttempt: num
         nextWave.candidates,
         nextWave.wave,
         now,
-        policy.offerTimeoutSeconds,
+        waveTimeoutSeconds(nextWave.candidates, policy.offerTimeoutSeconds),
       );
       const primary = nextWave.candidates[0]!;
       nextRiderIds = nextWave.candidates.map((candidate) => candidate.riderId);
@@ -582,6 +970,14 @@ export async function advanceDispatchOffer(orderId: string, expectedAttempt: num
     await stopRiderOffers(previousRiderIds, orderId, "")
       .catch((error) => logger.warn("Expired rider offer removal failed", {orderId, riderIds: previousRiderIds, error}));
   }
+  if (queue.status === "exhausted" && queue.bundle) {
+    // The trip's rider did not take this pickup: any nearby rider can now.
+    const snapshot = await orderRef(firestoreDb, orderId).get();
+    const pending = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+    logger.info("BUNDLE_OFFER_NOT_TAKEN", {orderId, riderId: queue.bundle.riderId});
+    if (pending && DISPATCH_ELIGIBLE_STATUSES.has(pending.status) && !pending.riderId) await beginSequentialDispatch(pending);
+    return;
+  }
   if (queue.status !== "offering" || !nextRiderIds.length) return;
   const orderSnapshot = await orderRef(firestoreDb, orderId).get();
   const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
@@ -590,7 +986,7 @@ export async function advanceDispatchOffer(orderId: string, expectedAttempt: num
     return;
   }
   const policy = policyForQueue(queue);
-  await scheduleTimeout(orderId, nextAttempt, policy.offerTimeoutSeconds);
+  await scheduleTimeout(orderId, nextAttempt, queueWaveTimeoutSeconds(queue, policy));
   await Promise.all(nextRiderIds.map(async (riderId) => {
     const offer = activeOfferForRider(queue, riderId);
     if (!offer) return;
@@ -631,8 +1027,11 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   if (wallet?.codBlocked === true || wallet?.orderBlocked === true) {
     throw new DomainError("failed-precondition", "Resolve the rider account hold before accepting another order.");
   }
+  // A rider we rang as a backup answers from a closed app: their signal is old by design.
+  const offeredAsBackup = cachedQueue?.candidates?.some((candidate) =>
+    candidate.riderId === uid && candidate.staleSignal === true) === true;
   if (!presence || !isDispatchPresenceEligible({...presence, activeOrderId: undefined}, Date.now(), {
-    presenceFreshMs: policy.presenceFreshMs,
+    presenceFreshMs: offeredAsBackup ? STALE_SIGNAL_MAX_AGE_MS : policy.presenceFreshMs,
     maxLocationAccuracyMeters: policy.maxLocationAccuracyMeters,
   })) {
     throw new DomainError("failed-precondition", "Go online with current location before accepting an order.");
@@ -640,7 +1039,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   if (!Number.isFinite(Number(presence.lat)) || !Number.isFinite(Number(presence.lng))) {
     throw new DomainError("failed-precondition", "A current rider location is required to accept this order.");
   }
-  if (!isEarlyDispatchWorkloadEligible(jobs)) {
+  if (!isEarlyDispatchWorkloadEligible(jobs) && !bundleClaimAllowed(cachedQueue, uid, jobs)) {
     throw new DomainError("failed-precondition", "Finish the current delivery before accepting another order.");
   }
   const claimAt = Date.now();
@@ -695,12 +1094,40 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   const restaurantSnapshot = await restaurantRef(firestoreDb, before.restaurantId).get();
   const restaurant = restaurantSnapshot.exists ? restaurantSnapshot.data() as {phone?: string} : null;
   let orderCommitted = false;
+  // An added order (batch): the rider's first order is linked in the same transaction, so the rider
+  // can never be handed a third order, and the plan is dropped if that order has moved on.
+  const batchBundle = queue.bundle?.kind === "batch" && queue.bundle.riderId === uid ? queue.bundle : null;
+  const leadDocRef = batchBundle ? orderRef(firestoreDb, batchBundle.leadOrderId) : null;
+  let batchStale = false;
+  let batchPickupEta: {riderPickupEtaAt?: number} = {};
   const order = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    batchStale = false;
+    batchPickupEta = {};
     const snapshot = await transaction.get(orderDocRef);
+    const leadSnapshot = leadDocRef ? await transaction.get(leadDocRef) : null;
     const orderValue = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
     if (!orderValue || orderValue.id !== before.id || orderValue.customerId !== before.customerId ||
       orderValue.restaurantId !== before.restaurantId || orderValue.createdAt !== before.createdAt ||
       !DISPATCH_ELIGIBLE_STATUSES.has(orderValue.status) || orderValue.riderId) return orderValue;
+    let batch: OrderBatchLink | null = null;
+    if (batchBundle && leadDocRef) {
+      const lead = leadSnapshot?.exists ? leadSnapshot.data() as SavrivoOrder : null;
+      if (!lead || lead.riderId !== uid || lead.batch || lead.clusterTrip || !BATCH_LEAD_ORDER_STATUSES.has(lead.status)) {
+        batchStale = true;
+        return orderValue;
+      }
+      batch = batchLinkFrom(batchBundle, orderValue, lead, claimAt);
+      const leadFirst = batch.pickupOrder[0] === lead.id;
+      batchPickupEta = leadFirst && lead.status !== "Handed to rider" ?
+        viaPickupEta(presence, lead.restaurantLocation, orderValue.restaurantLocation, claimAt) : {};
+      // The rider now visits this order's kitchen first: the first restaurant sees them later.
+      const leadEta = leadFirst ? {} : viaPickupEta(presence, orderValue.restaurantLocation, lead.restaurantLocation, claimAt);
+      transaction.update(leadDocRef, {
+        batch: batchLinkFor(batch, lead.id),
+        ...(leadEta.riderPickupEtaAt ? {riderPickupEtaAt: Math.max(Number(lead.riderPickupEtaAt ?? 0), leadEta.riderPickupEtaAt)} : {}),
+        updatedAt: claimAt,
+      });
+    }
     const ready = orderValue.status === "Ready for pickup";
     const candidate: SavrivoOrder = {
       ...stripPrivateOrderFields(orderValue),
@@ -711,9 +1138,11 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
       ...(RIDER_AVATARS.has(String(rider.avatar ?? "")) ? {riderAvatar: String(rider.avatar)} : {}),
       // When the restaurant can expect the rider, shown on the restaurant's order card.
       ...riderPickupEta(presence, orderValue.restaurantLocation, claimAt),
+      ...batchPickupEta,
       ...riderPublicStats(rider),
       riderAssignedAt: claimAt,
       ...(restaurant?.phone ? {restaurantPhone: String(restaurant.phone).slice(0, 30)} : {}),
+      ...(batch ? {batch: batchLinkFor(batch, orderValue.id)} : {}),
       status: ready ? "Assigned" : orderValue.status,
       updatedAt: claimAt,
       statusHistory: ready ? {...(orderValue.statusHistory ?? {}), [eventId]: event} : orderValue.statusHistory,
@@ -728,6 +1157,14 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
     orderCommitted = true;
     return next;
   });
+  if (batchStale) {
+    // The rider's first order left its restaurant (or changed) since the offer: offer this one normally.
+    await releaseQueueClaim(queueRef, uid);
+    logger.info("BATCH_CLAIM_STALE", {orderId, riderId: uid, leadOrderId: batchBundle?.leadOrderId});
+    await declineDispatchOffer(uid, orderId)
+      .catch((error) => logger.warn("BATCH_STALE_REDISPATCH_FAILED", {orderId, riderId: uid, error: String(error)}));
+    throw new DomainError("failed-precondition", "This extra order no longer fits your trip.");
+  }
   if (!orderCommitted) {
     const authoritativeSnapshot = await orderDocRef.get();
     const authoritativeOrder = authoritativeSnapshot.exists ? authoritativeSnapshot.data() as SavrivoOrder : null;
@@ -807,6 +1244,12 @@ async function finalizeRiderAssignment(
     // Who may post live location for this order (checked by the RTDB rules).
     db.ref(`${ROOT}/trackingAssignments/${order.id}`).set({riderId: uid, customerId: order.customerId, assignedAt: claimAt}),
   ]);
+  // The rider's first order learns it now shares the trip (its job is rebuilt only on status changes).
+  if (order.batch && order.batch.leadOrderId !== order.id) {
+    await riderJobRef(firestoreDb, uid, order.batch.leadOrderId)
+      .set({batch: riderBatchProjection(batchLinkFor(order.batch, order.batch.leadOrderId)), updatedAt: claimAt}, {merge: true})
+      .catch((error) => logger.warn("BATCH_LEAD_JOB_UPDATE_FAILED", {orderId: order.id, riderId: uid, error: String(error)}));
+  }
   await reconcileRestaurantOrderProjection(order);
   const offeredRiderIds = allOfferedRiderIds(queue);
   await clearRiderOfferRecords(offeredRiderIds, order.id);
@@ -817,6 +1260,11 @@ async function finalizeRiderAssignment(
     .catch((error) => logger.warn("Assigned rider offer removal failed", {orderId: order.id, riderId: uid, error}));
   await notifyCustomerRiderAssigned(order)
     .catch((error) => logger.warn("Customer rider-assigned notification failed", {orderId: order.id, riderId: uid, error}));
+  // First pickup of a shared trip taken: offer the trip's other pickups to this rider.
+  if (order.clusterTrip?.leadOrderId === order.id) {
+    await releaseTripFollowers(order)
+      .catch((error) => logger.warn("BUNDLE_FOLLOWER_DISPATCH_FAILED", {orderId: order.id, riderId: uid, error: String(error)}));
+  }
   return order;
 }
 
@@ -967,12 +1415,14 @@ export async function declineDispatchOffer(uid: string, orderId: string): Promis
   let attempt = -1;
   let advance = false;
   let committed = false;
+  let extraPickup = false;
   await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
     const snapshot = await transaction.get(ref);
     const current = snapshot.exists ? snapshot.data() as QueueWithOfferData : null;
     const declinedOffer = activeOfferForRider(current, uid);
     if (!current || current.status !== "offering" || current.claim || !declinedOffer) return;
     attempt = current.attempt;
+    extraPickup = Boolean(current.bundle);
     const remainingOffers = {...(current.activeOffers ?? {})};
     delete remainingOffers[uid];
     // Legacy sequential queues have no activeOffers map.
@@ -986,6 +1436,7 @@ export async function declineDispatchOffer(uid: string, orderId: string): Promis
       ...current,
       currentOffer: nextPrimary ?? {...declinedOffer, expiresAt: 0},
       activeOffers: remainingOffers,
+      declinedRiders: {...(current.declinedRiders ?? {}), [uid]: Date.now()},
       ...(nextPrimary ? {offeredRiderId: nextPrimary.riderId} : {}),
       ...(nextCandidate ? {distanceKm: Number(nextCandidate.distanceKm.toFixed(2))} : {}),
       metrics: {
@@ -1004,9 +1455,12 @@ export async function declineDispatchOffer(uid: string, orderId: string): Promis
   await clearRiderOfferRecords([uid], orderId);
   await stopRiderOffers([uid], orderId, "")
     .catch((error) => logger.warn("Declined rider offer removal failed", {orderId, riderId: uid, error}));
-  logger.info("RIDER_OFFER_REJECTED", {orderId, riderId: uid, attempt});
-  await recordRiderRewardOrderRejected(uid, orderId, Date.now())
-    .catch((error) => logger.warn("Reward rejection tracking failed", {orderId, riderId: uid, error}));
+  logger.info("RIDER_OFFER_REJECTED", {orderId, riderId: uid, attempt, extraPickup});
+  // Saying no to an extra pickup mid-trip never counts against a rider's acceptance rate.
+  if (!extraPickup) {
+    await recordRiderRewardOrderRejected(uid, orderId, Date.now())
+      .catch((error) => logger.warn("Reward rejection tracking failed", {orderId, riderId: uid, error}));
+  }
   if (advance) await advanceDispatchOffer(orderId, attempt);
 }
 

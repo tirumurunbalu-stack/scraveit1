@@ -3,6 +3,7 @@ import {
   buildRemoveRiderOfferMessage,
   buildRestaurantNewOrderMessage,
   buildRiderOfferMessage,
+  buildRiderWakeMessage,
   buildStopRestaurantAlarmMessage,
 } from "../src/domain/notificationMessages";
 import type {SavrivoOrder} from "../src/types";
@@ -112,5 +113,15 @@ describe("rider operational FCM messages", () => {
       offerId: "rider-offer:SV-ABC123",
       assignedRiderId: "rider-2",
     });
+  });
+});
+
+describe("rider wake push", () => {
+  it("is a silent high-priority data message that Android can use to start a service", () => {
+    const message = buildRiderWakeMessage();
+    expect(message.data).toEqual({type: "RIDER_WAKE_TRACKING"});
+    expect(message.android?.priority).toBe("high");
+    expect(message.android?.notification).toBeUndefined();
+    expect((message as {notification?: unknown}).notification).toBeUndefined();
   });
 });

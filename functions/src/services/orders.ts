@@ -9,6 +9,7 @@ import {
   canTransition,
   deterministicOrderId,
   hashOtp,
+  legacyOrderId,
   priceCart,
   roundMoney,
 } from "../domain/order";
@@ -18,7 +19,7 @@ import {countAvailableRiders, estimateDelivery} from "../domain/deliveryEstimate
 // Same staleness bar dispatch itself uses to decide a rider is really there,
 // so the delivery estimate and the dispatcher never disagree about supply.
 import {DEFAULT_DISPATCH_POLICY} from "../domain/dispatchPolicy";
-import {deriveLifecycleFromCanonicalState} from "../domain/lifecycle";
+import {buildLifecycleMutation, deriveLifecycle, deriveLifecycleFromCanonicalState} from "../domain/lifecycle";
 import {
   resolveFinancePaymentSelection,
   type FinancePolicy,
@@ -30,12 +31,14 @@ import {FieldValue} from "../firestoreTypes";
 import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef, riderWalletRef} from "../firestorePaths";
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
 import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
-import {authorizeTransition} from "./authz";
+import {authorizeTransition, requireApprovedRider} from "./authz";
 import {assertMayOrder} from "./accountAge";
 import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
+import {loadPriceQuote} from "./priceQuotes";
 import {
   checkoutTax,
   finalizeOrderEconomics,
+  markupCheckoutBill,
   loadEconomicsControl,
   orderEconomicsRecord,
   orderEconomicsRef,
@@ -47,6 +50,7 @@ import {
   restaurantCommissionBps,
 } from "./economics";
 import {economicsScopeKey, rupeesToPaise, settlementTerms} from "../domain/economics";
+import {isMarkupCart, markupCutPaise, markupFees, menuPricingOf, withoutCustomerTax} from "../domain/markupPricing";
 import {planWalletRedemption, reserveWalletRedemption} from "./wallet";
 import {reconcileRestaurantWorkload} from "./workload";
 import {reconcileRestaurantOrderProjection} from "./orderProjection";
@@ -56,6 +60,8 @@ import {persistOnlineOrderDeliveryLedger} from "./onlineDeliveryLedger";
 import {loadFinancePolicy} from "./platformConfig";
 import {lawBasedCheckoutTax} from "./taxEngine";
 import {requireVerifiedRiderRestaurantArrival} from "./riderRestaurantArrival";
+import {mediaFile} from "./mediaBucket";
+import {adClickBefore, learnedEtaFor, writeAdConversion} from "./learning";
 
 function eventKey(now: number, actorId: string): string {
   return `e_${now}_${actorId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30)}`;
@@ -396,19 +402,79 @@ async function promoteReadyOrderToAssigned(before: SavrivoOrder): Promise<Savriv
   }
 }
 
-export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput, options: {payerUid?: string} = {}): Promise<{
+/**
+ * Preparing → Ready for pickup → Assigned for the rider standing at the
+ * counter with the parcel, the same two steps "Order ready" would have taken.
+ */
+async function markReadyForRiderPickup(before: SavrivoOrder, riderId: string): Promise<SavrivoOrder> {
+  const ready = before.status === "Preparing" ? await commitAuthoritativeTransition({
+    before,
+    toStatus: "Ready for pickup",
+    // Not the rider's id: the pickup event right after it may land in the same
+    // millisecond and the two would share a history key.
+    actorId: "rider_pickup",
+    actorRole: "system",
+    detail: "Rider picked up before the kitchen tapped Order ready",
+    expectedRiderId: riderId,
+  }) : before;
+  return promoteReadyOrderToAssigned(ready);
+}
+
+/** One restaurant's part of a multi-restaurant order (see services/clusterOrders.ts). */
+export interface ClusterPartOptions {
+  id: string;
+  index: number;
+  size: number;
+  /** The platform fee is charged once per cart, on the first part. */
+  waivePlatformFee: boolean;
+  /** The small-order fee is judged on the whole cart, not on each restaurant's part. */
+  waiveSmallOrderFee: boolean;
+}
+
+const ORDER_ID_ATTEMPTS = 5;
+
+/**
+ * The order number for this checkout and the order already placed with it,
+ * if any. A checkout started before the switch to 15-digit numbers keeps its
+ * SV- order on retry; a number another customer's order holds moves on to
+ * the next one.
+ */
+export async function claimOrderId(uid: string, idempotencyKey: string): Promise<{orderId: string; existing: SavrivoOrder | null}> {
+  const mine = (snapshot: {exists: boolean; data(): unknown}) => {
+    const order = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+    return order?.customerId === uid && order.idempotencyKey === idempotencyKey ? order : null;
+  };
+  const legacyId = legacyOrderId(uid, idempotencyKey);
+  const [legacy, first] = await Promise.all([
+    orderRef(firestoreDb, legacyId).get(),
+    orderRef(firestoreDb, deterministicOrderId(uid, idempotencyKey)).get(),
+  ]);
+  const legacyOrder = mine(legacy);
+  if (legacyOrder) return {orderId: legacyId, existing: legacyOrder};
+  let snapshot = first;
+  for (let attempt = 0; attempt < ORDER_ID_ATTEMPTS; attempt++) {
+    const orderId = deterministicOrderId(uid, idempotencyKey, attempt);
+    if (attempt > 0) snapshot = await orderRef(firestoreDb, orderId).get();
+    if (!snapshot.exists) return {orderId, existing: null};
+    const existing = mine(snapshot);
+    if (existing) return {orderId, existing};
+  }
+  throw new DomainError("already-exists", "Order idempotency conflict.");
+}
+
+export async function createAuthoritativeOrder(uid: string, input: CreateOrderInput, options: {
+  payerUid?: string;
+  cluster?: ClusterPartOptions;
+  /** Meal plans place orders on a schedule; group orders check every store before their first part. */
+  skipDeliveryPartnerCheck?: boolean;
+} = {}): Promise<{
   order: SavrivoOrder;
   deliveryOtp: string;
   recovered: boolean;
 }> {
-  const orderId = deterministicOrderId(uid, input.idempotencyKey);
+  const {orderId, existing} = await claimOrderId(uid, input.idempotencyKey);
   const ref = orderRef(firestoreDb, orderId);
-  const existingSnapshot = await ref.get();
-  const existing = existingSnapshot.exists ? existingSnapshot.data() as SavrivoOrder : null;
   if (existing) {
-    if (existing.customerId !== uid || existing.idempotencyKey !== input.idempotencyKey) {
-      throw new DomainError("already-exists", "Order idempotency conflict.");
-    }
     const deliveryOtp = await otpForExisting(existing);
     return {order: stripPrivateOrderFields(existing), deliveryOtp, recovered: true};
   }
@@ -419,10 +485,14 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     loadRestaurantAndMenu(input.restaurantId),
     loadCustomerAddress(uid, input.addressId),
   ]);
-  const {items, subtotal} = priceCart(input.items, menuById);
+  // No free delivery partner near the store: nothing is written and no payment starts.
+  // Loaded on use (like adminToday.ts): dispatch brings rider-side modules order code otherwise never needs.
+  if (!options.skipDeliveryPartnerCheck && !options.cluster) await (await import("./dispatch")).assertDeliveryPartnerFreeNear(restaurant);
+  const {items, subtotal, markup} = priceCart(input.items, menuById, menuPricingOf(restaurant));
   const pricedAt = Date.now();
-  const [fees, promotion, economicsControl, availableRiders] = await Promise.all([
-    loadServerFees(restaurant, address, subtotal),
+  const [loadedFees, promotion, economicsControl, availableRiders] = await Promise.all([
+    // Markup restaurants: fee rules see the food total the customer saw (GST included).
+    loadServerFees(restaurant, address, markup?.listSubtotal ?? subtotal).then((value) => markupFees(value, markup)),
     resolveCheckoutPromotion(input.couponCode, {
       subtotalPaise: rupeesToPaise(subtotal),
       restaurantId: restaurant.id,
@@ -449,6 +519,24 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
         return null;
       }),
   ]);
+  const cluster = options.cluster;
+  // The fees the customer was shown, when that is the total they tapped on. Fresh fees still ran above,
+  // because they also enforce the minimum order and the delivery radius. An order from several
+  // restaurants has no single total to compare, so each part takes its own quote.
+  const quote = input.quotedTotal !== undefined || cluster ? await loadPriceQuote<typeof loadedFees>(uid, {
+    restaurantId: input.restaurantId,
+    addressId: input.addressId,
+    lat: address.lat,
+    lng: address.lng,
+    items: input.items,
+  }, pricedAt) : null;
+  const shownFees = quote && (cluster || rupeesToPaise(quote.total) === rupeesToPaise(input.quotedTotal)) ?
+    {...loadedFees, ...quote.fees} : loadedFees;
+  const fees = cluster ? {
+    ...shownFees,
+    ...(cluster.waivePlatformFee ? {platformFee: 0} : {}),
+    ...(cluster.waiveSmallOrderFee ? {smallOrderFee: 0} : {}),
+  } : shownFees;
   let payment: Pick<SavrivoOrder, "paymentMethod" | "paymentState" | "paymentProvider">;
   const financePolicy = await loadFinancePolicy(pricedAt);
   try {
@@ -469,6 +557,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     promotion,
     defaultCommissionBps: financePolicy.restaurantCommissionBps,
     now: pricedAt,
+    ...(isMarkupCart(markup) ? {markupCutPaise: markupCutPaise(rupeesToPaise(subtotal), markup)} : {}),
   });
   const discount = (economicsPlan.discount.restaurantDiscountPaise + economicsPlan.discount.platformDiscountPaise) / 100;
   // CA-defined component tax rules replace the flat food tax only once a
@@ -477,6 +566,10 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   // Effective-dated tax law (services/taxEngine.ts) replaces it once switched on.
   const lawTax = await lawBasedCheckoutTax({restaurant, items, menuById, plan: economicsPlan, fees, subtotal, at: pricedAt});
   if (lawTax?.tax) tax = lawTax.tax;
+  // Markup restaurants: food GST is inside the customer's prices, not added on top.
+  const markupPricing = markup ? markupCheckoutBill(markup, {
+    subtotal, plan: economicsPlan, tax, orderTax: lawTax?.tax ? lawTax.orderTax : null,
+  }) : null;
   const feeInput = {
     subtotal,
     discount,
@@ -491,7 +584,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     surgeFee: fees.surgeFee,
     riderIncentiveFee: fees.riderIncentiveFee,
     riderSurgeFee: fees.riderSurgeFee,
-    ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
+    ...(markupPricing ? {taxOverride: markupPricing.customerTaxPaise / 100} :
+      tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
   };
   // Wallet money (cashback / referral credit) is a way of paying, used only
   // when the customer asked and only up to the wallet rules for this order.
@@ -508,13 +602,21 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     ...feeInput,
     ...(walletRedeemPaise > 0 ? {walletRedeem: walletRedeemPaise / 100} : {}),
   });
+  // The customer pays what was on the screen, or no order is made and the app shows them the new total.
+  if (input.quotedTotal !== undefined && rupeesToPaise(total) !== rupeesToPaise(input.quotedTotal)) {
+    logger.info("ORDER_PRICE_CHANGED", {orderId, restaurantId: restaurant.id, shown: input.quotedTotal, total, quoted: quote !== null});
+    throw new DomainError("failed-precondition", `PRICE_CHANGED:${total}`);
+  }
   // Saved with the order so its bill names each charge the way checkout did.
   const incentiveItems = [
     ...fees.riderIncentiveItems,
     ...(fees.riderSurgeFee > 0 ? [{label: "Rider surge fee", amount: fees.riderSurgeFee}] : []),
   ];
-  const labelledPricing: PricingBreakdown = incentiveItems.length ?
-    {...basePricing, riderIncentiveItems: incentiveItems} : basePricing;
+  const labelledPricing: PricingBreakdown = {
+    ...basePricing,
+    ...(incentiveItems.length ? {riderIncentiveItems: incentiveItems} : {}),
+    ...(markupPricing ? {markup: withoutCustomerTax(markupPricing)} : {}),
+  };
   const pricing: PricingBreakdown = economicsPlan.engineEnabled ? {
     ...labelledPricing,
     restaurantDiscount: economicsPlan.discount.restaurantDiscountPaise / 100,
@@ -551,6 +653,19 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   }
 
   const now = pricedAt;
+  // Learned prep and ride times (only once they beat the rules), and whether a tap on this store's Ad brought the order.
+  const [learnedEta, adClickAt] = await Promise.all([
+    learnedEtaFor({
+      restaurant,
+      items: items.reduce((sum, item) => sum + item.quantity, 0),
+      customer: Number.isFinite(Number(address.lat)) && Number.isFinite(Number(address.lng)) ? {lat: Number(address.lat), lng: Number(address.lng)} : null,
+      at: now,
+    }).catch((error) => {
+      logger.warn("LEARNED_ETA_FAILED", {orderId, error: String(error)});
+      return null;
+    }),
+    adClickBefore(uid, restaurant.id, now),
+  ]);
   const deliveryEstimate = estimateDelivery({
     kitchenEtaMinMinutes: restaurant.etaMin,
     kitchenEtaMaxMinutes: restaurant.etaMax,
@@ -558,6 +673,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     activeOrders: fees.activeOrders,
     availableRiders,
     occurredAt: now,
+    learned: learnedEta,
   });
   // Reserve the OTP before committing the canonical order. A process failure
   // can leave a harmless private reservation, but can never leave a live order
@@ -577,6 +693,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     restaurantId: restaurant.id,
     restaurant: restaurant.name,
     restaurantLocation: {address: restaurant.address, lat: Number(restaurant.lat), lng: Number(restaurant.lng)},
+    // Fixed at checkout: whether this store delivers the order itself (see assignStoreAsRider).
+    ...((restaurant as {selfDelivery?: unknown}).selfDelivery === true ? {selfDelivery: true} : {}),
     ...(restaurant.phone ? {restaurantPhone: String(restaurant.phone).slice(0, 30)} : {}),
     items,
     pricing,
@@ -608,6 +726,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     etaBasis: deliveryEstimate.basis,
     ...(economics ? {economics: settlementTerms(economics)} : {}),
     ...(economicsPlan.offer ? {appliedOffer: economicsPlan.offer} : {}),
+    ...(cluster ? {clusterId: cluster.id, clusterIndex: cluster.index, clusterSize: cluster.size, clusterHold: true} : {}),
+    ...(adClickAt ? {adClickAt} : {}),
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
 
@@ -629,6 +749,8 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
         at: now,
       }) : null;
     transaction.set(ref, order);
+    // The store's Ad gets the credit in the same transaction, so a counted order always exists.
+    if (adClickAt) writeAdConversion(transaction, order, adClickAt, markup?.listSubtotal ?? subtotal);
     const writeWallet = walletRedeemPaise > 0 ?
       await reserveWalletRedemption(transaction, {customerId: uid, orderId, amountPaise: walletRedeemPaise, at: now}) : null;
     if (economics) {
@@ -656,10 +778,13 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
   // the idempotency marker is new state to write here.
   await firestoreDb.collection("orderIdempotency").doc(`${uid}_${input.idempotencyKey}`)
     .set({orderId, createdAt: now});
-  await Promise.all([
-    reconcileRestaurantOrderProjection(order),
-    reconcileRestaurantWorkload(order),
-  ]);
+  // A multi-restaurant part stays invisible to its restaurant until the whole cart is released.
+  if (!order.clusterHold) {
+    await Promise.all([
+      reconcileRestaurantOrderProjection(order),
+      reconcileRestaurantWorkload(order),
+    ]);
+  }
   return {order, deliveryOtp, recovered: false};
 }
 
@@ -672,6 +797,44 @@ export async function createAuthoritativeCodOrder(uid: string, input: CreateCodO
     ...input,
     paymentMethod: "cod",
   });
+}
+
+const PICKUP_PHOTO_MAX_BYTES = 3 * 1024 * 1024;
+const PICKUP_PHOTO_LINK_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function authorizeRiderPickup(uid: string, order: SavrivoOrder): Promise<ActorRole> {
+  if (order.riderId !== uid || isStoreDelivery(order)) {
+    throw new DomainError("permission-denied", "Only the delivery partner on this order can pick it up.");
+  }
+  await requireApprovedRider(uid);
+  return "rider";
+}
+
+export function pickupPhotoPathOk(path: string, uid: string, orderId: string): boolean {
+  const safe = (v: string) => v.replace(/[^A-Za-z0-9_-]/g, "");
+  if (!uid || !orderId || safe(uid) !== uid || safe(orderId) !== orderId) return false;
+  return new RegExp(`^private/rider-pickups/${uid}/${orderId}-[0-9]{10,16}\\.jpg$`).test(path);
+}
+
+/**
+ * The rider's photo of the parcel with the order ID showing, taken with the
+ * camera at pickup. It stays private; the order keeps a 7-day link to it for
+ * support if anything goes missing.
+ */
+async function verifyPickupPhoto(order: SavrivoOrder, uid: string, path: string | undefined) {
+  if (!path || !pickupPhotoPathOk(path, uid, order.id)) {
+    throw new DomainError("invalid-argument", "That photo can't be used for this order.");
+  }
+  const file = await mediaFile(path);
+  const [exists] = await file.exists();
+  if (!exists) throw new DomainError("failed-precondition", "The photo didn't finish uploading. Take it again.");
+  const [meta] = await file.getMetadata();
+  if (Number(meta.size ?? 0) > PICKUP_PHOTO_MAX_BYTES || !String(meta.contentType ?? "").startsWith("image/")) {
+    throw new DomainError("invalid-argument", "That file isn't a photo we can use.");
+  }
+  const at = Date.now(), expiresAt = at + PICKUP_PHOTO_LINK_MS;
+  const [url] = await file.getSignedUrl({version: "v4", action: "read", expires: expiresAt});
+  return {url, at, expiresAt, by: uid, path};
 }
 
 export async function transitionOrder(
@@ -694,7 +857,11 @@ export async function transitionOrder(
       "Verified online payment is required before this order can progress.",
     );
   }
-  const actorRole = await authorizeTransition(uid, token, before, input.toStatus);
+  // The rider picks up with a photo of the parcel showing the order ID, so the
+  // restaurant has nothing to tap. Without a photo the old staff handover runs.
+  const riderPickup = input.toStatus === "Handed to rider" && input.pickupPhotoPath !== undefined;
+  const actorRole = riderPickup ? await authorizeRiderPickup(uid, before) :
+    await authorizeTransition(uid, token, before, input.toStatus);
   if (before.status === input.toStatus) {
     // Network retries and two restaurant devices may repeat the same decision.
     // Returning the committed server state is safe; writing another history
@@ -714,17 +881,21 @@ export async function transitionOrder(
   if (input.toStatus === "Ready for pickup" && before.status === "Assigned" && before.riderId) {
     return {order: stripPrivateOrderFields(before), actorRole, idempotent: true};
   }
-  if (!canTransition(before.status, input.toStatus, actorRole)) {
+  // Kitchens often skip "Order ready" in a rush. A rider holding the parcel at
+  // the restaurant is proof it is ready, so the photo pickup marks it first.
+  const pickupBeforeReady = riderPickup && (before.status === "Preparing" || before.status === "Ready for pickup");
+  if (!pickupBeforeReady && !canTransition(before.status, input.toStatus, actorRole)) {
     throw new DomainError("failed-precondition", `Cannot change ${before.status} to ${input.toStatus}.`);
   }
   if (input.toStatus === "Cancelled" && !input.reason) {
     throw new DomainError("invalid-argument", "A cancellation reason is required.");
   }
-  if (input.toStatus === "Handed to rider") {
+  if (input.toStatus === "Handed to rider" && !isStoreDelivery(before)) {
     // The UI projection is advisory. Only the durable proof written by the
     // server-side GPS verifier can authorize physical handover.
     await requireVerifiedRiderRestaurantArrival(before);
   }
+  const pickupPhoto = riderPickup ? await verifyPickupPhoto(before, uid, input.pickupPhotoPath) : null;
   if (input.toStatus === "Delivered") {
     if (actorRole !== "rider" || !input.deliveryOtp || !await verifyPrivateDeliveryOtp(before, input.deliveryOtp)) {
       throw new DomainError("permission-denied", "Delivery verification failed.");
@@ -734,20 +905,34 @@ export async function transitionOrder(
     }
   }
 
+  const from = pickupBeforeReady ? await markReadyForRiderPickup(before, uid) : before;
   let order = await commitAuthoritativeTransition({
-    before,
+    before: from,
     toStatus: input.toStatus,
     actorId: uid,
     actorRole,
     actorEmail: String(token.email ?? ""),
     ...(input.reason ? {reason: input.reason} : {}),
     ...(input.toStatus === "Delivered" ? {proof: "otp"} : {}),
+    ...(riderPickup ? {proof: "parcel_photo", expectedRiderId: uid} : {}),
   });
+  if (pickupPhoto) await orderRef(firestoreDb, before.id).set({pickupPhoto}, {merge: true});
   // A rider may reserve the delivery while the kitchen is still preparing it.
   // Once staff marks that pre-assigned order ready, promote it immediately to
   // Assigned so the next restaurant action is an unambiguous handover.
   if (input.toStatus === "Ready for pickup" && order.riderId) {
     order = await promoteReadyOrderToAssigned(order);
+  }
+  // A self-delivering store's "handover" is the owner leaving with the food.
+  if (input.toStatus === "Handed to rider" && isStoreDelivery(order)) {
+    order = await commitAuthoritativeTransition({
+      before: order,
+      toStatus: "Out for delivery",
+      actorId: String(order.riderId),
+      actorRole: "rider",
+      detail: "Store left to deliver its own order",
+      expectedRiderId: String(order.riderId),
+    });
   }
   return {order, actorRole, idempotent: false};
 }
@@ -770,6 +955,36 @@ export async function cancelOrderFromConfirmationCall(orderId: string, callId: s
     detail: `confirmation call ${callId}`,
   });
   return true;
+}
+
+/**
+ * The customer gave up on paying online (to place it as cash on delivery, or
+ * not at all). Only their own unpaid online order that nobody has accepted is
+ * cancelled, and only after closePayments made sure no money can still land.
+ */
+export async function cancelUnpaidOnlineOrder(
+  uid: string,
+  orderId: string,
+  reason: string,
+  closePayments: (orderId: string) => Promise<void>,
+): Promise<SavrivoOrder> {
+  const snapshot = await orderRef(firestoreDb, orderId).get();
+  const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!before || before.customerId !== uid) throw new DomainError("not-found", "Order not found.");
+  if (before.status === "Cancelled") return stripPrivateOrderFields(before);
+  if (before.paymentState === "paid") throw new DomainError("already-exists", "Your payment was received. Your order will confirm in a moment.");
+  if (!requiresVerifiedOnlinePaymentBeforeProgress(before, "Accepted") || before.status !== "Order placed") {
+    throw new DomainError("failed-precondition", "This order can't be cancelled here.");
+  }
+  await closePayments(before.id);
+  return commitAuthoritativeTransition({
+    before,
+    toStatus: "Cancelled",
+    actorId: uid,
+    actorRole: "system",
+    reason,
+    detail: "online payment not completed",
+  });
 }
 
 export async function transitionOrderFromTracking(
@@ -854,4 +1069,153 @@ export async function recordOnlinePaymentLedger(order: SavrivoOrder): Promise<vo
   const financePolicy = await loadFinancePolicy();
   const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
   await persistOnlineOrderDeliveryLedger(order, commissionBps, undefined, await resolveDeliverySettlementOptions(order));
+}
+
+// ---------------------------------------------------------------------------
+// Store self-delivery: a store marked `selfDelivery` delivers its own orders.
+// The store stands in as the order's rider ("store_<restaurantId>"), so the
+// released Restaurant app's existing buttons drive it: "Chat rider" holds the
+// customer's address and the delivery pay, "Confirm handover" means the owner
+// has left, and typing the customer's delivery code in that chat completes it.
+// At delivery the rider's share is credited to the store's payout instead.
+
+const STORE_RIDER_PREFIX = "store_";
+const STORE_DELIVERY_ASSIGNABLE = new Set<OrderStatus>(["Accepted", "Preparing", "Ready for pickup"]);
+const STORE_DELIVERY_ON_THE_WAY = new Set<OrderStatus>(["Handed to rider", "Out for delivery", "Near you", "Arrived"]);
+
+export function storeRiderId(restaurantId: string): string {
+  return `${STORE_RIDER_PREFIX}${restaurantId}`;
+}
+
+export function isStoreDelivery(order: Pick<SavrivoOrder, "selfDelivery" | "riderId" | "restaurantId">): boolean {
+  return order.selfDelivery === true;
+}
+
+function paiseText(paise: number): string {
+  return `₹${Math.round(paise) / 100}`;
+}
+
+/** The rider's share for this order (trip pay plus any rain or surge share, and the tip). */
+export function storeDeliveryPayPaise(order: SavrivoOrder): {payPaise: number; tipPaise: number} {
+  const rider = order.economics?.rider;
+  const payPaise = Number(rider?.deliveryPayPaise ?? 0) + Number(rider?.feeSharePaise ?? 0);
+  const tipPaise = Number(order.economics?.customer.tipPaise ?? 0);
+  return {payPaise: Number.isFinite(payPaise) ? payPaise : 0, tipPaise: Number.isFinite(tipPaise) ? tipPaise : 0};
+}
+
+export function storeDeliveryNote(order: SavrivoOrder): string {
+  const address = order.address;
+  const where = [address.house, address.street || address.address, address.area].filter((part) => String(part ?? "").trim()).join(", ");
+  const {payPaise, tipPaise} = storeDeliveryPayPaise(order);
+  return [
+    "You deliver this order.",
+    `Customer: ${order.customerName}`,
+    `Phone: ${order.customerPhone || address.phone || "not given"}`,
+    `Address: ${where}`,
+    ...(address.landmark ? [`Landmark: ${address.landmark}`] : []),
+    ...(address.details ? [`Note: ${address.details}`] : []),
+    ...(order.instructions ? [`Delivery instructions: ${order.instructions}`] : []),
+    `Map: https://maps.google.com/?q=${address.lat},${address.lng}`,
+    ...(address.photoUrl ? [`Photo of the place: ${address.photoUrl}`] : []),
+    `Your delivery pay: ${paiseText(payPaise)}${tipPaise > 0 ? ` + ${paiseText(tipPaise)} tip` : ""}, added to your payout.`,
+    "Tap \"Confirm handover\" when you leave. At the door, ask the customer for the 4-digit delivery code in their app and type it here to finish the order.",
+  ].join("\n");
+}
+
+/** Posts a Scraveit message into the store-and-rider chat, which the customer can't see. */
+export async function postStoreDeliveryMessage(order: SavrivoOrder, body: string): Promise<void> {
+  const at = Date.now();
+  const id = `m_scraveit_${at}_${randomInt(1_000_000)}`;
+  await firestoreDb.collection("orderChats").doc(`${order.id}_restaurantRider_${id}`).set({
+    id,
+    orderId: order.id,
+    customerId: order.customerId,
+    restaurantId: order.restaurantId,
+    riderId: String(order.riderId ?? ""),
+    channel: "restaurantRider",
+    senderId: "scraveit",
+    senderRole: "Scraveit",
+    body: body.slice(0, 1_500),
+    masked: false,
+    at,
+  });
+}
+
+/**
+ * Accepting a self-delivery order takes the delivery for the store itself
+ * instead of searching for a rider. Idempotent: an order that already has a
+ * rider (or isn't a self-delivery order) is returned unchanged.
+ */
+export async function assignStoreAsRider(order: SavrivoOrder): Promise<SavrivoOrder> {
+  if (!isStoreDelivery(order) || order.riderId || !STORE_DELIVERY_ASSIGNABLE.has(order.status)) return order;
+  const ref = orderRef(firestoreDb, order.id);
+  const riderId = storeRiderId(order.restaurantId);
+  const now = Date.now();
+  let assigned: SavrivoOrder | null = null;
+  await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+    if (!current || current.riderId || !isStoreDelivery(current) || !STORE_DELIVERY_ASSIGNABLE.has(current.status)) return;
+    const candidate: SavrivoOrder = {
+      ...current,
+      riderId,
+      riderName: current.restaurant,
+      ...(current.restaurantPhone ? {riderPhone: current.restaurantPhone} : {}),
+      riderAssignedAt: now,
+      updatedAt: now,
+    };
+    const lifecycle = buildLifecycleMutation(deriveLifecycle(current), deriveLifecycleFromCanonicalState(candidate), now);
+    assigned = {...candidate, ...lifecycle.patch};
+    transaction.set(ref, assigned);
+  });
+  if (!assigned) {
+    const latest = await ref.get();
+    return latest.exists ? stripPrivateOrderFields(latest.data() as SavrivoOrder) : order;
+  }
+  let result = stripPrivateOrderFields(assigned);
+  await postStoreDeliveryMessage(result, storeDeliveryNote(assigned))
+    .catch((error) => logger.warn("STORE_DELIVERY_NOTE_FAILED", {orderId: order.id, error: String(error)}));
+  logger.info("STORE_DELIVERY_ASSIGNED", {orderId: order.id, restaurantId: order.restaurantId});
+  if (result.status === "Ready for pickup") result = await promoteReadyOrderToAssigned(result);
+  return result;
+}
+
+/**
+ * The store typed a message in its order chat. If the order is out with the
+ * store and the message holds the customer's delivery code, the order is
+ * delivered (with the code as proof, exactly as a rider's delivery).
+ */
+export async function completeStoreDeliveryFromChat(message: {
+  orderId?: unknown; senderRole?: unknown; body?: unknown;
+}): Promise<"delivered" | "wrong_code" | "ignored"> {
+  if (message.senderRole !== "restaurant") return "ignored";
+  const code = String(message.body ?? "").match(/(?:^|\D)(\d{4})(?:\D|$)/)?.[1];
+  if (!code) return "ignored";
+  const snapshot = await orderRef(firestoreDb, String(message.orderId ?? "")).get();
+  let order = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!order || !isStoreDelivery(order) || !order.riderId || !STORE_DELIVERY_ON_THE_WAY.has(order.status)) return "ignored";
+  if (!await verifyPrivateDeliveryOtp(order, code)) {
+    await postStoreDeliveryMessage(order, "That code didn't match. Ask the customer for the 4-digit delivery code shown in their Scraveit app.");
+    return "wrong_code";
+  }
+  const riderId = order.riderId;
+  const step = async (toStatus: OrderStatus, actorRole: ActorRole, proof?: string): Promise<void> => {
+    order = await commitAuthoritativeTransition({
+      before: order!,
+      toStatus,
+      actorId: actorRole === "system" ? "store-delivery" : riderId,
+      actorRole,
+      detail: "Store delivered its own order",
+      expectedRiderId: riderId,
+      ...(proof ? {proof} : {}),
+    });
+  };
+  if (order.status === "Handed to rider") await step("Out for delivery", "rider");
+  if (order.status === "Out for delivery" || order.status === "Near you") await step("Arrived", "system");
+  await step("Delivered", "rider", "otp");
+  const {payPaise, tipPaise} = storeDeliveryPayPaise(order);
+  await postStoreDeliveryMessage(order, `Delivered. ${paiseText(payPaise + tipPaise)} delivery pay is added to your payout.`)
+    .catch(() => undefined);
+  logger.info("STORE_DELIVERY_COMPLETED", {orderId: order.id, restaurantId: order.restaurantId});
+  return "delivered";
 }

@@ -52,7 +52,7 @@ async function canUseRestaurantApp(uid: string, token: DecodedIdToken): Promise<
  * their phone too, so they hear when Scraveit confirms their rate, asks for changes or approves them.
  */
 export async function hasStoreApplication(uid: string, database: FirestoreLike = firestoreDb): Promise<boolean> {
-  const snapshots = await Promise.all([uid, `${uid}_grocery`, `${uid}_dairy`]
+  const snapshots = await Promise.all([uid, `${uid}_grocery`, `${uid}_dairy`, `${uid}_pharmacy`]
     .map((id) => database.collection("restaurantApplications").doc(id).get()));
   return snapshots.some((snapshot) => snapshot.exists && String((snapshot.data() as {uid?: string} | undefined)?.uid ?? "") === uid);
 }

@@ -225,7 +225,10 @@ describe("customer wallet service", () => {
   it("shows the customer their balance, expiring money and live cashback offers", async () => {
     await campaign({});
     await earnCashbackForDeliveredOrder(delivered("SV-1"), attribution, database);
-    const wallet = await readCustomerWallet("c1", database);
+    // Read the wallet on the day the cashback was earned, not on the real date (the lot expires).
+    vi.useFakeTimers({toFake: ["Date"]});
+    vi.setSystemTime(NOW + 60_000);
+    const wallet = await readCustomerWallet("c1", database).finally(() => vi.useRealTimers());
     expect(wallet.balancePaise).toBe(3_500);
     expect(wallet.lots[0]).toMatchObject({remainingPaise: 3_500, source: "cashback"});
     expect(wallet.cashbackCampaigns[0]).toMatchObject({title: "10% back", funding: "scraveit"});

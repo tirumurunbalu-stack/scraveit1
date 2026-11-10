@@ -367,7 +367,7 @@ test("Partner active-delivery tracking survives process and network failures saf
   check(!tracking.includes('.putString("token", token)') && !tracking.includes('.putString("refreshToken", refreshToken)'), "Tracking credentials must not be persisted as plaintext strings");
   check(tracking.includes("HEARTBEAT_INTERVAL_MS") && tracking.includes("publishPresence"), "Foreground tracking must heartbeat rider presence while active");
   check(tracking.includes("availabilityOnly") && tracking.includes("Online for offers"), "Foreground service must support idle online availability after the app is backgrounded");
-  check(tracking.includes("verifyActiveJob") && tracking.includes('requestStop("assignment_terminal")'), "Foreground tracking must stop after cancellation, completion, or assignment removal");
+  check(tracking.includes("verifyActiveJob") && tracking.includes("switchToAvailability(checkedOrderId)") && tracking.includes('"offline".equals(reason)'), "Foreground tracking must leave the job after cancellation, completion, or assignment removal, and keep running until the rider goes offline");
   check(tracking.includes("MAX_LAST_KNOWN_AGE_MS") && tracking.includes("MAX_PROXIMITY_ACCURACY_METERS"), "Tracking must reject stale or poor GPS fixes");
   check(tracking.includes("int requiredFixes = 2"), "Automatic proximity milestones must require repeated reliable fixes");
   check(tracking.includes("proximityEvidence") && !tracking.includes("updateOrderStatus(candidate"), "GPS proximity must publish evidence without client-authoritative lifecycle writes");

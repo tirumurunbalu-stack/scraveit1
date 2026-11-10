@@ -7,10 +7,13 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Stage B: Rider restarts itself while online. Needs a Play declaration; the permission gate in premium.js stays hidden without it. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <application
         android:name="com.savrivo.firebase.SavrivoApplication"
         android:allowBackup="false"
@@ -36,7 +39,9 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <service android:name="com.savrivo.firebase.OrderAlarmService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="mediaPlayback" />
+        <!-- Offer ring: shortService needs no Play foreground-service declaration (mediaPlayback
+             was rejected for ringing, 2026-11-05). Android ends it after ~3 min; offers expire by then. -->
+        <service android:name="com.savrivo.firebase.OrderAlarmService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="shortService" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -48,6 +53,12 @@
             </intent-filter>
         </activity>
         <service android:name=".TrackingService" android:exported="false" android:foregroundServiceType="location" />
+        <receiver android:name=".TrackingRestartReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <activity
             android:name=".FaceCaptureActivity"
             android:exported="false"

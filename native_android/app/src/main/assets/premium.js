@@ -9,11 +9,18 @@
   const CONFIG = window.FEASTLY_FIREBASE || {};
   firebase.initializeApp(CONFIG);
   const fbAuth = firebase.auth(), fs = firebase.firestore();
+  const FIRESTORE_RESTART_AWAY_MS=5000;
+  let firestoreRestart=null,appHiddenAt=0;
   function userDoc(uidValue){return fs.collection("users").doc(uidValue)}
+  // Taste signals and the "For you" order (see "Taste signals" below). Declared up here so the
+  // very first render can read them.
+  const signals={queue:[],seen:new Map(),els:[],lastImp:{},lastAdd:{},open:null,timer:0,io:null,sending:false,fails:0};
+  const rankState={model:null,interests:null,city:"",loadedAt:0,loading:false,samples:new Map(),seed:Math.floor(Math.random()*4294967296)};
   // Privacy notice consent (DPDP Act, 2023). A signed-in account that has not agreed to the
   // current notice sees the notice full-screen until it agrees or signs out.
   function privacyConsentDoc(){return fs.collection("privacyConsents").doc(ScraveitPrivacy.consentDocId(state.session.uid,"customer"))}
-  async function checkPrivacyConsent(){if(!state.session||!window.ScraveitPrivacy)return;const uidNow=state.session.uid;try{const snap=await privacyConsentDoc().get();if(!state.session||state.session.uid!==uidNow)return;if(state.privacyConsentChecked===uidNow&&ScraveitPrivacy.isCurrent(state.privacyConsent))return;state.privacyConsent=snap.exists?snap.data():null;state.privacyConsentChecked=uidNow;render({preserveScroll:true})}catch(_){/* offline: checked again on the next launch */}}
+  async function checkPrivacyConsent(){if(!state.session||!window.ScraveitPrivacy)return;const uidNow=state.session.uid;try{const snap=await privacyConsentDoc().get();if(!state.session||state.session.uid!==uidNow)return;if(state.privacyConsentChecked===uidNow&&ScraveitPrivacy.isCurrent(state.privacyConsent))return;state.privacyConsent=snap.exists?snap.data():null;if(!ScraveitPrivacy.isCurrent(state.privacyConsent)&&state.pendingPrivacyConsent){state.pendingPrivacyConsent=false;try{await savePrivacyConsent("signup");render({preserveScroll:true});return}catch(_){}}state.privacyConsentChecked=uidNow;render({preserveScroll:true})}catch(_){/* offline: checked again on the next launch */}}
+  function privacyTapLine(){return window.ScraveitPrivacy?'<p class="privacy-tap">'+ScraveitPrivacy.tapLine("customer",ScraveitPrivacy.lang())+'</p>':''}
   function privacyGateNeeded(){return !!(window.ScraveitPrivacy&&state.session&&state.privacyConsentChecked===state.session.uid&&!ScraveitPrivacy.isCurrent(state.privacyConsent))}
   async function savePrivacyConsent(method,lang){const record=ScraveitPrivacy.consentRecord(state.session.uid,"customer",lang||ScraveitPrivacy.lang(),method,"customer");await privacyConsentDoc().set(record);state.privacyConsent=record;state.privacyConsentChecked=state.session.uid}
   function restaurantsCollectionRef(){return fs.collection("restaurants")}
@@ -70,6 +77,9 @@
     card: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/>',
     shield: '<path d="M12 22s8-3.6 8-10V5l-8-3-8 3v7c0 6.4 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/>',
     logout: '<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>',
+    work: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12.5h18"/>',
+    camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9.5" r="1.8"/><path d="m21 16-5-5-9 9"/>',
     phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
     warning: '<path d="M10.3 3.7 1.8 18.2A2 2 0 0 0 3.5 21h17a2 2 0 0 0 1.7-2.8L13.7 3.7a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
@@ -210,7 +220,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     // the catalogue so browsing still shows the city in its own order.
     searchCatalog:{}, searchFetched:{}, searchLoading:false, searchSequence:0,
     promotions: [], settings: {platformFee:15, taxRate:0, freeDeliveryAbove:0, maxDeliveryKm:7, deliverySlabs:{"0":{maxKm:2,fee:29},"1":{maxKm:4,fee:39},"2":{maxKm:6,fee:59},"3":{maxKm:8,fee:79},"4":{maxKm:10,fee:99},"5":{maxKm:12,fee:119},"6":{maxKm:15,fee:139}}, platformFeeOverrides:{cities:{},categories:{},restaurants:{},orderValueRules:{}}, rainFeeEnabled:true,rainLightFee:9,rainModerateFee:19,rainHeavyFee:29,rainSevereFee:39,rainMinProbability:35,rainLightMm:0.1,rainModerateMm:1,rainHeavyMm:4,rainSevereMm:10,surgeEnabled:true,surgeLowOrders:4,surgeMediumOrders:8,surgeHighOrders:12,surgeLowFee:9,surgeMediumFee:19,surgeHighFee:29,maxSurgeFee:39,smallOrderFeeEnabled:true,smallOrderThreshold:149,smallOrderFee:19,lateNightFeeEnabled:true,lateNightStartHour:23,lateNightEndHour:5,lateNightFee:19}, checkoutConfig:null,
-    orders: loadJSON("savrivo.customer.orders", []), ordersHydrated:false, ordersHydratedUid:"", tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
+    orders: loadJSON("savrivo.customer.orders", []), ordersHydrated:false, ordersHydratedUid:"", tracking: {}, deliveryOtps:{}, reviews:loadJSON(reviewCacheKey(cachedSession&&cachedSession.uid),{}), reviewsHydrated:false, reviewsHydratedUid:"", reviewSyncSequence:0, localAds:[], sponsored:[], sponsoredStores:{}, broadcasts:[], seenBroadcasts:loadJSON("savrivo.customer.seenBroadcasts",{}), broadcastTimers:{},
     cart: loadJSON("savrivo.customer.cart", []), carts: loadJSON("savrivo.customer.carts", {}), coupon: null, tip: 0,
     // couponAuto: this offer was chosen for the customer, so a better one may
     // replace it. couponDismissedFor: the restaurant whose auto-offer they
@@ -220,7 +230,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     menuPrice: "all", menuSort: "recommended", ratingView: loadJSON("savrivo.customer.ratingView", "overall"),
     selectedRestaurantId: "the-waffle-spot-naidupeta", selectedOrderId: "", selectedMenuCategory: "All", timelineExpanded: false,
     online: navigator.onLine, loading: false, syncError: "", lastSync: 0,
-    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, trackingSeenAt:{}, trackingMap:null, trackingRoutes:{}, trackingMapCollapsed:false, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
+    sheet: null, toastTimer: null, timers: [], watchers:{catalog:null,orders:null}, watcherStarts:{catalog:null,orders:null}, watcherScopes:{catalog:"",orders:""}, trackingWatchers:{}, trackingWatcherStarts:{}, trackingHydrated:{}, trackingReconnectTimers:{}, trackingSeenAt:{}, trackingMap:null, trackingRoutes:{},trackingHeldRoutes:{}, trackingMapCollapsed:false, syncTimers:{catalog:null,orders:null,reconnectCatalog:null,reconnectOrders:null}, locationBusy: false, dynamicPricing:{rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0}, chat:{orderId:"",channel:"",messages:[],title:"Chat"},
     addressMapDraft: null, addressMapZoom: 16, locationMode: "general", menuLoading:{}, menuRequests:{}, menuErrors:{}, homeBootStartedAt:perfNow(), homeVisibleLogged:false, locationPromptShown:false,
     checkout: Object.assign({deliveryMode:"asap", payment:"cod", instructions:"", contactless:false, pendingOrderId:"", pendingIdempotencyKey:""},loadJSON("savrivo.customer.checkout",{}))
   };
@@ -250,7 +260,17 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // that can keep the auto-applied offer honest as the basket changes - an
   // offer that stops qualifying (basket dropped below its minimum) has to be
   // dropped too, or checkout would send a code the server then rejects.
-  function persistCart() { refreshAutoOffer(); saveJSON("savrivo.customer.cart", state.cart); saveJSON("savrivo.customer.carts", state.carts||{}); scheduleCartSnapshot(); }
+  function persistCart() { refreshAutoOffer(); saveJSON("savrivo.customer.cart", state.cart); saveJSON("savrivo.customer.carts", state.carts||{}); scheduleCartSnapshot(); warmCheckout(); }
+  // Wakes the order and payment servers while the cart fills, so "Place order" and
+  // "Confirming your payment" answer at once instead of after a 4-5 s cold start.
+  let checkoutWarmAt = 0;
+  function warmCheckout() {
+    if (!state.cart.length || !state.session || Date.now() - checkoutWarmAt < 240000) return;
+    checkoutWarmAt = Date.now();
+    ["getCheckoutConfiguration", "createOrder", "createCodOrder", "createPaymentIntent", "checkOrderPayment"].forEach(op => {
+      if (nativeAvailable(op)) nativeInvoke(op, {warmup: true}, {timeoutMs: 20000}).catch(() => {});
+    });
+  }
   // The server sends one follow-up about a cart left for a day (cartReminders.ts). It only needs the
   // store, the first item, how many items and when; nothing else about the cart leaves the phone.
   let cartSnapTimer=null,lastCartSnap=null;
@@ -264,6 +284,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const CART_NUDGE_DELAY=5*1000;
   function cartNudgeCopy(snap,hour){const what=snap.firstItem+(snap.itemCount>1?" and "+(snap.itemCount-1)+" more":""),store=snap.restaurantName||"the store";
     if(snap.storeType==="dairy")return{title:"🥛 Your milk run is waiting",body:what+" from "+store+" is still in your cart. Order now for fresh delivery 🐄"};
+    if(snap.storeType==="pharmacy")return{title:"🩹 Your health care items are waiting",body:what+" from "+store+" is still in your cart. Order in a tap 💙"};
     if(snap.storeType==="grocery")return{title:"🧺 Forgot something?",body:what+" is still in your "+store+" basket. Finish your order in a tap 🛒"};
     if(hour<11)return{title:"☀️ Breakfast is one tap away",body:what+" from "+store+" is still in your cart. Start your day right 😋"};
     if(hour<15)return{title:"🍛 Your lunch is waiting",body:what+" from "+store+" is still in your cart. Order before you get hangry 😋"};
@@ -285,13 +306,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function persistCheckout() { saveJSON("savrivo.customer.checkout", state.checkout); }
   function persistOrders() { saveJSON("savrivo.customer.orders", state.orders.slice(0,60)); }
   function persistReviews() { if(state.session&&state.session.uid)saveJSON(reviewCacheKey(state.session.uid),state.reviews||{}); }
+  // Reviews still being saved by saveReview; a sync must not drop them from state.reviews meanwhile.
+  const pendingReviews={};
   function reviewStateReady() {
     return !!(state.session&&state.reviewsHydrated&&state.reviewsHydratedUid===String(state.session.uid||""));
   }
   function applyReviewSnapshot(uidValue,requestSequence,reviews) {
     const expectedUid=String(uidValue||"");
     if(!state.session||String(state.session.uid||"")!==expectedUid||requestSequence!==state.reviewSyncSequence)return false;
-    state.reviews=reviews&&typeof reviews==="object"?reviews:{};
+    state.reviews=Object.assign({},reviews&&typeof reviews==="object"?reviews:{},pendingReviews);
     state.reviewsHydrated=true;
     state.reviewsHydratedUid=expectedUid;
     persistReviews();
@@ -338,7 +361,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   function homeSummary(restaurant){
     const summary={};
-    ["id","name","storeType","dineIn","image","imageUrl","imageThumb","imageThumbUrl","coverImages","coverThumbs","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","fssaiNumber","updatedAt"].forEach(key=>{
+    ["id","name","storeType","dineIn","image","imageUrl","imageThumb","imageThumbUrl","coverImages","coverThumbs","cuisines","city","category","description","address","lat","lng","etaMin","etaMax","deliveryFee","platformFee","opensUntil","open","active","archived","rating","ratingCount","pureVeg","offer","offerText","discount","deliveryRadiusKm","priceForTwo","serviceAreaId","serviceAreaIds","fssaiNumber","drugLicenceNumber","updatedAt"].forEach(key=>{
       if(restaurant[key]!==undefined)summary[key]=restaurant[key];
     });
     summary.menuIndex=discoveryIndex((restaurant.menu&&restaurant.menu.length)?restaurant.menu:restaurant.menuIndex);
@@ -430,7 +453,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Sign-in tokens expire after an hour. A call made with a stale one is
   // rejected by the server, so every signed-in call asks Firebase for a
   // current token first (Firebase refreshes it only when it is near expiry).
-  const TOKENLESS_OPERATIONS = ["openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment", "callPermissions", "callAudio", "chatKeys"];
+  const TOKENLESS_OPERATIONS = ["pickReelVideo", "pickPlacePhoto", "reverseGeocode", "searchPlaces", "openExternalPayment", "getDeliveryOtp", "scanTableQr", "getUpiApps", "startCashfreePayment", "callPermissions", "callAudio", "chatKeys"];
   function nativeInvoke(operation, payload, options) {
     const user = fbAuth.currentUser;
     if (!user || TOKENLESS_OPERATIONS.includes(operation)) return nativeInvokeWithToken(operation, payload, options);
@@ -450,11 +473,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       const timer = setTimeout(() => {
         nativeRequests.delete(requestId);
         reject(new Error("REQUEST_TIMEOUT"));
-      }, Number(settings.timeoutMs || ((operation === "createCodOrder" || operation === "createOrder") ? 38000 : 22000)));
+      }, Number(settings.timeoutMs || ((operation === "createCodOrder" || operation === "createOrder" || operation === "createClusterOrder") ? 60000 : 22000)));
       nativeRequests.set(requestId, {resolve, reject, timer});
       try {
         if (operation === "createCodOrder") {
           FeastlyNative.createCodOrder(requestId, firebaseIdToken, JSON.stringify(payload || {}));
+        } else if (operation === "createClusterOrder") {
+          FeastlyNative.createClusterOrder(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "createOrder") {
           FeastlyNative.createOrder(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "getCheckoutConfiguration") {
@@ -485,12 +510,24 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
           FeastlyNative.pickProfilePhoto(requestId);
         } else if (operation === "pickChatPhoto") {
           FeastlyNative.pickChatPhoto(requestId);
+        } else if (operation === "pickPlacePhoto") {
+          FeastlyNative.pickPlacePhoto(requestId, String(payload && payload.source || "gallery"));
+        } else if (operation === "reverseGeocode") {
+          FeastlyNative.reverseGeocode(requestId, JSON.stringify(payload || {}));
+        } else if (operation === "searchPlaces") {
+          FeastlyNative.searchPlaces(requestId, JSON.stringify(payload || {}));
+        } else if (operation === "pickReelVideo") {
+          FeastlyNative.pickReelVideo(requestId);
         } else if (operation === "invokeSocial") {
           FeastlyNative.invokeSocial(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "invokeMealPlan") {
           FeastlyNative.invokeMealPlan(requestId, firebaseIdToken, String(payload && payload.fn || ""), JSON.stringify(payload && payload.data || {}));
         } else if (operation === "scanTableQr") {
           FeastlyNative.scanTableQr(requestId);
+        } else if (operation === "checkOrderPayment") {
+          FeastlyNative.checkOrderPayment(requestId, firebaseIdToken, JSON.stringify(payload || {}));
+        } else if (operation === "cancelUnpaidOrder") {
+          FeastlyNative.cancelUnpaidOrder(requestId, firebaseIdToken, JSON.stringify(payload || {}));
         } else if (operation === "recoverDeliveryOtp") {
           FeastlyNative.recoverDeliveryOtp(requestId, firebaseIdToken, String(payload && payload.orderId || ""));
         } else if (operation === "callPermissions") {
@@ -630,12 +667,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     state.remoteProfileUid = uidAtRead;
     if (remote && typeof remote === "object") {
       const prefs = Object.assign({}, state.profile.preferences || {}, remote.preferences || {});
-      const localAddresses = state.profile.addresses || [], localFavourites = state.profile.favourites || [], localDeleted = state.profile.deletedAddressIds || [];
+      const localAddresses = state.profile.addresses || [], localFavourites = state.profile.favourites || [], localGroups = state.profile.favouriteGroups || [], localDeleted = state.profile.deletedAddressIds || [];
       state.profile = Object.assign({}, state.profile, remote, {preferences:prefs});
       const gone = new Set([].concat(remote.deletedAddressIds || [], localDeleted).map(String).filter(id => id !== "current-location"));
       state.profile.deletedAddressIds = Array.from(gone).slice(-50);
       state.profile.addresses = mergeAddresses(remote.addresses, localAddresses, Number(remote.updatedAt || 0)).filter(x => !gone.has(String(x.id)));
       state.profile.favourites = Array.isArray(remote.favourites) ? remote.favourites : localFavourites;
+      state.profile.favouriteGroups = Array.isArray(remote.favouriteGroups) ? remote.favouriteGroups : localGroups;
       migrateSavedAddresses();persistProfile();applyTheme();
       loadDemographics().then(()=>{maybeAskAboutYou();if(["offers","account","cart"].includes(state.route))render({preserveScroll:true})});
       if(previousScope!==homeScope(currentAddress())){
@@ -679,7 +717,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const payload = {
       name:state.profile.name || "", email:state.profile.email || state.session.email || "", phone:state.profile.phone || "", emailVerified:state.profile.emailVerified===true,
       addresses:state.profile.addresses || [], selectedAddressId:state.profile.selectedAddressId || "",
-      favourites:state.profile.favourites || [], preferences:state.profile.preferences || {}, updatedAt:Date.now()
+      favourites:state.profile.favourites || [], favouriteGroups:favouriteGroups(), preferences:state.profile.preferences || {}, updatedAt:Date.now()
     };
     // Merge with the account inside one transaction instead of replacing it: an
     // address saved from another phone (or another copy of the app) is kept,
@@ -705,6 +743,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.profile.deletedAddressIds = merged.deletedAddressIds; persistProfile();
     }
   }
+
+  // ---- Markup restaurants (pricingModel "markup", set by Scraveit) ----
+  // The restaurant's menu prices include GST; customers see each price plus the markup, GST
+  // included, in whole rupees. Same formula as functions/src/domain/markupPricing.ts, so the
+  // menu, the cart and the server's bill always agree. ownPrice keeps the restaurant's price,
+  // so marking up an already marked-up item changes nothing.
+  function markupBps(r){if(!r||r.pricingModel!=="markup")return null;const raw=r.markupBps;if(raw==null||raw==="")return 1000;const bps=Number(raw);return Number.isInteger(bps)&&bps>=0&&bps<=5000?bps:1000}
+  // A restaurant's own switch, or always under markup: its prices include GST, so checkout adds none on the food.
+  function gstIncluded(r){return!!r&&(r.pricingModel==="markup"||r.pricesIncludeGst===true)}
+  function markedUp(price,bps){const p=Number(price);return p>0?Math.round(p*(10000+bps)/10000):0}
+  function markChoice(c,bps){if(!c||typeof c!=="object")return c;const key=c.priceDelta!=null?"priceDelta":"price",own=c.ownPrice!=null?Number(c.ownPrice):Number(c[key]||0);return Object.assign({},c,{ownPrice:own,[key]:markedUp(own,bps)})}
+  function markChoices(v,bps){if(Array.isArray(v))return v.map(c=>markChoice(c,bps));if(v&&typeof v==="object"){const out={};Object.keys(v).forEach(k=>{out[k]=markChoice(v[k],bps)});return out}return v}
+  // The restaurant's own order (set in its app or the partner website): categories by categoryRank, then
+  // items by itemRank. Anything not arranged yet follows, A to Z. Same order in every Scraveit app.
+  function menuInOrder(items){if(!Array.isArray(items))return items;const rank=v=>v===null||v===""||v===undefined||!Number.isFinite(Number(v))?Infinity:Number(v),cat=item=>(item&&item.category)||"Menu",catRank={};items.forEach(item=>{const c=cat(item),r=rank(item&&item.categoryRank);if(!(c in catRank)||r<catRank[c])catRank[c]=r});return items.map((item,i)=>({item,i})).sort((a,b)=>{const ca=cat(a.item),cb=cat(b.item);if(ca!==cb)return(catRank[ca]-catRank[cb])||ca.localeCompare(cb);return(rank(a.item&&a.item.itemRank)-rank(b.item&&b.item.itemRank))||String(a.item&&a.item.name||"").localeCompare(String(b.item&&b.item.name||""))||(a.i-b.i)}).map(x=>x.item)}
+  function shownMenu(r,items){return menuInOrder(withMarkup(r,items))}
+  function withMarkup(r,items){const bps=markupBps(r);if(bps==null||!Array.isArray(items))return items;return items.map(item=>{if(!item||typeof item!=="object")return item;const own=item.ownPrice!=null?Number(item.ownPrice):Number(item.price||0),out=Object.assign({},item,{ownPrice:own,price:markedUp(own,bps)});if(item.variants)out.variants=markChoices(item.variants,bps);if(item.addOns)out.addOns=markChoices(item.addOns,bps);return out})}
 
   function normalizeRestaurant(id, record) {
     const data = Object.assign({}, record || {});
@@ -738,6 +793,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     data.menu = data.menu
       .map((item,index) => Object.assign({id:item.id || data.id+"-item-"+index,category:item.category||"Menu",diet:item.diet||"veg",available:item.available!==false},item))
       .filter(item => item.archived !== true);
+    data.menu = shownMenu(data, data.menu);
     data.open = data.open !== false && data.active !== false && data.archived !== true;
     return data;
   }
@@ -753,7 +809,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function normalizeRestaurantSummary(id,record){
     const full=normalizeRestaurant(id,record),existing=state.catalog[id],saved=cachedMenu(id);
     full.menuIndex=discoveryIndex(full.menu);
-    full.menu=existing&&existing.menuLoaded?(existing.menu||[]):(saved||[]);
+    full.menu=shownMenu(full,existing&&existing.menuLoaded?(existing.menu||[]):(saved||[]));
     full.menuLoaded=full.menu.length>0;
     full.menuFetchedAt=existing&&existing.menuLoaded?Number(existing.menuFetchedAt||0):0;
     return full;
@@ -1089,19 +1145,31 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       fetchCollectionMap("localAds"),fetchCollectionMap("customerBroadcasts"),
       state.session&&nativeAvailable("getCheckoutConfiguration")?nativeInvoke("getCheckoutConfiguration",{},{
         idToken:state.session.idToken,timeoutMs:15000
-      }):Promise.resolve(null)
+      }):Promise.resolve(null),
+      fs.collection("sponsoredListings").where("endAt",">",Date.now()).get().then(recordsFromSnapshot)
     ]);
     const value=index=>result[index].status==="fulfilled"?result[index].value:null;
     state.promotions=Object.keys(value(0)||{}).map(id=>Object.assign({id},value(0)[id])).filter(item=>item.active===true);
     state.settings=Object.assign(state.settings,value(1)||{});
     state.localAds=Object.keys(value(2)||{}).map(id=>Object.assign({id},value(2)[id]||{}));
     state.broadcasts=Object.keys(value(3)||{}).map(id=>Object.assign({id},value(3)[id]||{}));
+    state.sponsored=Object.values(value(5)||{});
+    await fetchSponsoredStores();
     const liveCheckoutConfig=normalizeCheckoutConfiguration(value(4));
     if(liveCheckoutConfig)state.checkoutConfig=liveCheckoutConfig;
     reconcileCheckoutPaymentSelection();
     processBroadcasts();
     perfLog("SECONDARY_HOME_DATA_FINISHED",started,{failed:result.filter(item=>item.status==="rejected").length});
     if(["home","offers"].includes(state.route))render({preserveScroll:true});
+  }
+
+  // Top placement ("Ad"): a store that paid for today is listed first in the
+  // default order, marked Ad. Only stores already shown for this address are
+  // moved; one beyond the pages loaded so far is fetched on its own.
+  function sponsoredNow(){const now=Date.now(),ids=new Set();(state.sponsored||[]).forEach(s=>{if(s&&s.restaurantId&&Number(s.startAt)<=now&&now<Number(s.endAt))ids.add(s.restaurantId)});return ids}
+  async function fetchSponsoredStores(){
+    const missing=[...sponsoredNow()].filter(id=>!state.catalog[id]&&!state.sponsoredStores[id]).slice(0,10);
+    await Promise.all(missing.map(id=>restaurantDocRef(id).get().then(snap=>{if(!snap.exists)return;const r=normalizeRestaurantSummary(id,snap.data());if(r.archived!==true)state.sponsoredStores[id]=r}).catch(()=>{})));
   }
 
   async function ensureRestaurantMenu(restaurantId,options){
@@ -1114,7 +1182,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!force&&restaurant.menuLoaded&&!state.menuRequests[restaurantId]){ensureRestaurantMenu(restaurantId,{force:true});return restaurant.menu||[];}
     if(state.menuRequests[restaurantId])return state.menuRequests[restaurantId];
     const saved=cachedMenu(restaurantId);
-    if(!force&&saved&&saved.length){restaurant.menu=saved;restaurant.menuLoaded=true;render({preserveScroll:true})}
+    if(!force&&saved&&saved.length){restaurant.menu=shownMenu(restaurant,saved);restaurant.menuLoaded=true;render({preserveScroll:true})}
     const request=(async()=>{
       state.menuLoading[restaurantId]=true;delete state.menuErrors[restaurantId];
       const started=perfNow();
@@ -1122,9 +1190,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         const menuSnap=await menuItemsCollectionRef(restaurantId).get();
         const map=recordsFromSnapshot(menuSnap);
         const items=Object.keys(map||{}).map(itemId=>{const item=Object.assign({id:itemId},map[itemId]||{});item.image=item.imageUrl||item.image;item.imageThumb=item.imageThumbUrl||item.imageThumb||item.image;return item}).filter(item=>item.archived!==true);
-        restaurant.menu=items;restaurant.menuIndex=discoveryIndex(items);restaurant.menuLoaded=true;restaurant.menuFetchedAt=Date.now();saveMenuCache(restaurantId,items);
+        // The cache keeps the restaurant's own prices; the markup is applied whenever a menu is shown.
+        restaurant.menu=shownMenu(restaurant,items);restaurant.menuIndex=discoveryIndex(restaurant.menu);restaurant.menuLoaded=true;restaurant.menuFetchedAt=Date.now();saveMenuCache(restaurantId,items);
         perfLog("RESTAURANT_MENU_LOADED",started,{restaurantId,items:items.length,forced:force});
-        return items;
+        return restaurant.menu;
       } catch (error) {
         if(!restaurant.menuLoaded)state.menuErrors[restaurantId]=friendlyError(error);
         perfLog("RESTAURANT_MENU_FAILED",started,{restaurantId,code:String(error&&error.message||"unknown"),forced:force});
@@ -1326,14 +1395,25 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function normalizeOrders(map) {
-    return Object.keys(map || {}).map(id=>Object.assign({id:id},map[id]||{})).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
+    return Object.keys(map || {}).map(id=>Object.assign({id:id},map[id]||{})).filter(o=>!awaitingOnlinePayment(o)).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
   }
+  // An online order becomes the customer's order only once it's paid (or the bank said the money came in).
+  const paymentReceivedIds=new Set();
+  function awaitingOnlinePayment(o){return isOnlinePaymentMethod(o&&o.paymentMethod)&&["pending","authorized","failed"].includes(String(o.paymentState||""))&&!paymentReceivedIds.has(String(o.id))}
 
   function ordersFingerprint(list){
     return list.map(order=>order.id+":"+order.status+":"+(order.updatedAt||order.createdAt||0)).sort().join("|");
   }
+  // Android freezes the app in the background and its live Firestore connection can come back
+  // stuck: nothing new arrives while reads answer with the old list. After a restart the next
+  // read waits for the server.
+  function restartFirestoreConnection(){
+    if(!firestoreRestart)firestoreRestart=fs.disableNetwork().catch(()=>{}).then(()=>fs.enableNetwork()).catch(()=>{}).then(()=>{firestoreRestart=null});
+    return firestoreRestart;
+  }
   async function syncOrders(silent) {
     if (!state.session) return false;
+    if (firestoreRestart) { await firestoreRestart; if (!state.session) return false; }
     const sessionUid=String(state.session.uid||""),reviewSequence=++state.reviewSyncSequence,previousFingerprint=ordersFingerprint(state.orders);
     try {
       const pair = await Promise.all([
@@ -1372,7 +1452,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.orders.forEach(order => {
         if (before[order.id] && before[order.id] !== order.status) notifyOrderTransition(order, before[order.id]);
       });
-      const deliveredForReview=reviewStateReady()?state.orders.find(order=>before[order.id]&&before[order.id]!=="Delivered"&&order.status==="Delivered"&&!state.reviews[order.id]):null;
+      const deliveredNow=state.orders.find(order=>before[order.id]&&before[order.id]!=="Delivered"&&order.status==="Delivered");
+      rememberLiveStatuses(before);
       const active = state.orders.filter(order=>ACTIVE_STATES.has(order.status));
       active.filter(order=>["Out for delivery","Near you","Arrived"].includes(order.status)).forEach(order=>hydrateDeliveryOtp(order.id));
       await refreshTrackingStreams(active);
@@ -1381,7 +1462,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       // every active order's tracking record on each order/status refresh.
       await hydrateInitialTracking(active);
       state.lastSync = Date.now(); state.syncError = "";
-      if(deliveredForReview){go("review",{orderId:deliveredForReview.id});return true;}
+      // Whoever is watching this order goes home when it arrives: the rating bar and the little party are there.
+      if(deliveredNow&&["order","tracking"].includes(state.route)&&(orderById()||{}).id===deliveredNow.id){go("home",{},true);return false;}
       const changed=previousFingerprint!==ordersFingerprint(state.orders);
       if (!silent && ["home","orders","order","tracking"].includes(state.route)) render({preserveScroll:true});
       return changed;
@@ -1529,6 +1611,24 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.trackingHydrated[result.id]=true;
       if(result.value)state.tracking[result.id]=result.value;
     });
+    (activeOrders||[]).forEach(prefetchTrackingTiles);
+  }
+  // Start the live map's tiles downloading while the customer is still on
+  // Home, so opening tracking shows a map at once instead of a blank card
+  // waiting on the tile server. Same camera and tiles the map itself will use.
+  const trackingPrefetched={},trackingPrefetchImgs=[];
+  function prefetchTrackingTiles(order){
+    try{
+      if(!order||!order.id||(state.trackingMap&&state.trackingMap.orderId===order.id))return;
+      const live=state.tracking[order.id]||{},view=trackingCameraView(trackingGeoPoints(order,live),live,order);
+      if(!view)return;
+      const ms={zoom:view.zoom,anchorLat:view.center.lat,anchorLng:view.center.lng,panX:0,panY:0,mode:"north",bearing:0};
+      const key=order.id+":"+trackingTileKey(ms);
+      if(trackingPrefetched[key])return;
+      trackingPrefetched[key]=true;
+      trackingPrefetchImgs.length=0;
+      trackingTileList(ms).forEach(tile=>{const img=new Image();img.src=tile.src;trackingPrefetchImgs.push(img);});
+    }catch(_){}
   }
   function scheduleTrackingReconnect(orderId){
     clearTimeout(state.trackingReconnectTimers[orderId]);
@@ -1642,9 +1742,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function stopPolling() { state.timers.forEach(clearInterval); state.timers = []; stopRealtime(); stopSquadOrderWatch(); dineInStop(); }
 
-  function toast(msg,type){clearTimeout(state.toastTimer);const kind=type==="success"?"success":type==="danger"?"danger":type==="warning"?"warning":"info",mark=kind==="success"?'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':kind==="info"?'':'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.6v5.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg></span>';const text=kind==="success"?String(msg||"").split(/(?<=[.!])\s+/)[0].replace(/\.$/,""):msg;toastRegion.innerHTML='<div class="toast '+kind+'">'+mark+'<span class="toast-text">'+h(text)+'</span></div>';state.toastTimer=setTimeout(()=>{const t=toastRegion.firstElementChild;if(!t)return;t.classList.add("out");setTimeout(()=>{if(toastRegion.firstElementChild===t)toastRegion.innerHTML=""},200)},kind==="success"?1500:kind==="info"?2600:4000)}
+  let lastToast={msg:"",at:0};
+  function toast(msg,type){if(msg===lastToast.msg&&Date.now()-lastToast.at<8000)return;lastToast={msg:msg,at:Date.now()};clearTimeout(state.toastTimer);const kind=type==="success"?"success":type==="danger"?"danger":type==="warning"?"warning":"info",mark=kind==="success"?'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.6 8.4l2.9 2.9 5.9-6.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>':kind==="info"?'':'<span class="toast-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.6v5.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="8" cy="12" r="1.4" fill="currentColor"/></svg></span>';const text=kind==="success"?String(msg||"").split(/(?<=[.!])\s+/)[0].replace(/\.$/,""):msg;toastRegion.innerHTML='<div class="toast '+kind+'">'+mark+'<span class="toast-text">'+h(text)+'</span></div>';state.toastTimer=setTimeout(()=>{const t=toastRegion.firstElementChild;if(!t)return;t.classList.add("out");setTimeout(()=>{if(toastRegion.firstElementChild===t)toastRegion.innerHTML=""},200)},kind==="success"?1500:kind==="info"?2600:4000)}
   function setSheet(sheet) { state.sheet = sheet; renderSheet(); try{syncStatusBar();}catch(_){} }
-  function closeSheet() { if(pendingConfirm){settleConfirm(false);return;} state.sheet = null; renderSheet(); try{syncStatusBar();}catch(_){} if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
+  function closeSheet() { if(pendingConfirm){settleConfirm(false);return;} if(state.sheet&&state.sheet.type==="payWait"){leavePayWait(state.sheet);return;} state.sheet = null; renderSheet(); try{syncStatusBar();}catch(_){} if(state.aboutYouPending)setTimeout(maybeAskAboutYou,350); }
   // In-app replacement for the browser confirm dialog, which blocks the WebView with a
   // system dialog. Resolves true only on the confirm button; closing the sheet
   // any other way is a "no". The sheet that was open underneath comes back
@@ -1722,10 +1823,18 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if (wasLive && !liveOrderRoute()) stopTrackingCollapseCycle();
     if (liveOrderRoute()) startTrackingCollapseCycle();
     closeSheet();
+    if (route === "cart") { state.placeOpenedAt = Date.now(); state.dynamicPricing = dynamicPricingFallback(); }
     render(); resetPageScroll();
+    if (route === "cart") {
+      setTimeout(maybeSuggestTogether, 350); warmCheckout();
+      [PLACE_HOLD_MS, PRICE_WAIT_MS].forEach(ms => setTimeout(() => { if (state.route === "cart") render({preserveScroll:true}); }, ms + 30));
+      if (state.cart.length) refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});
+    }
   }
   function goBack() {
     const wasLive = liveOrderRoute();
+    // An emptied cart has nothing to review: skip its screen.
+    while (!state.cart.length && state.history.length && state.history[state.history.length-1].route==="cart") state.history.pop();
     const previous = state.history.pop();
     if (previous) {
       state.route = previous.route; state.routeData = previous.data || {};
@@ -1768,6 +1877,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const a=currentAddress();
     if(!a||!r)return null;
     return geoDistanceKm(a.lat,a.lng,r.lat,r.lng);
+  }
+
+  // Door-to-door time, worked out like the server's quote (functions/src/domain/deliveryEstimate.ts):
+  // the kitchen's own time + riding at 22 km/h + 5 min at both ends + 4 min in the lunch/dinner rush.
+  // Showing only the kitchen time made the time jump after ordering (25–35 here, 50–70 on the order).
+  function storeEtaText(r) {
+    const prep=v=>{v=Number(v);return Number.isFinite(v)&&v>0?Math.min(90,Math.max(3,v)):0};
+    let lo=prep(r&&r.etaMin)||15,hi=prep(r&&r.etaMax)||Math.max(lo+10,25);
+    if(hi<lo)[lo,hi]=[hi,lo];
+    const km=r?restaurantDistanceKm(r):null,ride=Number.isFinite(km)&&km>0?km/22*60+5:5;
+    const ist=new Date(Date.now()+330*60000),hour=ist.getUTCHours()+ist.getUTCMinutes()/60;
+    const extra=ride+((hour>=12&&hour<14.5)||(hour>=19&&hour<21.5)?4:0);
+    const clamp=v=>Math.min(120,Math.max(10,v));
+    let min=clamp(Math.floor((lo+extra)/5)*5),max=clamp(Math.ceil((hi+extra)/5)*5);
+    if(max-min<5){max=clamp(min+5);if(max-min<5)min=clamp(max-5)}
+    if(max-min>10)max=min+10;
+    return min+"–"+max;
   }
 
   function deliveryRadiusKm(r) {
@@ -1831,16 +1957,255 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
     return {lat:ADDRESS_MAP_FALLBACK.lat,lng:ADDRESS_MAP_FALLBACK.lng,zoom:ADDRESS_MAP_FALLBACK.zoom};
   }
-  function openAddressSheet(address){
-    const source=address||{},seed=addressMapSeed(source);
-    state.addressMapDraft={lat:seed.lat,lng:seed.lng};state.addressMapZoom=seed.zoom;setSheet({type:"address",address:clone(source)});
+  // ---- Delivery address: drag the map under a fixed pin, then one line for the door ----
+  // The pin is what the rider drives to and the door line is what they look for when
+  // they get there. Street, area and city are read from the pin, never typed.
+  const ADDRESS_MAP_MIN_ZOOM=10,ADDRESS_MAP_MAX_ZOOM=18;
+  const ADDRESS_PIN_SVG='<svg class="addr-pin-svg" viewBox="0 0 40 52" aria-hidden="true"><path d="M20 51s17-17.6 17-31A17 17 0 0 0 3 20c0 13.4 17 31 17 31Z"/><circle cx="20" cy="20" r="6.5"/></svg>';
+  // Bridge results arrive through atob(), which leaves UTF-8 as Latin-1 pairs.
+  function fixUtf8(text){const s=String(text==null?"":text);try{return decodeURIComponent(escape(s))}catch(_){return s}}
+  function placeLine(text){return String(text||"").replace(/,\s*India\s*$/i,"").replace(/\s+/g," ").trim()}
+  /** A GPS-only entry ("current location") knows the building but not the door. */
+  function addressNeedsDoor(address){return !!address&&!String(address.house||"").trim()&&(address.id==="current-location"||address.source==="gps")}
+  /** Saved before door/street were separate: the whole address is one typed line. */
+  function addressIsLegacyTyped(address){return !!address&&!!address.id&&address.id!=="current-location"&&address.source!=="gps"&&!String(address.house||"").trim()&&!!String(address.address||"").trim()}
+  function addressLabelKind(address){const a=address||{};if(a.labelKind)return a.labelKind;const l=String(a.label||"");return l==="Work"?"Work":l&&l!=="Home"?"Other":"Home"}
+  function addressLabelIcon(address){const kind=addressLabelKind(address);return address&&address.id==="current-location"?"target":kind==="Home"?"home":kind==="Work"?"work":"pin"}
+  function prettyPhone(value){const d=String(value||"").replace(/\D/g,"").slice(-10);return d.length===10?d.slice(0,5)+" "+d.slice(5):String(value||"")}
+  function addressPhotoUrl(address){const url=String(address&&address.photoUrl||"");return /^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/[^/]+\/o\/addressPhotos%2F/.test(url)?url:""}
+  function addressTilesKey(){const p=state.addressMapDraft||{};return addressZoom()+"/"+p.lat+"/"+p.lng}
+  function addressZoom(){return Math.max(ADDRESS_MAP_MIN_ZOOM,Math.min(ADDRESS_MAP_MAX_ZOOM,Math.round(Number(state.addressMapZoom)||17)))}
+  function openAddressSheet(address,options){
+    const source=clone(address||{}),opts=options||{},pinned=!!coordinatePoint(source),seed=addressMapSeed(source),unknown=!coordinatePoint(seed)||seed.zoom===ADDRESS_MAP_FALLBACK.zoom;
+    if(source.id==="current-location")source.label=""; // becomes Home/Work/Other once it has a door
+    state.addressMapDraft={lat:seed.lat,lng:seed.lng};state.addressMapZoom=unknown?ADDRESS_MAP_FALLBACK.zoom:17;
+    // What a saved address already says about its street, so the details step
+    // doesn't flash "finding the street" for a pin that hasn't moved.
+    const geo=pinned?{title:source.street?String(source.street).split(",")[0]:(source.area||""),line:source.street||(addressNeedsDoor(source)?source.address:"")||"",area:source.area||"",city:source.city||""}:null;
+    const step=pinned&&opts.step!=="map"?(opts.step||"details"):"map";
+    setSheet({type:"address",step,address:source,geo,unknownStart:unknown&&!pinned,search:{q:"",results:[],busy:false,error:""},reason:opts.reason||""});
+    if(step==="details")focusAddressDoor();
+    if(pinned&&!geo.line)lookUpAddressPin(0);
+    if(!pinned){if(locationReady())requestLocation("address");else if(!unknown)lookUpAddressPin(0)}
   }
-  function addressMapMarkup(){
-    const point=state.addressMapDraft||addressMapSeed(null),zoom=Math.max(12,Math.min(18,Number(state.addressMapZoom)||16)),world=mapWorld(point.lat,point.lng,zoom),tileX=Math.floor(world.x/256),tileY=Math.floor(world.y/256),max=Math.pow(2,zoom),tiles=[];
-    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let tx=(tileX+dx)%max;if(tx<0)tx+=max;const ty=Math.max(0,Math.min(max-1,tileY+dy)),left=(tileX+dx)*256-world.x,top=(tileY+dy)*256-world.y;const gsrc=mapTileSrc(zoom,tx,ty,false),osrc=osmTileSrc(zoom,tx,ty);tiles.push('<img alt="" aria-hidden="true" src="'+gsrc+'" data-osm="'+osrc+'"'+(gsrc===osrc?' class="osm"':'')+' style="position:absolute;width:256px;height:256px;left:calc(50% + '+left.toFixed(1)+'px);top:calc(50% + '+top.toFixed(1)+'px);max-width:none">');}
-    return '<div class="stack"><div class="cluster between"><div><strong>Delivery pin</strong><div class="caption">Tap the map to move the pin. Use phone location for your exact position.</div></div><div class="cluster"><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="-1" aria-label="Zoom out">−</button><button type="button" class="icon-button" data-action="address-map-zoom" data-delta="1" aria-label="Zoom in">+</button></div></div><div data-action="address-map-pick" class="map-picker" role="button" tabindex="0" aria-label="Choose delivery location on map" style="height:250px;position:relative;overflow:hidden;border-radius:18px;border:1px solid var(--border);background:#dce7ef;touch-action:manipulation">'+tiles.join("")+'<div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);font-size:34px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.35));pointer-events:none">📍</div></div><div class="cluster wrap"><button type="button" class="button tonal grow" data-action="detect-address-location">'+icon("target","small")+' Use phone location</button><span class="caption">'+point.lat.toFixed(5)+', '+point.lng.toFixed(5)+'</span></div></div>';
+  function focusAddressDoor(){requestAnimationFrame(()=>{const el=document.getElementById("address-house");if(el&&!el.value)el.focus({preventScroll:true})})}
+  let addressGeoTimer=0,addressGeoSeq=0;const addressGeoCache={};
+  /** Street name under the pin, once it settles. Older answers for a pin since moved are dropped. */
+  function lookUpAddressPin(delay){
+    const sheet=state.sheet,point=coordinatePoint(state.addressMapDraft);if(!sheet||sheet.type!=="address"||!point)return;
+    clearTimeout(addressGeoTimer);const seq=++addressGeoSeq,key=point.lat.toFixed(5)+","+point.lng.toFixed(5);
+    if(addressGeoCache[key]){sheet.geo=addressGeoCache[key];paintAddressSheet();return}
+    if(!nativeAvailable("reverseGeocode")){sheet.geo={title:"",line:"",area:"",city:""};paintAddressSheet();return}
+    sheet.geo=Object.assign({},sheet.geo||{},{pending:true});paintAddressSheet();
+    addressGeoTimer=setTimeout(async()=>{
+      let geo={title:"",line:"",area:"",city:""};
+      try{const r=await nativeInvoke("reverseGeocode",{lat:point.lat,lng:point.lng},{timeoutMs:9000});
+        geo={title:fixUtf8(r.title),line:placeLine(fixUtf8(r.line)),street:fixUtf8(r.street),area:fixUtf8(r.area),city:fixUtf8(r.city),pincode:String(r.pincode||"")};addressGeoCache[key]=geo}
+      catch(_){}
+      if(seq!==addressGeoSeq||state.sheet!==sheet)return;
+      sheet.geo=geo;paintAddressSheet();
+    },delay==null?350:delay);
   }
-  function restaurant(id){return state.catalog[id||state.selectedRestaurantId]||null;}
+  let addressSearchTimer=0,addressSearchSeq=0;
+  async function runAddressSearch(){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address")return;clearTimeout(addressSearchTimer);
+    const q=String(sheet.search.q||"").trim(),point=coordinatePoint(state.addressMapDraft)||{};
+    if(q.length<3){addressSearchSeq++;Object.assign(sheet.search,{results:[],error:"",busy:false});paintAddressSheet();return}
+    if(!nativeAvailable("searchPlaces")){Object.assign(sheet.search,{results:[],error:"Search needs the latest Scraveit app. Drag the map to your place instead.",busy:false});paintAddressSheet();return}
+    const seq=++addressSearchSeq;Object.assign(sheet.search,{busy:true,error:""});paintAddressSheet();
+    try{const r=await nativeInvoke("searchPlaces",{query:q,lat:point.lat,lng:point.lng},{timeoutMs:12000});if(seq!==addressSearchSeq)return;
+      const list=(Array.isArray(r.results)?r.results:[]).map(x=>({title:fixUtf8(x.title),line:placeLine(fixUtf8(x.line)),street:fixUtf8(x.street),area:fixUtf8(x.area),city:fixUtf8(x.city),lat:Number(x.lat),lng:Number(x.lng)})).filter(x=>coordinatePoint(x)).slice(0,6);
+      Object.assign(sheet.search,{results:list,error:list.length?"":"No match. Try a landmark near you, or drag the map."})}
+    catch(e){if(seq!==addressSearchSeq)return;Object.assign(sheet.search,{results:[],error:e&&e.userMessage||"Search isn’t working right now. Drag the map to your place instead."})}
+    sheet.search.busy=false;if(state.sheet===sheet)paintAddressSheet();
+  }
+  function addressTilesMarkup(center,zoomLevel,reach){
+    const point=center||state.addressMapDraft||addressMapSeed(null),zoom=zoomLevel||addressZoom(),r=reach==null?2:reach,world=mapWorld(point.lat,point.lng,zoom),tileX=Math.floor(world.x/256),tileY=Math.floor(world.y/256),max=Math.pow(2,zoom),tiles=[];
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){let tx=(tileX+dx)%max;if(tx<0)tx+=max;const ty=Math.max(0,Math.min(max-1,tileY+dy)),left=(tileX+dx)*256-world.x,top=(tileY+dy)*256-world.y;const gsrc=mapTileSrc(zoom,tx,ty,false),osrc=osmTileSrc(zoom,tx,ty);tiles.push('<img alt="" aria-hidden="true" draggable="false" src="'+gsrc+'" data-osm="'+osrc+'"'+(gsrc===osrc?' class="osm"':'')+' style="left:calc(50% + '+left.toFixed(1)+'px);top:calc(50% + '+top.toFixed(1)+'px)">');}
+    return tiles.join("");
+  }
+  function addressGeoText(sheet){
+    const g=sheet.geo||{},line=g.line||[g.area,g.city].filter(Boolean).join(", ");
+    return {title:g.title||g.area||g.city||(line?line.split(",")[0]:""),line,pending:!!g.pending&&!line};
+  }
+  function addressPickedMarkup(sheet){
+    const t=addressGeoText(sheet);
+    if(sheet.unknownStart&&!sheet.geo)return '<span class="addr-picked-ic">'+icon("search","small")+'</span><span class="grow"><strong>Find your place</strong><small>Search above, use your current location, or drag the map.</small></span>';
+    if(t.pending)return '<span class="addr-picked-ic">'+icon("pin","small")+'</span><span class="grow"><strong class="addr-wait">Finding the street…</strong><small>&nbsp;</small></span>';
+    return '<span class="addr-picked-ic">'+icon("pin","small")+'</span><span class="grow"><strong>'+h(t.title||"Pinned location")+'</strong><small>'+h(t.line||"No street name here. You can type it on the next step.")+'</small></span>';
+  }
+  function addressResultsMarkup(sheet){
+    const s=sheet.search||{};
+    if(s.busy)return '<p class="addr-results-note"><span class="spinner"></span> Searching…</p>';
+    if(s.error)return '<p class="addr-results-note">'+h(s.error)+'</p>';
+    if(!s.results||!s.results.length)return '';
+    return '<ul>'+s.results.map((r,i)=>'<li><button type="button" data-action="address-search-pick" data-index="'+i+'">'+icon("pin","small")+'<span><strong>'+h(r.title||r.area||r.city||"Place")+'</strong><small>'+h(r.line)+'</small></span></button></li>').join("")+'</ul>';
+  }
+  function addressMapStep(sheet){
+    const editing=sheet.address&&sheet.address.id&&sheet.address.id!=="current-location";
+    return '<div class="sheet-backdrop addr-backdrop"><section class="sheet addr-sheet addr-map-step" data-sheet-surface data-step="map" role="dialog" aria-modal="true" aria-label="Set delivery location">'
+      +'<header class="addr-top"><button type="button" class="icon-button flat" data-action="close-sheet" aria-label="Close">'+icon("back")+'</button><h2>'+(editing?'Move the pin':'Where should we deliver?')+'</h2></header>'
+      +'<div class="addr-search-wrap"><form id="addr-search-form" class="addr-search" role="search"><span class="addr-search-ic">'+icon("search","small")+'</span><input id="addr-search" name="q" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="Search street, area or apartment" aria-label="Search for your area" value="'+h(sheet.search.q)+'"></form>'
+      +'<div id="addr-results" class="addr-results">'+addressResultsMarkup(sheet)+'</div></div>'
+      +'<div id="addr-map" class="addr-map" role="application" aria-label="Map. Drag it to put the pin on your building.">'
+        +'<div id="addr-tiles" class="addr-tiles" data-key="'+addressTilesKey()+'">'+addressTilesMarkup()+'</div>'
+        +(sheet.reason?'<p class="addr-reason">'+h(sheet.reason)+'</p>':'')
+        +'<div class="addr-pin" aria-hidden="true"><span class="addr-pin-tip">Your order comes here</span>'+ADDRESS_PIN_SVG+'<i></i></div>'
+        +'<div class="addr-zoom"><button type="button" data-action="address-map-zoom" data-delta="1" aria-label="Zoom in">+</button><button type="button" data-action="address-map-zoom" data-delta="-1" aria-label="Zoom out">−</button></div>'
+        +'<button type="button" class="addr-locate" data-action="detect-address-location"'+(state.locationBusy?' disabled':'')+'>'+(state.locationBusy?'<span class="spinner"></span> Finding you…':icon("target","small")+' Use my current location')+'</button>'
+      +'</div>'
+      +'<div class="addr-foot"><p class="addr-hint">Drag the map to put the pin on your building</p><div id="addr-picked" class="addr-picked">'+addressPickedMarkup(sheet)+'</div>'
+      +'<button type="button" id="addr-confirm" class="button primary full" data-action="address-confirm-pin"'+(sheet.unknownStart&&!sheet.geo?' disabled':'')+'>Confirm location</button></div>'
+      +'</section></div>';
+  }
+  function addressMiniMarkup(sheet){
+    const t=addressGeoText(sheet),point=coordinatePoint(state.addressMapDraft);
+    return '<span class="addr-mini-map">'+(point?'<span class="addr-mini-tiles">'+addressTilesMarkup(point,17,1)+'</span>':'')+ADDRESS_PIN_SVG+'</span><span class="grow"><strong>'+h(t.pending?'Finding the street…':(t.title||"Pinned location"))+'</strong><small>'+h(t.line||"Tap to check the pin on the map")+'</small></span><span class="addr-mini-change">Change</span>';
+  }
+  function addressPhotoMarkup(sheet){
+    const a=sheet.address||{},url=addressPhotoUrl(a);
+    if(sheet.photoBusy)return '<div class="addr-photo-card busy"><span class="spinner"></span><span>Adding your photo…</span></div>';
+    if(url)return '<div class="addr-photo-card"><img src="'+h(url)+'" alt="Photo of your place"><div class="addr-photo-actions"><button type="button" class="button tonal" data-action="address-photo" data-source="camera">'+icon("camera","small")+' Retake</button><button type="button" class="text-button" data-action="address-photo-remove">Remove</button></div></div>';
+    return '<div class="addr-photo-add"><p>Snap your gate, door or building. The rider sees it and spots your place in seconds.</p><div class="addr-photo-buttons"><button type="button" class="button tonal" data-action="address-photo" data-source="camera">'+icon("camera","small")+' Take photo</button><button type="button" class="button tonal" data-action="address-photo" data-source="gallery">'+icon("image","small")+' Gallery</button></div></div>';
+  }
+  function addressDetailsStep(sheet){
+    const a=sheet.address||{},kind=addressLabelKind(a),phone=String(a.phone!=null&&a.phone!==""?a.phone:state.profile.phone||""),showPhone=sheet.editPhone||!validPhone(phone),legacy=addressIsLegacyTyped(a),t=addressGeoText(sheet);
+    const door=a.house!=null&&a.house!==""?a.house:(legacy?a.address:""),needStreet=!legacy&&!t.line&&!t.pending,editing=a.id&&a.id!=="current-location";
+    const chip=(value,ic)=>'<button type="button" class="addr-chip'+(kind===value?' active':'')+'" data-action="address-label-chip" data-value="'+value+'" aria-pressed="'+(kind===value)+'">'+icon(ic,"small")+value+'</button>';
+    return '<div class="sheet-backdrop addr-backdrop"><section class="sheet addr-sheet addr-details" data-sheet-surface data-step="details" role="dialog" aria-modal="true" aria-label="Address details">'
+      +'<header class="addr-top"><button type="button" class="icon-button flat" data-action="address-step" data-step="map" aria-label="Back to map">'+icon("back")+'</button><h2>'+(editing?'Edit address':'Add your door details')+'</h2><button type="button" class="icon-button flat" data-action="close-sheet" aria-label="Close">'+icon("close")+'</button></header>'
+      +'<div class="addr-body">'
+      +(sheet.reason?'<div class="notice info">'+icon("bike","small")+'<span>'+h(sheet.reason)+'</span></div>':'')
+      +'<button type="button" id="addr-mini" class="addr-mini" data-action="address-step" data-step="map" aria-label="Change the pin on the map">'+addressMiniMarkup(sheet)+'</button>'
+      +'<form id="address-form" class="addr-form" novalidate>'
+        +'<div class="field"><label for="address-house">'+(legacy?'Full address':'House / flat no. and floor')+'</label><input id="address-house" class="input" name="house" maxlength="'+(legacy?400:160)+'" autocomplete="address-line1" enterkeyhint="next" value="'+h(door)+'" placeholder="e.g. Flat 204, 2nd floor, Sai Residency"></div>'
+        +(needStreet?'<div class="field"><label for="address-street">Street and area</label><input id="address-street" class="input" name="street" maxlength="200" autocomplete="address-line2" enterkeyhint="next" value="'+h(a.street||"")+'" placeholder="e.g. Rama Street, Naidupeta"></div>':'')
+        +'<div class="field"><label for="address-landmark">Landmark <span class="addr-optional">optional</span></label><input id="address-landmark" class="input" name="landmark" maxlength="160" enterkeyhint="done" value="'+h(a.landmark||"")+'" placeholder="e.g. Opposite Ganesh temple, green gate"></div>'
+        +'<div class="field"><label>Photo of your place <span class="addr-optional">optional</span></label><div id="addr-photo">'+addressPhotoMarkup(sheet)+'</div></div>'
+        +'<div class="field"><label>Save as</label><div class="addr-chips">'+chip("Home","home")+chip("Work","work")+chip("Other","pin")+'</div></div>'
+        +(kind==="Other"?'<div class="field"><input id="address-label-custom" class="input" name="label" maxlength="40" aria-label="Name for this place" value="'+h(a.label&&a.label!=="Other"&&a.label!=="Home"&&a.label!=="Work"?a.label:"")+'" placeholder="Name this place, e.g. Mom’s house"></div>':'')
+        +(showPhone?'<div class="field"><label for="address-phone">Phone number for the rider</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="16" value="'+h(phone)+'" placeholder="10-digit mobile number"></div>'
+          :'<div class="addr-phone">'+icon("phone","small")+'<span class="grow">Rider will call <strong>'+h(prettyPhone(phone))+'</strong></span><button type="button" class="text-button" data-action="address-phone-edit">Change</button><input type="hidden" name="phone" value="'+h(phone)+'"></div>')
+        +'<div class="sheet-submit addr-submit"><button class="button primary full" type="submit"'+(sheet.photoBusy?' disabled':'')+'>'+(sheet.photoBusy?'<span class="spinner"></span> Adding photo…':'Save address')+'</button></div>'
+      +'</form></div></section></div>';
+  }
+  /**
+   * Redraws only what changed (tiles, street line, results, photo), so the
+   * search box keeps its focus and the map doesn't flash, then records the
+   * result as the sheet's current markup so unrelated renders leave it alone.
+   */
+  function paintAddressSheet(){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address")return;
+    const root=sheetRegion.querySelector(".addr-sheet");
+    if(!root||root.dataset.step!==sheet.step){renderSheet();return}
+    const set=(id,html)=>{const el=document.getElementById(id);if(el)el.innerHTML=html;return el};
+    if(sheet.step==="map"){
+      const tiles=document.getElementById("addr-tiles"),key=addressTilesKey();
+      if(tiles&&tiles.dataset.key!==key){tiles.innerHTML=addressTilesMarkup();tiles.dataset.key=key;tiles.style.transform=""}
+      set("addr-picked",addressPickedMarkup(sheet));set("addr-results",addressResultsMarkup(sheet));
+      const confirm=document.getElementById("addr-confirm");if(confirm)confirm.disabled=!!(sheet.unknownStart&&!sheet.geo);
+    }else{
+      set("addr-mini",addressMiniMarkup(sheet));set("addr-photo",addressPhotoMarkup(sheet));
+      const submit=root.querySelector(".addr-submit button");if(submit){submit.disabled=!!sheet.photoBusy;submit.innerHTML=sheet.photoBusy?'<span class="spinner"></span> Adding photo…':'Save address'}
+      // A street box appears only when the pin has no street name to offer.
+      const t=addressGeoText(sheet),wantStreet=!addressIsLegacyTyped(sheet.address)&&!t.line&&!t.pending;
+      if(wantStreet!==!!root.querySelector("#address-street")){renderAddressKeepingFocus();return}
+    }
+    syncAddressSheetCache();
+  }
+  function renderAddressKeepingFocus(){
+    const active=document.activeElement,id=active&&active.id,pos=active&&typeof active.selectionStart==="number"?active.selectionStart:null;
+    renderSheet();
+    const again=id&&document.getElementById(id);if(again&&again!==document.activeElement){again.focus({preventScroll:true});if(pos!=null)try{again.setSelectionRange(pos,pos)}catch(_){}}
+  }
+  function addressFormSheet(sheet){return sheet.step==="details"?addressDetailsStep(sheet):addressMapStep(sheet)}
+  function syncAddressSheetCache(){if(state.sheet&&state.sheet.type==="address"){lastSheetHtml=addressFormSheet(state.sheet);lastSheetShown=state.sheet}}
+  function setAddressPin(point,zoom){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address"||!coordinatePoint(point))return;
+    state.addressMapDraft={lat:Number(point.lat),lng:Number(point.lng)};if(zoom!=null)state.addressMapZoom=zoom;sheet.unknownStart=false;
+  }
+  // Drag to pan, pinch to zoom, tap to put the pin there. The tiles follow the
+  // finger with a transform and are redrawn around the new centre on release.
+  const addressPointers=new Map();let addressGesture=null;
+  document.addEventListener("pointerdown",e=>{const map=e.target.closest&&e.target.closest("#addr-map");if(!map||e.target.closest("button"))return;
+    addressPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});try{map.setPointerCapture(e.pointerId)}catch(_){}
+    if(addressPointers.size===1)addressGesture={x:e.clientX,y:e.clientY,dx:0,dy:0,moved:false,scale:1,pinch:0};
+    else if(addressPointers.size===2&&addressGesture){const [a,b]=[...addressPointers.values()];addressGesture.pinch=Math.hypot(a.x-b.x,a.y-b.y)||1;addressGesture.moved=true}
+  });
+  document.addEventListener("pointermove",e=>{if(!addressGesture||!addressPointers.has(e.pointerId))return;addressPointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const g=addressGesture,tiles=document.getElementById("addr-tiles");if(!tiles)return;
+    if(addressPointers.size>=2&&g.pinch){const [a,b]=[...addressPointers.values()];g.scale=Math.max(.25,Math.min(4,Math.hypot(a.x-b.x,a.y-b.y)/g.pinch))}
+    else if(addressPointers.size===1){g.dx=e.clientX-g.x;g.dy=e.clientY-g.y;if(Math.abs(g.dx)+Math.abs(g.dy)>6)g.moved=true}
+    if(g.moved){tiles.style.transform="translate("+g.dx+"px,"+g.dy+"px) scale("+g.scale+")";tiles.parentNode.classList.add("dragging")}
+  });
+  function endAddressGesture(e){if(!addressPointers.has(e.pointerId))return;addressPointers.delete(e.pointerId);if(addressPointers.size||!addressGesture)return;
+    const g=addressGesture,map=document.getElementById("addr-map"),point=coordinatePoint(state.addressMapDraft);addressGesture=null;if(map)map.classList.remove("dragging");
+    if(!point||!map||!state.sheet||state.sheet.type!=="address")return;
+    const zoom=addressZoom(),world=mapWorld(point.lat,point.lng,zoom);let next;
+    if(g.moved)next=worldToLatLng(world.x-g.dx/g.scale,world.y-g.dy/g.scale,zoom);
+    else if(e.type==="pointerup"){const r=map.getBoundingClientRect();next=worldToLatLng(world.x+(e.clientX-r.left-r.width/2),world.y+(e.clientY-r.top-r.height/2),zoom)}
+    else return;
+    const nextZoom=g.scale!==1?Math.max(ADDRESS_MAP_MIN_ZOOM,Math.min(ADDRESS_MAP_MAX_ZOOM,zoom+Math.round(Math.log2(g.scale)))):zoom;
+    setAddressPin(next,nextZoom);paintAddressSheet();lookUpAddressPin();
+  }
+  document.addEventListener("pointerup",endAddressGesture);document.addEventListener("pointercancel",endAddressGesture);
+  document.addEventListener("wheel",e=>{if(!e.target.closest||!e.target.closest("#addr-map"))return;e.preventDefault();state.addressMapZoom=Math.max(ADDRESS_MAP_MIN_ZOOM,Math.min(ADDRESS_MAP_MAX_ZOOM,addressZoom()+(e.deltaY<0?1:-1)));paintAddressSheet()},{passive:false});
+  // Typed values live on the sheet so a re-render (a chip tap, a background
+  // refresh) never wipes what the customer has written.
+  document.addEventListener("input",e=>{const t=e.target,sheet=state.sheet;if(!t||!sheet||sheet.type!=="address")return;
+    if(t.id==="addr-search"){sheet.search.q=t.value;clearTimeout(addressSearchTimer);addressSearchTimer=setTimeout(runAddressSearch,650);syncAddressSheetCache();return}
+    if(t.form&&t.form.id==="address-form"&&["house","street","landmark","phone","label"].includes(t.name)){sheet.address[t.name]=t.value;syncAddressSheetCache()}
+  });
+  function pickAddressSearchResult(index){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address")return;const r=(sheet.search.results||[])[index];if(!r)return;
+    setAddressPin(r,17);const geo={title:r.title,line:r.line,street:r.street,area:r.area,city:r.city};addressGeoCache[r.lat.toFixed(5)+","+r.lng.toFixed(5)]=geo;sheet.geo=geo;
+    Object.assign(sheet.search,{q:"",results:[],error:"",busy:false});addressSearchSeq++;
+    const input=document.getElementById("addr-search");if(input){input.value="";input.blur()}
+    paintAddressSheet();
+  }
+  function goAddressStep(step){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address")return;
+    if(step==="details"&&!coordinatePoint(state.addressMapDraft)){toast("Put the pin on your building first.","danger");return}
+    if(step==="details"&&sheet.unknownStart&&!sheet.geo){toast("Find your place on the map first.","danger");return}
+    sheet.step=step;renderSheet();
+    if(step==="details"){focusAddressDoor();if(!sheet.geo)lookUpAddressPin(0)}
+  }
+  async function pickAddressPhoto(source){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address"||sheet.photoBusy)return;
+    if(!nativeAvailable("pickPlacePhoto")){toast("Update Scraveit to add a photo.","danger");return}
+    let res;try{res=await nativeInvoke("pickPlacePhoto",{source:source==="camera"?"camera":"gallery"},{timeoutMs:300000})}
+    catch(e){if(!/CANCELLED/.test(String(e&&e.message||"")))toast(e&&e.userMessage||"Photo not added.","danger");return}
+    const img=String(res&&res.image||"");if(!img.startsWith("data:image/jpeg;base64,")||state.sheet!==sheet)return;
+    sheet.photoBusy=true;paintAddressSheet();
+    try{const photo=await uploadPlacePhoto(img);sheet.address.photoUrl=photo.url;sheet.address.photoPath=photo.path}
+    catch(e){toast("Photo not added. "+(e&&e.message||"Try again."),"danger")}
+    finally{sheet.photoBusy=false;if(state.sheet===sheet)paintAddressSheet()}
+  }
+  /**
+   * The photo goes to addressPhotos/{uid}/ (only the owner may write there) and
+   * is kept as its download link: the rider opens that link from the order
+   * without needing access to the customer's files.
+   */
+  async function uploadPlacePhoto(dataUrl){
+    const owner=myUid();if(!owner)throw new Error("Sign in again.");
+    const raw=atob(dataUrl.slice(dataUrl.indexOf(",")+1)),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+    const path="addressPhotos/"+owner+"/"+uid("place_").replace(/[^A-Za-z0-9_-]/g,"")+".jpg",base="https://firebasestorage.googleapis.com/v0/b/"+STORY_BUCKET+"/o",auth={Authorization:"Firebase "+await storageToken()};
+    const res=await fetch(base+"?uploadType=media&name="+encodeURIComponent(path),{method:"POST",headers:Object.assign({"Content-Type":"image/jpeg"},auth),body:new Blob([bytes],{type:"image/jpeg"})});
+    if(!res.ok)throw new Error(res.status===403?"Upload isn’t allowed.":"The upload didn’t finish ("+res.status+").");
+    let meta=await res.json().catch(()=>({}));
+    if(!meta.downloadTokens){const again=await fetch(base+"/"+encodeURIComponent(path),{headers:auth});meta=again.ok?await again.json().catch(()=>({})):{}}
+    const token=String(meta.downloadTokens||"").split(",")[0];if(!token)throw new Error("The photo link couldn’t be made.");
+    return {path,url:base+"/"+encodeURIComponent(path)+"?alt=media&token="+encodeURIComponent(token)};
+  }
+  /** Before an order goes out: a pin, a door and a phone, each asked for right here instead of on another screen. */
+  function addressReadyForCheckout(address){
+    if(!address){toast("Choose where to deliver first.","danger");setSheet({type:"addressPicker"});return false}
+    if(!coordinatePoint(address)){openAddressSheet(address,{step:"map",reason:"Put the pin on your building so the rider can find it."});return false}
+    if(addressNeedsDoor(address)){openAddressSheet(address,{step:"details",reason:"Almost done! Add your house or flat number so the rider comes right to your door."});return false}
+    if(!validPhone(address.phone||state.profile.phone)){openAddressSheet(address,{step:"details",reason:"Add a phone number the rider can call when they arrive."});return false}
+    return true;
+  }
+  function restaurant(id){const key=id||state.selectedRestaurantId;return state.catalog[key]||state.sponsoredStores[key]||null;}
   function menuItem(rid,iid){const r=restaurant(rid);return r&&r.menu.find(x=>x.id===iid);}
   function cartCount(){return state.cart.reduce((sum,item)=>sum+Number(item.quantity||0),0);}
   function cartRestaurant(){return state.cart.length?restaurant(state.cart[0].restaurantId):null;}
@@ -1858,14 +2223,41 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function dockRateOrders(){if(typeof reviewStateReady!=="function"||!reviewStateReady())return[];const gone=capsuleDismissed(),now=Date.now();
     return state.orders.filter(o=>o.status==="Delivered"&&!isGuestOrder(o)&&!state.reviews[o.id]&&!gone["rate:"+o.id]&&now-Number(o.deliveredAt||o.updatedAt||o.createdAt||0)<3*86400000).slice(0,2)}
   function dockSlides(){const orders=activeOrders().slice(0,4).map(o=>({kind:"order",o})),rates=[];
-    dockRateOrders().forEach(o=>{rates.push({kind:"rate",o});if(o.riderId)rates.push({kind:"rider",o})});
-    return orders.concat(rates,allCarts().map(e=>({kind:"cart",c:cartSummary(e)})))}
-  function dockStars(o,action){return'<span class="dock-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="dock-star" data-action="'+action+'" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">★</button>').join("")+'</span>'}
+    dockRateOrders().forEach(o=>{const shut=dockRatings()[o.id]||{};if(!shut.foodClosed)rates.push({kind:"rate",o});if(o.riderId&&!shut.riderClosed)rates.push({kind:"rider",o})});
+    return orders.concat(allCarts().map(e=>({kind:"cart",c:cartSummary(e)})),rates)}
+  function dockStars(o,action){const picked=(dockRatings()[o.id]||{})[action==="dock-rate-rider"?"rider":"food"]||0;return'<span class="dock-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="dock-star'+(n<=picked?' on':'')+'" data-action="'+action+'" data-order-id="'+h(o.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">'+icon("star","round-star")+'</button>').join("")+'</span>'}
+  // Rating on the bar itself, with no second page: the restaurant and the rider each have a slide and the
+  // customer swipes between them. A customer can create a review but not change it, so both go in one save.
+  // Tapped stars wait in dockRatings, where they can be seen or changed, until DOCK_SAVE_MS after the last
+  // touch on the bar (DOCK_SAVE_ONE_MS while the other slide is still open and unrated) or leaving the app.
+  // A × closes its own slide and keeps any stars on it; closing the last open slide saves at once.
+  const DOCK_SAVE_MS=6000,DOCK_SAVE_ONE_MS=15000,dockSaveTimers={};
+  function dockRatings(){return state.dockRatings||(state.dockRatings={})}
+  function dockRateOrder(id){return state.orders.find(o=>String(o.id)===id)}
+  function dockRateTap(control,action){const id=String(control.dataset.orderId||""),n=Number(control.dataset.rating)||0;
+    if(!n||state.reviews[id]||!dockRateOrder(id))return;
+    const ratings=dockRatings()[id]||(dockRatings()[id]={food:0,rider:0});ratings[action==="dock-rate-rider"?"rider":"food"]=n;
+    document.querySelectorAll('.dock-star[data-order-id="'+id+'"][data-action="'+action+'"]').forEach(star=>star.classList.toggle("on",Number(star.dataset.rating)<=n));
+    armDockSave(id)}
+  function armDockSave(id){clearTimeout(dockSaveTimers[id]);const ratings=dockRatings()[id],order=dockRateOrder(id);if(!ratings||!order)return;
+    const allDone=(ratings.food||ratings.foodClosed)&&(ratings.rider||ratings.riderClosed||!order.riderId);
+    dockSaveTimers[id]=setTimeout(()=>{if(Date.now()-dockTouchedAt<DOCK_SAVE_MS)armDockSave(id);else saveDockRating(id)},allDone?DOCK_SAVE_MS:DOCK_SAVE_ONE_MS)}
+  function dockRateSkip(control){const id=String(control.dataset.orderId||""),order=dockRateOrder(id),rider=control.dataset.kind==="rider",ratings=dockRatings()[id]||(dockRatings()[id]={food:0,rider:0});
+    ratings[rider?"riderClosed":"foodClosed"]=true;const rated=ratings.food||ratings.rider;
+    if(rider?!ratings.foodClosed:order&&order.riderId&&!ratings.riderClosed){if(rated)armDockSave(id);const left=dockSlides().findIndex(x=>(x.kind==="rate"||x.kind==="rider")&&String(x.o.id)===id);if(left>=0)state.dockIndex=left;render({preserveScroll:true});return}
+    if(rated){saveDockRating(id);return}
+    clearTimeout(dockSaveTimers[id]);delete dockRatings()[id];dismissCapsule("rate:"+id);render({preserveScroll:true})}
+  function saveDockRating(id){clearTimeout(dockSaveTimers[id]);const ratings=dockRatings()[id],order=dockRateOrder(id);delete dockRatings()[id];
+    if(!ratings||!order||state.reviews[id])return;
+    const review=buildReviewPayload(order,ratings.food,ratings.rider,"");
+    pendingReviews[order.id]=review;state.reviews[order.id]=review;persistReviews();toast("Thank you for helping Scraveit improve.","success");render({preserveScroll:true});
+    saveReview(order.id,review,String(state.session.uid||""))}
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState!=="visible")Object.keys(dockRatings()).forEach(id=>{const ratings=dockRatings()[id];if(ratings.food||ratings.rider)saveDockRating(id)})});
   function dockSlide(x){
     if(x.kind==="order"){const o=x.o,r=restaurant(o.restaurantId),img=safeUrl(r&&(r.imageThumb||r.image)||"");
       return'<div class="dock-slide order"><button class="dock-main" data-action="open-order" data-order-id="'+h(o.id)+'"><span class="dock-thumb">'+(img?'<img src="'+h(img)+'" alt="">':icon("orders"))+'<i class="dock-live" aria-hidden="true"></i></span><span class="dock-copy"><strong>'+h(o.status||"Order placed")+'</strong><small>'+h(o.restaurant||"Your order")+' · '+h(etaText(o))+'</small><span class="dock-progress"><span style="width:'+orderProgress(o)+'%"></span></span></span></button><button class="dock-cta order" data-action="open-order" data-order-id="'+h(o.id)+'">Track</button></div>'}
-    if(x.kind==="rate"||x.kind==="rider"){const o=x.o,r=restaurant(o.restaurantId),img=safeUrl(r&&(r.imageThumb||r.image)||""),rider=String(o.riderName||"your delivery partner").split(" ")[0];
-      return'<div class="dock-slide rate"><span class="dock-thumb'+(x.kind==="rider"?' rider':'')+'">'+(x.kind==="rider"?'<span class="dock-rider" aria-hidden="true">🛵</span>':img?'<img src="'+h(img)+'" alt="">':icon("star"))+'</span><span class="dock-copy"><strong>'+(x.kind==="rider"?'Rate '+h(rider):'How was '+h(o.restaurant||(r&&r.name)||"your food")+'?')+'</strong>'+dockStars(o,x.kind==="rider"?"dock-rate-rider":"quick-rate")+'</span><button class="dock-x" data-action="dock-rate-skip" data-order-id="'+h(o.id)+'" aria-label="Not now">×</button></div>'}
+    if(x.kind==="rate"||x.kind==="rider"){const o=x.o,r=restaurant(o.restaurantId),rider=String(o.riderName||"").trim().split(/\s+/)[0];
+      return'<div class="dock-slide rate"><span class="dock-thumb'+(x.kind==="rider"?' rider':'')+'">'+(x.kind==="rider"?'<span class="dock-rider" aria-hidden="true">🛵</span>':capsuleImg(r||{}))+'</span><span class="dock-copy"><strong>'+(x.kind==="rider"?(rider?'How was '+h(rider.charAt(0).toUpperCase()+rider.slice(1).toLowerCase())+'’s delivery?':'How was your delivery?'):'How was '+h(o.restaurant||(r&&r.name)||"your food")+'?')+'</strong>'+dockStars(o,x.kind==="rider"?"dock-rate-rider":"dock-rate")+'</span><button class="dock-x" data-action="dock-rate-skip" data-kind="'+x.kind+'" data-order-id="'+h(o.id)+'" aria-label="Not now">×</button></div>'}
     const c=x.c;return'<div class="dock-slide cart"><button class="dock-main" data-action="dock-menu" data-restaurant-id="'+h(c.rid)+'"><span class="dock-thumb">'+(c.image?'<img src="'+h(c.image)+'" alt="">':icon("cart"))+'</span><span class="dock-copy"><strong>'+h(c.name)+'</strong><small>View menu ›</small></span></button><button class="dock-cta" data-action="dock-cart" data-restaurant-id="'+h(c.rid)+'"><b>View cart</b><small>'+h(c.count)+' item'+(c.count===1?'':'s')+' · '+money(c.subtotal)+'</small></button></div>'}
   function bottomDock(){const slides=dockSlides();if(!slides.length)return"";const many=slides.length>1,carts=allCarts().length;
     return'<div class="floating-cart bottom-dock'+(many?' many':'')+(carts>1?' stacked':'')+'">'+(carts>1?'<button class="dock-all-tab" data-action="dock-all">🛒 '+carts+' carts · View all</button>':'')+'<div class="dock-rail" id="dock-rail">'+slides.map(dockSlide).join("")+'</div>'
@@ -1881,11 +2273,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const DOCK_SLIDE_MS=4000;let dockTouchedAt=0;
   document.addEventListener("touchstart",e=>{if(e.target&&e.target.closest&&e.target.closest(".bottom-dock"))dockTouchedAt=Date.now()},{passive:true,capture:true});
   setInterval(()=>{const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(n<2||state.sheet||document.visibilityState!=="visible"||Date.now()-dockTouchedAt<DOCK_SLIDE_MS*2)return;
-    rail.scrollTo({left:((dockIndex(n)+1)%n)*dockStep(rail),behavior:"smooth"})},DOCK_SLIDE_MS);
+    const isRate=k=>rail.children[k].classList.contains("rate"),from=dockIndex(n);if(isRate(from))return;let next=(from+1)%n;while(isRate(next))next=(next+1)%n;
+    if(next!==from)rail.scrollTo({left:next*dockStep(rail),behavior:"smooth"})},DOCK_SLIDE_MS);
 
   function dockSheet(){const carts=dockSlides().filter(x=>x.kind==="cart"),slides=carts;
     return sheetShell("Your carts",carts.length+" restaurants",''
       +(carts.length?'<div class="stack">'+carts.map(x=>'<div class="dock-row">'+dockSlide(x)+'<button class="icon-button flat dock-remove" data-action="dock-remove" data-restaurant-id="'+h(x.c.rid)+'" aria-label="Remove '+h(x.c.name)+' cart">✕</button></div>').join("")+'</div>':'')
+      +(carts.length>1?'<button class="button primary full together-all" data-together-all="1">Order all together · one delivery</button><p class="caption">Each restaurant cooks its part; we time the riders so everything reaches you together. Up to 3 restaurants.</p>':'')
       +(!slides.length?'<p class="supporting">Nothing here yet.</p>':''))}
 
   function cartSubtotal(){return state.cart.reduce((sum,item)=>sum+(Number(item.price)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||0),0);}
@@ -2002,10 +2396,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
    *  it applies the profitability cap and who-pays split the order will get. */
   function serverOffer(){const coupon=eligibleCoupon(),p=state.dynamicPricing&&state.dynamicPricing.offer;if(!coupon||!p||p.valid!==true||String(p.code)!==String(coupon.code)||Math.abs(Number(p.subtotal)-cartSubtotal())>0.001)return null;return p}
   function discount(){const server=serverOffer(),coupon=eligibleCoupon();return server?Math.max(0,Number(server.discount||0)):promotionDiscount(coupon,promotionBase(coupon,cartSubtotal()));}
-  function tax(){const s=serverLine("tax");if(s!=null)return s;const rate=Number(state.settings.taxRate||0);if(rate>0)return Math.max(0,(cartSubtotal()-discount())*rate/100);
+  function tax(){const s=serverLine("tax");if(s!=null)return s;
+    // Before the server answers: delivery and platform fees carry 18% GST at every store.
+    const feeGst=(deliveryFee()+platformFee())*.18;
+    if(gstIncluded(cartRestaurant()))return feeGst;const rate=Number(state.settings.taxRate||0);if(rate>0)return Math.max(0,(cartSubtotal()-discount())*rate/100);
     // GST comes from the server's tax rules. While a changed cart is being re-priced, scale the
     // last server GST so the line doesn't vanish and come back.
-    const last=state.lastServerCheckout;return last&&Number(last.subtotalAtRequest)>0?Math.max(0,Number(last.tax||0)*cartSubtotal()/Number(last.subtotalAtRequest)):0;}
+    const last=state.lastServerCheckout;return last&&Number(last.subtotalAtRequest)>0?Math.max(0,Number(last.tax||0)*cartSubtotal()/Number(last.subtotalAtRequest)):feeGst;}
   function smallOrderFee(){const s=serverLine("smallOrderFee");if(s!=null)return s;return state.settings.smallOrderFeeEnabled===true&&cartSubtotal()>0&&cartSubtotal()<Number(state.settings.smallOrderThreshold||149)?Math.max(0,Number(state.settings.smallOrderFee||19)):0;}
   function lateNightFee(){const s=serverLine("lateNightFee");if(s!=null)return s;if(state.settings.lateNightFeeEnabled!==true)return 0;const hNow=new Date().getHours(),start=Number(state.settings.lateNightStartHour==null?23:state.settings.lateNightStartHour),end=Number(state.settings.lateNightEndHour==null?5:state.settings.lateNightEndHour),active=start>end?(hNow>=start||hNow<end):(hNow>=start&&hNow<end);return active?Math.max(0,Number(state.settings.lateNightFee||19)):0;}
   function rainFee(){return Math.max(0,Number(state.dynamicPricing&&state.dynamicPricing.rainFee||0));}
@@ -2014,6 +2411,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function riderIncentiveItems(){return(state.dynamicPricing&&Array.isArray(state.dynamicPricing.riderIncentiveItems))?state.dynamicPricing.riderIncentiveItems:[];}
   /** The server-computed bill, but only while it still matches this exact cart. */
   function serverCheckout(){const c=state.dynamicPricing&&state.dynamicPricing.checkout,coupon=eligibleCoupon();if(!c||c.serverAuthoritative!==true)return null;if(Math.abs(Number(c.subtotalAtRequest)-cartSubtotal())>0.001||String(c.couponAtRequest)!==String(coupon?coupon.code||"":"")||Number(c.tipAtRequest)!==Number(state.tip||0)||c.walletAtRequest!==(state.useWallet===true))return null;return c}
+  // Place order waits for the server's price for this exact cart, so what the screen shows is what is charged:
+  // at least PLACE_HOLD_MS after the screen opens (the home bar's View cart is on the same spot, so a second tap
+  // must not order) and at most PRICE_WAIT_MS if the server is slow. The server saves each price it sends, so the tap
+  // charges that price (quotedTotal) with no second check. An older server has no lock (priceLock unset): re-price at the tap.
+  const PLACE_HOLD_MS=1000,PRICE_WAIT_MS=3000;
+  function priceChecking(){return Date.now()-Number(state.placeOpenedAt||0)<PRICE_WAIT_MS&&!serverCheckout()&&!(state.dynamicPricing&&state.dynamicPricing.noPrice)}
+  function placeHeld(){return Date.now()-Number(state.placeOpenedAt||0)<PLACE_HOLD_MS||priceChecking()}
   function orderTotal(){const server=serverCheckout();if(server)return Math.max(0,Number(server.total||0));return Math.max(0,cartSubtotal()+deliveryFee()+platformFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()+Number(state.tip||0)+tax()-discount());}
   // Dynamic weather/demand/rider-incentive pricing is calculated only by the
   // trusted backend - the APK never contains a Weather API server key and
@@ -2027,15 +2431,16 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   const dynamicPricingFallback=()=>({rainFee:0,surgeFee:0,riderIncentiveFee:0,riderIncentiveItems:[],weatherSeverity:"",weatherChecked:false,activeOrders:0,serverAuthoritative:true,checkedAt:Date.now()});
   let pricingSeq=0,pricingTimer=null;
   // Re-price the cart shortly after the customer stops tapping (quantity, tip, coupon).
-  function scheduleCheckoutRefresh(){clearTimeout(pricingTimer);pricingTimer=setTimeout(()=>{if(!state.cart.length||(state.route!=="cart"&&state.route!=="checkout"))return;refreshDynamicPricing().then(()=>{if(state.route==="cart"||state.route==="checkout")render({preserveScroll:true})}).catch(()=>{})},400)}
+  function scheduleCheckoutRefresh(){clearTimeout(pricingTimer);pricingTimer=setTimeout(()=>{if(!state.cart.length||state.route!=="cart"||state.loading)return;refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{})},400)}
   async function refreshDynamicPricing(){
     const seq=++pricingSeq;
     const fallback=dynamicPricingFallback();
     const r=cartRestaurant(),addr=currentAddress();
-    if(!state.session||!r||!addr||!state.cart.length||!nativeAvailable("getCheckoutConfiguration")){state.dynamicPricing=fallback;return fallback}
+    if(!state.session||!r||!addr||!state.cart.length||!nativeAvailable("getCheckoutConfiguration")){fallback.noPrice="skipped";state.dynamicPricing=fallback;return fallback}
     try{
       const coupon=eligibleCoupon(),subtotalAtRequest=cartSubtotal();
       const raw=await nativeInvoke("getCheckoutConfiguration",{restaurantId:r.id,addressId:addr.id,items:callableCartItems(),couponCode:coupon?String(coupon.code||""):"",tip:Number(state.tip||0),paymentMethod:state.checkout&&["cod","upi","card"].includes(state.checkout.payment)?state.checkout.payment:"cod",useWallet:state.useWallet===true},{idToken:state.session.idToken,timeoutMs:15000});
+      if(raw&&raw.priceLock===true)state.priceLock=true;
       const preview=raw&&typeof raw==="object"&&raw.feePreview&&typeof raw.feePreview==="object"?raw.feePreview:null;
       const offerRaw=raw&&typeof raw==="object"&&raw.offerPreview&&typeof raw.offerPreview==="object"?raw.offerPreview:null;
       const offer=offerRaw?{valid:offerRaw.valid===true,code:String(offerRaw.code||""),subtotal:subtotalAtRequest,discount:Math.max(0,Number(offerRaw.discount||0)),restaurantFunded:Math.max(0,Number(offerRaw.restaurantFunded||0)),platformFunded:Math.max(0,Number(offerRaw.platformFunded||0)),limited:Number(offerRaw.withheldPlatformPaise||0)>0,message:String(offerRaw.message||"")}:null;
@@ -2050,11 +2455,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         checkout:raw&&raw.checkoutPreview&&typeof raw.checkoutPreview==="object"?Object.assign({},raw.checkoutPreview,{subtotalAtRequest:subtotalAtRequest,couponAtRequest:coupon?String(coupon.code||""):"",tipAtRequest:Number(state.tip||0),walletAtRequest:state.useWallet===true}):null
       }:fallback;
       if(seq!==pricingSeq)return state.dynamicPricing;
-      if(next.checkout)state.lastServerCheckout=next.checkout;
+      if(next.checkout)state.lastServerCheckout=next.checkout;else next.noPrice="skipped";
       state.dynamicPricing=next;
       return next;
     }catch(_){
       if(seq!==pricingSeq)return state.dynamicPricing;
+      fallback.noPrice="failed";
       state.dynamicPricing=fallback;
       return fallback;
     }
@@ -2067,6 +2473,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function addCartItem(rid, iid, custom) {
     const r = restaurant(rid), item = menuItem(rid,iid);
     if (!r || !item || item.available === false) { toast("This item is unavailable right now.","danger"); return; }
+    // Delivery partners busy here: no adding to the cart until one is free (dine-in tables are not affected).
+    if (partnersBusy(rid) && !tableHere(rid)) { toast("Delivery partners are busy. You can add dishes in a few minutes.","warning"); render({preserveScroll:true}); return; }
     if (state.cart.length && state.cart[0].restaurantId !== rid) {
       const previous=cartRestaurant();activateCart(rid);
       toast((previous?previous.name:"Your other")+" cart is saved below. Started one for "+r.name+".","success");
@@ -2084,7 +2492,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       addOnIds:addOns.map(x=>String(x.id||x.name||"")).filter(Boolean),
       addOnTotal:addOns.reduce((sum,x)=>sum+Number(x.priceDelta!=null?x.priceDelta:x.price||0),0), note:custom&&custom.note||""
     });
-    persistCart(); closeSheet(); if(!(custom&&custom.quiet))toast(item.name+" added to cart.","success"); render({preserveScroll:true}); cartWin();
+    persistCart(); closeSheet(); if(!(custom&&custom.quiet))toast(item.name+" added to cart.","success"); render({preserveScroll:true}); cartWin(); signalAdd(rid);
   }
   function updateCart(key, delta) {
     const item = state.cart.find(x=>x.key===key); if(!item)return;
@@ -2141,10 +2549,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   window.setDetectedLocation = async function (label, area, city, details, lat, lng) {
     if(state.locationMode==="address"&&state.sheet&&state.sheet.type==="address") {
-      state.addressMapDraft={lat:Number(lat),lng:Number(lng)};state.locationBusy=false;state.locationMode="general";
-      const draft=state.sheet.address||(state.sheet.address={});draft.lat=Number(lat);draft.lng=Number(lng);
-      if(!draft.area&&area)draft.area=area;if(!draft.city&&city)draft.city=city;if(!draft.address&&details)draft.address=details;
-      renderSheet();toast("Map pin moved to your phone location.","success");return;
+      const sheet=state.sheet,named=v=>v&&v!=="Current location"&&v!=="Nearby"?String(v):"";
+      state.locationBusy=false;state.locationMode="general";setAddressPin({lat,lng},17);
+      // The native geocoder already named the spot; show that at once and let a fresh lookup refine it.
+      const line=/^-?\d+(\.\d+)?, ?-?\d+(\.\d+)?$/.test(String(details||"").trim())?"":placeLine(details);
+      sheet.geo={title:named(area)||(line?line.split(",")[0]:""),line,area:named(area),city:String(city||""),pending:!line};
+      renderSheet();lookUpAddressPin(0);return;
     }
     // Standing at a saved address (within ~75 m)? Use that one instead of adding
     // a second "current location" entry for the same place.
@@ -2192,6 +2602,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(type==="CHAT"&&payload.openedFromNotification===true){const route=String(payload.route||"");if(route.startsWith("dm:"))go("dm",{pairId:route.slice(3)});else if(route==="week"){go("chats");setTimeout(openWeekCard,500)}else go(route==="friends"?"friends":"chats");return;}
     if(type==="ORDER_STATUS"||type==="RIDER_ASSIGNED"||type==="FCM_MESSAGES_DELETED"){
       await syncOrders(true);
+      // The notification knows a status the list doesn't: the connection is stuck.
+      const listed=type==="ORDER_STATUS"&&payload.status&&payload.orderId?orderById(String(payload.orderId)):null;
+      if(listed&&listed.status!==payload.status&&!TERMINAL_STATES.has(listed.status)){await restartFirestoreConnection();await syncOrders(true);}
       if(state.route==="review")return;
       if(payload.openedFromNotification===true&&payload.orderId&&orderById(String(payload.orderId))){
         go("order",{orderId:String(payload.orderId)});
@@ -2283,18 +2696,22 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function parentTab() {
-    if(["home","search","restaurant","deals","cart","checkout","addresses","favourites"].includes(state.route))return"home";
+    if(["home","search","restaurant","deals","cart","addresses","favourites"].includes(state.route))return"home";
     if(["orders","order","tracking","review"].includes(state.route))return"orders";
     if(state.route==="offers")return"offers";return"account";
   }
-  // Floating Restaurants / Groceries / Dairy bar, same as www.scraveit.in/shop.
+  // Floating Restaurants / Groceries / Dairy / Health care bar, same as www.scraveit.in/shop.
   // Orders, offers and account are reached from the home header instead.
   const STORE_KINDS=[
     ["restaurant","Restaurants",'<path d="M7 3v8m-3-8v5a3 3 0 0 0 6 0V3M7 11v10M17 21V3c-2.5 1.5-4 4.5-4 8h4"/>'],
     ["grocery","Groceries",'<path d="M5 8h14l-1.4 11.2a2 2 0 0 1-2 1.8H8.4a2 2 0 0 1-2-1.8z"/><path d="M9 8a3 3 0 0 1 6 0"/>'],
     ["dairy","Dairy",'<path d="M9 3h6v3l2 3v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9l2-3z"/><path d="M7 12h10"/>'],
+    // Pharmacies, selling only what needs no prescription.
+    ["pharmacy","Health care",'<path d="M9.5 3.5h5v6h6v5h-6v6h-5v-6h-6v-5h6z"/>'],
   ];
-  function storeKind(r){const k=String(r&&r.storeType||"").toLowerCase(),c=String(r&&r.category||"").toLowerCase();return k==="grocery"||k==="dairy"?k:k?"restaurant":c==="dairy"?"dairy":c==="grocery"||c==="groceries"?"grocery":"restaurant";}
+  // Tabs that list shops selling packed goods rather than cooked food.
+  const GOODS_TABS=["grocery","dairy","pharmacy"];
+  function storeKind(r){const k=String(r&&r.storeType||"").toLowerCase(),c=String(r&&r.category||"").toLowerCase();return GOODS_TABS.includes(k)?k:k?"restaurant":c==="dairy"?"dairy":c==="grocery"||c==="groceries"?"grocery":c==="pharmacy"||c==="health care"?"pharmacy":"restaurant";}
   function nav() {
     const selected=state.homeKind||"restaurant", onHome=state.route==="home";
     return '<nav class="bottom-nav kind-nav" aria-label="Browse by store type">'+STORE_KINDS.map(([kind,label,path])=>{const active=selected===kind;return'<button class="nav-button '+(active?'active':'')+'" data-action="home-kind" data-value="'+kind+'" aria-current="'+(active&&onHome?'page':'false')+'"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+path+'</svg><span>'+label+'</span></button>'}).join("")+'</nav>';
@@ -2302,6 +2719,64 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function topbar(title,subtitle,actions) {
     return '<header class="topbar"><button class="back-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><div class="topbar-title"><h1 class="page-title">'+h(title)+'</h1>'+(subtitle?'<p class="supporting">'+h(subtitle)+'</p>':'')+'</div>'+(actions||"")+'</header>';
   }
+  // Delivery partners near the store on screen. Asked when a store page or the cart opens, so the
+  // customer hears "all delivery partners are busy" before choosing dishes, not at Place order. The
+  // server answers with the very check Place order uses. A failed or missing answer never counts as
+  // busy, and Place order itself is never switched off here: the server stays the judge.
+  const partnerChecks={};let partnerCheckTimer=null,partnerSeenKey="";
+  const PARTNER_BUSY_RECHECK_MS=20000,PARTNER_BUSY_TRUST_MS=90000;
+  const PARTNER_BUSY_PATTERN=/delivery partners\b.*\bbusy/i;
+  function partnerCheckStoreId(){
+    if(state.route==="restaurant"){const r=restaurant();return r&&r.open&&!tableHere(r.id)?r.id:""}
+    if(state.route==="cart"){const r=cartRestaurant();return r?r.id:""}
+    return"";
+  }
+  function partnersBusy(rid){const c=partnerChecks[rid];return!!(c&&c.busy&&Date.now()-c.at<PARTNER_BUSY_TRUST_MS)}
+  function partnerBusyBanner(r){
+    if(!r||!partnersBusy(r.id))return"";
+    const said=partnerChecks[r.id].message||"All delivery partners near "+String(r.name||"this store")+" are busy right now. Please try again in a few minutes.";
+    return'<div class="notice warning partners-busy" role="status">'+icon("bike","small")+'<div><strong>Delivery partners are busy</strong><div class="caption">'+h(said)+'</div></div></div>';
+  }
+  // The server's own words when it refused an order for this reason, else "".
+  function partnersBusyText(error){const said=String(error&&error.userMessage||"");return PARTNER_BUSY_PATTERN.test(said)?said.slice(0,200):""}
+  function notePartnersBusy(rid,message){if(!rid)return;partnerChecks[rid]={busy:true,message:String(message||"").slice(0,200),at:Date.now(),pending:false};partnerRecheckLoop()}
+  async function checkPartners(rid,maxAgeMs){
+    const c=partnerChecks[rid]||(partnerChecks[rid]={busy:false,message:"",at:0,pending:false});
+    if(c.pending||Date.now()-c.at<maxAgeMs||!state.session||!state.online||!nativeAvailable("getCheckoutConfiguration"))return;
+    c.pending=true;
+    try{
+      const raw=await nativeInvoke("getCheckoutConfiguration",{restaurantId:rid,deliveryPartnerCheck:true},{idToken:state.session.idToken,timeoutMs:10000});
+      const said=raw&&typeof raw==="object"&&raw.deliveryPartners&&typeof raw.deliveryPartners==="object"?raw.deliveryPartners:null;
+      c.busy=!!(said&&said.busy===true);c.message=c.busy?String(said.message||"").slice(0,200):"";c.at=Date.now();
+    }catch(_){/* keep the last answer; it stops counting after PARTNER_BUSY_TRUST_MS */}
+    c.pending=false;
+    try{if(partnerCheckStoreId()===rid)render({preserveScroll:true})}finally{partnerRecheckLoop()}
+  }
+  // While "busy" is on screen, ask again every 20 seconds so it clears by itself.
+  function partnerRecheckLoop(){
+    clearTimeout(partnerCheckTimer);partnerCheckTimer=null;
+    const rid=partnerCheckStoreId();
+    if(!rid||!(partnerChecks[rid]&&partnerChecks[rid].busy))return;
+    partnerCheckTimer=setTimeout(()=>{
+      partnerCheckTimer=null;
+      const now=partnerCheckStoreId();
+      if(!now)return;
+      if(document.visibilityState==="visible"&&partnerChecks[now]&&partnerChecks[now].busy)checkPartners(now,PARTNER_BUSY_RECHECK_MS-2000).catch(()=>{}).then(partnerRecheckLoop);
+      else partnerRecheckLoop();
+    },PARTNER_BUSY_RECHECK_MS);
+  }
+  // Called on every render: asks once each time a store page or the cart comes on screen.
+  function ensurePartnerCheck(){
+    try{
+      const rid=partnerCheckStoreId(),key=rid?state.route+":"+rid:"";
+      if(key===partnerSeenKey)return;
+      partnerSeenKey=key;
+      if(!rid){clearTimeout(partnerCheckTimer);partnerCheckTimer=null;return}
+      checkPartners(rid,state.route==="cart"?15000:60000).catch(()=>{});
+      partnerRecheckLoop();
+    }catch(_){/* never let this stop a screen from drawing */}
+  }
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState!=="visible")return;const rid=partnerCheckStoreId();if(rid)checkPartners(rid,PARTNER_BUSY_RECHECK_MS).catch(()=>{})});
   function networkBanner() {
     if(!state.online)return'<div class="notice warning offline-banner">'+icon("warning","small")+'<div><strong>You are offline</strong><div class="caption">Showing saved information. Orders cannot be placed until you reconnect.</div></div></div>';
     if(state.syncError)return'<div class="notice warning offline-banner">'+icon("refresh","small")+'<div class="grow"><strong>Live sync paused</strong><div class="caption">'+h(state.syncError)+'</div></div><button class="text-button" data-action="refresh">Retry</button></div>';
@@ -2391,9 +2866,44 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   let lastRenderedHtml = null;
   let lastRenderedRoute = null;
+  let lastRenderedKind = null;
+  // ---- Screen changes: the new screen's sections rise in one after another while the bottom bar
+  // stays put, and the bar's highlight slides to the new tab instead of jumping.
+  function calmMotion(){try{return matchMedia("(prefers-reduced-motion: reduce)").matches}catch(_){return false}}
+  function navPillFrom(){const b=document.querySelector(".bottom-nav .nav-button.active");return b?{nav:b.closest(".bottom-nav").className,r:b.getBoundingClientRect()}:null}
+  function slideNavPill(from){const b=document.querySelector(".bottom-nav .nav-button.active");if(!from||!b||calmMotion())return;
+    const nav=b.closest(".bottom-nav"),to=b.getBoundingClientRect(),dx=from.r.left-to.left;if(nav.className!==from.nav||Math.abs(dx)<2)return;
+    const n=nav.getBoundingClientRect(),cs=getComputedStyle(b),pill=document.createElement("span");pill.className="nav-pill";pill.setAttribute("aria-hidden","true");
+    pill.style.cssText="left:"+(to.left-n.left)+"px;top:"+(to.top-n.top)+"px;width:"+to.width+"px;height:"+to.height+"px;border-radius:"+cs.borderRadius+";background:"+cs.backgroundColor;
+    nav.querySelectorAll(".nav-pill").forEach(x=>x.remove());nav.prepend(pill);nav.classList.add("pill-moving");
+    const done=()=>{pill.remove();nav.classList.remove("pill-moving")};
+    pill.animate([{transform:"translateX("+dx+"px)"},{transform:"none"}],{duration:320,easing:"cubic-bezier(.3,1.25,.5,1)"}).onfinish=done}
+  // Cards and forms are opened up, so a sign-in screen arrives field by field rather than as one block.
+  const ENTER_OPEN=".screen-content,.auth-card,.auth-hero,.form-grid,.welcome2-sheet,.welcome2-copy,.launch-placeholder,.login2-card,.login2-form";
+  function enterScreen(){if(calmMotion())return;const main=app.querySelector(".screen")||app.firstElementChild;if(!main)return;const parts=[];
+    const walk=(box,depth)=>{for(const el of box.children){if(el.matches(".bottom-nav,.bottom-dock"))continue;const pos=getComputedStyle(el).position;if(pos==="fixed"||pos==="absolute")continue;
+      if(depth<3&&el.matches(ENTER_OPEN)&&el.children.length)walk(el,depth+1);else parts.push(el)}};walk(main,0);
+    parts.forEach((el,i)=>el.animate([{opacity:0,transform:"translateY(14px)"},{opacity:1,transform:"none"}],{duration:320,delay:Math.min(i,10)*45,easing:"cubic-bezier(.2,.8,.2,1)",fill:"backwards"}))}
+  // The phone's splash stays up until the first real screen is drawn, then fades into it.
+  let appReadySent=false;
+  window.scraveitShown=function(){enterScreen()};
+  // A scooter riding a dotted ring: shown while signing in and while the app gets ready.
+  function busyLoader(){let dots="";for(let k=1;k<=7;k++){const a=-k*17*Math.PI/180;dots+='<circle cx="'+(50+36*Math.sin(a)).toFixed(1)+'" cy="'+(50-36*Math.cos(a)).toFixed(1)+'" r="'+(3.2-k*.3).toFixed(1)+'" opacity="'+(1-k/8).toFixed(2)+'"/>'}
+    return'<div class="busy-orbit" aria-hidden="true"><div class="busy-spin"><svg class="busy-trail" viewBox="0 0 100 100">'+dots+'</svg><svg class="busy-head" viewBox="0 0 24 24"><circle cx="6" cy="17" r="2.6"/><circle cx="18" cy="17" r="2.6"/><path d="M8.6 17h6.8l2.6-7.5h-2.5"/><path d="M3.5 13.5h6.5l1.5 3.5"/><path d="M4 9.5h5v4"/></svg></div></div>'}
+  function busyCopy(){if(!state.loading)return null;const r=state.route;
+    if(r==="login"||r==="welcome")return["Signing you in","Getting your favourites ready"];
+    if(r==="signup")return["Creating your account","Setting up your Scraveit"];
+    return null}
+  /** Signing in blurs the screen behind the scooter loader instead of leaving a spinner in a button. */
+  function syncBusy(){const copy=busyCopy();let el=document.getElementById("busy-layer");
+    if(!copy){if(el&&!el.classList.contains("out")){el.classList.add("out");setTimeout(()=>{if(el.classList.contains("out"))el.remove()},320)}return}
+    if(!el||el.classList.contains("out")){if(el)el.remove();el=document.createElement("div");el.id="busy-layer";el.className="busy-layer";el.setAttribute("role","status");el.setAttribute("aria-live","polite");
+      el.innerHTML=busyLoader()+'<strong></strong><small></small>';document.body.appendChild(el)}
+    el.querySelector("strong").textContent=copy[0];el.querySelector("small").textContent=copy[1]}
   function render(options) {
     applyTheme();
     ensureCallWatch();
+    ensurePartnerCheck();
     const preserving = !!(options && options.preserveScroll);
     const gated = privacyGateNeeded();
     if (gated && state.sheet) state.sheet = null;
@@ -2414,8 +2924,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       ? (pendingScrollTarget !== null ? pendingScrollTarget : currentPageScrollTop())
       : 0;
 
+    const entering = routeKey !== lastRenderedRoute || (routeKey === "home" && (state.homeKind || "restaurant") !== lastRenderedKind);
+    const pillFrom = entering ? navPillFrom() : null;
     lastRenderedHtml = html;
     lastRenderedRoute = routeKey;
+    lastRenderedKind = state.homeKind || "restaurant";
 
     if (canMorph) {
       const incoming = document.createElement("div");
@@ -2425,6 +2938,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       app.innerHTML = html;
     }
     app.setAttribute("aria-busy", state.loading ? "true" : "false");
+    if (entering) { enterScreen(); slideNavPill(pillFrom); }
+    if (!appReadySent && routeKey !== "launch") { appReadySent = true; try { if (window.FeastlyNative && FeastlyNative.appReady) FeastlyNative.appReady(); } catch (_) {} }
     // trackingTileMarkup() intentionally renders no tiles (see its comment) so
     // that every tile - including the very first batch - is created the same
     // way, starting hidden and fading in on its own "load" event. "tracking"
@@ -2447,6 +2962,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if (typeof syncDock === "function") syncDock();
     afterHomeRender();
     renderSheet();
+    syncBusy();
+    try{watchSignals()}catch(_){}
     // After a reconcile the scroller survived untouched, so there is no
     // position to restore - only an explicit non-preserving render still has
     // to send it back to the top.
@@ -2483,7 +3000,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const sky=state.route==="deals"&&!pinned?{top:"#ff9a1f",dark:true}:state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2")&&!pinned)||(state.route==="welcome"&&document.querySelector(".welcome2")))?state.heroTheme:null;
     if(sky){color=sky.top;darkIcons=!sky.dark;}
     // A story or a full-screen photo is black edge to edge, clock included.
-    const black=!!(state.sheet&&["friendStory","photo","compose"].includes(state.sheet.type));
+    const black=!!(state.sheet&&["friendStory","photo","compose","reelCompose","storyCam"].includes(state.sheet.type))||(state.route==="reels"&&!state.sheet);
     if(black){color="#05080F";darkIcons=false;}
     const scrim=statusScrimElement();if(scrim){scrim.style.background=sky?sky.top:"";scrim.style.visibility=black?"hidden":"";}
     const next=color+(darkIcons?":dark":":light");
@@ -2519,7 +3036,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     el.classList.toggle("under-bar",pinned);
     if(pinned!==statusBarPinned){statusBarPinned=pinned;try{syncStatusBar()}catch(_){}}
   }
-  function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+'<div class="spinner"></div><strong>Preparing your Scraveit home…</strong></div></main>';}
+  function screenLaunch(){return '<main class="screen no-nav"><div class="launch-placeholder">'+logo()+busyLoader()+'<strong>Preparing your Scraveit home…</strong></div></main>';}
 
   function screenWelcome() {
     const theme=skyTheme(),mascot=todaysMascot();state.heroTheme={top:theme.top,dark:theme.dark};
@@ -2541,15 +3058,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function passwordField(id, label, autocomplete) {
     return '<div class="field"><label for="'+id+'">'+h(label)+'</label><div class="input-wrap"><input class="input with-action" id="'+id+'" name="'+id+'" type="password" autocomplete="'+h(autocomplete||"current-password")+'" minlength="8" required><button type="button" class="icon-button flat input-action" data-action="toggle-password" data-target="'+id+'" aria-label="Show password">'+icon("eye")+'</button></div><div class="field-error" data-error-for="'+id+'"></div></div>';
   }
+  // Sign in: the welcome sky (rider and floating food) on top, a clean white card over it.
+  const LOGIN_ICONS={mail:'<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7.5 7.5 5.5 7.5-5.5"/>',lock:'<rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>'};
+  function loginIcon(name){return'<svg class="login2-icon" viewBox="0 0 24 24" aria-hidden="true">'+LOGIN_ICONS[name]+'</svg>'}
   function screenLogin() {
-    return '<main class="screen no-nav auth-screen"><div class="screen-content auth-card">'+authHeader("Welcome back.","Sign in to see your favourites, orders and live delivery updates.")
-      +networkBanner()+'<form id="login-form" class="form-grid" novalidate><div class="field"><label for="login-email">Email address</label><input class="input" id="login-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required><div class="field-error" data-error-for="login-email"></div></div>'
-      +passwordField("login-password","Password","current-password")
-      +'<div class="cluster between"><label class="cluster supporting"><input type="checkbox" checked disabled> Keep me signed in</label><button type="button" class="text-button" data-action="forgot-password">Forgot password?</button></div>'
-      +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Signing in…':'Sign in securely')+'</button></form>'
-      +(googleSignInAvailable()?'<div class="divider">or</div><button class="button tonal full google-button" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Continue with Google</button>':'')
-      +'<p class="supporting" style="text-align:center">New to Scraveit? <button class="text-button" data-action="go" data-route="signup">Create an account</button></p></div>'
-      +'<p class="caption" style="text-align:center">Protected by Firebase Authentication. Scraveit never sees your password.</p></main>';
+    const theme=skyTheme(),foods=["🍕","🧋","🍗","🍩","🌮","🍜"];state.heroTheme={top:theme.top,dark:theme.dark};
+    return '<main class="welcome-screen welcome2 login2 no-nav'+(theme.dark?' dark':'')+'" style="--sky-top:'+theme.top+';--sky-bottom:'+theme.bottom+'">'+skyDecor(theme)
+      +'<header class="welcome2-top">'+wordmark("welcome2-word")+'</header>'
+      +'<section class="welcome2-stage login2-stage" aria-hidden="true">'+foods.map((f,i)=>'<span class="welcome2-food f'+i+'">'+f+'</span>').join("")
+        +'<div id="welcome-rider-slot" class="welcome2-rider" data-action="mascot-tap"></div><div class="hero2-road welcome2-road"><span></span></div></section>'
+      +'<section class="login2-card"><span class="login2-grab" aria-hidden="true"></span><h1>Welcome back</h1><p class="login2-sub">Your favourites and orders are waiting</p>'+networkBanner()
+      +'<form id="login-form" class="login2-form" novalidate>'
+        +'<label class="login2-field">'+loginIcon("mail")+'<span class="sr-only">Email address</span><input id="login-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="Enter your email" required></label><div class="field-error" data-error-for="login-email"></div>'
+        +'<label class="login2-field">'+loginIcon("lock")+'<span class="sr-only">Password</span><input id="login-password" name="login-password" type="password" autocomplete="current-password" minlength="8" placeholder="Enter your password" required><button type="button" class="login2-eye" data-action="toggle-password" data-target="login-password" aria-label="Show password">'+icon("eye")+'</button></label><div class="field-error" data-error-for="login-password"></div>'
+        +'<div class="login2-row"><label class="login2-check"><input type="checkbox" checked disabled> Keep me signed in</label><button type="button" class="login2-link" data-action="forgot-password">Forgot password?</button></div>'
+        +'<button class="login2-submit" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'Signing in…':'Login')+'</button></form>'
+      +(googleSignInAvailable()?'<div class="login2-or"><span>Or continue with</span></div><button class="login2-google" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Google</button>':'')
+      +privacyTapLine()+privacyTapLine()+'<p class="login2-foot">New to Scraveit? <button class="login2-link strong" data-action="go" data-route="signup">Create an account</button></p></section></main>';
   }
   function screenSignup() {
     return '<main class="screen no-nav"><div class="screen-content">'+topbar("Create account","Your details stay connected to your own account.")
@@ -2558,7 +3083,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<div class="field"><label for="signup-phone">Mobile number</label><input class="input" id="signup-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="10-digit mobile number" required><div class="field-error" data-error-for="signup-phone"></div></div>'
       +'<div class="field"><label for="signup-dob">Date of birth</label><input class="input" id="signup-dob" name="birthDate" type="date" required min="1900-01-01" max="'+h(new Date().toISOString().slice(0,10))+'"><p class="caption">Scraveit is for 13 and over. Under 18, a parent approves your account. You can edit it later.</p><div class="field-error" data-error-for="signup-dob"></div></div>'
       +passwordField("signup-password","Create password","new-password")+passwordField("signup-confirm","Confirm password","new-password")
-      +(window.ScraveitPrivacy?ScraveitPrivacy.consentLabel("customer",ScraveitPrivacy.lang(),"signup-consent"):'<label class="notice info"><input id="signup-consent" type="checkbox" required><span>I agree to the Terms of Service and the Privacy Notice.</span></label>')
+      +privacyTapLine()
       +'<button class="button primary full" type="submit" '+(state.loading?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Creating account…':'Create my account')+'</button></form>'
       +(googleSignInAvailable()?'<div class="divider" style="margin:22px 0">or</div><button class="button tonal full" data-action="google-signin" '+(state.loading?'disabled':'')+'><span class="google-dot">G</span>Sign up with Google</button>':'')+'</div></main>';
   }
@@ -2600,7 +3125,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function activeLocalAds(){
     const now=Date.now(), a=currentAddress()||{}, city=keyName(a.city||a.area), area=keyName(a.area);
     return (state.localAds||[]).filter(ad=>ad&&ad.active!==false&&Number(ad.startAt||0)<=now&&(!ad.endAt||Number(ad.endAt)>=now))
-      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0)).slice(0,20);
+      .filter(ad=>!ad.city||keyName(ad.city)===city).filter(ad=>!ad.area||keyName(ad.area)===area).filter(audienceMatches).sort((x,y)=>Number(y.priority||0)-Number(x.priority||0)).slice(0,20);
   }
   function activeLocalAd(){ return activeLocalAds()[0]||null; }
   /** Every live ad as one swipeable row (left/right), dots below; falls back to the brand card. */
@@ -2694,14 +3219,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const s=cardPhotoSlot(rid,n),w=cardPhotoWidth(t);if(Date.now()-(cardPhotoTouched.get(t)||0)<1500)return;if(Math.round(t.scrollLeft/w)!==s.i)t.scrollLeft=s.i*w;setCardPhotoDot(t,s.i)})}
   /** Restaurants the customer had delivered before, newest first: one tap reorders. */
   /** Open restaurants that deliver here, nearest first. */
-  // Per-tab words: the Restaurants, Groceries and Dairy tabs share one layout.
-  const KIND_WORDS={restaurant:{one:"restaurant",many:"restaurants",Many:"Restaurants"},grocery:{one:"grocery store",many:"grocery stores",Many:"Grocery stores"},dairy:{one:"dairy",many:"dairies",Many:"Dairies"}};
+  // Per-tab words: the Restaurants, Groceries, Dairy and Health care tabs share one layout.
+  const KIND_WORDS={restaurant:{one:"restaurant",many:"restaurants",Many:"Restaurants"},grocery:{one:"grocery store",many:"grocery stores",Many:"Grocery stores"},dairy:{one:"dairy",many:"dairies",Many:"Dairies"},pharmacy:{one:"pharmacy",many:"pharmacies",Many:"Pharmacies"}};
   function nearbyRestaurantsMarkup(kind){kind=kind||"restaurant";const w=KIND_WORDS[kind]||KIND_WORDS.restaurant;
     const list=restaurantsFiltered().filter(r=>storeKind(r)===kind&&r.open!==false)
       .map(r=>({r,d:restaurantDistanceKm(r)})).sort((a,b)=>(a.d==null?999:a.d)-(b.d==null?999:b.d)).slice(0,10);
     if(!list.length)return"";
     return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">'+w.Many+' near you</h2><p class="supporting">Closest first</p></div><button class="text-button" data-action="go" data-route="search">See all</button></div><div class="order-again-row">'
-      +list.map(({r,d})=>{const rating=ratingForRestaurant(r);return'<button type="button" class="order-again-card near-card" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+(d!=null&&Number.isFinite(d)?(d<1?Math.round(d*1000)+' m':d.toFixed(1)+' km')+' away':'Nearby')+'</span><span class="caption">'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min'+(rating.value?' · '+rating.value.toFixed(1)+'★':'')+'</span></button>'}).join("")
+      +list.map(({r,d})=>{const rating=ratingForRestaurant(r);return'<button type="button" class="order-again-card near-card" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><strong>'+h(r.name)+'</strong><span class="caption">'+(d!=null&&Number.isFinite(d)?(d<1?Math.round(d*1000)+' m':d.toFixed(1)+' km')+' away':'Nearby')+'</span><span class="caption">'+h(storeEtaText(r))+' min'+(rating.value?' · '+rating.value.toFixed(1)+'★':'')+'</span></button>'}).join("")
       +'</div></section>';
   }
   // Bottom capsule: rate the last order, or order it again. Swipe it left or
@@ -2715,7 +3240,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const gone=capsuleDismissed(),recent=o=>Date.now()-Number(o.deliveredAt||o.updatedAt||o.createdAt||0)<3*86400000;
     const toRate=latestDeliveredNeedingReview();
     if(toRate&&recent(toRate)&&!gone["rate:"+toRate.id]){const r=restaurant(toRate.restaurantId)||{};
-      return'<div class="home-capsule" data-capsule="rate:'+h(toRate.id)+'" role="group" aria-label="Rate your last order">'+capsuleImg(r)+'<div class="capsule-copy"><strong>How was '+h(toRate.restaurant||r.name||"your order")+'?</strong><span class="capsule-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="capsule-star" data-action="quick-rate" data-order-id="'+h(toRate.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">★</button>').join("")+'</span></div><button type="button" class="capsule-x" data-action="capsule-dismiss" aria-label="Dismiss">×</button></div>';}
+      return'<div class="home-capsule" data-capsule="rate:'+h(toRate.id)+'" role="group" aria-label="Rate your last order">'+capsuleImg(r)+'<div class="capsule-copy"><strong>How was '+h(toRate.restaurant||r.name||"your order")+'?</strong><span class="capsule-stars">'+[1,2,3,4,5].map(n=>'<button type="button" class="capsule-star" data-action="quick-rate" data-order-id="'+h(toRate.id)+'" data-rating="'+n+'" aria-label="'+n+' star'+(n>1?'s':'')+'">'+icon("star","round-star")+'</button>').join("")+'</span></div><button type="button" class="capsule-x" data-action="capsule-dismiss" aria-label="Dismiss">×</button></div>';}
     const last=state.orders.find(o=>o.status==="Delivered"&&o.restaurantId&&!isGuestOrder(o)&&restaurant(o.restaurantId));
     if(!last||gone["again:"+last.id])return"";
     const r=restaurant(last.restaurantId)||{},item=(last.items||[]).map(x=>x.name).filter(Boolean)[0]||"your last order";
@@ -2808,7 +3333,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   let categoryCache={signature:null,list:[]};
   function browsableCategories() {
-    const tabKind=state.homeKind==="grocery"||state.homeKind==="dairy"?state.homeKind:"restaurant",list=restaurantsAtAddress().filter(r=>storeKind(r)===tabKind),address=currentAddress()||{};
+    const tabKind=GOODS_TABS.includes(state.homeKind)?state.homeKind:"restaurant",list=restaurantsAtAddress().filter(r=>storeKind(r)===tabKind),address=currentAddress()||{};
     // Counting walks every menu, which is wasted work on the many renders
     // where nothing about the catalogue changed. The signature covers only
     // restaurants, so it stays cheap as the catalogue grows.
@@ -2893,12 +3418,74 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function offerAreaName(){const a=currentAddress()||{};return String(a.area||a.city||"your area").split(",")[0].trim()||"your area"}
   function isBestOfferHere(r){const top=topOfferRestaurants();return !!(top[0]&&top[0].id===r.id)}
   function topOffersShelf(){if(homeMode()!=="delivery")return"";const top=topOfferRestaurants().slice(0,6);if(!top.length)return"";return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Top offers near you</h2><p class="supporting">Big savings from top-rated places nearby</p></div><button class="text-button" data-action="offers-sort">See all</button></div><div class="restaurant-list">'+top.slice(0,3).map(r=>restaurantCard(r,true)).join("")+'</div></section>'}
-  function restaurantOffersStrip(r){const offers=liveOffersFor(r,true).filter(p=>p.code);if(!offers.length)return"";const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase();return'<section class="offer-strip" aria-label="Offers">'+offers.slice(0,4).map(p=>{const code=String(p.code).toUpperCase(),on=applied===code;return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">'+h(promotionSponsor(p))+(p.firstOrderOnly?' · first order':'')+'</span></div><button class="offer-apply'+(on?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(on?'✓ '+h(code):'Apply '+h(code))+'</button></div>'}).join("")+'</section>'}
+  /** A store's free-item offers ("freebies", set on the partner website): a free side with chosen dishes,
+   *  one with each, or one free item once the item total reaches an amount. The server adds them to the
+   *  order at ₹0 by the same rules (functions domain/freebies.ts); the app only shows them. */
+  function liveFreebies(r){return(r&&Array.isArray(r.freebies)?r.freebies:[]).filter(f=>f&&f.active!==false&&f.freeItem&&(f.trigger==="amount"?Number(f.minimumOrder)>0:f.trigger==="items"&&Array.isArray(f.itemIds)&&f.itemIds.length>0))}
+  function freebieLine(r,f){
+    if(f.trigger==="amount")return"Free "+f.freeItem+" on orders above "+money(f.minimumOrder);
+    const names=f.itemIds.map(id=>{const i=(r.menu||[]).find(x=>x.id===id);return i&&i.name}).filter(Boolean);
+    return"Free "+f.freeItem+" with "+(names.length===1?names[0]:names.length?names[0]+" + "+(names.length-1)+" more":"selected dishes");
+  }
+  function dishFreebieTags(r,item){return liveFreebies(r).filter(f=>f.trigger==="items"&&f.itemIds.includes(item.id)).map(f=>'<span class="free-tag">🎁 Free '+h(f.freeItem)+' with this</span>').join("")}
+  function cartFreebies(){
+    const r=cartRestaurant(),earned=[],next=[];if(!r)return{earned,next};
+    const sub=cartSubtotal();
+    liveFreebies(r).forEach(f=>{
+      if(f.trigger==="amount"){if(sub>=Number(f.minimumOrder))earned.push({f:f,qty:1});else next.push({f:f,short:Number(f.minimumOrder)-sub});return}
+      const qty=Math.min(10,state.cart.filter(x=>f.itemIds.includes(x.itemId)).reduce((n,x)=>n+Number(x.quantity||0),0));if(qty)earned.push({f:f,qty:qty});
+    });
+    return{earned,next:next.sort((a,b)=>a.short-b.short)};
+  }
+  function cartFreebiesMarkup(){
+    const {earned,next}=cartFreebies();
+    return earned.map(x=>'<article class="cart-item free-line"><span class="free-thumb" aria-hidden="true">🎁</span><div class="grow"><h3 class="card-title">'+h(x.f.freeItem)+(x.qty>1?' × '+x.qty:'')+'</h3><p class="caption">'+h(x.f.title)+' · a gift from the restaurant</p></div><strong class="free-price">FREE</strong></article>').join("")
+      +next.slice(0,1).map(x=>'<div class="free-nudge"><span aria-hidden="true">🎁</span><span>Add <strong>'+money(x.short)+'</strong> more to get a free <strong>'+h(x.f.freeItem)+'</strong>'+(x.f.title&&x.f.title!=="Free "+x.f.freeItem?' · '+h(x.f.title):'')+'</span></div>').join("");
+  }
+  /** A store's paid pairings (set on the partner website): its own name for each ("Finish sweetly"), the
+   *  dishes from its menu to suggest and the dishes they go with. Once one of those is in the cart the
+   *  suggestions are offered under it, and in the cart, at their menu prices. They are ordinary menu items;
+   *  nothing about them is free. */
+  function livePairings(r){
+    const vegOnly=state.diet==="veg"||state.profile.preferences.vegetarian;
+    return(r&&Array.isArray(r.pairings)?r.pairings:[]).map(p=>{
+      if(!p||p.active===false||!Array.isArray(p.itemIds)||!p.itemIds.length||!Array.isArray(p.suggestIds))return null;
+      const items=p.suggestIds.map(id=>(r.menu||[]).find(x=>x.id===id&&x.available!==false&&x.archived!==true)).filter(x=>x&&(!vegOnly||x.diet==="veg"));
+      return items.length?{p:p,items:items}:null;
+    }).filter(Boolean);
+  }
+  function pairAddControl(r,item){
+    const ids=' data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'"';
+    if(itemCustomisable(item))return'<button type="button" class="usual-add" data-action="open-item"'+ids+'>ADD<sup>+</sup></button>';
+    const line=state.cart.find(x=>x.key===r.id+"::"+item.id+"::::");
+    return line?'<div class="usual-add add-stepper"><button type="button" data-action="cart-quantity" data-key="'+h(line.key)+'" data-delta="-1" aria-label="Remove one '+h(item.name)+'">−</button><span>'+line.quantity+'</span><button type="button" data-action="quick-add"'+ids+' aria-label="Add one more '+h(item.name)+'">+</button></div>'
+      :'<button type="button" class="usual-add" data-action="quick-add"'+ids+' aria-label="Add '+h(item.name)+'">ADD</button>';
+  }
+  function pairRow(r,it){
+    const photo=it.imageThumb||it.imageUrl||it.image,diet='<span class="diet-mark '+(it.diet==="nonveg"||it.diet==="egg"?'nonveg':'')+'" aria-label="'+(it.diet==="egg"?'Contains egg':it.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span>';
+    return'<div class="pair-row">'+(photo?'<div class="usual-thumb pair-thumb"><img src="'+h(safeUrl(photo,r.imageThumb||r.image))+'" alt="" loading="lazy" decoding="async">'+diet+'</div>':'')
+      +'<div class="pair-copy"><h4>'+(photo?'':diet)+'<span>'+h(it.name)+'</span></h4><strong>'+money(it.price)+'</strong></div>'+pairAddControl(r,it)+'</div>';
+  }
+  function pairStrip(r,title,items,note){return'<div class="pair-strip"><span class="pair-title">'+h(title||"Goes well with")+'</span>'+(note?'<span class="caption">'+h(note)+'</span>':'')+items.map(it=>pairRow(r,it)).join("")+'</div>'}
+  /** Under a dish on the menu, once it is in the cart: the pairings the store chose for that dish. */
+  function dishPairingsMarkup(r,item,inCart){return inCart?livePairings(r).filter(x=>x.p.itemIds.includes(item.id)).map(x=>{const items=x.items.filter(i=>i.id!==item.id);return items.length?pairStrip(r,x.p.title,items,""):""}).join(""):""}
+  /** In the cart: for each pairing whose dishes are in the cart, its suggestions not added yet, each once. */
+  function cartPairingsMarkup(){
+    const r=cartRestaurant();if(!r)return"";
+    const ids=new Set(state.cart.map(x=>x.itemId)),shown=new Set();
+    return livePairings(r).map(x=>{
+      const with_=x.p.itemIds.find(id=>ids.has(id));if(!with_)return"";
+      const items=x.items.filter(i=>!ids.has(i.id)&&!shown.has(i.id));items.forEach(i=>shown.add(i.id));if(!items.length)return"";
+      const d=(r.menu||[]).find(i=>i.id===with_);return pairStrip(r,x.p.title,items,d?"Goes with your "+d.name:"");
+    }).filter(Boolean).slice(0,2).join("");
+  }
+  function restaurantOffersStrip(r){const offers=liveOffersFor(r,true).filter(p=>p.code),gifts=liveFreebies(r);if(!offers.length&&!gifts.length)return"";const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase();return'<section class="offer-strip" aria-label="Offers">'+gifts.slice(0,3).map(f=>'<div class="offer-tile gift"><span class="offer-tile-icon" aria-hidden="true">🎁</span><div class="grow"><strong>'+h(f.title)+'</strong><span class="caption">'+h(freebieLine(r,f))+'</span></div></div>').join("")+offers.slice(0,4).map(p=>{const code=String(p.code).toUpperCase(),on=applied===code;return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">'+h(promotionSponsor(p))+(p.firstOrderOnly?' · first order':'')+'</span></div><button class="offer-apply'+(on?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(on?'✓ '+h(code):'Apply '+h(code))+'</button></div>'}).join("")+'</section>'}
   function restaurantOfferLabel(r){
     const offers=liveOffersFor(r,true);
     if(offers.length){const best=OM.offerScore(offers).best;if(best)return OM.offerLabel(best)}
     const percent=restaurantOfferPercent(r);
     if(percent>0)return Math.round(percent)+"% OFF";
+    const gift=liveFreebies(r)[0];if(gift)return"Free "+gift.freeItem;
     return restaurantHasOffer(r)?"Offer":"";
   }
   function restaurantsFiltered() {
@@ -2908,7 +3495,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const source=state.route==="search"&&searchKey(state.query)&&Object.keys(state.searchCatalog).length
       ? Object.assign({},state.catalog,state.searchCatalog)
       : state.catalog;
-    let list=Object.values(source).filter(r=>r.archived!==true);
+    const ads=sponsoredNow();
+    let list=Object.values(Object.assign({},state.sponsoredStores,source)).filter(r=>r.archived!==true&&(state.catalog[r.id]||state.searchCatalog[r.id]||ads.has(r.id)));
 
     if(state.cuisine!=="All")
       list=list.filter(r=>(r.cuisines||[]).some(c=>keyName(c)===keyName(state.cuisine))||keyName(r.category)===keyName(state.cuisine)||discoveryItems(r).some(i=>keyName(i.category)===keyName(state.cuisine)));
@@ -2983,9 +3571,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         ||distanceValue(a)-distanceValue(b)
       );
     } else {
+      // The customer's own sort (above) always wins; top placement only leads the default order.
+      // Within a distance band, the "For you" order (rankScore) when there is anything to go on.
+      const adValue=r=>ads.has(r.id)?0:1,personal=rankActive();
       list.sort((a,b)=>
         openValue(a)-openValue(b)
+        ||adValue(a)-adValue(b)
         ||Math.floor(distanceValue(a)/2)-Math.floor(distanceValue(b)/2)
+        ||(personal?rankScore(b)-rankScore(a):0)
         ||Number(b.rating||0)-Number(a.rating||0)
         ||distanceValue(a)-distanceValue(b)
         ||Number(a.etaMin||99)-Number(b.etaMin||99)
@@ -3004,7 +3597,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<div class="photo-track" data-rid="'+h(r.id)+'">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||thumbs[0]||url):(thumbs[i]||url),"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
       +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===cur?' class="on"':'')+'><b></b></span>').join("")+'</div>';
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · "),km=restaurantDistanceKm(r),kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button>'+(r.open?'':'<span class="rc2-eta">Closed</span>')+'</div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+h(ratingText):'New')+'</span></div><p class="rc2-meta">'+icon("clock","small")+'<span>'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins':'Closed now')+'</span>'+(kmText?'<i></i><span>'+h(kmText)+'</span>':'')+'</p>'+(cuisines||isPureVegRestaurant(r)?'<p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+'</p>':'')+'</div></article>'}
+  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · "),km=restaurantDistanceKm(r),kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";return'<article class="restaurant-card rc2'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button>'+(r.open?'':'<span class="rc2-eta">Closed</span>')+'</div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+h(ratingText):'New')+'</span></div><p class="rc2-meta">'+(sponsoredNow().has(r.id)?'<span class="rc2-ad" title="Sponsored: this store paid to be shown first">Ad</span>':'')+icon("clock","small")+'<span>'+(r.open?h(storeEtaText(r))+' mins':'Closed now')+'</span>'+(kmText?'<i></i><span>'+h(kmText)+'</span>':'')+'</p>'+(cuisines||isPureVegRestaurant(r)?'<p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+'</p>':'')+'</div></article>'}
   // ===== Campaign banner: the top of home becomes an animated ad =====
   // Only for a real campaign: an ad the admin published with a discount in its
   // title ("Items at 50% OFF"), or else the best offer that is live right now.
@@ -3070,7 +3663,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!loading&&!dishes.length)return"";
     const rating=ratingForRestaurant(r),km=restaurantDistanceKm(r),code=best&&best.code?String(best.code).toUpperCase():"";
     const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase()===code;
-    return'<section class="deal-store"><button type="button" class="deal-store-head" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><span class="grow"><strong>'+h(r.name)+'</strong><span class="deal-store-meta"><b>⚡ '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins</b>'+(Number.isFinite(km)?'<i></i>'+(km<1?Math.max(50,Math.round(km*1000/50)*50)+' m':(Math.round(km*10)/10)+' km'):'')+'</span></span><span class="deal-store-rating'+(rating.value?'':' new')+'">★ '+(rating.value?rating.value.toFixed(1):'New')+'</span></button>'
+    return'<section class="deal-store"><button type="button" class="deal-store-head" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'"><span class="grow"><strong>'+h(r.name)+'</strong><span class="deal-store-meta"><b>⚡ '+h(storeEtaText(r))+' mins</b>'+(Number.isFinite(km)?'<i></i>'+(km<1?Math.max(50,Math.round(km*1000/50)*50)+' m':(Math.round(km*10)/10)+' km'):'')+'</span></span><span class="deal-store-rating'+(rating.value?'':' new')+'">★ '+(rating.value?rating.value.toFixed(1):'New')+'</span></button>'
       +(best?'<div class="deal-store-offer"><span class="deal-store-offer-icon" aria-hidden="true">%</span><span class="grow">'+h(OM.offerLabel(best))+(code?' · code '+h(code):'')+'</span>'+(code?'<button class="deal-apply'+(applied?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(applied?'✓ Applied':'Apply')+'</button>':'')+'</div>':'')
       +'<div class="deal-dish-rail">'+(loading?'<div class="deal-dish skeleton-card"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div>'.repeat(2):dishes.map(x=>dealDishCard(r,x,best)).join(""))+'</div>'
       +'<button type="button" class="deal-store-more" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">View full menu <span aria-hidden="true">→</span></button></section>';
@@ -3107,29 +3700,29 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // one more fact (free delivery, or how far away it is).
   function recommendedRail(list){
     const picks=(list||[]).slice(0,12);if(!picks.length)return"";
-    return'<section class="stack reco"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div><div class="reco-grid'+(picks.length>3?' two-rows':'')+'">'+picks.map(recoCard).join("")+'</div></section>';
+    return'<section class="stack reco"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">'+(rankActive()?'Nearby places people here love, matched to your taste':'Nearby, open and highly rated first')+'</p></div><button class="text-button" data-action="go" data-route="search">View all</button></div><div class="reco-grid'+(picks.length>3?' two-rows':'')+'">'+picks.map(recoCard).join("")+'</div></section>';
   }
   function recoCard(r){
     const rating=ratingForRestaurant(r),offer=restaurantOfferLabel(r),km=restaurantDistanceKm(r),fee=deliveryFeeForRestaurant(r,0);
     const photo=r.imageThumb||(Array.isArray(r.coverThumbs)&&r.coverThumbs[0])||r.image;
-    const eta=icon("clock","small")+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min':'Closed now');
+    const eta=icon("clock","small")+(r.open?h(storeEtaText(r))+' min':'Closed now');
     const second=!r.open?'':fee===0?icon("bike","small")+'Free delivery':Number.isFinite(km)?icon("pin","small")+(km<1?Math.max(50,Math.round(km*1000/50)*50)+' m':(Math.round(km*10)/10)+' km')+' away':'';
     return'<button type="button" class="reco-card'+(r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" aria-label="Open '+h(r.name)+'"><span class="reco-media"><img src="'+h(safeUrl(photo,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'+(offer?'<span class="reco-offer">'+h(offer)+'</span>':'')+'<span class="reco-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+rating.value.toFixed(1):'New')+'</span></span><strong class="reco-name">'+h(r.name)+'</strong><span class="reco-sub'+(second?' flip':'')+'"><span>'+eta+'</span>'+(second?'<span>'+second+'</span>':'')+'</span></button>';
   }
   function homeSkeletonMarkup(){return'<section class="stack" aria-label="Loading restaurants"><div class="skeleton skeleton-line wide"></div><div class="restaurant-list"><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div><div class="restaurant-card horizontal home-skeleton-card"><div class="skeleton home-skeleton-image"></div><div class="restaurant-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div></div></div><p class="caption">Finding restaurants for this saved address…</p></section>'}
   function menuSkeletonMarkup(){return'<section class="stack" aria-label="Loading menu"><div class="skeleton skeleton-line wide"></div><div class="menu-list"><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div><div class="menu-item"><div class="menu-copy stack"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div></div><div class="skeleton home-skeleton-image"></div></div></div><p class="caption">Loading this restaurant\'s menu…</p></section>'}
   function screenStoreKind(kind) {
-    const label=kind==="grocery"?"Groceries":"Dairy", address=currentAddress(), active=activeOrders()[0];
+    const label=kind==="grocery"?"Groceries":kind==="pharmacy"?"Health care":"Dairy", address=currentAddress(), active=activeOrders()[0];
     const stores=restaurantsFiltered().filter(r=>storeKind(r)===kind),w=KIND_WORDS[kind],recommended=stores.filter(r=>r.open!==false).slice(0,3);
     return '<main class="screen '+(dockSlides().length?'has-floating-cart':'')+'"><div class="screen-content page-stack">'+networkBanner()+homeHeader()
-      +'<section class="home-lead"><p class="eyebrow">'+label+'</p><h1 class="display">'+(kind==="grocery"?"Daily essentials, <em>delivered</em>.":"Fresh milk, curd <em>and more</em>.")+'</h1><p class="supporting">'+(kind==="grocery"?"Grocery stores":"Dairies")+' in '+h(address&&address.city||"your selected city")+'</p></section>'
+      +'<section class="home-lead"><p class="eyebrow">'+label+'</p><h1 class="display">'+(kind==="grocery"?"Daily essentials, <em>delivered</em>.":kind==="pharmacy"?"Health, <em>delivered</em>.":"Fresh milk, curd <em>and more</em>.")+'</h1><p class="supporting">'+(kind==="pharmacy"?"No prescription needed · licensed pharmacies":kind==="grocery"?"Grocery stores":"Dairies")+' in '+h(address&&address.city||"your selected city")+'</p></section>'
       +(stores.length?nearbyRestaurantsMarkup(kind)
         +(categoryChipsHtml()?'<section class="stack"><div class="cluster between"><h2 class="section-title">Browse categories</h2><button class="text-button" data-action="go" data-route="search">See all</button></div>'+categoryChipsHtml()+'</section>':'')
         +(recommended.length?'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Recommended for you</h2><p class="supporting">Nearby, open and highly rated first</p></div></div><div class="restaurant-list">'+recommended.map(r=>restaurantCard(r,true)).join("")+'</div></section>':'')
         +'<section class="stack"><div class="cluster between rating-view-row"><div><h2 class="section-title">All '+w.many+'</h2><p class="supporting">'+stores.length+' available for this address</p></div><button class="rating-toggle" data-action="toggle-rating-view" aria-label="Switch rating view"><span>My rating</span><span class="toggle-track '+(state.ratingView==="overall"?'on':'')+'"><i></i></span><span>Overall</span></button></div>'
         +'<div class="restaurant-list">'+stores.map(r=>restaurantCard(r,true)).join("")+'</div></section>'
         :(state.cuisine!=="All"?emptyState("search","No "+w.many+" in this category","Clear the category to see every "+w.one+" here.","cuisine-all","Show all")
-        :'<section class="card kind-soon"><span class="kind-soon-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+STORE_KINDS.find(k=>k[0]===kind)[2]+'</svg></span><div><h2 class="section-title">'+(kind==="grocery"?"Grocery stores":"Dairies")+' are coming soon</h2><p class="supporting">'+(kind==="grocery"?"Partner grocery stores":"Partner dairies")+' near you will appear here as they join Scraveit.</p></div></section>'))
+        :'<section class="card kind-soon"><span class="kind-soon-icon"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+STORE_KINDS.find(k=>k[0]===kind)[2]+'</svg></span><div><h2 class="section-title">'+(kind==="grocery"?"Grocery stores":kind==="pharmacy"?"Health care":"Dairies")+' '+(kind==="pharmacy"?"is":"are")+' coming soon</h2><p class="supporting">'+(kind==="grocery"?"Partner grocery stores":kind==="pharmacy"?"Licensed pharmacies":"Partner dairies")+' near you will appear here as they join Scraveit'+(kind==="pharmacy"?": baby care, women care and everyday items, no prescription needed":"")+'.</p></div></section>'))
       +'</div>'+bottomDock()+nav()+'</main>';
   }
   // =========================================================================
@@ -3140,49 +3733,36 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // =========================================================================
   const prefersCalm=()=>!!(window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches);
   function haptic(ms){try{if(window.FeastlyNative&&FeastlyNative.haptic)FeastlyNative.haptic(ms||12);else if(navigator.vibrate)navigator.vibrate(ms||12);}catch(_){}}
-  // Paper confetti: two side cannons (or one burst), each piece tumbling in 3D
-  // (it narrows and darkens as it turns edge-on), fluttering side to side and
-  // drifting down under air drag. Runs about five seconds, then fades.
+  // Paper confetti: two side cannons (or one burst) and a light shower. Each piece's path is worked out
+  // up front and played as a transform animation, which the GPU runs, so it stays smooth while the page
+  // underneath is still drawing. Pieces flutter by narrowing, never turning edge-on into thin lines.
   function confetti(opts){
-    if(prefersCalm())return;const o=opts||{},W=window.innerWidth,H=window.innerHeight,d=Math.min(2,window.devicePixelRatio||1);
-    const cv=document.createElement("canvas");cv.className="confetti-layer";cv.width=W*d;cv.height=H*d;document.body.appendChild(cv);
-    const g=cv.getContext("2d");g.scale(d,d);
-    const cols=[[20,96,240],[255,143,184],[143,227,207],[244,168,58],[110,155,255],[255,210,122],[181,160,255],[255,255,255]];
-    const total=Math.round((o.count||140)*1.5),ps=[],rnd=(a,b)=>a+Math.random()*(b-a);
-    const make=(x,y,angle,spread,power,delay)=>{const a=angle+rnd(-spread,spread),v=rnd(power*0.5,power),kind=Math.random();
-      return{x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,w:rnd(8,14),h:rnd(5,8),tilt:rnd(0,6.28),dt:rnd(0.07,0.2),spin:rnd(0,6.28),ds:rnd(-0.1,0.1),
-        sway:rnd(0,6.28),dsw:rnd(0.03,0.07),c:cols[(Math.random()*cols.length)|0],shape:kind<0.6?"rect":kind<0.84?"strip":"dot",delay};};
-    // A gentle shower from above the screen, so the whole screen celebrates.
-    const shower=n=>{for(let i=0;i<n;i++)ps.push(make(rnd(0,W),rnd(-60,-10),Math.PI/2,0.5,rnd(1,3),rnd(0,1400)));};
+    if(prefersCalm()||!document.body.animate)return;
+    const o=opts||{},W=window.innerWidth,H=window.innerHeight,layer=document.createElement("div");layer.className="confetti-layer";
+    const cols=["#1460F0","#FF8FB8","#8FE3CF","#F4A83A","#6E9BFF","#FFD27A","#B5A0FF"],rnd=(a,b)=>a+Math.random()*(b-a);
+    const total=Math.min(70,Math.round((o.count||140)*0.5)),life=3600,frames=Math.round(life/16.67);
+    const piece=(x,y,angle,spread,power,delay)=>{
+      const a=angle+rnd(-spread,spread),v=rnd(power*0.5,power),dot=Math.random()<0.25,size=dot?rnd(6,8):rnd(8,12),ds=rnd(-0.08,0.08),dt=rnd(0.05,0.11),dsw=rnd(0.03,0.07),keys=[];
+      let vx=Math.cos(a)*v,vy=Math.sin(a)*v,spin=rnd(0,6.28),tilt=rnd(0,6.28),sway=rnd(0,6.28);
+      for(let f=0;f<=frames;f++){
+        vy=Math.min(vy+0.32,3.2+Math.sin(sway)*0.6);vx*=0.975;sway+=dsw;x+=vx+Math.sin(sway)*1.15;y+=vy;spin+=ds;tilt+=dt;
+        if(f%6===0||f===frames)keys.push({transform:"translate3d("+x.toFixed(1)+"px,"+y.toFixed(1)+"px,0) rotate("+spin.toFixed(2)+"rad) scaleY("+(dot?1:(0.45+0.55*Math.abs(Math.cos(tilt))).toFixed(2))+")",opacity:f<frames*0.78?1:Math.max(0,(frames-f)/(frames*0.22))});
+      }
+      const el=document.createElement("i");el.className="confetti-piece"+(dot?" dot":"");el.style.width=size+"px";el.style.height=(dot?size:size*0.62)+"px";el.style.background=cols[(Math.random()*cols.length)|0];
+      layer.appendChild(el);el.animate(keys,{duration:life,delay,fill:"both"});};
+    const shower=n=>{for(let i=0;i<n;i++)piece(rnd(0,W),rnd(-60,-14),Math.PI/2,0.5,rnd(1,3),rnd(0,900));};
     if(o.y!=null||o.x!=null){
       // A pop from one spot (a tap): out in every direction, then drifting down.
-      const x=o.x!=null?o.x:W/2,y=o.y!=null?o.y:H*0.3;
-      for(let i=0;i<total*0.6;i++)ps.push(make(x,y,rnd(0,6.283),0,rnd(5,12),rnd(0,90)));
-      shower(Math.round(total*0.5));
+      const x=o.x!=null?o.x:W/2,y=o.y!=null?o.y:H*0.3,burst=Math.round(total*0.6);
+      for(let i=0;i<burst;i++)piece(x,y,rnd(0,6.283),0,rnd(5,12),rnd(0,90));
+      shower(total-burst);
     }else{
       // Big moments: two cannons from the bottom corners, then the shower.
-      for(let i=0;i<total;i++){const left=i%2===0;ps.push(make(left?-8:W+8,H*0.86,left?-Math.PI*0.37:-Math.PI*0.63,0.3,rnd(18,26),rnd(0,420)));}
-      shower(Math.round(total*0.6));
+      const cannons=Math.round(total*0.7);
+      for(let i=0;i<cannons;i++){const left=i%2===0;piece(left?-14:W+14,H*0.86,left?-Math.PI*0.37:-Math.PI*0.63,0.3,rnd(18,26),rnd(0,320));}
+      shower(total-cannons);
     }
-    const start=performance.now(),life=o.duration||5600;let last=start;
-    (function step(t){
-      const e=t-start,k=Math.min(2.2,(t-last)/16.67);last=t;g.clearRect(0,0,W,H);
-      const fade=e>life-900?Math.max(0,(life-e)/900):1;let alive=0;
-      for(const p of ps){
-        if(e<p.delay)continue;
-        p.vy=Math.min(p.vy+0.32*k,3.2+Math.sin(p.sway)*0.6);p.vx*=Math.pow(0.975,k);
-        p.sway+=p.dsw*k;p.x+=(p.vx+Math.sin(p.sway)*1.15)*k;p.y+=p.vy*k;p.tilt+=p.dt*k;p.spin+=p.ds*k;
-        if(p.y>H+30)continue;alive++;
-        const turn=Math.cos(p.tilt),shade=0.62+0.38*Math.abs(turn),c=p.c;
-        g.save();g.translate(p.x,p.y);g.rotate(p.spin);g.globalAlpha=fade;
-        g.fillStyle="rgb("+Math.round(c[0]*shade)+","+Math.round(c[1]*shade)+","+Math.round(c[2]*shade)+")";
-        if(p.shape==="dot"){g.beginPath();g.ellipse(0,0,p.h*0.6,p.h*0.6*Math.max(0.15,Math.abs(turn)),0,0,6.283);g.fill();}
-        else if(p.shape==="strip"){g.scale(1,Math.max(0.12,Math.abs(turn)));g.fillRect(-p.w*0.9,-1.6,p.w*1.8,3.2);}
-        else{g.scale(Math.max(0.1,Math.abs(Math.sin(p.tilt*0.5+1))),Math.max(0.12,Math.abs(turn)));g.fillRect(-p.w/2,-p.h/2,p.w,p.h);}
-        g.restore();
-      }
-      if(e<life&&(alive||e<600))requestAnimationFrame(step);else cv.remove();
-    })(start);
+    document.body.appendChild(layer);setTimeout(()=>layer.remove(),life+1000);
   }
   function winToast(emoji,eyebrow,title,copy){
     const el=document.createElement("div");el.className="win-toast";el.setAttribute("role","status");
@@ -3349,7 +3929,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const done=(state.orders||[]).filter(o=>o.status==="Delivered"),byRest={},weeks=new Set();
     let saved=0,night=0,early=0,rain=0,weekend=0;
     done.forEach(o=>{const at=new Date(Number(o.createdAt)||0),hr=at.getHours(),p=o.pricing||{};
-      byRest[o.restaurantId]=(byRest[o.restaurantId]||0)+1;if(!isGuestOrder(o))saved+=Math.max(0,Number(p.discount)||0);
+      byRest[o.restaurantId]=(byRest[o.restaurantId]||0)+1;if(!isGuestOrder(o))saved+=Math.max(0,Number(p.markup?p.markup.discount:p.discount)||0);
       if(hr>=22||hr<4)night++;if(hr>=5&&hr<9)early++;if(Number(p.rainFee)>0)rain++;if(at.getDay()===0||at.getDay()===6)weekend++;weeks.add(weekIndex(at.getTime()));});
     let streak=0,w=weekIndex(Date.now());if(!weeks.has(w))w--;while(weeks.has(w)){streak++;w--;}
     const dine=state.dineHistory||[];
@@ -3394,12 +3974,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(badge){winToast(badge[1],"Badge unlocked",badge[2],badge[3]+" · "+earnedBadges(foodStats()).length+" of "+FOOD_BADGES.length+" badges");confetti({count:80,y:110});haptic(25);}
     else if(id.startsWith("sticker_")){const p=(mascotPresets()).find(x=>"sticker_"+x.id===id);if(p)winToast("✨","Sticker collected",p.rider+" joined your sticker book","");}
   }
+  // The party compares against these, and Home may never be drawn while an order is live
+  // (placing an order goes straight to its screen), so every sync notes the live status.
+  function rememberLiveStatuses(before){
+    const seen=loadJSON("savrivo.customer.lastStatuses",{});let changed=false;
+    state.orders.slice(0,30).forEach(o=>{const live=ACTIVE_STATES.has(o.status)?o.status:ACTIVE_STATES.has(before[o.id])?before[o.id]:"";if(live&&seen[o.id]!==live){seen[o.id]=live;changed=true;}});
+    if(changed)saveJSON("savrivo.customer.lastStatuses",seen);
+  }
   // A delivered order is a moment worth a small party.
   function checkDeliveredMoments(){
     const seen=loadJSON("savrivo.customer.lastStatuses",{}),next={};let party=null;
     (state.orders||[]).slice(0,30).forEach(o=>{next[o.id]=o.status;if(seen[o.id]&&seen[o.id]!=="Delivered"&&o.status==="Delivered"&&Date.now()-Number(o.updatedAt||o.createdAt||0)<3*3600000)party=o;});
     saveJSON("savrivo.customer.lastStatuses",next);
-    if(party){confetti({count:120});haptic(30);const s=foodStats();winToast("😋","Delivered",(party.restaurant||"Your order")+" has arrived. Enjoy!","Order number "+s.orders+" with Scraveit");}
+    if(party){setTimeout(()=>confetti({count:120}),350);haptic(30);const s=foodStats();winToast("😋","Delivered",(party.restaurant||"Your order")+" has arrived. Enjoy!","Order number "+s.orders+" with Scraveit");}
   }
 
   // ---- the Craving Wheel ---------------------------------------------------
@@ -3473,7 +4060,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function spinFriend(w){const p=w.pairId?chatState().pairs.find(x=>x.id===w.pairId):null;return p?(nameOf(p,otherOf(p)).split(" ")[0]||"friend"):""}
   function spinResult(w,pick){const r=restaurant(pick.restaurantId),slot=daySlot(),friend=spinFriend(w);
     const word=w.pairId?"The plate says":(slot==="morning"?"This morning’s":slot==="day"?"Today’s":slot==="evening"?"Tonight’s":"Your late-night")+" pick";
-    const facts=[pick.dish?pick.name:"",pick.price?money(pick.price):"",r&&!pick.dish?(ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New"):"",r?(r.etaMin||25)+"–"+(r.etaMax||35)+" min":"",pick.open?"":"closed right now"].filter(Boolean).join(" · ");
+    const facts=[pick.dish?pick.name:"",pick.price?money(pick.price):"",r&&!pick.dish?(ratingForRestaurant(r).value?ratingForRestaurant(r).value.toFixed(1)+" ★":"New"):"",r?storeEtaText(r)+" min":"",pick.open?"":"closed right now"].filter(Boolean).join(" · ");
     const open=pick.itemId?'<button class="button '+(friend?'tonal':'primary')+' grow" data-action="dm-card-add" data-restaurant-id="'+h(pick.restaurantId)+'" data-item-id="'+h(pick.itemId)+'">Add to cart</button>'
       :'<button class="button '+(friend?'tonal':'primary')+' grow" data-action="open-restaurant" data-restaurant-id="'+h(pick.restaurantId)+'">Open the menu</button>';
     return'<div class="wheel-result"><img src="'+h(safeUrl(pick.image||(r&&(r.imageThumb||r.image)),"restaurant-placeholder.svg"))+'" alt=""><div class="grow"><small>'+h(word)+'</small><strong>'+h(pick.dish||pick.name)+'</strong><span>'+h(facts)+'</span></div></div>'
@@ -3653,8 +4240,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const close=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),400);};el.addEventListener("click",close);setTimeout(close,2600);
   }
   function afterHomeRender(){
-    if(state.route==="welcome"){const ws=document.getElementById("welcome-rider-slot"),m=todaysMascot();if(ws&&m&&window.HeroRider)HeroRider.mount(ws,m.id);return;}
-    if(state.route!=="home"||state.homeKind==="grocery"||state.homeKind==="dairy")return;
+    if(state.route==="welcome"||state.route==="login"){const ws=document.getElementById("welcome-rider-slot"),m=todaysMascot();if(ws&&m&&window.HeroRider)HeroRider.mount(ws,m.id);return;}
+    if(state.route!=="home"||GOODS_TABS.includes(state.homeKind))return;
     const slot=document.getElementById("hero-rider-slot"),mascot=todaysMascot();
     if(slot&&mascot&&window.HeroRider)HeroRider.mount(slot,mascot.id);
     startHeroHints();checkFoodWins();checkDeliveredMoments();resumeSquad();
@@ -3832,27 +4419,190 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     try{await mealCall("updateMealSubscription",Object.assign({subscriptionId:subId,action},date?{date}:{}));toast(action==="skip"?"Skipped "+dayLabel(date)+".":action==="unskip"?dayLabel(date)+" is back on.":action==="pause"?"Plan paused.":action==="resume"?"Plan resumed.":"Plan stopped.","success");await loadMealPlans(true)}catch(e){Object.assign(s,JSON.parse(before));render({preserveScroll:true});toast(mealError(e),"danger")}}
   // ===== Friends & chat: friend codes, one-to-one chat, dish cards, report and block =====
   const CHAT_REASONS=[["harassment","Harassment or bullying"],["sexual","Sexual or abusive content"],["spam","Spam or scam"],["self-harm","Talk of self-harm"],["other","Something else"]];
-  function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],payAsks:[],payInbox:[],payBusy:"",children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{}};return state.social}
+  function chatState(){if(!state.social)state.social={profile:null,profileLoaded:false,pairs:[],parentInbox:[],payAsks:[],payInbox:[],payBusy:"",children:[],threads:{},unsubs:[],threadUnsub:null,threadId:"",uid:"",avatars:{},avatarAt:{},typingSeen:{},presence:{},presenceUnsubs:{},myPresence:null};return state.social}
   function myUid(){return String(state.session&&state.session.uid||"")}
   function ensureChatSync(){const c=chatState(),uid=myUid();if(!uid||c.uid===uid)return;stopChatSync();c.uid=uid;setTimeout(()=>{e2eAccount()},1500);
     const pc=readPeopleCache(uid);if(pc){if(pc.me)c.avatars[uid]=pc.me;pc.people.forEach(x=>{if(x.img&&!c.avatars[x.uid])c.avatars[x.uid]=x.img})}
     try{
       loadAvatars();
-      c.unsubs.push(fs.collection("accountAges").doc(uid).onSnapshot(s=>{c.account=s.exists?s.data():null;c.accountLoaded=true;chatRerender()},()=>{c.accountLoaded=true}));
+      // Offline, the cache answers "no such doc" for a birth date it never saw; wait for the server so the DOB card never shows by mistake.
+      c.unsubs.push(fs.collection("accountAges").doc(uid).onSnapshot({includeMetadataChanges:true},s=>{if(!s.exists&&s.metadata&&s.metadata.fromCache)return;c.account=s.exists?s.data():null;c.accountLoaded=true;chatRerender()},()=>{}));
       c.unsubs.push(fs.collection("chatProfiles").doc(uid).onSnapshot(s=>{c.profile=s.exists?s.data():null;c.profileLoaded=true;chatRerender()},()=>{c.profileLoaded=true;chatRerender()}));
-      c.unsubs.push(fs.collection("friendships").where("members","array-contains",uid).onSnapshot(s=>{c.pairs=s.docs.map(d=>Object.assign({id:d.id},d.data()));c.pairsLoaded=true;loadAvatars();chatRerender();checkCraveMatches()},()=>{c.pairsLoaded=true;chatRerender()}));
+      c.unsubs.push(fs.collection("friendships").where("members","array-contains",uid).onSnapshot(s=>{c.pairs=s.docs.map(d=>Object.assign({id:d.id},d.data()));c.pairsLoaded=true;loadAvatars();loadPresence();chatRerender();checkCraveMatches()},()=>{c.pairsLoaded=true;chatRerender()}));
+      c.unsubs.push(fs.collection("presence").doc(uid).onSnapshot(s=>{c.myPresence={loaded:true,show:s.exists?s.data().show===true:null};loadPresence();presenceBeat(true);chatRerender()},()=>{c.myPresence={loaded:true,show:null}}));
       c.unsubs.push(fs.collection("feeds").doc(uid).collection("feedItems").orderBy("createdAt","desc").limit(80).onSnapshot(s=>{c.feed=s.docs.map(d=>d.data());c.feedLoaded=true;chatRerender();if(state.sheet&&state.sheet.type==="friendStory")renderSheet()},()=>{c.feedLoaded=true;chatRerender()}));
       c.unsubs.push(fs.collection("parentRequests").where("parentUid","==",uid).onSnapshot(s=>{c.parentInbox=s.docs.map(d=>d.data());chatRerender()},()=>{}));
       c.unsubs.push(fs.collection("parentPayRequests").where("childUid","==",uid).onSnapshot(s=>{c.payAsks=s.docs.map(d=>d.data());watchParentPayAnswer();chatRerender()},()=>{}));
       c.unsubs.push(fs.collection("parentPayRequests").where("parentUid","==",uid).onSnapshot(s=>{c.payInbox=s.docs.map(d=>d.data());chatRerender()},()=>{}));
     }catch(_){}
   }
-  function stopChatSync(){const c=chatState();c.unsubs.forEach(u=>{try{u()}catch(_){}});c.unsubs=[];Object.values(c.avatarUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.avatarUnsubs={};c.avatars={};closeThread();c.uid="";c.profile=null;c.profileLoaded=false;c.pairs=[];c.pairsLoaded=false}
-  function chatRerender(){if(["chats","feed","dm","friends","home","checkout","account"].includes(state.route))render({preserveScroll:true})}
+  function stopChatSync(){const c=chatState();c.unsubs.forEach(u=>{try{u()}catch(_){}});c.unsubs=[];Object.values(c.avatarUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.avatarUnsubs={};c.avatars={};stopPresence();c.myPresence=null;closeThread();c.uid="";c.profile=null;c.profileLoaded=false;c.pairs=[];c.pairsLoaded=false}
+  function chatRerender(){if(["chats","feed","dm","friends","home","cart","account"].includes(state.route))render({preserveScroll:true})}
   /** Your profile photo for the header and account page, or your initials if you haven't added one. */
   function myAvatarFace(){const a=state.social&&state.social.avatars,uid=myUid(),img=a&&typeof a[uid]==="string"?a[uid]:(state.session&&uid&&(readPeopleCache(uid)||{}).me)||"";return img?'<img class="hh2-photo" src="'+h(img)+'" alt="">':h(initials())}
   async function socialCall(fn,data){if(!nativeAvailable("invokeSocial"))throw Object.assign(new Error("UPDATE_APP"),{userMessage:"Update Scraveit to use chat."});await ensureSession();return nativeInvoke("invokeSocial",{fn,data:data||{}},{idToken:state.session.idToken,timeoutMs:25000})}
   const chatError=e=>(e&&e.userMessage)||friendlyError(e)||"That didn’t work. Check your connection and try again.";
+
+  // ---- Taste signals: what this customer looks at, opens and adds ----
+  // Batched and sent about once a minute (recordAppEvents). The server keeps a fading taste
+  // profile per customer and per-city counts for ranking; none of it is shown to anyone else.
+  // A card counts as seen after a full second at least half on screen, once per 10 minutes.
+  // Ad views and taps are counted for a store only when the server confirms it had top
+  // placement at that moment, so a stale ad label on this phone cannot bill anyone.
+  function tasteKey(value){return String(value==null?"":value).trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,40)}
+  function signalCuisines(r){return(Array.isArray(r&&r.cuisines)?r.cuisines:[]).map(x=>String(x).trim().slice(0,60)).filter(Boolean).slice(0,3)}
+  function pushSignal(event){
+    if(!state.session)return;
+    signals.queue.push(Object.assign({at:Date.now()},event));
+    if(signals.queue.length>240)signals.queue.splice(0,signals.queue.length-240);
+    // A tap on an ad is sent at once: an order placed right after it is credited to the ad.
+    const urgent=event.t==="adClick"||event.t==="brandClick";
+    if(urgent||signals.queue.length>=60){clearTimeout(signals.timer);signals.timer=setTimeout(flushSignals,urgent?300:0)}
+    else if(!signals.timer)signals.timer=setTimeout(flushSignals,45000);
+  }
+  function restaurantSignal(t,rid,extra){
+    rid=String(rid||"").slice(0,128);if(!rid)return;
+    const r=restaurant(rid)||(state.sponsoredStores||{})[rid],city=String(r&&r.city||"").trim().slice(0,120),cuisines=signalCuisines(r);
+    pushSignal(Object.assign({t,rid},city?{city}:{},cuisines.length?{cuisines}:{},extra||{}));
+  }
+  async function flushSignals(){
+    clearTimeout(signals.timer);signals.timer=0;
+    if(signals.sending||!signals.queue.length||!state.session||!state.online||!nativeAvailable("invokeSocial"))return;
+    const batch=signals.queue.splice(0,80);signals.sending=true;
+    try{await socialCall("recordAppEvents",{events:batch});signals.fails=0}
+    catch(_){
+      // Kept for a retry, but a batch that keeps failing is let go rather than retried forever.
+      signals.fails+=1;if(signals.fails<3)signals.queue=batch.concat(signals.queue).slice(-240);
+    }finally{
+      signals.sending=false;
+      if(signals.queue.length&&!signals.timer)signals.timer=setTimeout(flushSignals,signals.queue.some(e=>e.t==="adClick"||e.t==="brandClick")&&!signals.fails?1500:45000);
+    }
+  }
+  function signalTarget(el){
+    if(el.dataset.adId)return{key:"b:"+el.dataset.adId,adId:String(el.dataset.adId).slice(0,128)};
+    const rid=el.dataset.restaurantId;if(!rid)return null;
+    const ad=!!(el.querySelector&&el.querySelector(".rc2-ad"));
+    return{key:(ad?"a:":"r:")+rid,t:ad?"adImp":"imp",rid};
+  }
+  function viewLeft(key,v,at){v.end=v.end||at;if(!v.close)v.close=setTimeout(()=>endView(key),400)}
+  function endView(key,now){
+    const v=signals.seen.get(key);if(!v)return;
+    signals.seen.delete(key);clearTimeout(v.close);
+    const ms=Math.min(30*60000,Math.round((now||v.end||Date.now())-v.start));
+    if(ms<1000||Date.now()-(signals.lastImp[key]||0)<10*60000)return;
+    signals.lastImp[key]=Date.now();
+    if(v.target.adId)pushSignal({t:"brandImp",adId:v.target.adId,ms});
+    else restaurantSignal(v.target.t,v.target.rid,{ms});
+  }
+  function onSignalView(entries){
+    const now=Date.now();
+    for(const entry of entries){
+      const el=entry.target,key=el.__sig;if(!key)continue;
+      let v=signals.seen.get(key);
+      if(entry.isIntersecting&&entry.intersectionRatio>=0.5&&document.visibilityState==="visible"){
+        if(!v){const target=signalTarget(el);if(!target)continue;v={start:now,end:0,close:0,els:new Set(),target};signals.seen.set(key,v)}
+        clearTimeout(v.close);v.close=0;v.end=0;v.els.add(el);
+      }else if(v){v.els.delete(el);if(!v.els.size)viewLeft(key,v,now)}
+    }
+  }
+  /** After every render: watch new cards, let go of removed ones, and follow the open restaurant. */
+  function watchSignals(){
+    if(!state.session)return;
+    if(rankState.uid!==state.session.uid)restoreRankSignals();
+    if(Date.now()-rankState.loadedAt>30*60000||rankState.city!==rankCityKey())loadRankSignals();
+    trackOpenRestaurant();
+    if(typeof IntersectionObserver!=="function")return;
+    if(!signals.io)signals.io=new IntersectionObserver(onSignalView,{threshold:[0,0.5,1]});
+    const now=Date.now(),known=new Set(signals.els);
+    signals.els=signals.els.filter(el=>{
+      const old=el.__sig,target=el.isConnected&&signalTarget(el);
+      if(target&&target.key===old)return true;
+      // Removed, or reused by the page for a different store: the old view ends here.
+      const v=old&&signals.seen.get(old);if(v){v.els.delete(el);if(!v.els.size)viewLeft(old,v,now)}
+      signals.io.unobserve(el);
+      if(!target){el.__sig="";return false}
+      el.__sig=target.key;signals.io.observe(el);return true;
+    });
+    document.querySelectorAll('[data-action="open-restaurant"][data-restaurant-id],[data-action="open-ad"][data-ad-id]').forEach(el=>{
+      if(known.has(el))return;const target=signalTarget(el);if(!target)return;
+      el.__sig=target.key;signals.els.push(el);signals.io.observe(el);
+    });
+  }
+  function trackOpenRestaurant(){
+    const rid=state.route==="restaurant"&&document.visibilityState==="visible"?String(state.selectedRestaurantId||state.routeData&&state.routeData.restaurantId||""):"";
+    const o=signals.open;if(o&&o.rid===rid)return;
+    signals.open=rid?{rid,start:Date.now()}:null;
+    if(o){const ms=Date.now()-o.start;if(ms>=1000)restaurantSignal("open",o.rid,{ms:Math.min(30*60000,Math.round(ms))})}
+  }
+  function signalAdd(rid){if(Date.now()-(signals.lastAdd[rid]||0)<60000)return;signals.lastAdd[rid]=Date.now();restaurantSignal("add",rid)}
+  document.addEventListener("visibilitychange",()=>{
+    if(document.visibilityState==="visible"){trackOpenRestaurant();if(signals.io)signals.els.forEach(el=>{signals.io.unobserve(el);signals.io.observe(el)});return}
+    const now=Date.now();Array.from(signals.seen.keys()).forEach(key=>endView(key,now));
+    trackOpenRestaurant();flushSignals();
+  });
+
+  // ---- "For you": the default order of the restaurant list ----
+  // After open stores and paid top placement, and within the same 2 km distance band, stores are
+  // ordered by how often people in this city order after seeing them (rankModels, learned every
+  // night) times this customer's own taste (customerInterests). The city rate is drawn once per
+  // app session from its uncertainty (Thompson sampling): a new store with little history still
+  // gets turns near the top, a proven one stays there, and the list never jumps while scrolling.
+  function rankCityKey(){const a=currentAddress();return catalogCityKey(a&&(a.city||a.area)||"")}
+  async function loadRankSignals(){
+    if(!state.session||rankState.loading)return;
+    const city=rankCityKey(),uidNow=state.session.uid;rankState.loading=true;
+    const read=ref=>ref.get().then(s=>s.exists?s.data():null).catch(()=>undefined);
+    try{
+      const [model,mine]=await Promise.all([city&&city!=="unknown"?read(fs.collection("rankModels").doc(city)):null,read(fs.collection("customerInterests").doc(uidNow))]);
+      if(!state.session||state.session.uid!==uidNow)return;
+      const before=JSON.stringify([rankState.model&&rankState.model.updatedAt,rankState.interests&&rankState.interests.updatedAt,rankState.city]);
+      // A failed read keeps what this phone already had.
+      if(model!==undefined)rankState.model=model;if(mine!==undefined)rankState.interests=mine;
+      rankState.city=city;
+      if(JSON.stringify([rankState.model&&rankState.model.updatedAt,rankState.interests&&rankState.interests.updatedAt,rankState.city])!==before){
+        rankState.samples.clear();
+        try{saveJSON("scraveit.rank."+uidNow,{model:rankState.model,interests:rankState.interests,city})}catch(_){}
+        if(["home","search","favourites"].includes(state.route))render({preserveScroll:true});
+      }
+    }finally{rankState.loadedAt=Date.now();rankState.loading=false}
+  }
+  /** What this phone learned last time, for this account, so the first screen is already in order. */
+  function restoreRankSignals(){
+    const saved=state.session?loadJSON("scraveit.rank."+state.session.uid,null):null,ok=saved&&typeof saved==="object";
+    rankState.model=ok&&saved.model||null;rankState.interests=ok&&saved.interests||null;rankState.city=ok?String(saved.city||""):"";
+    rankState.samples.clear();rankState.loadedAt=0;rankState.uid=state.session?state.session.uid:"";
+  }
+  function rankActive(){const m=rankState.model,i=rankState.interests;return!!((m&&m.restaurants&&Object.keys(m.restaurants).length)||(i&&i.r&&Object.keys(i.r).length))}
+  function seededRandom(seed){let a=seed>>>0;return()=>{a=(a+0x6d2b79f5)>>>0;let t=a;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296}}
+  function hashText(text){let x=2166136261;for(let i=0;i<text.length;i+=1){x^=text.charCodeAt(i);x=Math.imul(x,16777619)}return x>>>0}
+  function gammaDraw(k,rnd){
+    if(k<1)return gammaDraw(k+1,rnd)*Math.pow(Math.max(1e-12,rnd()),1/k);
+    const d=k-1/3,c=1/Math.sqrt(9*d);
+    for(let tries=0;tries<64;tries+=1){
+      let x,v;do{x=Math.sqrt(-2*Math.log(Math.max(1e-12,rnd())))*Math.cos(2*Math.PI*rnd());v=1+c*x}while(v<=0);
+      v=v*v*v;const u=Math.max(1e-12,rnd());
+      if(u<1-0.0331*x*x*x*x||Math.log(u)<0.5*x*x+d*(1-v+Math.log(v)))return d*v;
+    }
+    return k;
+  }
+  function rankScore(r){
+    const cached=rankState.samples.get(r.id);if(cached!=null)return cached;
+    const m=rankState.model||{},cityRate=Math.min(0.5,Math.max(0.005,Number(m.cityRate)||0.03)),c=(m.restaurants||{})[r.id]||{};
+    const imp=Math.max(0,Number(c.imp)||0),orders=Math.max(0,Number(c.order)||0),rnd=seededRandom(hashText(rankState.seed+":"+r.id));
+    // Beta posterior: 20 impressions' worth of the city's rate as the prior, then this store's own record.
+    const a=20*cityRate+orders,b=20*(1-cityRate)+Math.max(0,imp-orders),x=gammaDraw(a,rnd),y=gammaDraw(b,rnd),rate=x/(x+y||1);
+    const mine=rankState.interests||{},own=Number((mine.r||{})[r.id])||0,taste=signalCuisines(r).reduce((s,name)=>s+(Number((mine.c||{})[tasteKey(name)])||0),0);
+    const rating=ratingForRestaurant(r).value,quality=rating?Math.min(1.1,Math.max(0.9,0.85+0.05*rating)):1;
+    const score=rate*(1+0.35*Math.min(3,Math.log1p(own)))*(1+0.15*Math.min(3,Math.log1p(taste)))*quality;
+    rankState.samples.set(r.id,score);return score;
+  }
+  /** A brand ad aimed at an audience (cuisines) shows only to customers whose taste includes one of them. */
+  function audienceMatches(ad){
+    const wanted=(Array.isArray(ad.audience)?ad.audience:String(ad.audience||"").split(",")).map(tasteKey).filter(Boolean);
+    if(!wanted.length)return true;
+    const c=rankState.interests&&rankState.interests.c||{};
+    return wanted.some(key=>(Number(c[key])||0)>=1);
+  }
   function otherOf(p){return(p.members||[]).find(m=>m!==myUid())||""}
   function nameOf(p,uid){return(p.names&&p.names[uid])||"Friend"}
   function chatUnread(){const uid=myUid();return chatState().pairs.filter(p=>p.status==="accepted").reduce((n,p)=>n+Number(p.unread&&p.unread[uid]||0),0)+chatState().pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid).length}
@@ -3951,15 +4701,16 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(p.lastFrom===uid&&/^Reacted /.test(p.lastText||""))return{bold:false,text:"You r"+String(p.lastText).slice(1).replace(" to your message","")+" · "+t};
     if(p.lastFrom===uid)return{bold:false,text:(Number(p.readAt&&p.readAt[other]||0)>=Number(p.lastAt)?"Seen ":"Sent ")+t+" ago"};
     return{bold:false,text:lastTextOf(p)+" · "+t}}
-  function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,groups=storyGroups(),seen=storySeenSet(),requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0));
+  function screenChats(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),me=c.profile,groups=storyGroups(),seen=storySeenSet(),requests=c.pairs.filter(p=>p.status==="pending"&&p.requestedBy!==uid),convos=c.pairs.filter(p=>p.status==="accepted").sort((a,b)=>Number(b.lastAt||b.acceptedAt||0)-Number(a.lastAt||a.acceptedAt||0)),pins=chatLocal("Pins"),marked=chatLocal("Unread");
+    convos.sort((a,b)=>{const x=pins.indexOf(a.id),y=pins.indexOf(b.id);return(x<0?99:x)-(y<0?99:y)});
     return'<main class="screen no-nav"><div class="screen-content page-stack">'+topbar(me&&me.name?me.name:"Chats","",'<button class="icon-button flat" data-action="go" data-route="friends" aria-label="Add friends">'+icon("plus")+'</button>')+networkBanner()
-      +(gate||((convos.length?'<label class="inbox-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
+      +(gate||(presencePrompt()+(convos.length?'<label class="inbox-search">'+icon("search","small")+'<input id="chat-search" type="search" placeholder="Search friends" aria-label="Search friends" autocomplete="off"></label>'
         +weekBanner()+craveBar()+'<div class="pals" aria-label="Friends and stories">'+myStoryBubble(groups,seen)+convos.slice().sort((a,b)=>(storyUnseen(groups,otherOf(b),seen)?3:eatingOf(b)?2:friendCrave(b)?1:0)-(storyUnseen(groups,otherOf(a),seen)?3:eatingOf(a)?2:friendCrave(a)?1:0)).map((p,i)=>groups.has(otherOf(p))?'<button class="pal" data-action="story-open" data-uid="'+h(otherOf(p))+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+storyFace(otherOf(p),groups,seen,nameOf(p,otherOf(p)).split(" ")[0])+'</button>':'<button class="pal" data-action="'+(eatingOf(p)?'eating-view':'open-dm')+'" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,otherOf(p)).toLowerCase())+'">'+ringed(avatar(nameOf(p,otherOf(p)),i,otherOf(p)).replace('class="chat-avatar','class="chat-avatar big'),p)+'<span>'+h(eatingOf(p)?"eating":nameOf(p,otherOf(p)).split(" ")[0])+'</span></button>').join("")+'<button class="pal" data-action="go" data-route="friends"><span class="chat-avatar big add" aria-hidden="true">+</span><span>Add</span></button></div>':'')
         +'<div class="inbox-head"><h2 class="section-title">Messages</h2><button class="text-button" data-action="go" data-route="friends">Requests'+(requests.length?' ('+requests.length+')':'')+'</button></div>'
-        +(convos.length?'<div class="chat-list">'+convos.map((p,i)=>{const other=otherOf(p),line=convoLine(p,uid),n=Number(p.unread&&p.unread[uid]||0);return'<button class="chat-row inbox-row" data-action="open-dm" data-pair-id="'+h(p.id)+'" data-name="'+h(nameOf(p,other).toLowerCase())+'">'+ringed(avatar(nameOf(p,other),i,other).replace('class="chat-avatar','class="chat-avatar big'),p)+'<span class="grow"><strong'+(n?'':' class="soft"')+'>'+h(nameOf(p,other))+streakChip(p)+'</strong><span class="chat-preview'+(line.bold?' bold':'')+'">'+h(line.text)+'</span></span>'+(n?'<span class="pal-dot" aria-label="Unread"></span>':'')+'</button>'}).join("")+'</div>'
+        +(convos.length?'<div class="chat-list">'+convos.map((p,i)=>{const other=otherOf(p),line=convoLine(p,uid),n=Number(p.unread&&p.unread[uid]||0)||(marked.includes(p.id)?1:0),pinned=pins.includes(p.id);return'<div class="inbox-item" data-name="'+h(nameOf(p,other).toLowerCase())+'"><button class="chat-row inbox-row" data-action="open-dm" data-pair-id="'+h(p.id)+'"><span class="av-wrap">'+ringed(avatar(nameOf(p,other),i,other).replace('class="chat-avatar','class="chat-avatar big'),p)+(activeNow(other)?'<i class="active-dot" aria-label="Active now"></i>':'')+'</span>'+'<span class="grow"><strong'+(n?'':' class="soft"')+'>'+h(nameOf(p,other))+streakChip(p)+(pinned?'<span class="inbox-pin" aria-label="Pinned">📌</span>':'')+'</strong><span class="chat-preview'+(line.bold||n?' bold':'')+'">'+h(line.text)+'</span></span>'+(n?'<span class="pal-dot" aria-label="Unread"></span>':'')+'</button><button class="inbox-cam" data-action="dm-photo" data-pair-id="'+h(p.id)+'" aria-label="Send a photo to '+h(nameOf(p,other))+'"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button></div>'}).join("")+'</div>'
           :emptyState("chat","No chats yet","Tap + to share your friend code, or add a friend with theirs."))))
       +'</div>'+(gate?'':socialNav("chats"))+'</main>'}
-  document.addEventListener("input",e=>{if(!e.target||e.target.id!=="chat-search")return;const q=e.target.value.trim().toLowerCase();document.querySelectorAll(".inbox-row,.pal[data-name]").forEach(el=>{el.hidden=!!q&&!String(el.dataset.name||"").includes(q)})});
+  document.addEventListener("input",e=>{if(!e.target||e.target.id!=="chat-search")return;const q=e.target.value.trim().toLowerCase();document.querySelectorAll(".inbox-item,.pal[data-name]").forEach(el=>{el.hidden=!!q&&!String(el.dataset.name||"").includes(q)})});
   // ---- Friends' feed: food photos and 24-hour stories, seen only by friends ----
   // The server puts a card for each post in the poster's and every friend's feed;
   // photos are fetched once and kept in memory, like chat photos.
@@ -3994,10 +4745,138 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function storyFace(uid,groups,seen,label){return storyRing(uid,groups,seen)+'<span>'+h(label)+'</span>'}
   function myStoryBubble(groups,seen){const uid=myUid(),has=groups.has(uid);
     return'<button class="pal" data-action="'+(has?'story-open':'feed-compose')+'" data-uid="'+h(uid)+'" data-kind="story" aria-label="'+(has?'Your story':'Add to your story')+'">'+storyFace(uid,groups,seen,"Your story")+'</button>'}
-  const SOCIAL_ICONS={feed:'<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>',post:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.5v7M8.5 12h7"/>',chats:'<path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/>'};
+  // ---- Feed photos keep to the shapes a feed shows whole: no taller than 4:5, no wider than 1.91:1 ----
+  function cropForFeed(out){const W=out.w,H=out.h;if(!W||!H)return Promise.resolve(out);const tall=H/W>1.25,wide=W/H>1.91;if(!tall&&!wide)return Promise.resolve(out);
+    return new Promise(resolve=>{const img=new Image();img.onload=()=>{const cw=wide?Math.round(H*1.91):W,ch=tall?Math.round(W*1.25):H,c=document.createElement("canvas");c.width=cw;c.height=ch;
+      c.getContext("2d").drawImage(img,Math.round((W-cw)/2),Math.round((H-ch)/2),cw,ch,0,0,cw,ch);resolve({img:c.toDataURL("image/jpeg",.82),w:cw,h:ch})};img.onerror=()=>resolve(out);img.src=out.img})}
+
+  // ---- Public reels: food videos anyone signed in can watch, nearest city first ----
+  // Recorded with the story camera (tap to start and stop, up to 60 s) or picked from the phone, which
+  // Android shrinks to 720p first. Every reel is checked by Scraveit before it goes public and anyone can
+  // report one (IT Rules 2021); under-18s can't post (DPDP Act); only a city is shown, never a place.
+  // Own sound only: there is no music library to license.
+  const REEL_MAX_MS=60000;
+  const REEL_REASONS=[["nudity","Nudity or sexual content"],["violence","Violence or dangerous acts"],["hate","Hate or abuse"],["harassment","Bullying or harassment"],["spam","Spam or a scam"],["copyright","It uses my work without permission"],["child-safety","It puts a child at risk"],["other","Something else"]];
+  function reelsState(){if(!state.reels)state.reels={list:[],mine:[],loaded:false,loading:false,error:"",liked:{},likeChecked:{},muted:true,draft:null,hidden:[],lastTap:{id:"",at:0},src:{}};return state.reels}
+  function reelCity(){const a=currentAddress(),c=String(a&&(a.city||a.area)||"").replace(/[^\p{L}\s.-]/gu,"").replace(/\s+/g," ").trim().slice(0,40);return/\p{L}/u.test(c)?c:""}
+  function reelBlocked(uid){return chatState().pairs.some(p=>p.status==="blocked"&&otherOf(p)===uid)}
+  function compactCount(n){return n>=1e6?(n/1e6).toFixed(n>=1e7?0:1).replace(/\.0$/,"")+"M":n>=1e3?(n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,"")+"K":String(n)}
+  async function loadReels(force){const r=reelsState(),uid=myUid();if(!uid||r.loading||(r.loaded&&!force))return;r.loading=true;r.error="";
+    try{const city=reelCity(),col=fs.collection("reels"),seen=new Set(),list=[];
+      const add=snap=>snap.docs.forEach(d=>{if(!seen.has(d.id)){seen.add(d.id);list.push(Object.assign({id:d.id},d.data()))}});
+      if(city)add(await col.where("status","==","live").where("city","==",city).orderBy("createdAt","desc").limit(20).get());
+      if(list.length<8)add(await col.where("status","==","live").orderBy("createdAt","desc").limit(20).get());
+      const mine=await col.where("from","==",uid).orderBy("createdAt","desc").limit(10).get();
+      r.mine=mine.docs.map(d=>Object.assign({id:d.id},d.data())).filter(x=>x.status==="review"||x.status==="hidden");
+      r.list=list.filter(x=>!reelBlocked(x.from));r.loaded=true}
+    catch(e){r.error=chatError(e)}finally{r.loading=false;if(state.route==="reels")render({preserveScroll:true})}}
+  function screenReels(){ensureChatSync();const r=reelsState();if(!r.loaded&&!r.loading&&!r.error)setTimeout(()=>loadReels(false),0);
+    const items=r.mine.concat(r.list.filter(x=>!r.mine.some(m=>m.id===x.id))).filter(x=>!r.hidden.includes(x.id)),city=reelCity();
+    const top='<header class="reels-top"><h1>Reels</h1>'+(city?'<span class="reels-city">📍 '+h(city)+'</span>':'')+'<span class="grow"></span><button class="reels-new" data-action="reel-new" aria-label="Post a reel"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.5v7M8.5 12h7"/></svg></button></header>';
+    const body=items.length?items.map(reelCard).join(""):'<div class="reels-empty">'+(r.error&&!r.loading?'<p>'+h(r.error)+'</p><button class="button tonal" data-action="reel-refresh">Try again</button>':!r.loaded||r.loading?'<span class="spinner" aria-label="Loading"></span>':r.error?'<p>'+h(r.error)+'</p><button class="button tonal" data-action="reel-refresh">Try again</button>':'<p class="reels-empty-title">No reels near you yet</p><p>Be the first: show off a dish you love.</p><button class="button primary" data-action="reel-new">Post a reel</button>')+'</div>';
+    setTimeout(mountReels,0);
+    return'<main class="screen no-nav reels-screen">'+top+'<div class="reels-feed" id="reels-feed">'+body+'</div>'+socialNav("reels")+'</main>'}
+  function reelCard(x){const r=reelsState(),mine=x.from===myUid(),liked=!!r.liked[x.id],who=x.by&&x.by.username?"@"+x.by.username:(x.by&&x.by.name)||"Scraveit member";
+    const status=x.status==="live"?"":'<p class="reel-status">'+(x.status==="hidden"?"Hidden after reports while Scraveit checks it.":"Being checked. Only you can see it until it’s approved.")+'</p>';
+    return'<section class="reel" data-reel-id="'+h(x.id)+'"><video class="reel-video" data-src="'+h(x.videoUrl||"")+'"'+(r.src[x.id]&&x.videoUrl?' src="'+h(x.videoUrl)+'" preload="metadata"':' preload="none"')+' poster="'+h(x.thumbUrl||"")+'" playsinline loop muted></video>'
+      +'<button type="button" class="reel-tap" data-action="reel-tap" data-reel-id="'+h(x.id)+'" aria-label="Turn sound on or off"></button>'
+      +'<div class="reel-info">'+status+'<p class="reel-by"><strong>'+h(who)+'</strong>'+(x.city?'<span> · 📍 '+h(x.city)+'</span>':'')+'</p>'+(x.caption?'<p class="reel-caption">'+h(x.caption)+'</p>':'')+'<p class="reel-sound">♪ Original sound</p></div>'
+      +'<div class="reel-rail">'+(x.status==="live"?'<button type="button" class="reel-act reel-like'+(liked?' on':'')+'" data-action="reel-like" data-reel-id="'+h(x.id)+'" aria-pressed="'+liked+'" aria-label="Like"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20Z"/></svg><span>'+h(compactCount(Number(x.likeCount||0)))+'</span></button>':'')
+      +'<button type="button" class="reel-act" data-action="reel-sound" aria-label="'+(r.muted?'Sound on':'Sound off')+'"><span class="reel-sound-ic">'+(r.muted?'🔇':'🔊')+'</span></button>'
+      +'<button type="button" class="reel-act" data-action="reel-menu" data-reel-id="'+h(x.id)+'" aria-label="'+(mine?'Delete or more':'Report or more')+'">⋯</button></div></section>'}
+  let reelObserver=null;
+  function mountReels(){if(state.route!=="reels")return;const feed=document.getElementById("reels-feed");if(!feed||typeof IntersectionObserver!=="function")return;
+    if(!reelObserver||reelObserver.root!==feed){if(reelObserver)reelObserver.disconnect();
+      reelObserver=new IntersectionObserver(entries=>entries.forEach(en=>{const v=en.target.querySelector("video");if(!v)return;
+        if(en.isIntersecting&&en.intersectionRatio>=.6){if(!v.getAttribute("src")&&v.dataset.src){v.src=v.dataset.src;reelsState().src[en.target.dataset.reelId]=true}v.muted=reelsState().muted;v.play().catch(()=>{});reelSeen(en.target.dataset.reelId);
+          const next=en.target.nextElementSibling&&en.target.nextElementSibling.querySelector("video");if(next&&!next.getAttribute("src")&&next.dataset.src){next.preload="metadata";next.src=next.dataset.src;reelsState().src[en.target.nextElementSibling.dataset.reelId]=true}}
+        else v.pause()}),{root:feed,threshold:[0,.6]})}
+    feed.querySelectorAll(".reel").forEach(el=>{if(!el.dataset.watched){el.dataset.watched="1";reelObserver.observe(el)}})}
+  async function reelSeen(id){const r=reelsState(),uid=myUid(),x=r.list.find(y=>y.id===id);if(!x||x.status!=="live"||!uid||r.likeChecked[id])return;r.likeChecked[id]=true;
+    try{const d=await fs.collection("reels").doc(id).collection("likes").doc(uid).get();r.liked[id]=d.exists;paintReelLike(id)}catch(_){r.likeChecked[id]=false}}
+  function paintReelLike(id){const r=reelsState(),x=r.list.find(y=>y.id===id),b=document.querySelector('.reel[data-reel-id="'+CSS.escape(id)+'"] .reel-like');if(!x||!b)return;
+    b.classList.toggle("on",!!r.liked[id]);b.setAttribute("aria-pressed",String(!!r.liked[id]));const n=b.querySelector("span");if(n)n.textContent=compactCount(Number(x.likeCount||0))}
+  async function toggleReelLike(id,onlyLike){const r=reelsState(),x=r.list.find(y=>y.id===id),uid=myUid();if(!x||!uid||x.status!=="live"||r.likeBusy)return;
+    if(!r.likeChecked[id]){await reelSeen(id);if(!r.likeChecked[id])return}const on=!r.liked[id];if(onlyLike&&!on)return;r.likeBusy=true;
+    r.liked[id]=on;x.likeCount=Math.max(0,Number(x.likeCount||0)+(on?1:-1));paintReelLike(id);if(on)haptic(10);
+    try{const ref=fs.collection("reels").doc(id),b=fs.batch();if(on)b.set(ref.collection("likes").doc(uid),{from:uid,at:firebase.firestore.FieldValue.serverTimestamp()});else b.delete(ref.collection("likes").doc(uid));
+      b.update(ref,{likeCount:firebase.firestore.FieldValue.increment(on?1:-1)});await b.commit()}
+    catch(_){r.liked[id]=!on;x.likeCount=Math.max(0,Number(x.likeCount||0)+(on?-1:1));paintReelLike(id);toast("Couldn’t save your like.","danger")}finally{r.likeBusy=false}}
+  function reelHeart(id){const el=document.querySelector('.reel[data-reel-id="'+CSS.escape(id)+'"]');if(!el)return;const b=document.createElement("span");b.className="reel-burst";b.textContent="❤️";el.appendChild(b);setTimeout(()=>b.remove(),900)}
+  function setReelSound(muted){const r=reelsState();r.muted=muted;document.querySelectorAll(".reel-video").forEach(v=>{v.muted=muted});document.querySelectorAll(".reel-sound-ic").forEach(i=>{i.textContent=muted?"🔇":"🔊"})}
+  function reelStart(){const p=chatState().profile;if(chatGate()||!p){toast("Set up Chats first: reels show your chat name.","info");go("chats");return}
+    if(p.minor){toast("Public reels aren’t available under 18.","warning");return}setSheet({type:"reelSource"})}
+  function reelSourceSheet(){return sheetShell("Post a reel","Up to 60 seconds. Everyone on Scraveit can watch it once our team has checked it.",'<div class="stack"><button class="button primary full" data-action="reel-record">Record a reel</button><button class="button tonal full" data-action="reel-gallery">Choose a video</button><button class="text-button" data-action="reel-guide">Community guidelines</button></div>')}
+  async function reelPickGallery(){if(!nativeAvailable("pickReelVideo")){toast("Update Scraveit to post videos from your phone.","danger");return}
+    let res;try{res=await nativeInvoke("pickReelVideo",{},{timeoutMs:600000})}catch(e){if(!/CANCELLED|No video/i.test(String(e&&e.message||"")))toast(chatError(e),"danger");return}
+    const d=res&&res.url?res:res&&(res.data||res.result)||{};
+    try{const blob=await(await fetch(String(d.url||""))).blob();if(!blob.size)throw new Error("empty");await reelFromBlob(new Blob([blob],{type:"video/mp4"}),Number(d.ms)||0)}catch(_){toast("That video couldn’t be used. Try another.","danger")}}
+  function reelFrame(url){return new Promise((resolve,reject)=>{const v=document.createElement("video");v.muted=true;v.playsInline=true;v.preload="auto";let done=false;const fail=()=>{if(!done){done=true;reject(new Error("frame"))}};setTimeout(fail,15000);
+    v.onerror=fail;v.onloadeddata=()=>{try{v.currentTime=Math.min(.3,isFinite(v.duration)&&v.duration>0?v.duration/2:.3)}catch(_){fail()}};
+    v.onseeked=()=>{if(done)return;const W=v.videoWidth,H=v.videoHeight;if(!W||!H){fail();return}done=true;const k=Math.min(1,540/Math.min(W,H)),c=document.createElement("canvas");c.width=Math.round(W*k);c.height=Math.round(H*k);c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+      c.toBlob(b=>b?resolve({w:W,h:H,ms:Math.round((isFinite(v.duration)?v.duration:0)*1000),thumb:b}):reject(new Error("thumb")),"image/jpeg",.8)};v.src=url})}
+  async function reelFromBlob(blob,dur){const url=URL.createObjectURL(blob);let meta;try{meta=await reelFrame(url)}catch(_){URL.revokeObjectURL(url);toast("That video couldn’t be read. Try another.","danger");return}
+    const ms=Math.round(Math.min(REEL_MAX_MS+500,dur||meta.ms));if(ms<1000){URL.revokeObjectURL(url);toast("A reel needs at least 1 second of video.","warning");return}
+    if(blob.size>24.5*1024*1024){URL.revokeObjectURL(url);toast("That video is too big. Try a shorter one.","danger");return}
+    const r=reelsState();if(r.draft&&r.draft.url)URL.revokeObjectURL(r.draft.url);r.draft={blob,url,w:meta.w,h:meta.h,dur:ms,thumb:meta.thumb,caption:"",city:reelCity(),own:false,busy:false};setSheet({type:"reelCompose"})}
+  function reelComposeSheet(){const d=reelsState().draft;if(!d)return"";
+    return'<div class="vc-view reel-compose" role="dialog" aria-modal="true" aria-label="Post a reel"><video class="vc-video" src="'+h(d.url)+'" autoplay loop playsinline muted></video>'
+      +'<div class="se-top"><button type="button" class="se-btn" data-action="reel-discard" aria-label="Discard">×</button><span class="se-grow"></span></div>'
+      +'<form id="reel-compose-form" class="se-foot vc-foot reel-foot"><input class="input se-caption" name="caption" maxlength="200" autocomplete="off" placeholder="Say something about this dish…" value="'+h(d.caption)+'">'
+      +'<label class="reel-city-field"><span aria-hidden="true">📍</span><input class="input" name="city" maxlength="40" autocomplete="off" placeholder="Your city" aria-label="City" value="'+h(d.city)+'"></label>'
+      +'<label class="reel-own"><input type="checkbox" name="own"'+(d.own?' checked':'')+'><span>This video and its sound are mine to share, and it follows the <button type="button" class="text-button inline" data-action="reel-guide">community guidelines</button>.</span></label>'
+      +'<p class="se-hint">Reels are public: anyone on Scraveit can watch yours once our team has checked it. Don’t show other people’s faces, homes or phone numbers without their OK.</p>'
+      +'<button class="button primary full" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Posting…':'Post reel')+'</button></form></div>'}
+  document.addEventListener("input",e=>{const f=e.target&&e.target.form,d=reelsState().draft;if(!f||f.id!=="reel-compose-form"||!d)return;if(e.target.name==="caption")d.caption=e.target.value;if(e.target.name==="city")d.city=e.target.value});
+  document.addEventListener("change",e=>{const f=e.target&&e.target.form,d=reelsState().draft;if(f&&f.id==="reel-compose-form"&&d&&e.target.name==="own")d.own=e.target.checked});
+  async function uploadToStorage(path,blob,type){const res=await fetch("https://firebasestorage.googleapis.com/v0/b/"+STORY_BUCKET+"/o?uploadType=media&name="+encodeURIComponent(path),{method:"POST",headers:{Authorization:"Firebase "+await storageToken(),"Content-Type":type},body:blob});
+    if(!res.ok)throw new Error(res.status===403?"Upload isn’t allowed.":"The upload didn’t finish ("+res.status+").")}
+  async function postReel(form){const r=reelsState(),d=r.draft,uid=myUid();if(!d||d.busy||!uid)return;d.caption=String(form.elements.caption.value||"").trim().slice(0,200);d.city=String(form.elements.city.value||"").trim().slice(0,40);d.own=!!form.elements.own.checked;
+    if(!d.own){toast("Tick the box to confirm the video is yours to share.","warning");return}
+    d.busy=true;renderSheet();const id=fs.collection("reels").doc().id;
+    try{await uploadToStorage("reelVideos/"+uid+"/"+id,d.blob,String(d.blob.type||"video/mp4").split(";")[0]);await uploadToStorage("reelThumbs/"+uid+"/"+id,d.thumb,"image/jpeg");
+      await socialCall("createReel",{reelId:id,caption:d.caption,w:d.w,h:d.h,dur:d.dur,city:d.city,ownWork:true});
+      URL.revokeObjectURL(d.url);r.draft=null;closeSheet();toast("Posted! It goes public once our team has checked it, usually within a few hours.","success");if(state.route!=="reels")go("reels");loadReels(true)}
+    catch(e){d.busy=false;renderSheet();toast("Reel not posted. "+chatError(e),"danger")}}
+  function reelMenuSheet(sheet){const r=reelsState(),x=r.list.concat(r.mine).find(y=>y.id===sheet.reelId);if(!x)return sheetShell("Reel","","");const mine=x.from===myUid(),attr=' data-reel-id="'+h(x.id)+'"';
+    return sheetShell(mine?"Your reel":"Reel","",'<div class="stack">'+(mine?'<button class="button danger full" data-action="reel-delete"'+attr+'>Delete reel</button>'
+      :'<button class="button danger full" data-action="reel-report"'+attr+'>Report</button><button class="button tonal full" data-action="reel-hide"'+attr+'>Not interested</button>')+'<button class="text-button" data-action="reel-guide">Community guidelines</button></div>')}
+  function reelReportSheet(sheet){return sheetShell("Report this reel","Our team checks every report within 24 hours. The poster isn’t told who reported it.",
+    '<form id="reel-report-form" class="form-grid" data-reel-id="'+h(sheet.reelId)+'"><fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">What’s wrong?</legend>'+REEL_REASONS.map((x,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="reason" value="'+x[0]+'" '+(i===0?'checked':'')+'><span class="grow">'+x[1]+'</span></label>').join("")+'</fieldset>'
+    +'<div class="field"><label for="reel-report-note">Anything else (optional)</label><textarea class="textarea" id="reel-report-note" name="note" maxlength="500"></textarea></div>'
+    +'<p class="caption">If someone is in danger, call 112. For a child at risk you can also report at cybercrime.gov.in.</p><button class="button danger full" type="submit"'+(sheet.busy?' disabled':'')+'>'+(sheet.busy?'Sending…':'Send report')+'</button></form>')}
+  async function sendReelReport(form){const id=form.dataset.reelId,sh=state.sheet;if(!id||(sh&&sh.busy))return;if(sh){sh.busy=true;renderSheet()}
+    try{await socialCall("reportReel",{reelId:id,reason:String(form.elements.reason.value||"other"),note:String(form.elements.note.value||"").trim().slice(0,500)});
+      const r=reelsState();r.hidden.push(id);closeSheet();toast("Thanks for telling us. We’ll check it within 24 hours.","success");render({preserveScroll:true})}
+    catch(e){if(sh){sh.busy=false;renderSheet()}toast("Report not sent. "+chatError(e),"danger")}}
+  function reelGuideSheet(){return sheetShell("Community guidelines","What can go on Scraveit reels",'<div class="stack reel-guide">'
+    +'<p><strong>Share food you love.</strong> Dishes, cooking, restaurants and food trips are what reels are for.</p>'
+    +'<p><strong>Only post what’s yours.</strong> Your own video and sound. No music, clips or photos you don’t have the rights to.</p>'
+    +'<p><strong>Respect people.</strong> Don’t film anyone, their home or their phone number without their OK. No bullying, hate, threats or harassment.</p>'
+    +'<p><strong>Keep it safe.</strong> No nudity or sexual content, no violence or dangerous acts, nothing that puts a child at risk, no drugs or weapons.</p>'
+    +'<p><strong>Be honest.</strong> No spam, scams, fake reviews, or paid promotion you don’t disclose.</p>'
+    +'<p class="caption">Every reel is checked before it goes public. Reels that break these rules are removed, and repeat or serious cases can lose access to reels and chat. Complaints: Grievance Officer, balaji@scraveit.in (we reply within 24 hours and resolve within 15 days).</p></div>')}
+  function handleReelClick(action,control){const id=String(control.dataset.reelId||""),r=reelsState();
+    if(action==="reel-new"){reelStart();return true}
+    if(action==="reel-refresh"){loadReels(true);render({preserveScroll:true});return true}
+    if(action==="reel-record"){closeSheet();openStoryCam(true);return true}
+    if(action==="reel-gallery"){closeSheet();reelPickGallery();return true}
+    if(action==="reel-guide"){setSheet({type:"reelGuide"});return true}
+    if(action==="reel-like"){toggleReelLike(id,false);return true}
+    if(action==="reel-sound"){setReelSound(!r.muted);return true}
+    if(action==="reel-tap"){const now=Date.now();if(r.lastTap.id===id&&now-r.lastTap.at<320){r.lastTap={id:"",at:0};reelHeart(id);toggleReelLike(id,true)}else{r.lastTap={id,at:now};setTimeout(()=>{if(r.lastTap.id===id&&r.lastTap.at===now)setReelSound(!r.muted)},330)}return true}
+    if(action==="reel-menu"){setSheet({type:"reelMenu",reelId:id});return true}
+    if(action==="reel-report"){setSheet({type:"reelReport",reelId:id});return true}
+    if(action==="reel-hide"){r.hidden.push(id);closeSheet();render({preserveScroll:true});return true}
+    if(action==="reel-delete"){closeSheet();(async()=>{if(!await askConfirm("Delete this reel?","It’s removed for everyone and can’t be brought back.","Delete","Keep"))return;
+      try{await fs.collection("reels").doc(id).delete();r.list=r.list.filter(x=>x.id!==id);r.mine=r.mine.filter(x=>x.id!==id);toast("Reel deleted.","success");render({preserveScroll:true})}catch(e){toast("Not deleted. "+chatError(e),"danger")}})();return true}
+    if(action==="reel-discard"){(async()=>{if(!await askConfirm("Discard this reel?","It won’t be posted.","Discard","Keep"))return;const d=r.draft;if(d&&d.url)URL.revokeObjectURL(d.url);r.draft=null;closeSheet()})();return true}
+    return false}
+
+  const SOCIAL_ICONS={feed:'<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5.5h4V20"/>',post:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M12 8.5v7M8.5 12h7"/>',chats:'<path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/>',reels:'<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><path d="M3.5 8.5h17M8.5 3.5l2.5 5M14 3.5l2.5 5"/><path d="m10.5 11.8 4 2.4-4 2.4Z"/>'};
   /** Feed / Post / Chats, at the bottom of the friends screens. */
   function socialNav(active){const b=(key,label)=>'<button class="nav-button'+(active===key?' active':'')+'" '+(key==="post"?'data-action="feed-compose" data-kind="post"':'data-action="social-tab" data-route="'+key+'"')+(active===key?' aria-current="page"':'')+'><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'+SOCIAL_ICONS[key]+'</svg><span>'+label+'</span></button>';
-    return'<nav class="bottom-nav kind-nav social-nav" aria-label="Friends">'+b("feed","Feed")+b("post","Post")+b("chats","Chats")+'</nav>'}
+    return'<nav class="bottom-nav kind-nav social-nav" aria-label="Friends">'+b("feed","Feed")+b("reels","Reels")+b("post","Post")+b("chats","Chats")+'</nav>'}
   function screenFeed(){ensureChatSync();const c=chatState(),uid=myUid(),gate=chatGate(),groups=storyGroups(),seen=storySeenSet(),posts=liveFeed().filter(x=>x.kind==="post");
     return'<main class="screen no-nav feed-screen"><div class="screen-content page-stack">'+topbar("Feed","Only your friends see this",'<button class="icon-button flat" data-action="feed-compose" data-kind="post" aria-label="Share a photo">'+icon("plus")+'</button>')+networkBanner()
       +(gate||('<div class="pals story-row" aria-label="Stories">'+myStoryBubble(groups,seen)+storyOrder(groups).filter(u=>u!==uid).map(u=>'<button class="pal" data-action="story-open" data-uid="'+h(u)+'">'+storyFace(u,groups,seen,String(feedName(u)).split(" ")[0])+'</button>').join("")+'</div>'+highlightsRow(uid,true)
@@ -4288,7 +5167,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   window.addEventListener("resize",()=>{if(!state.sheet||state.sheet.type!=="compose")return;const d=chatState().compose,v=document.querySelector(".se-view");if(!d||!v)return;const st=v.querySelector(".se-stage"),fr=v.querySelector(".se-frame");if(st&&fr)seLayout(d,st,fr);const ta=document.getElementById("se-text-input");if(ta)seAutoSize(ta)});
   document.addEventListener("input",e=>{if(e.target&&e.target.id==="compose-caption"&&chatState().compose)chatState().compose.caption=e.target.value});
   async function shareCompose(){const c=chatState(),d=c.compose;if(!d||d.busy)return;d.busy=true;renderSheet();
-    try{const out=seEdited(d)?await seExport(d):{img:d.img,w:d.w,h:d.h},ref=fs.collection("posts").doc(),uid=myUid(),at=firebase.firestore.FieldValue.serverTimestamp();
+    try{let out=seEdited(d)?await seExport(d):{img:d.img,w:d.w,h:d.h};if(d.kind==="post")out=await cropForFeed(out);const ref=fs.collection("posts").doc(),uid=myUid(),at=firebase.firestore.FieldValue.serverTimestamp();
       await fs.collection("postMedia").doc(ref.id).set({from:uid,image:out.img,at});
       const post={from:uid,kind:d.kind,caption:String(d.caption||"").trim().slice(0,200),w:out.w,h:out.h,createdAt:at};
       if(d.kind==="story"){if(d.to==="close")post.to="close";const ix=(d.items||[]).filter(it=>it.type==="ix"&&it.ix).slice(0,6).map(it=>Object.assign({},it.ix,{x:+it.x.toFixed(4),y:+it.y.toFixed(4),s:+(+it.s||1).toFixed(3),r:+(+it.r||0).toFixed(3)}));if(ix.length)post.stickers=ix}
@@ -4436,13 +5315,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function storyCamAvailable(){return!!(window.ScraveitCallFx&&ScraveitCallFx.lens&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&HTMLCanvasElement.prototype.captureStream)}
   async function camPerms(){if(!nativeAvailable("callPermissions"))return true;
     try{const p=await nativeInvoke("callPermissions",{video:true},{timeoutMs:60000});if(!p||p.video!==true){toast("Allow the camera for stories (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}catch(_){return false}}
-  async function openStoryCam(){if(chatGate()){go("chats");return}if(cam.opening)return;cam.opening=true;
+  async function openStoryCam(reel){if(chatGate()){go("chats");return}if(cam.opening)return;cam.opening=true;cam.reel=reel===true;
     try{if(!await camPerms())return;setSheet({type:"storyCam"});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));await camStart()}finally{cam.opening=false}}
   function camStopStream(){if(cam.stream){cam.stream.getTracks().forEach(t=>t.stop());cam.stream=null}}
   function camClose(){clearInterval(cam.recTimer);clearTimeout(cam.hold);if(cam.rec){try{cam.rec.onstop=null;cam.rec.stop()}catch(_){}cam.rec=null}
     if(cam.lens){cam.lens.stop();cam.lens=null}camStopStream();if(cam.video){cam.video.srcObject=null}}
   async function camStart(){const view=document.querySelector(".sc-view");if(!view)return;camStopStream();
-    const want={video:{facingMode:cam.facing,width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}},audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}};
+    const low=!!(window.ScraveitCallFx&&ScraveitCallFx.lowEnd),want={video:{facingMode:cam.facing,width:{ideal:low?1280:1920},height:{ideal:low?720:1080},frameRate:{ideal:30,max:30}},audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}};
     try{cam.stream=await navigator.mediaDevices.getUserMedia(want)}catch(_){try{cam.stream=await navigator.mediaDevices.getUserMedia({video:want.video,audio:false})}catch(e){toast("The camera is busy or blocked.","danger");closeSheet();return}}
     if(!state.sheet||state.sheet.type!=="storyCam"){camStopStream();return}
     const v=cam.video||(cam.video=document.createElement("video"));v.muted=true;v.playsInline=true;v.setAttribute("playsinline","");v.srcObject=cam.stream;v.play().catch(()=>{});
@@ -4453,14 +5332,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     view.querySelectorAll(".sc-lens").forEach(b=>{const on=b.dataset.id===cam.lensId;b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));if(on)b.scrollIntoView({block:"nearest",inline:"center"})});
     const name=view.querySelector(".sc-lens-name"),l=(ScraveitCallFx.LENSES||[]).find(x=>x.id===cam.lensId);if(name)name.textContent=l?l.name:"";
     const sh=view.querySelector(".sc-shutter");if(sh&&!sh.dataset.bound){sh.dataset.bound="1";
-      sh.addEventListener("pointerdown",e=>{e.preventDefault();clearTimeout(cam.hold);cam.hold=setTimeout(camRecord,320)});
-      const up=()=>{if(cam.rec){camStopRec();return}if(cam.hold){clearTimeout(cam.hold);cam.hold=0;camPhoto()}};
-      sh.addEventListener("pointerup",up);sh.addEventListener("pointercancel",()=>{if(cam.rec)camStopRec();clearTimeout(cam.hold);cam.hold=0});sh.addEventListener("contextmenu",e=>e.preventDefault())}}
+      sh.addEventListener("pointerdown",e=>{e.preventDefault();clearTimeout(cam.hold);if(cam.reel){if(cam.rec)camStopRec();else camRecord();return}cam.hold=setTimeout(camRecord,320)});
+      const up=()=>{if(cam.reel)return;if(cam.rec){camStopRec();return}if(cam.hold){clearTimeout(cam.hold);cam.hold=0;camPhoto()}};
+      sh.addEventListener("pointerup",up);sh.addEventListener("pointercancel",()=>{if(cam.reel)return;if(cam.rec)camStopRec();clearTimeout(cam.hold);cam.hold=0});sh.addEventListener("contextmenu",e=>e.preventDefault())}}
   function camSheet(){const lenses=(window.ScraveitCallFx&&ScraveitCallFx.LENSES)||[];
     return'<div class="sc-view" role="dialog" aria-modal="true" aria-label="Story camera"><canvas class="sc-stage" aria-hidden="true"></canvas>'
       +'<div class="sc-top"><button type="button" class="sc-btn" data-action="sc-close" aria-label="Close">×</button><span class="sc-rec" aria-live="polite"></span><button type="button" class="sc-btn" data-action="sc-flip" aria-label="Switch camera">⟲</button></div>'
       +'<div class="sc-bottom"><p class="sc-lens-name"></p><div class="sc-lenses" role="group" aria-label="Effects">'+lenses.map(l=>'<button type="button" class="sc-lens" data-action="sc-lens" data-id="'+h(l.id)+'" aria-label="'+h(l.name)+'"><span>'+l.icon+'</span></button>').join("")+'</div>'
-      +'<div class="sc-controls"><button type="button" class="sc-side" data-action="sc-gallery" aria-label="Choose from gallery">🖼️</button><button type="button" class="sc-shutter" aria-label="Tap for a photo, hold for a video"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="sc-ring" cx="50" cy="50" r="45"/><circle class="sc-prog" cx="50" cy="50" r="45"/></svg><span></span></button><span class="sc-side sc-hint">Hold for<br>video</span></div></div></div>'}
+      +'<div class="sc-controls"><button type="button" class="sc-side" data-action="sc-gallery" aria-label="Choose from gallery">🖼️</button><button type="button" class="sc-shutter" aria-label="Tap for a photo, hold for a video"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="sc-ring" cx="50" cy="50" r="45"/><circle class="sc-prog" cx="50" cy="50" r="45"/></svg><span></span></button><span class="sc-side sc-hint">'+(cam.reel?'Tap to start<br>and stop':'Hold for<br>video')+'</span></div></div></div>'}
   function camSetLens(id){cam.lensId=id;haptic(8);if(cam.lens)cam.lens.set(id);const view=document.querySelector(".sc-view");if(!view)return;
     view.querySelectorAll(".sc-lens").forEach(b=>{const on=b.dataset.id===id;b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on))});
     const l=(ScraveitCallFx.LENSES||[]).find(x=>x.id===id),name=view.querySelector(".sc-lens-name");if(name){name.textContent=l?l.name:"";name.classList.remove("flash");void name.offsetWidth;name.classList.add("flash")}}
@@ -4468,20 +5347,21 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const old=chatState().compose;if(old&&old.url)URL.revokeObjectURL(old.url);seReset();
     chatState().compose={img:p.img,url:photoBlobUrl(p.img),w:p.w,h:p.h,kind:"story",caption:"",busy:false,to:"friends"};setSheet({type:"compose"})}
   function camRecUi(on,secs){const view=document.querySelector(".sc-view");if(!view)return;view.classList.toggle("recording",!!on);
-    const t=view.querySelector(".sc-rec");if(t)t.textContent=on?"● "+Math.floor(secs||0)+"s":"";const pr=view.querySelector(".sc-prog");if(pr)pr.style.strokeDashoffset=String(283*(1-Math.min(1,(secs||0)/15)))}
+    const t=view.querySelector(".sc-rec");if(t)t.textContent=on?"● "+Math.floor(secs||0)+"s":"";const pr=view.querySelector(".sc-prog");if(pr)pr.style.strokeDashoffset=String(283*(1-Math.min(1,(secs||0)/camMaxSec())))}
+  function camMaxSec(){return cam.reel?60:15}
   function camRecord(){cam.hold=0;if(cam.rec||!cam.lens)return;if(!window.MediaRecorder){toast("Video isn’t available on this phone. Tap for a photo.","warning");return}
     const mic=cam.stream&&cam.stream.getAudioTracks()[0],stream=cam.lens.record(mic);
     const type=["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp8,opus","video/webm"].find(t=>{try{return MediaRecorder.isTypeSupported(t)}catch(_){return false}})||"";
-    let rec;try{rec=new MediaRecorder(stream,type?{mimeType:type,videoBitsPerSecond:2000000,audioBitsPerSecond:96000}:undefined)}catch(_){cam.lens.endRecord();toast("Video isn’t available on this phone. Tap for a photo.","warning");return}
+    let rec;try{rec=new MediaRecorder(stream,type?{mimeType:type,videoBitsPerSecond:cam.reel?2800000:5500000,audioBitsPerSecond:128000}:undefined)}catch(_){cam.lens.endRecord();toast("Video isn’t available on this phone. Tap for a photo.","warning");return}
     cam.chunks=[];cam.rec=rec;cam.poster=cam.lens.photo();cam.recAt=Date.now();haptic(20);
     rec.ondataavailable=e=>{if(e.data&&e.data.size)cam.chunks.push(e.data)};
-    rec.onstop=()=>{clearInterval(cam.recTimer);const dur=Math.min(16000,Date.now()-cam.recAt),mime=String(rec.mimeType||type||"video/webm").split(";")[0],blob=new Blob(cam.chunks,{type:mime});
+    rec.onstop=()=>{clearInterval(cam.recTimer);const dur=Math.min(camMaxSec()*1000+1000,Date.now()-cam.recAt),mime=String(rec.mimeType||type||"video/webm").split(";")[0],blob=new Blob(cam.chunks,{type:mime});
       stream.getVideoTracks().forEach(t=>t.stop());if(cam.lens)cam.lens.endRecord();cam.rec=null;camRecUi(false);
       if(dur<800||blob.size<4000){toast("Hold the button a little longer to record.","info");return}camToVideo(blob,dur)};
     try{rec.start(250)}catch(_){cam.rec=null;cam.lens.endRecord();toast("Couldn’t start recording.","danger");return}
-    camRecUi(true,0);cam.recTimer=setInterval(()=>{const s=(Date.now()-cam.recAt)/1000;camRecUi(true,s);if(s>=15)camStopRec()},100)}
+    camRecUi(true,0);cam.recTimer=setInterval(()=>{const s=(Date.now()-cam.recAt)/1000;camRecUi(true,s);if(s>=camMaxSec())camStopRec()},100)}
   function camStopRec(){clearInterval(cam.recTimer);if(cam.rec&&cam.rec.state!=="inactive"){try{cam.rec.stop()}catch(_){}}}
-  function camToVideo(blob,dur){const poster=cam.poster;camClose();const old=chatState().vcompose;if(old&&old.url&&!old.shared)URL.revokeObjectURL(old.url);
+  function camToVideo(blob,dur){const poster=cam.poster;camClose();if(cam.reel){cam.reel=false;reelFromBlob(blob,dur);return}const old=chatState().vcompose;if(old&&old.url&&!old.shared)URL.revokeObjectURL(old.url);
     chatState().vcompose={blob,url:URL.createObjectURL(blob),poster,dur,caption:"",to:"friends",busy:false,muted:false};setSheet({type:"videoCompose"})}
   // Leaving the app lets go of the camera and microphone (a recording in progress is kept); back from
   // the lock screen or another app, the camera feed starts again.
@@ -4496,7 +5376,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<div class="aud-row" role="radiogroup" aria-label="Who sees it"><button type="button" class="aud'+(close?'':' on')+'" data-action="aud-set" data-to="friends" role="radio" aria-checked="'+!close+'">🌍 All friends</button>'
       +'<button type="button" class="aud close'+(close?' on':'')+'" data-action="aud-set" data-to="close" role="radio" aria-checked="'+close+'">★ Close friends</button><button type="button" class="aud-edit" data-action="story-prefs" data-tab="close">Edit list</button></div>'}
   function videoComposeSheet(){const d=chatState().vcompose;if(!d)return"";
-    return'<div class="vc-view" role="dialog" aria-modal="true" aria-label="Share your video"><video class="vc-video" src="'+h(d.url)+'" autoplay loop playsinline'+(d.muted?' muted':'')+'></video>'
+    return'<div class="vc-view" role="dialog" aria-modal="true" aria-label="Share your video"><video class="vc-video" src="'+h(d.url)+'"'+(d.poster&&d.poster.img?' poster="'+h(d.poster.img)+'"':'')+' autoplay loop playsinline'+(d.muted?' muted':'')+'></video>'
       +'<div class="se-top"><button type="button" class="se-btn" data-action="vc-close" aria-label="Discard">×</button><span class="se-grow"></span><button type="button" class="se-btn" data-action="vc-mute" aria-label="'+(d.muted?'Sound on':'Sound off')+'">'+(d.muted?'🔇':'🔊')+'</button></div>'
       +'<form id="vc-form" class="se-foot vc-foot"><input class="input se-caption" id="vc-caption" name="caption" maxlength="200" placeholder="Add a caption…" autocomplete="off" value="'+h(d.caption||"")+'">'+audienceRow(d)
       +'<div class="se-foot-row"><span class="se-grow"></span><button class="se-share" type="submit"'+(d.busy?' disabled':'')+'>'+(d.busy?'Sharing…':'Share')+'<span aria-hidden="true">➤</span></button></div><p class="se-hint">'+(d.to==="close"?'Only your close friends can see it.':'Only your friends can see it.')+'</p></form></div>'}
@@ -4659,15 +5539,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     try{await fs.collection("posts").doc(id).update({["likes."+uid]:liked?firebase.firestore.FieldValue.delete():true})}catch(e){loadPostMeta(id,true);toast("Couldn’t like that. "+chatError(e),"danger")}}
   async function deletePost(id,isStory){const yes=await askConfirm(isStory?"Delete this story?":"Delete this post?","Your friends won’t see it any more.","Delete","Keep");if(!yes)return;
     try{await fs.collection("posts").doc(id).delete();if(state.sheet&&state.sheet.type==="friendStory")closeSheet();toast("Deleted.","success")}catch(e){toast("Not deleted. "+chatError(e),"danger")}}
-  function handleFeedClick(action,control){const id=String(control.dataset.postId||""),u=String(control.dataset.uid||"");
-    if(action==="social-tab"){const r=control.dataset.route;if(state.route!==r)go(r,{},["feed","chats"].includes(state.route));return true}
+  function handleFeedClick(action,control){if(action.startsWith("reel"))return handleReelClick(action,control);const id=String(control.dataset.postId||""),u=String(control.dataset.uid||"");
+    if(action==="social-tab"){const r=control.dataset.route;if(state.route!==r)go(r,{},["feed","chats","reels"].includes(state.route));return true}
     if(action==="feed-compose"){feedCompose(control.dataset.kind||"story");return true}
     if(action.startsWith("se-"))return seClick(action,control);
     // The story camera and video sharing.
     if(action==="sc-close"){camClose();closeSheet();return true}
     if(action==="sc-flip"){camFlip();return true}
     if(action==="sc-lens"){camSetLens(String(control.dataset.id||"none"));return true}
-    if(action==="sc-gallery"){camClose();closeSheet();feedCompose("story",true);return true}
+    if(action==="sc-gallery"){const reel=cam.reel;camClose();closeSheet();if(reel){cam.reel=false;reelPickGallery()}else feedCompose("story",true);return true}
     if(action==="vc-close"){(async()=>{if(await askConfirm("Discard this video?","It won’t be shared.","Discard","Keep")){const d=chatState().vcompose;if(d&&d.url&&!d.shared)URL.revokeObjectURL(d.url);chatState().vcompose=null;closeSheet()}})();return true}
     if(action==="vc-mute"){const d=chatState().vcompose;if(d){d.muted=!d.muted;renderSheet()}return true}
     if(action==="aud-set"){const to=control.dataset.to==="close"?"close":"friends",d=state.sheet&&state.sheet.type==="videoCompose"?chatState().vcompose:chatState().compose;if(d){d.to=to;haptic(8);if(to==="close"&&!storyPrefs.loaded)loadStoryPrefs();renderSheet()}return true}
@@ -4714,6 +5594,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="feed-menu"){if(u===myUid()){deletePost(id,false);return true}const p=pairWith(u);if(p)setSheet({type:"chatReport",pairId:p.id});return true}
     return false}
   async function handleFeedSubmit(form){
+    if(form.id==="reel-compose-form"){postReel(form);return true}
+    if(form.id==="reel-report-form"){sendReelReport(form);return true}
     if(form.id==="compose-form"){shareCompose();return true}
     if(form.id==="vc-form"){shareVideoStory();return true}
     if(form.id==="story-edit-form"){saveStoryCaption(form);return true}
@@ -4780,15 +5662,20 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +'<section class="stack"><h2 class="section-title">Friends · '+friends.length+'</h2>'+(friends.length?friends.map((x,i)=>'<div class="chat-row inbox-row"><button class="inbox-open" data-action="open-dm" data-pair-id="'+h(x.id)+'">'+avatar(nameOf(x,otherOf(x)),i,otherOf(x)).replace('class="chat-avatar','class="chat-avatar big')+'<span class="grow"><strong>'+h(nameOf(x,otherOf(x)))+'</strong><span class="chat-preview">'+(usernameOf(x,otherOf(x))?'@'+h(usernameOf(x,otherOf(x))):'Tap to chat')+'</span></span></button><button class="icon-button flat" data-action="friend-menu" data-pair-id="'+h(x.id)+'" aria-label="More for '+h(nameOf(x,otherOf(x)))+'">⋮</button></div>').join(""):'<p class="supporting">No friends yet. Share your code to start.</p>')+'</section>'
         +(sent.length?'<section class="stack"><h2 class="section-title">Sent</h2>'+sent.map((x,i)=>row(x,'<small class="caption">Waiting</small>',i)).join("")+'</section>':'')
         +(blocked.length?'<section class="stack"><h2 class="section-title">Blocked</h2>'+blocked.map((x,i)=>row(x,btn("Unblock","friend-unblock",x.id),i)).join("")+'</section>':'')
-        +'<section class="card stack"><h2 class="section-title">Who can send you requests</h2><div class="stack" role="radiogroup" aria-label="Who can send you requests">'+(p.minor?[["code","People with my code"],["nobody","Nobody"]]:[["everyone","Anyone with my username or code"],["code","Only people with my code"],["nobody","Nobody"]]).map(o=>{const cur=p.requests||(p.minor?"code":"everyone");return'<button class="settings-row chat-radio '+(cur===o[0]?'on':'')+'" role="radio" aria-checked="'+(cur===o[0])+'" data-action="chat-privacy" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>'}).join("")+'</div>'+(p.minor?'<p class="caption">Under 18, people can add you only with the code you share.</p>':'')+'</section>'
+        +'<section class="card stack"><h2 class="section-title">Who can send you requests</h2><div class="stack" role="radiogroup" aria-label="Who can send you requests">'+(p.minor?[["code","People with my code"],["nobody","Nobody"]]:[["everyone","Anyone with my username or code"],["code","Only people with my code"],["nobody","Nobody"]]).map(o=>{const cur=p.requests||(p.minor?"code":"everyone");return'<button class="settings-row chat-radio '+(cur===o[0]?'on':'')+'" role="radio" aria-checked="'+(cur===o[0])+'" data-action="chat-privacy" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>'}).join("")+'</div>'+(p.minor?'<p class="caption">Under 18, people can add you only with the code you share.</p>':'')+'</section>'+activityCard(p)
         +(e2eReady()?'<section class="card stack e2e-rows"><button class="settings-row" data-action="e2e-account"><span class="grow"><strong>🔒 Chat encryption</strong><span class="supporting">'+(e2e.acct&&e2e.acct.bundle.pendingCode?'Save your recovery key so you can get your chats back on a new phone.':e2e.needs==="link"?'Set up this phone to read your encrypted chats.':'Recovery key, older messages and your phones.')+'</span></span><span aria-hidden="true">›</span></button></section>':'')
         +(()=>{const on=typeof p.shareEating==="boolean"?p.shareEating:!p.minor;return'<section class="card stack"><button class="settings-row" data-action="chat-eating-share" data-value="'+(on?'off':'on')+'"><span class="grow"><strong>Show friends when I’m eating</strong><span class="supporting">When your food arrives, friends see the dish and restaurant on your photo for 30 minutes. Never your address.</span></span><span class="switch '+(on?'on':'')+'" aria-hidden="true"></span></button></section>'})()
         +(kids.length?'<section class="card stack"><h2 class="section-title">Your children</h2>'+kids.map(r=>'<div class="cluster between"><span>'+h(r.childName||"Child")+'</span><button class="button tonal small" data-action="parent-revoke" data-child-uid="'+h(r.childUid)+'">Turn chat off</button></div>').join("")+'</section>':''))
       +'</div></main>'}
   function openThread(pairId){const c=chatState();if(c.threadId===pairId&&c.threadUnsub)return;closeThread();c.threadId=pairId;
     try{c.threadUnsub=fs.collection("chats").doc(pairId).collection("messages").orderBy("at","desc").limit(80).onSnapshot(s=>{const prev=c.threads[pairId],next=e2eApply(pairId,s.docs.map(d=>Object.assign({id:d.id},d.data())).reverse()),fx=reactionFx(prev,next);c.threads[pairId]=next;if(state.route==="dm"){const stick=!prev||dmNearBottom()||(next.length&&next[next.length-1].from===myUid()&&!(prev||[]).some(m=>m.id===next[next.length-1].id));render({preserveScroll:true});if(!fx.length&&stick)scrollThreadToEnd();playReactionFx(fx)}markThreadRead(pairId)},()=>{})}catch(_){}
+    try{let first=true;c.typingUnsub=fs.collection("chats").doc(pairId).collection("typing").onSnapshot(s=>{const was=isTyping(pairId,otherOfPair(pairId)),now=Date.now(),seen=c.typingSeen[pairId]=c.typingSeen[pairId]||{};
+      s.docChanges().forEach(ch=>{if(ch.doc.id===myUid())return;const at=ch.doc.data().at,ms=at&&typeof at.toMillis==="function"?at.toMillis():0;
+        // A change arriving now means they are typing now; the first read only counts if it is fresh.
+        seen[ch.doc.id]=ch.type==="removed"?0:first?(now-ms<8000?now:0):now});first=false;
+      if(was!==isTyping(pairId,otherOfPair(pairId)))chatRerender();typingExpiry(pairId)},()=>{})}catch(_){}
   }
-  function closeThread(){const c=chatState();if(c.threadUnsub){try{c.threadUnsub()}catch(_){}}c.threadUnsub=null;c.threadId=""}
+  function closeThread(){const c=chatState();if(c.threadUnsub){try{c.threadUnsub()}catch(_){}}if(c.typingUnsub){try{c.typingUnsub()}catch(_){}}if(c.threadId)stopTyping(c.threadId);c.threadUnsub=null;c.typingUnsub=null;c.threadId=""}
   let readTimer=null;function markThreadRead(pairId){clearTimeout(readTimer);readTimer=setTimeout(()=>{const p=chatState().pairs.find(x=>x.id===pairId);if(p&&Number(p.unread&&p.unread[myUid()]||0)>0)socialCall("chatMarkRead",{pairId}).catch(()=>{})},600)}
   // Screens scroll inside "#app > main", not the page.
   function dmScroller(){return document.querySelector("#app > main")}
@@ -4806,7 +5693,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function callsAvailable(){return typeof window.RTCPeerConnection==="function"&&nativeAvailable("callPermissions")&&nativeAvailable("callAudio")&&!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)}
   /** Chat header: photo, name and @username stay pinned at the top; calls on the right. */
   function dmHeader(p,pairId,other,blocked,st){
-    const user=usernameOf(p,other),sub=blocked?"Blocked":user?"@"+user:"";
+    const user=usernameOf(p,other),act=blocked?"":isTyping(pairId,other)?"typing…":activeLabel(other),sub=blocked?"Blocked":act||(user?"@"+user:"");
     const callBtn=(kind,label,svg)=>'<button class="dm-head-btn" data-action="call-start" data-kind="'+kind+'" data-pair-id="'+h(pairId)+'" aria-label="'+label+'"'+(blocked||!callsAvailable()?' disabled':'')+'>'+svg+'</button>';
     return'<header class="dm-head"><button class="back-button" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
       +(storyGroups().has(other)?'<button class="dm-head-who has-story" data-action="story-open" data-uid="'+h(other)+'" aria-label="See story">':'<div class="dm-head-who">')+avatar(nameOf(p,other),0,other).replace('class="chat-avatar','class="chat-avatar dm-head-face')
@@ -4817,11 +5704,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function screenDm(){ensureChatSync();const c=chatState(),uid=myUid(),pairId=String(state.routeData.pairId||""),p=c.pairs.find(x=>x.id===pairId);openThread(pairId);
     if(!p)return'<main class="screen"><div class="screen-content page-stack">'+topbar("Chat","")+emptyState("chat","Chat not available","This person may have removed you or been blocked.")+'</div>'+nav()+'</main>';
     const other=otherOf(p),msgs=c.threads[pairId]||[],theirRead=Number(p.readAt&&p.readAt[other]||0),blocked=p.status==="blocked",gate=chatGate();let lastMineSeen=-1;msgs.forEach((m,i)=>{if(m.from===uid&&msgTime(m)<=theirRead)lastMineSeen=i});
-    const st=streakOf(p);
+    const st=streakOf(p);clearUnreadLocal(pairId);let sepAt=0;const seps=msgs.map(m=>{if(m.hiddenFor&&m.hiddenFor[uid])return"";const t=msgTime(m),s=!sepAt||t-sepAt>=3600000?'<p class="dm-time-sep">'+h(dmSepLabel(t))+'</p>':"";sepAt=t;return s});
     return'<main class="screen dm-screen no-nav"><div class="screen-content dm-wrap">'+dmHeader(p,pairId,other,blocked,st)
-      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(blocked?'':e2eNotice(p,other))+(msgs.length?msgs.map((m,i)=>{const mine=m.from===uid;if(m.hiddenFor&&m.hiddenFor[uid])return'';if(m.removed)return'<p class="dm-removed">Message removed</p>';if(m.unsent)return'<div class="dm-msg '+(mine?'mine':'theirs')+' dm-unsent" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'"><p>🚫 '+(mine?'You unsent a message':'This message was deleted')+'</p></div>';if(m.e2e&&(m.e2ePending||m.e2eError))return'<div class="dm-msg '+(mine?'mine':'theirs')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+e2eBubble(m)+'</div>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')}).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+'</div>'
+      +eatingBanner(p)+dmFunStrip(p)+'<div class="dm-messages" id="dm-messages">'+(blocked?'':e2eNotice(p,other))+(msgs.length?msgs.map((m,i)=>seps[i]+((m,i)=>{const mine=m.from===uid;if(m.hiddenFor&&m.hiddenFor[uid])return'';if(m.removed)return'<p class="dm-removed">Message removed</p>';if(m.unsent)return'<div class="dm-msg '+(mine?'mine':'theirs')+' dm-unsent" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'"><p>🚫 '+(mine?'You unsent a message':'This message was deleted')+'</p></div>';if(m.e2e&&(m.e2ePending||m.e2eError))return'<div class="dm-msg '+(mine?'mine':'theirs')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+e2eBubble(m)+'</div>';const reacts=Object.values(m.reactions||{}).filter(Boolean);if(m.iou)return iouMessage(m,p);return'<div class="dm-msg '+(mine?'mine':'theirs')+(m.card&&m.card.type==="photo"&&!m.text?' photo-only':'')+(m.card&&m.card.type==="voice"?' voice-only':'')+(m.card&&m.card.type==="call"?' call-only':'')+'" data-msg-id="'+h(m.id)+'" data-pair-id="'+h(pairId)+'">'+replyQuote(p,pairId,m)+(m.card?(m.card.type==="photo"?photoBubble(m.card,pairId,mine):m.card.type==="call"?callLine(m.card,pairId,mine):m.card.type==="voice"?voiceBubble(m.card,pairId,mine):m.card.type==="story"?storyCardBubble(m.card):dishCard(m.card)):'')+(m.text?'<p>'+h(m.text)+'</p>':'')+(reacts.length?'<span class="dm-reacts" aria-label="Reactions">'+reacts.map(e=>h(e)).join("")+'</span>':'')+'</div>'+(i===lastMineSeen?'<small class="dm-seen">Seen</small>':'')})(m,i)).join(""):'<p class="supporting" style="text-align:center">Say hi to '+h(nameOf(p,other))+' 👋</p>')+(!blocked&&isTyping(pairId,other)?'<div class="dm-msg theirs dm-typing" aria-label="'+h(nameOf(p,other))+' is typing"><p><i></i><i></i><i></i></p></div>':'')+'</div>'
       +(blocked||gate?'<div class="notice warning">'+icon("warning","small")+'<span>'+(blocked?'You can’t message in this chat.':'Chat isn’t available on your account right now.')+'</span></div>'
-        :'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
+        :replyBar(p,pairId)+'<form id="dm-form" class="dm-composer" data-pair-id="'+h(pairId)+'"><button class="dm-food dm-plus" type="button" data-action="dm-fun" data-pair-id="'+h(pairId)+'" aria-label="More: restaurant, spin, IOU, taste match">＋</button><button class="dm-food dm-cam" type="button" data-action="dm-photo" data-pair-id="'+h(pairId)+'" aria-label="Send a photo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5L20 17"/></svg></button><input class="input" name="text" maxlength="1000" autocomplete="off" placeholder="Message" aria-label="Message"><button class="button primary small dm-send" type="submit">Send</button>'+(voiceNotesAvailable()?'<button class="dm-mic" type="button" data-pair-id="'+h(pairId)+'" aria-label="Hold to record a voice message, or tap to record hands-free"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.6" y="2.8" width="6.8" height="12" rx="3.4"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3"/></svg></button>':'')+'</form>')
       +'</div></main>'}
   // ---- End-to-end encryption ----
   // Messages, photos and voice messages are locked on this phone (chat-e2e.js); Scraveit's server
@@ -5089,13 +5976,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       keepDmPhoto(ref.id,{url:photoBlobUrl(img)});
       await sendDm(pairId,"",{type:"photo",photoId:ref.id,w,h:hh});scrollThreadToEnd()}
     catch(e){toast("Photo not sent. "+chatError(e),"danger")}}
-  async function sendDm(pairId,text,card){const uid=myUid();if(!uid||!pairId)return;const words=String(text||"").slice(0,1000);
+  async function sendDm(pairId,text,card,replyTo){const uid=myUid();if(!uid||!pairId)return;const words=String(text||"").slice(0,1000);
     const ref=fs.collection("chats").doc(pairId).collection("messages").doc(),p=chatState().pairs.find(x=>x.id===pairId);
     let body={from:uid,text:words,at:firebase.firestore.FieldValue.serverTimestamp()};if(card)body.card=card;
     try{const lock=await e2eLock(p?otherOf(p):"");
       if(lock){const shown=maskPhoneNumbers(words),s=await ScraveitE2E.sealMessage2(lock.acct,lock.peer.agree,pairId,uid,ref.id,shown,card||null);
         e2e.opened.set(ref.id,{text:shown,card:card||null});e2eCekPut(lock.acct,"m|"+pairId+"|"+ref.id,s.cek);
         body={from:uid,text:"",e2e:s.e2e,at:firebase.firestore.FieldValue.serverTimestamp()}}
+      if(replyTo)body.replyTo=String(replyTo);
       await ref.set(body)}catch(e){toast("Message not sent. "+chatError(e),"danger")}}
   // ---- Voice messages ----
   // Recorded as Opus (about 3 KB a second) up to 2 minutes; each one is its own document beside the
@@ -5437,10 +6325,66 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function myReaction(pairId,msgId){const m=(chatState().threads[pairId]||[]).find(x=>x.id===msgId);return m&&m.reactions&&m.reactions[myUid()]||""}
   // Long-press menu: react, delete for me, or unsend your own message (2 days, like WhatsApp).
   const UNSEND_MS=48*60*60*1000;
+  // ---- Activity status and typing ----
+  // Off until the person turns it on, and only shared both ways: someone who hides theirs sees no one's.
+  // Never for under-18s (DPDP Act: no tracking of children). Only accepted friends can read it (rules).
+  const PRESENCE_BEAT_MS=90000,ACTIVE_NOW_MS=180000;let presenceAt=0;
+  function presenceOn(){const c=chatState();return!!(c.profile&&!c.profile.minor&&c.myPresence&&c.myPresence.show===true)}
+  function presenceBeat(force){const uid=myUid();if(!uid||!presenceOn()||document.visibilityState!=="visible")return;if(!force&&Date.now()-presenceAt<PRESENCE_BEAT_MS-5000)return;presenceAt=Date.now();
+    fs.collection("presence").doc(uid).set({show:true,at:firebase.firestore.FieldValue.serverTimestamp()}).catch(()=>{presenceAt=0})}
+  function setPresence(on){const uid=myUid(),c=chatState();if(!uid)return;if(on&&c.profile&&c.profile.minor){toast("Activity status isn’t available under 18.","danger");return}
+    presenceAt=on?Date.now():0;fs.collection("presence").doc(uid).set(on?{show:true,at:firebase.firestore.FieldValue.serverTimestamp()}:{show:false}).then(()=>toast(on?"Friends who share theirs can now see when you’re active.":"Activity status is off. You won’t see friends’ either.","success"),e=>toast("Not saved. "+chatError(e),"danger"))}
+  function loadPresence(){const c=chatState();if(!c.presenceUnsubs)c.presenceUnsubs={};if(!c.presence)c.presence={};if(!presenceOn()){stopPresence();return}
+    const want=new Set(c.pairs.filter(p=>p.status==="accepted").map(otherOf).filter(Boolean));
+    Object.keys(c.presenceUnsubs).forEach(id=>{if(!want.has(id)){try{c.presenceUnsubs[id]()}catch(_){}delete c.presenceUnsubs[id];delete c.presence[id]}});
+    // A friend who hasn't turned theirs on can't be read; try again next time the list changes or the app opens.
+    want.forEach(id=>{if(c.presenceUnsubs[id])return;try{c.presenceUnsubs[id]=fs.collection("presence").doc(id).onSnapshot(d=>{const at=d.exists&&d.data().show===true?d.data().at:null,ms=at&&typeof at.toMillis==="function"?at.toMillis():0;if((c.presence[id]||0)!==ms){c.presence[id]=ms;chatRerender()}},()=>{delete c.presenceUnsubs[id];if(c.presence[id]){c.presence[id]=0;chatRerender()}})}catch(_){}})}
+  function stopPresence(){const c=chatState();Object.values(c.presenceUnsubs||{}).forEach(u=>{try{u()}catch(_){}});c.presenceUnsubs={};c.presence={}}
+  function activeNow(uid){const ms=presenceOn()&&chatState().presence?chatState().presence[uid]:0;return!!ms&&Date.now()-ms<ACTIVE_NOW_MS}
+  function activeLabel(uid){const ms=presenceOn()&&chatState().presence?chatState().presence[uid]:0;if(!ms)return"";const age=Date.now()-ms;
+    return age<ACTIVE_NOW_MS?"Active now":age<3600000?"Active "+Math.max(1,Math.floor(age/60000))+"m ago":age<86400000?"Active "+Math.floor(age/3600000)+"h ago":""}
+  function presencePrompt(){const c=chatState(),p=c.profile;if(!p||p.minor||!c.myPresence||!c.myPresence.loaded||c.myPresence.show!==null)return"";
+    return'<section class="card stack presence-ask"><div><h2 class="section-title">Show friends when you’re active?</h2><p class="supporting">Friends will see “Active now” or when you were last on Scraveit, and you’ll see theirs. Only friends you’ve accepted can see it. You can change this anytime in Friends › Privacy.</p></div><div class="cluster"><button class="button primary" data-action="presence-set" data-value="on">Turn on</button><button class="button tonal" data-action="presence-set" data-value="off">Not now</button></div></section>'}
+  function activityCard(p){if(p.minor)return'<section class="card stack"><h2 class="section-title">Activity status</h2><p class="caption">Activity status is always off under 18.</p></section>';const on=presenceOn();
+    return'<section class="card stack"><h2 class="section-title">Activity status</h2><div class="stack" role="radiogroup" aria-label="Activity status">'+[["on","Show when I’m active"],["off","Don’t show"]].map(o=>'<button class="settings-row chat-radio '+((o[0]==="on")===on?'on':'')+'" role="radio" aria-checked="'+((o[0]==="on")===on)+'" data-action="presence-set" data-value="'+o[0]+'"><span class="chat-radio-dot" aria-hidden="true"></span><span class="grow">'+o[1]+'</span></button>').join("")+'</div><p class="caption">Friends see “Active now” or when you were last active. If you turn it off, you won’t see theirs either.</p></section>'}
+  function otherOfPair(pairId){const p=chatState().pairs.find(x=>x.id===pairId);return p?otherOf(p):""}
+  function isTyping(pairId,uid){const at=((chatState().typingSeen||{})[pairId]||{})[uid]||0;return!!at&&Date.now()-at<6000}
+  let typingTimer=null;function typingExpiry(pairId){clearTimeout(typingTimer);if(isTyping(pairId,otherOfPair(pairId)))typingTimer=setTimeout(()=>{if(state.route==="dm")chatRerender()},6100)}
+  const typingSent={};
+  function noteTyping(pairId){const uid=myUid();if(!uid||!pairId||Date.now()-(typingSent[pairId]||0)<4000)return;typingSent[pairId]=Date.now();
+    fs.collection("chats").doc(pairId).collection("typing").doc(uid).set({at:firebase.firestore.FieldValue.serverTimestamp()}).catch(()=>{})}
+  function stopTyping(pairId){const uid=myUid();if(!uid||!pairId||!typingSent[pairId])return;typingSent[pairId]=0;fs.collection("chats").doc(pairId).collection("typing").doc(uid).delete().catch(()=>{})}
+  document.addEventListener("input",e=>{const f=e.target&&e.target.form;if(f&&f.id==="dm-form"&&e.target.name==="text"){if(String(e.target.value||"").trim())noteTyping(f.dataset.pairId);else stopTyping(f.dataset.pairId)}});
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")presenceBeat(true);else{const c=chatState();if(c.threadId)stopTyping(c.threadId)}});
+  setInterval(()=>{presenceBeat(false);if(["chats","dm"].includes(state.route)&&presenceOn())chatRerender()},60000);
+
+  // ---- Replies, copy and time breaks in a chat; pinned and marked-unread chats in the inbox ----
+  // Pins and "mark as unread" live on this phone only, like other per-viewer settings.
+  function chatLocal(kind){try{const v=JSON.parse(localStorage.getItem("scraveit.chat"+kind+"."+myUid())||"[]");return Array.isArray(v)?v:[]}catch(_){return[]}}
+  function chatLocalSet(kind,list){try{localStorage.setItem("scraveit.chat"+kind+"."+myUid(),JSON.stringify(list.slice(0,50)))}catch(_){}}
+  function togglePin(pairId){let pins=chatLocal("Pins");if(pins.includes(pairId))pins=pins.filter(x=>x!==pairId);else{if(pins.length>=3){toast("You can pin up to 3 chats.","danger");return}pins.unshift(pairId)}chatLocalSet("Pins",pins);chatRerender()}
+  function markUnreadLocal(pairId){const u=chatLocal("Unread");if(!u.includes(pairId))chatLocalSet("Unread",[pairId].concat(u));chatRerender()}
+  function clearUnreadLocal(pairId){const u=chatLocal("Unread");if(u.includes(pairId))chatLocalSet("Unread",u.filter(x=>x!==pairId))}
+  function chatRowSheet(sheet){const p=chatState().pairs.find(x=>x.id===sheet.pairId);if(!p)return sheetShell("Chat","","");const attr=' data-pair-id="'+h(p.id)+'"';
+    return sheetShell(nameOf(p,otherOf(p)),"",'<div class="stack"><button class="button tonal full" data-action="chat-pin"'+attr+'>'+(chatLocal("Pins").includes(p.id)?"Unpin chat":"Pin to top")+'</button><button class="button tonal full" data-action="chat-unread"'+attr+'>Mark as unread</button><button class="button tonal full" data-action="dm-menu"'+attr+'>Report or block</button></div>')}
+  function dmSepLabel(ms){const d=new Date(ms),now=new Date(),t=d.toLocaleTimeString("en-IN",{hour:"numeric",minute:"2-digit"}),days=Math.round((new Date(now.getFullYear(),now.getMonth(),now.getDate())-new Date(d.getFullYear(),d.getMonth(),d.getDate()))/86400000);
+    return days<=0?"Today "+t:days===1?"Yesterday "+t:days<7?d.toLocaleDateString("en-IN",{weekday:"short"})+" "+t:d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})+(d.getFullYear()!==now.getFullYear()?" "+d.getFullYear():"")+", "+t}
+  function msgSnippet(m){if(!m)return"Earlier message";if(m.unsent)return"Unsent message";if(m.e2e&&(m.e2ePending||m.e2eError))return"🔒 Message";if(m.text)return m.text.length>90?m.text.slice(0,90)+"…":m.text;const t=m.card&&m.card.type;
+    return t==="photo"?"📷 Photo":t==="voice"?"🎤 Voice message":t==="story"?"Story":t==="call"?"Call":m.iou?"IOU":m.card?"🍽 "+String(m.card.name||m.card.dish||"Food"):"Message"}
+  function firstNameOf(p,uid){return uid===myUid()?"You":String(nameOf(p,uid)).split(" ")[0]}
+  function startReply(pairId,msgId){const m=threadMsg(pairId,msgId);if(!m||m.unsent||(m.card&&m.card.type==="call")||(m.e2e&&(m.e2ePending||m.e2eError)))return;chatState().reply={pairId,msgId};render({preserveScroll:true});const i=document.querySelector("#dm-form input[name=text]");if(i)i.focus()}
+  function replyBar(p,pairId){const r=chatState().reply,m=r&&r.pairId===pairId?threadMsg(pairId,r.msgId):null;if(!m)return"";
+    return'<div class="dm-reply-bar"><span class="grow"><strong>Replying to '+h(m.from===myUid()?"yourself":firstNameOf(p,m.from))+'</strong><small>'+h(msgSnippet(m))+'</small></span><button type="button" class="dm-reply-x" data-action="reply-cancel" data-pair-id="'+h(pairId)+'" aria-label="Cancel reply">✕</button></div>'}
+  function replyQuote(p,pairId,m){if(!m.replyTo)return"";const o=threadMsg(pairId,m.replyTo),uid=myUid(),who=firstNameOf(p,m.from);
+    const label=!o?who+" replied to an earlier message":who+" replied to "+(o.from===uid?(m.from===uid?"yourself":"you"):o.from===m.from?"their message":firstNameOf(p,o.from));
+    return'<button type="button" class="dm-quote" data-action="dm-jump" data-pair-id="'+h(pairId)+'" data-msg-id="'+h(m.replyTo)+'"><small>↩ '+h(label)+'</small><span>'+h(msgSnippet(o))+'</span></button>'}
+  function jumpToMsg(msgId){const el=document.querySelector('.dm-msg[data-msg-id="'+CSS.escape(String(msgId||""))+'"]');if(!el){toast("That message is further back in the chat.");return}
+    el.scrollIntoView({block:"center",behavior:"smooth"});el.classList.add("dm-flash");setTimeout(()=>el.classList.remove("dm-flash"),1400)}
   function threadMsg(pairId,msgId){return(chatState().threads[pairId]||[]).find(x=>x.id===msgId)||null}
   function msgMenuButtons(sheet){const m=threadMsg(sheet.pairId,sheet.msgId),uid=myUid();if(!m)return"";const at=callTs(m.at),attr=' data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'"';
     const canUnsend=m.from===uid&&!m.unsent&&!(m.card&&m.card.type==="call")&&at&&Date.now()-at<UNSEND_MS;
-    return'<div class="stack" style="margin-top:12px">'+(canUnsend?'<button class="button danger full" data-action="msg-unsend"'+attr+'>Unsend for everyone</button>':'')+'<button class="button tonal full" data-action="msg-hide"'+attr+'>Delete for me</button></div>'}
+    const canReply=!m.unsent&&!(m.card&&m.card.type==="call")&&!(m.e2e&&(m.e2ePending||m.e2eError));
+    return'<div class="stack" style="margin-top:12px">'+(canReply?'<button class="button tonal full" data-action="msg-reply"'+attr+'>Reply</button>':'')+(m.text&&!m.unsent?'<button class="button tonal full" data-action="msg-copy"'+attr+'>Copy text</button>':'')+(canUnsend?'<button class="button danger full" data-action="msg-unsend"'+attr+'>Unsend for everyone</button>':'')+'<button class="button tonal full" data-action="msg-hide"'+attr+'>Delete for me</button></div>'}
   function reactSheet(sheet){const mine=myReaction(sheet.pairId,sheet.msgId),m=threadMsg(sheet.pairId,sheet.msgId);
     if(m&&m.unsent)return sheetShell("Message","",msgMenuButtons(sheet));
     return sheetShell("React","",'<div class="react-row">'+REACTIONS.map(e=>'<button class="react-pick'+(mine===e?' on':'')+'" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="'+h(e)+'" aria-label="React '+h(e)+'">'+e+'</button>').join("")+'</div>'+(mine?'<button class="button tonal full" data-action="react-pick" data-pair-id="'+h(sheet.pairId)+'" data-msg-id="'+h(sheet.msgId)+'" data-emoji="">Remove my reaction</button>':'')+msgMenuButtons(sheet))}
@@ -5551,8 +6495,22 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     +(state.weekImage?'<img class="wrapped-preview story" src="'+state.weekImage+'" alt="Your food week card">':'')+'<button class="button primary full" data-action="week-share">Share on your story</button><button class="button secondary full" data-action="close-sheet">Close</button></section></div>'}
   function weekBanner(){const d=new Date().getDay();if(d!==0&&d!==1)return"";const s=weekStats();if(!s.orders)return"";return'<button class="week-banner" data-action="week-open"><span>✨</span><span class="grow"><strong>Your food week is ready</strong><small>'+h(s.orders)+(s.orders===1?' order':' orders')+' · '+h(s.persona[1])+'. Share it on your story.</small></span>'+icon("chevron","small")+'</button>'}
   (function bindReactionGestures(){let pressTimer=null,lastTap={id:"",at:0},longPressed=false;
-    document.addEventListener("pointerdown",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;longPressed=false;clearTimeout(pressTimer);pressTimer=setTimeout(()=>{longPressed=true;try{navigator.vibrate&&navigator.vibrate(15)}catch(_){}setSheet({type:"react",pairId:el.dataset.pairId,msgId:el.dataset.msgId})},450)});
+    let swipe=null;
+    document.addEventListener("pointerdown",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;longPressed=false;clearTimeout(pressTimer);swipe={el,x:e.clientX,y:e.clientY,dx:0,on:false};pressTimer=setTimeout(()=>{longPressed=true;try{navigator.vibrate&&navigator.vibrate(15)}catch(_){}setSheet({type:"react",pairId:el.dataset.pairId,msgId:el.dataset.msgId})},450)});
     ["pointerup","pointercancel","pointerleave","scroll"].forEach(t=>document.addEventListener(t,()=>clearTimeout(pressTimer),true));
+    // Swipe a message to the right to reply to it.
+    document.addEventListener("pointermove",e=>{if(!swipe)return;const dx=e.clientX-swipe.x,dy=e.clientY-swipe.y;if(Math.abs(dx)>10||Math.abs(dy)>10)clearTimeout(pressTimer);
+      if(!swipe.on){if(Math.abs(dy)>12){swipe=null;return}if(dx>12)swipe.on=true;else return}
+      swipe.dx=Math.max(0,Math.min(72,dx));swipe.el.style.transition="none";swipe.el.style.transform="translateX("+swipe.dx+"px)";swipe.el.classList.toggle("reply-ready",swipe.dx>=56)},{passive:true});
+    const endSwipe=e=>{const sw=swipe;swipe=null;if(!sw||!sw.on)return;sw.el.style.transition="";sw.el.style.transform="";sw.el.classList.remove("reply-ready");if(e.type==="pointerup"&&sw.dx>=56){longPressed=true;try{navigator.vibrate&&navigator.vibrate(10)}catch(_){}startReply(sw.el.dataset.pairId,sw.el.dataset.msgId)}};
+    document.addEventListener("pointerup",endSwipe,true);document.addEventListener("pointercancel",endSwipe,true);
+    // Hold a chat in the inbox to pin it or mark it unread.
+    let rowTimer=null,rowHeld=false;
+    document.addEventListener("pointerdown",e=>{const row=e.target.closest&&e.target.closest(".inbox-row[data-pair-id]");rowHeld=false;clearTimeout(rowTimer);if(!row)return;const x=e.clientX,y=e.clientY;
+      rowTimer=setTimeout(()=>{rowHeld=true;try{navigator.vibrate&&navigator.vibrate(15)}catch(_){}setSheet({type:"chatRow",pairId:row.dataset.pairId})},500);
+      const move=m=>{if(Math.abs(m.clientX-x)>10||Math.abs(m.clientY-y)>10){clearTimeout(rowTimer);document.removeEventListener("pointermove",move)}};document.addEventListener("pointermove",move,{passive:true})});
+    ["pointerup","pointercancel","scroll"].forEach(t=>document.addEventListener(t,()=>clearTimeout(rowTimer),true));
+    document.addEventListener("click",e=>{if(rowHeld&&e.target.closest&&e.target.closest(".inbox-row")){rowHeld=false;e.preventDefault();e.stopPropagation()}},true);
     document.addEventListener("click",e=>{const el=e.target.closest&&e.target.closest(".dm-msg[data-msg-id]");if(!el||e.target.closest("button"))return;if(longPressed){longPressed=false;return}const now=Date.now(),id=el.dataset.msgId;
       if(lastTap.id===id&&now-lastTap.at<320){lastTap={id:"",at:0};setReaction(el.dataset.pairId,id,myReaction(el.dataset.pairId,id)==="❤️"?"":"❤️")}else lastTap={id,at:now}});
   })();
@@ -5607,6 +6565,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="chat-username-edit"){state.social.editUsername=!state.social.editUsername;render({preserveScroll:true});return true}
     if(action==="react-pick"){closeSheet();setReaction(pid,control.dataset.msgId,control.dataset.emoji||"");return true}
     if(action==="msg-hide"){closeSheet();hideMessage(pid,control.dataset.msgId);return true}
+    if(action==="msg-reply"){closeSheet();startReply(pid,control.dataset.msgId);return true}
+    if(action==="msg-copy"){closeSheet();const m=threadMsg(pid,control.dataset.msgId);if(m&&m.text)Promise.resolve().then(()=>navigator.clipboard.writeText(m.text)).then(()=>toast("Copied.","success"),()=>toast("Couldn’t copy on this phone.","danger"));return true}
+    if(action==="reply-cancel"){chatState().reply=null;render({preserveScroll:true});return true}
+    if(action==="dm-jump"){jumpToMsg(control.dataset.msgId);return true}
+    if(action==="chat-pin"){closeSheet();togglePin(pid);return true}
+    if(action==="presence-set"){setPresence(control.dataset.value==="on");return true}
+    if(action==="chat-unread"){closeSheet();markUnreadLocal(pid);return true}
     if(action==="msg-unsend"){closeSheet();unsendMessage(pid,control.dataset.msgId);return true}
     if(action==="dm-menu"){setSheet({type:"chatReport",pairId:pid});return true}
     if(e2eHandleClick(action,control))return true;
@@ -5628,7 +6593,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(form.id==="account-dob-form"){const v=form.elements.birthDate.value,b=form.querySelector('button[type="submit"]');if(!v){toast("Enter your date of birth.","danger");return true}if(b)b.disabled=true;try{const r=await socialCall("accountSetBirthDate",{birthDate:v});closeSheet();toast(r&&r.minor&&r.parentStatus!=="approved"?"Saved. You’re under 18, so a parent needs to approve your account.":"Date of birth saved.","success")}catch(e){toast(chatError(e),"danger")}finally{if(b)b.disabled=false}return true}
     if(form.id==="add-friend-form"){try{const r=await socialCall("chatAddFriend",{handle:form.elements.code.value});form.reset();const who=r&&(r.name||(r.username?"@"+r.username:""));toast(r&&r.status==="accepted"?"You’re now friends"+(who?" with "+who:"")+".":"Request sent"+(who?" to "+who:"")+".","success")}catch(e){toast(chatError(e),"danger")}return true}
     if(form.id==="iou-form"){const d=chatState().iouDraft||{},b=form.querySelector('button[type="submit"]');if(b)b.disabled=true;await iouAct(form.dataset.pairId,{action:"create",treat:d.treat||"waffles",owedBy:d.owedBy||"them",note:String(form.elements.note.value||"").trim()});closeSheet();return true}
-    if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";await sendDm(form.dataset.pairId,text);input.focus();return true}
+    if(form.id==="dm-form"){const input=form.elements.text,text=String(input.value||"").trim();if(!text)return true;input.value="";const r=chatState().reply,replyTo=r&&r.pairId===form.dataset.pairId?r.msgId:"";chatState().reply=null;if(replyTo)render({preserveScroll:true});stopTyping(form.dataset.pairId);await sendDm(form.dataset.pairId,text,null,replyTo);const again=document.querySelector("#dm-form input[name=text]");if(again)again.focus();return true}
     if(form.id==="e2e-restore-form"){e2eRestore(String(form.elements.code.value||""));return true}
     if(form.id==="chat-report-form"){const pid=form.dataset.pairId,reason=(form.querySelector('input[name="reason"]:checked')||{}).value||"other";setSheet({type:"chatReport",pairId:pid,busy:true});try{await socialCall("chatReport",{pairId:pid,reason,note:form.elements.note.value||"",block:form.elements.block.checked,revealed:e2eRevealed(pid)});closeSheet();toast("Report sent. Our team will check it within 24 hours.","success");if(form.elements.block.checked)go("chats",{},true)}catch(e){setSheet({type:"chatReport",pairId:pid});toast(chatError(e),"danger")}return true}
     return false;
@@ -5636,13 +6601,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function squadHomeCard(){
     const s=state.squad;
     if(s&&s.data)return'<button class="squad-card live" data-action="open-squad"><span class="squad-card-icon" aria-hidden="true">👥</span><span class="grow"><strong>Squad order · '+h(s.data.restaurantName)+'</strong><span>'+(s.data.status==="ordered"?"Order placed · see who pays what":squadPickList().length+(squadPickList().length===1?" person has":" people have")+" added picks · code "+h(s.code))+'</span></span><span class="wheel-spin-pill">Open</span></button>';
-    return'<div class="squad-card"><span class="squad-card-icon" aria-hidden="true">👥</span><div class="grow"><strong>Squad order</strong><span>Order with friends, pay once. Start one and share the code, or join with a friend’s code.</span><span class="squad-card-actions"><button class="wheel-spin-pill" data-action="open-squad-start">Start</button><button class="wheel-spin-pill ghost" data-action="open-squad-join">Join with code</button></span></div></div>';
+    return'<div class="squad-card"><span class="squad-card-icon" aria-hidden="true">👥</span><div class="grow"><strong>Squad order</strong><span>Order with friends, pay once.</span><span class="squad-card-actions"><button class="wheel-spin-pill" data-action="open-squad-start">Start</button><button class="wheel-spin-pill ghost" data-action="open-squad-join">Join with code</button></span></div></div>';
   }
   function squadStartSheet(){
     const open=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"&&r.open!==false);
     return'<div class="sheet-backdrop" data-action="close-sheet"><section class="sheet" data-sheet-surface role="dialog" aria-modal="true" aria-label="Start a squad"><div class="sheet-handle"></div>'
       +'<h2 class="title">Start a squad</h2><p class="supporting">Pick where you’re ordering from. You’ll get a code to share; friends add their own picks and you pay once.</p>'
-      +(open.length?'<div class="squad-pick-list">'+open.map(r=>'<button class="squad-pick" data-action="start-squad" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy"><span class="grow"><strong>'+h(r.name)+'</strong><small>'+h((r.cuisines||[]).slice(0,2).join(" · "))+' · '+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' min</small></span>'+icon("chevron","small")+'</button>').join("")+'</div>'
+      +(open.length?'<div class="squad-pick-list">'+open.map(r=>'<button class="squad-pick" data-action="start-squad" data-restaurant-id="'+h(r.id)+'"><img src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy"><span class="grow"><strong>'+h(r.name)+'</strong><small>'+h((r.cuisines||[]).slice(0,2).join(" · "))+' · '+h(storeEtaText(r))+' min</small></span>'+icon("chevron","small")+'</button>').join("")+'</div>'
         :'<p class="caption">No restaurants are open right now.</p>')
       +'<button class="button secondary full" data-action="close-sheet">Cancel</button></section></div>';
   }
@@ -5872,18 +6837,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function screenHome() {
     if(!state.catalogLoaded)return '<main class="screen"><div class="screen-content page-stack">'+homeHeader()+homeSkeletonMarkup()+'</div>'+nav()+'</main>';
     if(state.homeStatus==="errorWithoutCache")return'<main class="screen"><div class="screen-content page-stack">'+homeHeader()+emptyState("warning","Restaurants could not be loaded","Check your connection and try again. Your saved address is still selected.","refresh","Retry")+'</div>'+nav()+'</main>';
-    if(state.homeKind==="grocery"||state.homeKind==="dairy")return screenStoreKind(state.homeKind);
+    if(GOODS_TABS.includes(state.homeKind))return screenStoreKind(state.homeKind);
     const active=activeOrders()[0], restaurants=restaurantsFiltered().filter(r=>storeKind(r)==="restaurant"),address=currentAddress();
     if(!state.homeVisibleLogged){state.homeVisibleLogged=true;perfLog("HOME_RESTAURANTS_VISIBLE",state.homeBootStartedAt,{source:state.catalogMode,restaurants:restaurants.length,scope:homeScope(address)})}
     if(!state.locationPromptShown&&!locationReady()){state.locationPromptShown=true;setTimeout(()=>{if(state.route==="home"&&!state.sheet)setSheet({type:"addressPicker"})},0)}
     return '<main class="screen home2 '+(dockSlides().length?'has-floating-cart':'')+'">'+homeStickyBar()+'<div class="screen-content page-stack">'+homeHero()+networkBanner()+homePeople()+accountHomeCards()+(locationReady()?'':'<div class="notice warning">'+icon("target","small")+'<div><strong>Location is off</strong><div class="caption">Turn it on for accurate address detection and faster delivery.</div></div><button class="text-button" data-action="detect-location">Enable</button></div>')
-      +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Add a map pin to this saved address</strong><div class="caption">Browsing works now. A pin is required only before checkout.</div></div><button class="text-button" data-action="go" data-route="addresses">Update</button></div>':'')
+      +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Put this address on the map</strong><div class="caption">Browsing works now. The rider needs the pin before you order.</div></div><button class="text-button" data-action="address-complete">Set pin</button></div>':'')
       +homeModeSwitch()
       +(homeMode()==="dinein"?dineInHome():''
       +foodStoryStrip()+activeTableCard()+eatOutShelf()
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
       +'<div class="play-row">'+wheelCard()+squadHomeCard()+mealPlanHomeCard()+'</div>'
       +moodSection()
+      +groupsShelf()
       +recommendedRail(restaurants)
       +topOffersShelf()
       +nearbyRestaurantsMarkup()
@@ -5975,8 +6941,44 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       return '<section class="menu-cat'+(open?' open':'')+'" data-cat="'+h(category)+'">'+(showAll?'<div class="menu-cat-head static"><h2 class="section-title">'+h(category)+'</h2><span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></div>':'<button type="button" class="menu-cat-head" data-action="menu-cat-toggle" data-restaurant-id="'+h(r.id)+'" data-value="'+h(category)+'" aria-expanded="'+open+'"><span class="grow"><span class="section-title">'+h(category)+'</span> <span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>')
       +(open?'<div class="menu-list">'+grouped[category].map(item=>{
       const inCart=state.cart.filter(x=>x.restaurantId===r.id&&x.itemId===item.id).reduce((n,x)=>n+x.quantity,0);
-      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,item,inCart)+'</div></article>';
+      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+dishFreebieTags(r,item)+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,item,inCart)+'</div>'+dishPairingsMarkup(r,item,inCart)+'</article>';
     }).join("")+'</div>':'')+'</section>'}).join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
+  }
+  /** "Your usuals": dishes this customer had delivered from this store, newest first, each with the
+   *  size and extras picked last time. Rebuilt from today's menu, so prices and options are current;
+   *  a dish or choice no longer on the menu is left out. */
+  const USUALS_SHOWN=3;
+  function optionPrice(x){return Number(x&&(x.priceDelta!=null?x.priceDelta:x.price)||0)}
+  function usualsFor(r){
+    if(!r||!r.menuLoaded)return[];
+    const seen={},list=[],vegOnly=state.diet==="veg"||state.profile.preferences.vegetarian;
+    (state.orders||[]).filter(o=>o.restaurantId===r.id&&o.status==="Delivered"&&!isGuestOrder(o)).forEach(o=>(o.items||[]).forEach(old=>{
+      if(old.free)return;
+      const item=(r.menu||[]).find(x=>String(x.id)===String(old.itemId)&&x.available!==false&&x.archived!==true);if(!item)return;
+      const variants=Array.isArray(item.variants)?item.variants:[];
+      const variant=old.variantId||old.variant?currentOption(variants,old.variantId,old.variant):variants.length?variants.find(v=>v&&v.isDefault===true)||null:null;
+      if((old.variantId||old.variant||variants.length)&&!variant)return;
+      const wanted=Array.isArray(old.addOnIds)&&old.addOnIds.length?old.addOnIds.map(id=>({id:id,name:""})):(Array.isArray(old.addOns)?old.addOns:[]).map(v=>typeof v==="object"?v:{id:v,name:v});
+      const addOns=wanted.map(v=>currentOption(item.addOns,v.id,v.name)).filter(Boolean);if(addOns.length!==wanted.length)return;
+      const sig=item.id+"::"+(variant&&variant.name||"")+"::"+addOns.map(x=>x.name).sort().join("|");
+      if(seen[sig]){if(seen[sig].orderId!==o.id){seen[sig].times++;seen[sig].orderId=o.id}return;}
+      list.push(seen[sig]={sig:sig,item:item,variant:variant,addOns:addOns,orderId:o.id,lastAt:Number(o.deliveredAt||o.createdAt||0),times:1});
+    }));
+    return list.filter(u=>vegOnly?u.item.diet==="veg":state.diet==="nonveg"?u.item.diet==="nonveg"||u.item.diet==="egg":true);
+  }
+  function usualAgo(at){const d=Math.floor((Date.now()-Number(at||0))/86400000);return d<1?"today":d<2?"yesterday":d<7?d+" days ago":d<14?"a week ago":d<60?Math.floor(d/7)+" weeks ago":d<365?Math.floor(d/30)+" months ago":"over a year ago"}
+  function usualsMarkup(r){
+    if(!r||state.selectedMenuCategory!=="All"||tableHere(r.id))return"";
+    const all=usualsFor(r);if(!all.length)return"";
+    const ui=(state.usualsUi||{})[r.id]||{},closed=ui.closed===true,more=ui.more===true,shown=more?all:all.slice(0,USUALS_SHOWN),custom=all.some(u=>u.variant||u.addOns.length);
+    const row=u=>{
+      const it=u.item,key=r.id+"::"+u.sig,line=state.cart.find(x=>x.key===key),price=Number(it.price||0)+optionPrice(u.variant)+u.addOns.reduce((n,x)=>n+optionPrice(x),0);
+      const pick=[u.variant&&u.variant.name,u.addOns.map(x=>x.name).join(", ")].filter(Boolean).join(" · "),ids=' data-restaurant-id="'+h(r.id)+'" data-sig="'+h(u.sig)+'"';
+      return'<article class="usual-row"><div class="usual-thumb"><img src="'+h(safeUrl(it.imageThumb||it.imageUrl||it.image,r.imageThumb||r.image))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'"><span class="diet-mark '+(it.diet==="nonveg"||it.diet==="egg"?'nonveg':'')+'" aria-label="'+(it.diet==="veg"?'Vegetarian':'Non-vegetarian')+'"></span></div>'
+        +'<div class="usual-copy"><h3>'+h(it.name)+'</h3>'+(pick?'<p class="usual-pick">'+h(pick)+'</p>':'')+'<strong>'+money(price)+'</strong><p class="usual-when">'+(u.times>1?'Ordered '+u.times+' times · last '+usualAgo(u.lastAt):'You ordered '+usualAgo(u.lastAt))+'</p></div>'
+        +(line?'<div class="usual-add add-stepper"><button type="button" data-action="cart-quantity" data-key="'+h(key)+'" data-delta="-1" aria-label="Remove one '+h(it.name)+'">−</button><span>'+line.quantity+'</span><button type="button" data-action="usual-add"'+ids+' aria-label="Add one more '+h(it.name)+'">+</button></div>':'<button type="button" class="usual-add" data-action="usual-add"'+ids+' aria-label="Add '+h(it.name)+'">ADD</button>')+'</article>'};
+    return'<section class="usuals'+(closed?' closed':'')+'"><button type="button" class="usuals-head" data-action="usuals-toggle" data-restaurant-id="'+h(r.id)+'" aria-expanded="'+!closed+'"><span class="grow"><span class="usuals-title">Your usuals</span><span class="usuals-sub">'+(custom?'Your last choices are already picked':'Your past picks here, one tap to add')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>'
+      +(closed?'':'<div class="usuals-list">'+shown.map(row).join("")+'</div>'+(all.length>USUALS_SHOWN?'<button type="button" class="usuals-more" data-action="usuals-more" data-restaurant-id="'+h(r.id)+'">'+(more?'Show fewer':'See '+(all.length-USUALS_SHOWN)+' more')+'<span class="menu-cat-chev'+(more?' up':'')+'" aria-hidden="true"></span></button>':''))+'</section>';
   }
   /** Calories per serving, when the store gives them (FSS Labelling and Display Regulations 2020, reg. 9). */
   function itemKcal(item){const v=item&&item.calories;return v===""||v==null||!Number.isFinite(Number(v))||Number(v)<0?null:Math.round(Number(v));}
@@ -5986,8 +6988,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const products=storeKind(r)!=="restaurant",hasKcal=(r.menu||[]).some(x=>itemKcal(x)!=null);
     const notes=[(products?"Products, descriptions and prices":"Menu items, descriptions and prices")+" are set by the "+(products?"store":"restaurant")+".","Taxes, delivery fee and platform fee are shown in your bill before you pay."];
     if(hasKcal)notes.push("Calorie values are per serving and indicative; they may vary with ingredients, portion size and customisation.","An average active adult requires 2,000 kcal energy per day, however, calorie needs may vary.");
+    if(storeKind(r)==="pharmacy")notes.unshift("Only items that need no prescription. Sold and billed by a licensed pharmacy.");
     const fssai=/^[12]\d{13}$/.test(String(r.fssaiNumber||""))?'<p class="menu-fssai"><img class="fssai-logo" src="fssai-logo.png" alt="FSSAI" width="41" height="20" style="width:41px;height:20px"><span>'+(String(r.fssaiNumber)[0]==="2"?"Reg.":"Lic.")+' No. '+h(r.fssaiNumber)+'</span></p>':'';
-    return '<section class="menu-footer"><ul class="menu-notes">'+notes.map(n=>'<li>'+h(n)+'</li>').join("")+'</ul><button type="button" class="text-button menu-report" data-action="report-menu" data-restaurant-id="'+h(r.id)+'">Report an issue with the '+(products?"products":"menu")+' ›</button>'+fssai+'</section>';
+    const drugLicence=r.drugLicenceNumber?'<p class="menu-fssai"><span>Drug licence No. '+h(r.drugLicenceNumber)+'</span></p>':'';
+    return '<section class="menu-footer"><ul class="menu-notes">'+notes.map(n=>'<li>'+h(n)+'</li>').join("")+'</ul><button type="button" class="text-button menu-report" data-action="report-menu" data-restaurant-id="'+h(r.id)+'">Report an issue with the '+(products?"products":"menu")+' ›</button>'+drugLicence+fssai+'</section>';
   }
   const MENU_ISSUES=["Wrong price","Item not available","Wrong photo","Wrong veg / non-veg mark","Wrong description or allergens","Something else"];
   function menuReportSheet(sheet){const r=restaurant(sheet.restaurantId)||{};return sheetShell("Report an issue",h(r.name||"This store")+" · goes to the Scraveit team",'<form id="menu-report-form" class="form-grid" data-restaurant-id="'+h(sheet.restaurantId||"")+'"><div class="chip-row about-chips" role="radiogroup" aria-label="What is wrong">'+MENU_ISSUES.map((x,i)=>'<label class="chip"><input type="radio" name="issue" value="'+h(x)+'"'+(i===0?' checked':'')+'> '+h(x)+'</label>').join("")+'</div><div class="field"><label for="menu-report-item">Which item? (optional)</label><input id="menu-report-item" class="input" name="item" maxlength="80" placeholder="e.g. Chicken biryani"></div><div class="field"><label for="menu-report-note">Details (optional)</label><textarea id="menu-report-note" class="textarea" name="note" maxlength="500" placeholder="What did you see?"></textarea></div><button class="button primary full" type="submit">Send report</button></form>');}
@@ -6018,18 +7022,18 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'<div class="store-title-row"><div class="grow"><h1 class="store-name">'+h(r.name)+'</h1>'+((r.cuisines||[]).length?'<p class="store-cuisine">'+h(r.cuisines.join(" · "))+'</p>':'')+'</div>'
       +'<div class="store-rating"><span class="store-rating-pill'+(rating.value?'':' new')+'">★ '+(rating.value?rating.value.toFixed(1):'New')+'</span><span class="store-rating-by">'+h(by)+'</span></div></div>'
       +'<p class="store-line">'+icon("pin","small")+'<span>'+(kmText?'<strong>'+h(kmText)+'</strong> · ':'')+h(place)+'</span></p>'
-      +'<p class="store-line">'+icon("clock","small")+'<span><strong>'+h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins</strong>'+(r.open?(until?' · Open until '+h(until):' · Open now'):' · <span class="danger-text">Closed now</span>')+'</span></p>'
-      +'<div class="store-chips"><span class="store-chip">✓ '+(fee===0?'Free delivery':h(money(fee))+' delivery fee')+'</span>'+(r.open?'<span class="store-chip">✓ Accepting orders</span>':'<span class="store-chip closed">Currently closed</span>')+'</div></section>';
+      +'<p class="store-line">'+icon("clock","small")+'<span><strong>'+h(storeEtaText(r))+' mins</strong>'+(r.open?(until?' · Open until '+h(until):' · Open now'):' · <span class="danger-text">Closed now</span>')+'</span></p>'
+      +(r.open&&partnersBusy(r.id)&&!tableHere(r.id)?'':'<div class="store-chips">'+(!r.open?'<span class="store-chip closed">Currently closed</span>':'<span class="store-chip">✓ Accepting orders</span>')+'</div>')+'</section>';
   }
   function screenRestaurant() {
     const r=restaurant();if(!r)return'<main class="screen"><div class="screen-content">'+topbar("Restaurant unavailable","This restaurant is no longer in the live catalogue.")+emptyState("search","Restaurant unavailable","Return home to find another restaurant.","go-home","Back to home")+'</div>'+nav()+'</main>';
     const categories=["All",...new Set(discoveryItems(r).map(x=>x.category||"Menu"))],pureVeg=isPureVegRestaurant(r);const liked=(state.profile.favourites||[]).includes(r.id),rating=ratingForRestaurant(r);
     const menuContent=state.menuLoading[r.id]&&!r.menuLoaded?menuSkeletonMarkup():state.menuErrors[r.id]&&!r.menuLoaded?emptyState("warning","Menu could not be loaded","The restaurant is visible, but its menu refresh failed.","retry-menu","Retry menu"):restaurantMenu(r);
     const jump=r.menuLoaded&&categories.length>2;
-    return '<main class="screen flush store-page '+(cartCount()?'has-floating-cart':'')+'">'
-      +'<div class="sticky-bar store-sticky" data-anchor=".store-name"><button class="icon-button flat" data-action="back" aria-label="Go back">'+icon("back")+'</button><div class="grow sticky-copy"><strong>'+h(r.name)+'</strong><small>'+(r.open?h(r.etaMin||25)+'–'+h(r.etaMax||35)+' mins':'Closed now')+(rating.value?' · ★ '+rating.value.toFixed(1):'')+'</small></div>'+(jump?'<button class="icon-button flat" data-action="open-menu-jump" aria-label="Jump to a menu section">'+icon("menuBook")+'</button>':'')+'</div>'
+    return '<main class="screen flush store-page '+(r.open&&partnersBusy(r.id)&&!tableHere(r.id)?'adds-paused ':'')+(storeKind(r)==="pharmacy"?'store-pharmacy ':'')+(cartCount()?'has-floating-cart':'')+'">'
+      +'<div class="sticky-bar store-sticky" data-anchor=".store-name"><button class="icon-button flat" data-action="back" aria-label="Go back">'+icon("back")+'</button><div class="grow sticky-copy"><strong>'+h(r.name)+'</strong><small>'+(r.open?h(storeEtaText(r))+' mins':'Closed now')+(rating.value?' · ★ '+rating.value.toFixed(1):'')+'</small></div>'+(jump?'<button class="icon-button flat" data-action="open-menu-jump" aria-label="Jump to a menu section">'+icon("menuBook")+'</button>':'')+'</div>'
       +'<div class="screen-content"><section class="restaurant-hero">'+restaurantCoverMarkup(r)+'<div class="restaurant-hero-actions"><button class="icon-button" data-action="back" aria-label="Go back">'+icon("back")+'</button><button class="icon-button '+(liked?'active':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button></div></section>'
-      +'<div class="restaurant-body">'+networkBanner()+restaurantInfoMarkup(r,rating,pureVeg)+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)
+      +'<div class="restaurant-body">'+networkBanner()+restaurantInfoMarkup(r,rating,pureVeg)+(r.open&&!tableHere(r.id)?partnerBusyBanner(r):'')+restaurantSquadBanner(r)+restaurantOffersStrip(r)+restaurantDineCard(r)+usualsMarkup(r)
       +'<section class="stack menu-discovery"><div class="cluster between"><div><h2 class="section-title">Menu</h2><p class="supporting">Choose items and customise before adding.</p></div>'+(pureVeg?'<span class="pure-veg-badge large">Pure vegetarian</span>':'')+'</div><div class="chip-row menu-primary-filters"><button class="chip" data-action="open-menu-filters">'+icon("filter","small")+' Filters</button>'+(!pureVeg?dietChip("veg","Veg")+(state.profile.preferences.vegetarian?'':dietChip("nonveg","Non-veg")):'')+(state.selectedMenuCategory!=="All"?'<button class="chip active" data-action="menu-category" data-value="All" aria-label="Show the full menu">'+h(state.selectedMenuCategory)+' ✕</button>':'')+'</div></section>'+menuContent
       +'<section class="card flat stack"><h2 class="section-title">About this restaurant</h2><p class="supporting">'+h(r.description||r.address||"Restaurant information is maintained by Scraveit Control.")+'</p><div class="restaurant-meta"><span>'+icon("clock","small")+' '+(r.open?'Open now':'Closed')+'</span><span>•</span><span>Approx. '+money(r.priceForTwo||500)+' for two</span></div>'+'</section>'+restaurantMenuFooter(r)+'</div></div>'
       +(cartCount()?(tableHere(r.id)?'<div class="floating-cart"><button class="button primary full" data-action="table-round"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+'</span><span>Send to kitchen · '+money(cartSubtotal())+'</span></button></div>':'<div class="floating-cart"><button class="button primary full" data-action="go" data-route="cart"><span>'+cartCount()+' item'+(cartCount()===1?'':'s')+' added</span><span class="floating-cart-go">View cart '+icon("chevron","small")+'</span></button></div>'):'')+(jump?'<button class="menu-fab" data-action="open-menu-jump">'+icon("menuBook","small")+'<span>Menu</span></button>':'')+'</main>';
@@ -6062,7 +7066,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const sub=cartSubtotal(),off=discount(),code=state.coupon&&state.coupon.code,server=serverOffer(),slab=deliverySlabFee(),group=deliveryGroupFee();
     const freeDelivery=deliveryFee()===0&&slab>0;
     return'<div class="stack">'
-      +'<div class="price-row"><span>Item total'+(off>0&&code?'<small class="caption bill-sub success-text">'+h(code)+' applied</small>':'')+'</span><span>'+(off>0?'<s class="bill-was">'+money(sub)+'</s> ':'')+money(Math.max(0,sub-off))+'</span></div>'
+      +'<div class="price-row"><span>Item total'+(off>0&&code?'<small class="caption bill-sub success-text">'+h(code)+' applied</small>':'')+(gstIncluded(cartRestaurant())?'<small class="caption bill-sub">GST included in price</small>':'')+'</span><span>'+(off>0?'<s class="bill-was">'+money(sub)+'</s> ':'')+money(Math.max(0,sub-off))+'</span></div>'
       +(server&&server.limited?limitedOfferNote():'')
       +billTapRow("delivery",feeLabel("delivery fee"),(freeDelivery?'<s class="bill-was">'+money(slab)+'</s> ':'')+(group?money(group):'<span class="success-text">Free</span>'))
       +billTapRow("platform","Platform fee",money(platformFee()))
@@ -6093,6 +7097,223 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +row("<strong>Total</strong>","<strong>"+money(tax())+"</strong>","total");
     }
     return'<div class="bill-pop-scrim" data-action="bill-info" data-key=""><div class="bill-pop" role="dialog" aria-modal="true" data-action="bill-pop-stay">'+body+'<button type="button" class="bill-pop-ok" data-action="bill-info" data-key="">OKAY</button></div></div>'}
+  // ---- Deliver together: one order with food from up to three restaurants ----
+  // Each saved cart stays its own restaurant's order; the server (createClusterOrder) releases
+  // them together, charges one platform fee and times the riders so the food arrives together.
+  function togetherCandidates(){const cur=state.cart.length?state.cart[0].restaurantId:"",c=parkedCarts();return Object.keys(c).filter(rid=>rid!==cur&&!togetherClosed(rid)).slice(0,5)}
+  // Closed only when we know it is; the server checks again when the order is placed.
+  function togetherClosed(rid){const r=restaurant(rid);return!!r&&(r.open===false||r.acceptingOrders===false)}
+  function togetherName(rid){const r=restaurant(rid),lines=parkedCarts()[rid]||(state.cart.length&&state.cart[0].restaurantId===rid?state.cart:[]);return(r&&r.name)||((lines[0]||{}).restaurantName)||"Restaurant"}
+  function togetherSelected(){const ok=new Set(togetherCandidates());state.together=(state.together||[]).filter(rid=>ok.has(rid)).slice(0,2);return state.together}
+  function linesSubtotal(lines){return(lines||[]).reduce((sum,item)=>sum+(Number(item.price)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||0),0)}
+  function linesForCallable(lines){const saved=state.cart;state.cart=lines||[];try{return callableCartItems()}finally{state.cart=saved}}
+  function togetherLines(index,rid){return index===0?state.cart:(parkedCarts()[rid]||[])}
+  const TOGETHER_PRICE_MS=14*60*1000;
+  async function previewTogether(){
+    const addr=currentAddress(),selected=togetherSelected();
+    if(!selected.length||!state.cart.length){state.togetherPreview=null;render({preserveScroll:true});return}
+    if(!addr||!state.session||!nativeAvailable("getCheckoutConfiguration")){state.togetherPreview={error:"Choose a delivery address to see the total."};render({preserveScroll:true});return}
+    const rids=[state.cart[0].restaurantId,...selected],seq=state.togetherSeq=(state.togetherSeq||0)+1;
+    state.togetherPreview={loading:true};render({preserveScroll:true});
+    try{
+      const parts=await Promise.all(rids.map((rid,i)=>{const lines=togetherLines(i,rid);return nativeInvoke("getCheckoutConfiguration",{restaurantId:rid,addressId:addr.id,items:linesForCallable(lines),couponCode:"",tip:i===0?Number(state.tip||0):0,paymentMethod:"cod",useWallet:false},{idToken:state.session.idToken,timeoutMs:15000}).then(raw=>{if(raw&&raw.priceLock===true)state.priceLock=true;const c=raw&&raw.checkoutPreview||{};return{rid,name:togetherName(rid),subtotal:Number(c.subtotal!=null?c.subtotal:linesSubtotal(lines)),total:Number(c.total||0),platformFee:Number(c.platformFee||0),smallOrderFee:Number(c.smallOrderFee||0),deliveryFee:Number(c.deliveryFee||0),tax:Number(c.tax||0),tip:i===0?Number(state.tip||0):0}})}));
+      if(seq!==state.togetherSeq)return;
+      const cartSub=parts.reduce((a,p)=>a+p.subtotal,0),threshold=Number(state.settings&&state.settings.smallOrderThreshold||0),cartIsSmall=threshold>0&&cartSub<threshold;
+      parts.forEach((p,i)=>{let less=0;if(i>0)less+=p.platformFee;if(i>0||!cartIsSmall)less+=p.smallOrderFee;p.saved=less;p.other=Math.max(0,Math.round((p.total-p.subtotal-p.deliveryFee-p.platformFee-p.smallOrderFee-p.tax-p.tip)*100)/100);p.total=Math.max(0,p.total-less)});
+      state.togetherPreview={parts,total:parts.reduce((a,p)=>a+p.total,0),saved:parts.reduce((a,p)=>a+p.saved,0),at:Date.now()};
+    }catch(e){if(seq===state.togetherSeq)state.togetherPreview={error:friendlyError(e)}}
+    render({preserveScroll:true});
+  }
+  function togetherCard(){
+    const list=togetherCandidates();if(!list.length)return"";
+    const sel=new Set(togetherSelected()),p=state.togetherPreview;
+    return'<section class="card stack together-card"><div><h2 class="section-title">Deliver together</h2><p class="supporting">Order from more than one restaurant in one go.</p></div><ol class="together-steps"><li><b>One order</b><span>Pick the carts you want to add.</span></li><li><b>Each kitchen cooks its part</b><span>Restaurants see only their own items.</span></li><li><b>Arrives together</b><span>We time the cooking and riders so it all reaches you at once.</span></li></ol>'
+      +list.map(rid=>{const lines=parkedCarts()[rid]||[],on=sel.has(rid),full=!on&&sel.size>=2;return'<button class="together-row '+(on?'on':'')+'" data-together="'+h(rid)+'" '+(full?'disabled':'')+'><span class="together-box">'+(on?icon("check","small"):'')+'</span><span class="grow"><strong>'+h(togetherName(rid))+'</strong><span class="caption">'+lines.reduce((n,i)=>n+Number(i.quantity||0),0)+' items · '+money(linesSubtotal(lines))+'</span></span></button>'}).join("")
+      +(sel.size?(p&&p.loading?'<p class="caption">Working out your total…</p>':p&&p.error?'<div class="notice warning">'+icon("warning","small")+'<span>'+h(p.error)+'</span></div>':p&&p.parts?'<div class="stack" style="gap:6px">'+p.parts.map((x,i)=>'<button type="button" class="price-row together-part" data-together-part="'+i+'"><span>'+h(x.name)+'</span><strong>'+money(x.total)+' '+icon("chevron","small")+'</strong></button>').join("")+(p.saved>0?'<div class="price-row"><span>Saved by ordering together</span><strong>−'+money(p.saved)+'</strong></div>':'')+'<div class="price-row"><span><strong>About</strong></span><strong>'+money(p.total)+'</strong></div></div>':'')
+        +'<p class="caption">Tap a restaurant to see its bill.</p>'
+        +(favouriteGroups().some(g=>groupSignature(g.parts)===groupSignature([state.cart[0].restaurantId].concat(Array.from(sel)).map(rid=>({rid}))))?'<p class="caption together-saved">'+icon("heart","small")+' Saved in your groups</p>':'<button class="text-button" data-group-save="cart">'+icon("heart","small")+' Save these restaurants as a group</button>'):'')
+      +'</section>';
+  }
+  function togetherKey(){const existing=String(state.checkout.pendingTogetherKey||"");if(/^[A-Za-z0-9_-]{16,80}$/.test(existing))return existing;const generated=("tog_"+Date.now().toString(36)+"_"+uid("").replace(/[^A-Za-z0-9_-]/g,"")).slice(0,80);state.checkout.pendingTogetherKey=generated;persistCheckout();return generated}
+  async function submitTogether(){
+    if(state.loading||!state.cart.length||placeHeld())return;
+    const address=currentAddress(),rids=[state.cart[0].restaurantId,...togetherSelected()];
+    if(rids.length<2){toast("Choose another saved cart to deliver together.","danger");return}
+    if(!addressReadyForCheckout(address))return;
+    if(!state.online){toast("Reconnect to place this order safely.","danger");return}
+    const closed=rids.find(togetherClosed);if(closed){toast(togetherName(closed)+" is not accepting orders right now.","danger");return}
+    if(!nativeAvailable("createClusterOrder")){toast("Update the app to order from more than one restaurant.","danger");return}
+    const shownTotal=state.togetherPreview&&state.togetherPreview.parts?money(state.togetherPreview.total):"";
+    state.loading=true;render({preserveScroll:true});
+    // Saved prices last 15 minutes on the server (services/priceQuotes.ts): an older one is worked out again first.
+    if(!(state.priceLock===true&&shownTotal&&Date.now()-Number(state.togetherPreview.at||0)<TOGETHER_PRICE_MS)){
+      await previewTogether();
+      const fresh=state.togetherPreview;
+      if(!fresh||!fresh.parts){state.loading=false;toast("Could not confirm the price. Check your connection and tap Place order again.","danger");render({preserveScroll:true});return}
+      if(money(fresh.total)!==shownTotal){state.loading=false;toast("The price changed. New total "+money(fresh.total)+". Tap Place order again.","warning");render({preserveScroll:true});return}
+    }
+    const priced=state.togetherPreview,shownFood=rid=>{const part=priced.parts.find(x=>x.rid===rid);return state.priceLock===true&&part?{quotedSubtotal:part.subtotal}:{}};
+    const payload={idempotencyKey:togetherKey(),addressId:address.id,parts:rids.map((rid,i)=>({restaurantId:rid,items:linesForCallable(togetherLines(i,rid)),instructions:i===0?String(state.checkout.instructions||"").slice(0,500):"",...shownFood(rid)})),tip:Number(state.tip||0),contactless:state.checkout.contactless===true,paymentMethod:"cod"};
+    try{
+      await ensureSession();
+      const result=await nativeInvoke("createClusterOrder",payload,{idToken:state.session.idToken,timeoutMs:60000});
+      if(!result||!Array.isArray(result.orderIds)||!result.orderIds.length)throw new Error("INVALID_SERVER_RESPONSE");
+      const parts=(result.bill&&result.bill.parts)||[],otps=Array.isArray(result.deliveryOtps)?result.deliveryOtps:[];
+      const made=result.orderIds.map((id,i)=>({id,clusterId:result.clusterId,clusterIndex:i,clusterSize:result.orderIds.length,restaurantId:rids[i],restaurant:(parts[i]||{}).restaurant||togetherName(rids[i]),total:Number((parts[i]||{}).total||0),status:"Order placed",paymentMethod:"cod",createdAt:Date.now()}));
+      made.slice(1).forEach((o,i)=>{state.orders=[o].concat(state.orders.filter(x=>x.id!==o.id));if(otps[i+1])state.deliveryOtps[o.id]=String(otps[i+1])});
+      const groupParts=groupPartsFromCarts(rids);
+      rids.slice(1).forEach(rid=>{delete parkedCarts()[rid]});
+      state.together=[];state.togetherPreview=null;state.checkout.pendingTogetherKey="";
+      state.lastCluster={clusterId:result.clusterId,bill:result.bill||null,plan:result.plan||null,orderIds:result.orderIds,parts:groupParts};
+      finishOrderPlacement(made[0],made[0].id,String(otps[0]||""),false);
+      setSheet({type:"togetherBill"});
+    }catch(error){
+      if(priceChangedError(error)){await previewTogether();const now=state.togetherPreview;toast(now&&now.parts?"The price changed. New total "+money(now.total)+". Tap Place order again.":"The price changed. Tap Place order again.","warning");return}
+      if(partnersBusyText(error)){toast(partnersBusyText(error),"warning");return}
+      toast("Order was not placed. "+friendlyError(error)+" Retrying uses the same protected request and will not duplicate an order.","danger");
+    }finally{state.loading=false;render({preserveScroll:true})}
+  }
+  function togetherPartSheet(){
+    const p=state.togetherPreview,x=p&&p.parts&&p.parts[Number(state.sheet&&state.sheet.index)];
+    if(!x)return sheetShell("Bill","",'<p class="supporting">Working out the bill…</p>');
+    const row=(label,value,note)=>'<div class="price-row"><span>'+label+(note?'<span class="caption" style="display:block">'+note+'</span>':'')+'</span><strong>'+value+'</strong></div>';
+    const free=(fee,why)=>fee>0?'<s class="bill-was">'+money(fee)+'</s> '+money(0):money(0);
+    const freePlatform=x.saved>0&&x.platformFee>0&&Number(state.sheet.index)>0, freeSmall=x.saved-(freePlatform?x.platformFee:0)>0;
+    const rows=row("Item total",money(x.subtotal))
+      +row("Delivery fee",money(x.deliveryFee))
+      +(x.platformFee?row("Platform fee",freePlatform?free(x.platformFee):money(x.platformFee),freePlatform?"Paid once for the whole order":""):"")
+      +(x.smallOrderFee?row("Small order fee",freeSmall?free(x.smallOrderFee):money(x.smallOrderFee),freeSmall?"Whole order is above the minimum":""):"")
+      +(x.other>0?row("Other charges",money(x.other)):"")
+      +(x.tax?row("Taxes",money(x.tax)):"")
+      +(x.tip?row("Tip for your rider",money(x.tip)):"");
+    return sheetShell(h(x.name),"Part of your order from "+p.parts.length+" restaurants",'<div class="stack-lg">'+(x.saved>0?'<div class="saved-banner">🎉 You save '+money(x.saved)+' by ordering together</div>':'')+'<section class="bill-card stack" style="gap:10px">'+rows+'<div class="price-row"><span><strong>To pay</strong></span><strong>'+money(x.total)+'</strong></div></section><p class="caption">Your confirmed bill shows as soon as the order is placed.</p><button class="button primary full" data-action="close-sheet">Okay</button></div>');
+  }
+  document.addEventListener("click",event=>{const t=event.target.closest&&event.target.closest("[data-together-part]");if(!t)return;setSheet({type:"togetherPart",index:Number(t.dataset.togetherPart)})});
+  function togetherBillSheet(){
+    const c=state.lastCluster||{},bill=c.bill||{parts:[],total:0},plan=c.plan;
+    const rows=(bill.parts||[]).map(p=>'<div class="stack" style="gap:4px"><div class="price-row"><span><strong>'+h(p.restaurant)+'</strong></span><strong>'+money(p.total)+'</strong></div><div class="caption">Food '+money(p.subtotal)+' · Delivery '+money(p.deliveryFee)+(p.platformFee?' · Platform '+money(p.platformFee):'')+(p.tax?' · Taxes '+money(p.tax):'')+'</div></div>').join("");
+    const how=plan?(plan.riders===1?'One rider collects everything and brings it together.':plan.riders+' riders bring your food, timed to reach you together.')+(plan.etaMinutes?' About '+plan.etaMinutes+' min.':''):'';
+    const parts=Array.isArray(c.parts)?c.parts:[],saved=parts.length>1&&favouriteGroups().some(g=>groupSignature(g.parts)===groupSignature(parts));
+    const save=parts.length>1?(saved?'<p class="caption together-saved">'+icon("heart","small")+' Saved in your groups. Order it again from Home.</p>':'<button class="button tonal full" data-group-save="last">'+icon("heart","small")+' Save this group to order again</button>'):'';
+    return sheetShell("Order placed together",how||"Each restaurant is cooking its part.",'<div class="stack-lg">'+rows+'<div class="price-row"><span><strong>Total to pay</strong></span><strong>'+money(bill.total)+'</strong></div><p class="caption">Pay cash when your food arrives. Each restaurant\'s part is tracked as its own order in Orders, with its own amount.</p>'+save+'<button class="button primary full" data-action="close-sheet">Track my order</button></div>');
+  }
+  document.addEventListener("click",event=>{const t=event.target.closest&&event.target.closest("[data-together],[data-together-place]");if(!t||t.disabled)return;
+    if(t.dataset.together){const rid=t.dataset.together,sel=togetherSelected();state.together=sel.includes(rid)?sel.filter(x=>x!==rid):sel.concat(rid).slice(0,2);previewTogether();return}
+    if(t.dataset.togetherPlace){submitTogether()}});
+  // "Order all together" in the Your carts sheet: open one cart with the others already ticked.
+  document.addEventListener("click",event=>{const t=event.target.closest&&event.target.closest("[data-together-all]");if(!t)return;
+    const rids=allCarts().map(x=>x.rid).filter(rid=>!togetherClosed(rid));
+    if(rids.length<2){toast("At least two of your carts need open restaurants to order together.","danger");return}
+    activateCart(rids[0]);state.together=rids.slice(1,3);state.togetherPreview=null;state.sheet=null;renderSheet();go("cart");previewTogether()});
+
+  // Opening the cart with other restaurants' carts waiting: offer to send them as one order.
+  // Asked once per set of carts (closing the sheet counts as "no"), and only for the nearest two,
+  // since one order takes food from at most three restaurants and close kitchens share a rider.
+  function nearestCarts(rids){
+    const cur=cartRestaurant();
+    const km=rid=>{const r=restaurant(rid);return cur&&r?geoDistanceKm(cur.lat,cur.lng,r.lat,r.lng):null};
+    return rids.slice().sort((a,b)=>{const x=km(a),y=km(b);return(x==null?999:x)-(y==null?999:y)});
+  }
+  function togetherSuggestKey(){return[state.cart.length?state.cart[0].restaurantId:""].concat(togetherCandidates().slice().sort()).join("|")}
+  function maybeSuggestTogether(){
+    if(state.route!=="cart"||state.sheet||state.loading||!state.cart.length||!state.session||togetherSelected().length)return;
+    if(!togetherCandidates().length||!nativeAvailable("createClusterOrder")||togetherClosed(state.cart[0].restaurantId))return;
+    const key=togetherSuggestKey(),asked=loadJSON("scraveit.togetherAsked",{}),now=Date.now();
+    if(asked[key]&&now-Number(asked[key])<3*86400000)return;
+    asked[key]=now;
+    try{saveJSON("scraveit.togetherAsked",Object.fromEntries(Object.entries(asked).filter(([,at])=>now-Number(at)<3*86400000).slice(-20)))}catch(_){}
+    setSheet({type:"togetherSuggest"});
+  }
+  function togetherSuggestSheet(){
+    const cur=cartRestaurant(),list=nearestCarts(togetherCandidates()),pick=list.slice(0,2);
+    const row=(rid,lines,mark)=>'<div class="together-row'+(mark?' on':'')+'"><span class="together-box">'+(mark?icon("check","small"):'')+'</span><span class="grow"><strong>'+h(togetherName(rid))+'</strong><span class="caption">'+lines.reduce((n,i)=>n+Number(i.quantity||0),0)+' items · '+money(linesSubtotal(lines))+'</span></span></div>';
+    const rows=row(state.cart[0].restaurantId,state.cart,true)+list.map(rid=>row(rid,parkedCarts()[rid]||[],pick.includes(rid))).join("");
+    return sheetShell("Order these together?","Your carts from "+(list.length+1)+" restaurants can come as one order.",'<div class="stack-lg"><div class="stack" style="gap:8px">'+rows+'</div>'
+      +'<ul class="together-why"><li>'+icon("check","small")+'<span>One platform fee for the whole order</span></li><li>'+icon("check","small")+'<span>Cooking and riders timed so it all arrives together</span></li><li>'+icon("check","small")+'<span>Pay once when it arrives</span></li></ul>'
+      +(list.length>2?'<p class="caption">One order takes up to 3 restaurants. We ticked the closest ones; change them in the cart.</p>':'')
+      +'<button class="button primary full" data-together-suggest="yes">Deliver together</button><button class="button tonal full" data-together-suggest="no">Just '+h(cur?cur.name:"this cart")+'</button></div>');
+  }
+  document.addEventListener("click",event=>{const t=event.target.closest&&event.target.closest("[data-together-suggest]");if(!t)return;
+    if(t.dataset.togetherSuggest==="yes"){state.together=nearestCarts(togetherCandidates()).slice(0,2);state.togetherPreview=null;closeSheet();previewTogether()}
+    else closeSheet()});
+
+  // ---- Saved groups: food from several restaurants, kept to order again in one tap ----
+  // A group keeps only dish identifiers, choices and quantities. Ordering again rebuilds every
+  // line from the live menu at today's prices (the same check as reorder), so a saved group
+  // never brings back an old price or a dish that is gone.
+  const MAX_GROUPS=8;
+  function favouriteGroups(){return(Array.isArray(state.profile.favouriteGroups)?state.profile.favouriteGroups:[]).filter(g=>g&&g.id&&Array.isArray(g.parts)&&g.parts.length>1)}
+  function groupLine(x){
+    const addOns=(Array.isArray(x.addOns)?x.addOns:[]).map(a=>typeof a==="object"&&a?{id:String(a.id||a.name||""),name:String(a.name||a.id||"")}:{id:String(a),name:String(a)}).slice(0,12);
+    return{itemId:String(x.itemId||""),name:String(x.name||"").slice(0,80),variantId:String(x.variantId||""),variant:String(x.variant||""),addOnIds:(Array.isArray(x.addOnIds)?x.addOnIds:[]).map(String).slice(0,12),addOns,quantity:Math.max(1,Math.min(20,Math.floor(Number(x.quantity||1)))),note:String(x.note||"").slice(0,140)};
+  }
+  function groupPartsFromCarts(rids){return rids.map((rid,i)=>({rid,name:togetherName(rid),items:togetherLines(i,rid).map(groupLine).filter(x=>x.itemId)})).filter(p=>p.items.length)}
+  function groupSignature(parts){return(parts||[]).map(p=>String(p.rid)).sort().join("|")}
+  function groupItemCount(g){return g.parts.reduce((n,p)=>n+(p.items||[]).reduce((m,x)=>m+Number(x.quantity||0),0),0)}
+  async function saveFavouriteGroup(parts){
+    if(!parts||parts.length<2){toast("Pick at least two restaurants' carts to save a group.","danger");return}
+    const sig=groupSignature(parts);
+    // Saving the same restaurants again replaces the old group with today's dishes.
+    const group={id:"grp_"+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36),name:parts.map(p=>p.name).join(" + ").slice(0,90),parts,savedAt:Date.now()};
+    state.profile.favouriteGroups=[group].concat(favouriteGroups().filter(g=>groupSignature(g.parts)!==sig)).slice(0,MAX_GROUPS);
+    persistProfile();toast("Group saved. Order it again from Home or Favourites.","success");render({preserveScroll:true});
+    try{await saveProfile()}catch(_){toast("Saved on this device; cloud sync will retry.")}
+  }
+  async function removeFavouriteGroup(id){
+    const g=favouriteGroups().find(x=>x.id===id);if(!g)return;
+    if(!await askConfirm("Remove this group?",g.name,"Remove","Keep"))return;
+    state.profile.favouriteGroups=favouriteGroups().filter(x=>x.id!==id);persistProfile();render({preserveScroll:true});
+    try{await saveProfile()}catch(_){toast("Removed on this device; cloud sync will retry.")}
+  }
+  async function orderFavouriteGroup(id){
+    const g=favouriteGroups().find(x=>x.id===id);if(!g||state.loading)return;
+    if(!state.online){toast("Reconnect to refresh the menus first.","danger");return}
+    if(!currentAddress()){toast("Choose a delivery address first.","danger");go("addresses");return}
+    state.loading=true;render({preserveScroll:true});
+    try{
+      await syncCatalog();
+      const ready=[],missed=[];
+      for(const part of g.parts){
+        let r=restaurant(part.rid);
+        if(!r||r.archived===true||r.open===false||r.acceptingOrders===false||!restaurantServiceable(r)){missed.push(part.name||"A restaurant");continue}
+        try{await ensureRestaurantMenu(r.id,{force:true,throwOnError:true})}catch(_){missed.push(part.name||r.name);continue}
+        r=restaurant(part.rid);
+        const rebuilt=reconcileReorderItems({items:part.items},r);
+        if(rebuilt.items.length)ready.push({rid:r.id,items:rebuilt.items,skipped:rebuilt.skipped.length});else missed.push(r.name);
+      }
+      if(!ready.length){toast("None of these restaurants can take this order right now.","danger");return}
+      // Whatever is in the cart now is kept in the dock; each part goes in its own restaurant's cart.
+      const carts=parkedCarts(),current=state.cart.length?state.cart[0].restaurantId:"",mine=new Set(ready.map(p=>p.rid));
+      if(current&&!mine.has(current))carts[current]=state.cart;
+      ready.forEach(p=>{carts[p.rid]=p.items});
+      const others=Object.keys(carts).filter(rid=>!mine.has(rid));
+      while(Object.keys(carts).length>MAX_CARTS&&others.length)delete carts[others.shift()];
+      state.cart=carts[ready[0].rid];delete carts[ready[0].rid];state.coupon=null;state.tip=0;persistCart();persistCheckout();
+      state.together=ready.slice(1,3).map(p=>p.rid);state.togetherPreview=null;
+      state.profile.favouriteGroups=favouriteGroups().map(x=>x.id===id?Object.assign({},x,{lastOrderedAt:Date.now()}):x);persistProfile();
+      const skipped=ready.reduce((n,p)=>n+p.skipped,0);
+      toast(missed.length?missed.join(", ")+" can't take orders now, so the rest is in your cart.":skipped?"Added at today's prices. A few changed dishes were left out.":"Added at today's prices. Check and place your order.",missed.length?"warning":"success");
+      go("cart");
+      if(state.together.length)previewTogether();
+      saveProfile().catch(()=>{});
+    }catch(error){toast("This group could not be loaded. "+friendlyError(error),"danger")}
+    finally{state.loading=false;render({preserveScroll:true})}
+  }
+  function groupCard(g){
+    const faces=g.parts.slice(0,3).map(p=>{const r=restaurant(p.rid);return'<img src="'+h(safeUrl(r&&(r.imageThumb||r.image),"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'}).join("");
+    const names=g.parts.map(p=>{const r=restaurant(p.rid);return(r&&r.name)||p.name}).join(" + ");
+    return'<article class="group-card"><div class="group-faces">'+faces+'</div><strong class="group-name">'+h(names)+'</strong><span class="caption">'+g.parts.length+' restaurants · '+groupItemCount(g)+' items'+(g.lastOrderedAt?' · ordered '+h(timeAgo(g.lastOrderedAt)):'')+'</span><div class="group-actions"><button class="button primary small" data-group-order="'+h(g.id)+'">Order again</button><button class="icon-button flat" data-group-remove="'+h(g.id)+'" aria-label="Remove group">'+icon("close","small")+'</button></div></article>';
+  }
+  function groupsShelf(){
+    const list=favouriteGroups().slice().sort((a,b)=>Number(b.lastOrderedAt||b.savedAt||0)-Number(a.lastOrderedAt||a.savedAt||0));if(!list.length)return"";
+    return'<section class="stack"><div class="cluster between"><div><h2 class="section-title">Your groups</h2><p class="supporting">Your favourite combos, one tap to order again</p></div>'+(list.length>2?'<button class="text-button" data-action="go" data-route="favourites">See all</button>':'')+'</div><div class="group-rail">'+list.slice(0,6).map(groupCard).join("")+'</div></section>';
+  }
+  document.addEventListener("click",event=>{const t=event.target.closest&&event.target.closest("[data-group-save],[data-group-order],[data-group-remove]");if(!t||t.disabled)return;
+    if(t.dataset.groupOrder){orderFavouriteGroup(t.dataset.groupOrder);return}
+    if(t.dataset.groupRemove){removeFavouriteGroup(t.dataset.groupRemove);return}
+    if(t.dataset.groupSave==="last"){saveFavouriteGroup((state.lastCluster||{}).parts||[]).then(()=>{if(state.sheet&&state.sheet.type==="togetherBill")renderSheet()});return}
+    if(t.dataset.groupSave==="cart"&&state.cart.length)saveFavouriteGroup(groupPartsFromCarts([state.cart[0].restaurantId].concat(togetherSelected())))});
+
   function screenCart() {
     const r=cartRestaurant();
     if(state.cart.length&&!r){
@@ -6102,14 +7323,18 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         +'<button class="button danger full" data-action="clear-unavailable-cart">Remove unavailable cart</button>'
         +'<button class="button tonal full" data-action="go-home">Browse live restaurants</button></div>'+nav()+'</main>';
     }
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Your cart",r?r.name:"Ready when you are")+networkBanner()
-      +(state.cart.length?'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section><section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section><section class="card">'+billSummaryRow()+'</section><button class="button primary full" data-action="go-checkout" '+(!state.online?'disabled':'')+'>Continue to checkout · '+money(orderTotal())+'</button>':emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants"))+'</div>'+nav()+'</main>';
+    if(state.cart.length)return screenCheckout();
+    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Your cart","Ready when you are")+networkBanner()
+      +emptyState("cart","Your cart is empty","Browse restaurants and add something you will enjoy.","go-home","Explore restaurants")+'</div>'+nav()+'</main>';
   }
 
   function addressSummary(address) {
-    if(!address)return'<div class="notice warning">'+icon("warning","small")+'<div><strong>No delivery address selected</strong><div class="caption">Add an address with a mobile number before placing your order.</div></div></div>';
-    return '<div class="cluster"><span class="settings-icon">'+icon("address")+'</span><div class="grow"><strong>'+h(address.label||address.area||"Delivery address")+'</strong><p class="supporting">'+h(address.address||address.details||"")+'</p><p class="caption">'+h(address.phone||state.profile.phone||"Mobile number required")+(Number.isFinite(Number(address.lat))?' · Location pin saved':' · Location pin needed for proximity alerts')+'</p></div></div>';
+    if(!address)return'<div class="notice warning">'+icon("warning","small")+'<div><strong>Where should we deliver?</strong><div class="caption">Tap to add your address.</div></div></div>';
+    const door=addressNeedsDoor(address),pinned=!!coordinatePoint(address),phone=address.phone||state.profile.phone;
+    const note=!pinned?'<p class="addr-card-warn">Put this address on the map before ordering</p>':door?'<p class="addr-card-warn">Add house / flat no. so the rider finds your door</p>':'<p class="caption">'+(validPhone(phone)?'Rider will call '+h(prettyPhone(phone)):'Add a phone number for the rider')+(addressPhotoUrl(address)?' · Photo added':'')+'</p>';
+    return '<div class="cluster"><span class="settings-icon">'+icon(addressLabelIcon(address))+'</span><div class="grow"><strong>Deliver to '+h(address.id==="current-location"?"current location":(address.label||address.area||"this address"))+'</strong><p class="supporting">'+h(address.address||address.details||"")+'</p>'+note+'</div></div>';
   }
+
   function isOnlinePaymentMethod(value){return value==="upi"||value==="card";}
   function normalizeCheckoutConfiguration(raw){
     const value=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:null,methods=value&&value.methods&&typeof value.methods==="object"&&!Array.isArray(value.methods)?value.methods:{},method=(name,provider)=>{const source=methods[name]&&typeof methods[name]==="object"&&!Array.isArray(methods[name])?methods[name]:{};return{enabled:source.enabled===true,available:source.available===true,...(provider?{provider:String(source.provider||provider)===provider?provider:provider}:{})}};
@@ -6188,6 +7413,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   /** "Total bill · you saved · incl. taxes" - the whole breakdown opens from the bottom. */
   function billSummaryRow(){
+    if(priceChecking())return '<button type="button" class="bill-row" data-action="open-bill"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill</strong><span class="caption">Checking price…</span></span>'+icon("chevron","small")+'</button>';
     const saved=discount();
     return '<button type="button" class="bill-row" data-action="open-bill"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+(saved>0?'<s class="bill-was">'+money(orderTotal()+saved)+'</s> ':'')+money(orderTotal())+'</strong>'+(saved>0?'<span class="saved-pill">You saved '+money(saved)+'</span>':'')+'<span class="caption">Incl. taxes and charges</span></span>'+icon("chevron","small")+'</button>';
   }
@@ -6222,51 +7448,59 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const store=order.restaurantId&&state.catalog?state.catalog[order.restaurantId]:null;
     const no=String(order.restaurantFssai||(store&&store.fssaiNumber)||"");
     const fssai=/^[12]\d{13}$/.test(no)?'<img class="fssai-logo" src="fssai-logo.png" alt="FSSAI" width="41" height="20" style="width:41px;height:20px"><span>'+(no[0]==="2"?"Reg.":"Lic.")+' No. '+h(no)+'</span>':'';
-    return '<div class="menu-fssai bill-seller"><span>Sold and prepared by '+h(order.restaurant||(store&&store.name)||"the store")+'</span>'+fssai+'<span>Platform: SCRAVEIT PRIVATE LIMITED · GSTIN 37ABVCS0396N1ZA'+platformFssaiText()+'</span></div>';
+    const drug=store&&store.drugLicenceNumber?'<span>Drug licence No. '+h(store.drugLicenceNumber)+'</span>':'';
+    return '<div class="menu-fssai bill-seller"><span>Sold'+(drug?'':' and prepared')+' by '+h(order.restaurant||(store&&store.name)||"the store")+'</span>'+drug+fssai+'<span>Platform: SCRAVEIT PRIVATE LIMITED · GSTIN 37ABVCS0396N1ZA'+platformFssaiText()+'</span></div>';
   }
   // SCRAVEIT's own FSSAI licence, from settings/customer.scraveitFssai, so it shows on every bill once issued.
   function platformFssaiText(){const no=String(state.settings&&state.settings.scraveitFssai||"").replace(/\D/g,"");return/^[12]\d{13}$/.test(no)?' · FSSAI '+(no[0]==="2"?"Reg.":"Lic.")+' No. '+h(no):''}
   function orderBillSheet(sheet){
     const order=(state.orders||[]).find(o=>o.id===sheet.orderId);if(!order)return sheetShell("Bill summary","","<p class=\"supporting\">This bill is not available on this device.</p>");
-    const p=order.pricing||{},line=(label,value,cls)=>Number(value)>0?'<div class="price-row'+(cls?' '+cls:'')+'"><span>'+h(label)+'</span><span>'+(cls==="success-text"?'−':'')+money(value)+'</span></div>':'';
+    // Markup restaurants: food shown GST-inclusive, as the menu showed it; taxes are GST on fees only.
+    const m=order.pricing&&order.pricing.markup,p=m?Object.assign({},order.pricing,{subtotal:m.listSubtotal,discount:m.discount,tax:m.tax}):(order.pricing||{}),line=(label,value,cls)=>Number(value)>0?'<div class="price-row'+(cls?' '+cls:'')+'"><span>'+h(label)+'</span><span>'+(cls==="success-text"?'−':'')+money(value)+'</span></div>':'';
     // Orders placed from 3.21.19 carry each campaign's own name (Late-night fee, Surge fee…);
     // older orders only have the combined amount.
     const named=Array.isArray(p.riderIncentiveItems)?p.riderIncentiveItems.filter(x=>x&&Number(x.amount)>0):[];
     const incentiveLines=named.length?named.map(x=>line(String(x.label||"Surge fee"),x.amount)).join(""):line(timeOfDayFeeName(order.createdAt),Number(p.riderIncentiveFee||0))+line("Rider surge fee",p.riderSurgeFee);
     return sheetShell("Bill summary",h(order.restaurant||""),'<section class="bill-card stack">'+orderItemsSummary(order)
-      +'<div class="price-row"><span>Item total</span><span>'+money(p.subtotal||0)+'</span></div>'+line("Discount",p.discount,"success-text")
+      +'<div class="price-row"><span>Item total'+(m&&Number(m.foodGst)>0?'<small class="caption bill-sub">GST '+money(m.foodGst)+' included in price</small>':'')+'</span><span>'+money(p.subtotal||0)+'</span></div>'+line("Discount",p.discount,"success-text")
       +'<div class="price-row"><span>Delivery fee</span><span>'+(Number(p.deliveryFee)>0?money(p.deliveryFee):'<span class="success-text">Free</span>')+'</span></div>'
       +line("Rain fee",p.rainFee)+line("Demand fee",p.surgeFee)+line("Late-night fee",p.lateNightFee)+incentiveLines+line("Small-order fee",p.smallOrderFee)
       +line("Platform fee",p.platformFee)+line("Taxes",p.tax)+line("Delivery partner tip",p.tip)
       +'<div class="price-row total"><span>'+(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'To pay on delivery':'Paid')+'</span><span>'+money(order.total)+'</span></div>'+billSellerFooter(order)+'</section>');
   }
   function screenCheckout() {
-    const address=currentAddress(),r=cartRestaurant();
+    const address=currentAddress(),r=cartRestaurant(),together=togetherSelected().length,held=placeHeld()||!!(together&&state.togetherPreview&&state.togetherPreview.loading);
     reconcileCheckoutPaymentSelection();
     const paymentAvailable=paymentMethodEnabled(state.checkout.payment),paymentWarning=!enabledCheckoutMethods().length?'<div class="notice warning">'+icon("warning","small")+'<span>No checkout payment method is available right now. Please try again in a moment.</span></div>':"";
-    const canPlace=!(!address||!state.online||state.loading||!state.cart.length||!paymentAvailable||payOpen(myPayAsk()));
-    return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r?r.name:"Checkout",r?((r.etaMin||25)+'–'+(r.etaMax||35)+' min to '+(address?(address.label||address.area||"you"):"you")):"Review your order")+networkBanner()
+    const canPlace=!(!address||!state.online||state.loading||held||!state.cart.length||!paymentAvailable||payOpen(myPayAsk()));
+    return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r.name,storeEtaText(r)+' min to '+(address?(address.label||address.area||"you"):"you"))+networkBanner()+partnerBusyBanner(r)
       +(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')
+      +'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+cartFreebiesMarkup()+cartPairingsMarkup()+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section>'
+      +togetherCard()
       +adRailMarkup("checkout-ad-track")
+      +'<section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section>'
       +'<section class="card checkout-card">'
-        +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(r&&r.etaMin||25)+'–'+h(r&&r.etaMax||35)+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
+        +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(storeEtaText(r))+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
         +'<div class="checkout-divider"></div>'
-        +'<button type="button" class="checkout-line" data-action="go" data-route="addresses">'+addressSummary(address)+icon("chevron","small")+'</button>'
+        +'<button type="button" class="checkout-line" data-action="'+(address&&(addressNeedsDoor(address)||!coordinatePoint(address))?'address-complete':'open-address-picker')+'">'+addressSummary(address)+icon("chevron","small")+'</button>'
         +'<div class="checkout-divider"></div>'
         +'<label class="field compact"><span>Instructions for your delivery partner</span><textarea id="checkout-instructions" class="textarea" maxlength="180" rows="2" placeholder="Landmark, gate or delivery note">'+h(state.checkout.instructions)+'</textarea></label>'
         +'<button class="settings-row" data-action="toggle-contactless"><span class="settings-icon">'+icon("shield")+'</span><span class="grow"><strong>Contactless delivery</strong><span class="supporting">Leave at the door and notify me.</span></span><span class="switch '+(state.checkout.contactless?'on':'')+'" aria-hidden="true"></span></button>'
-        +'<div class="checkout-divider"></div>'
         +billSummaryRow()
       +'</section>'
       +walletToggle()+paymentWarning+askParentCard()
       +'</div>'
-      +'<div class="floating-cart pay-dock"><button type="button" class="pay-using" data-action="open-pay-sheet"><span class="caption">PAY USING ▲</span><strong>'+h(paymentMethodTitle(state.checkout.payment||"cod"))+'</strong></button>'
-      +'<button class="button primary pay-cta" data-action="place-order" '+(canPlace?'':'disabled')+'>'+(state.loading?'<span class="spinner"></span> Placing…':'<span class="pay-cta-total"><strong>'+money(orderTotal())+'</strong><small>TOTAL</small></span><span>Place order</span>')+'</button></div>'
+      +(together
+        // Orders from more than one restaurant are cash only (submitTogether).
+        ?'<div class="floating-cart pay-dock"><div class="pay-using"><span class="caption">PAY USING</span><strong>Cash on delivery</strong></div>'
+          +'<button class="button primary pay-cta" data-together-place="1" '+(!state.online||state.loading||held?'disabled':'')+'>'+(state.loading?'<span class="spinner"></span> Placing…':held?'<span class="spinner"></span> Checking price…':(state.togetherPreview&&state.togetherPreview.parts?'<span class="pay-cta-total"><strong>'+money(state.togetherPreview.total)+'</strong><small>'+(together+1)+' RESTAURANTS</small></span>':'')+'<span>Place order</span>')+'</button></div>'
+        :'<div class="floating-cart pay-dock"><button type="button" class="pay-using" data-action="open-pay-sheet"><span class="caption">PAY USING ▲</span><strong>'+h(paymentMethodTitle(state.checkout.payment||"cod"))+'</strong></button>'
+          +'<button class="button primary pay-cta" data-action="place-order" '+(canPlace?'':'disabled')+'>'+(state.loading?'<span class="spinner"></span> Placing…':held?'<span class="spinner"></span> Checking price…':'<span class="pay-cta-total"><strong>'+money(orderTotal())+'</strong><small>TOTAL</small></span><span>Place order</span>')+'</button></div>')
       +nav()+'</main>';
   }
 
   function orderItemsSummary(order) {
-    return (order.items||[]).map(item=>'<div class="price-row"><span>'+h(item.quantity||1)+' × '+h(item.name)+(item.variant?' · '+h(item.variant):'')+'</span><span>'+money((Number(item.price||0)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||1))+'</span></div>').join("");
+    return (order.items||[]).map(item=>item.free?'<div class="price-row"><span>'+h(item.quantity||1)+' × 🎁 '+h(item.name)+(item.note?'<small class="caption bill-sub">'+h(item.note)+'</small>':'')+'</span><span class="success-text">FREE</span></div>':'<div class="price-row"><span>'+h(item.quantity||1)+' × '+h(item.name)+(item.variant?' · '+h(item.variant):'')+'</span><span>'+money((item.listPrice!=null?Number(item.listPrice):Number(item.price||0)+Number(item.variantPrice||0)+Number(item.addOnTotal||0))*Number(item.quantity||1))+'</span></div>').join("");
   }
   function orderCard(order) {
     return '<article class="card order-card" data-action="open-order" data-order-id="'+h(order.id)+'" tabindex="0" role="button"><div class="cluster between"><span class="status-pill '+statusTone(order.status)+'">'+h(order.status||"Order placed")+'</span><strong>'+money(order.total)+'</strong></div><div><h2 class="card-title">'+h(order.restaurant||"Restaurant")+'</h2><p class="supporting">'+h((order.items||[]).map(x=>(x.quantity||1)+'× '+x.name).slice(0,2).join(" · "))+'</p></div><div class="cluster between caption"><span>'+h(order.id)+' · '+h(timeAgo(order.createdAt))+'</span><span>'+icon("chevron","small")+'</span></div></article>';
@@ -6320,9 +7554,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
    * bottom edge runs straight into the status it belongs to, which is both
    * tighter and reads as a single live thing.
    */
+  /** Two customers on one trip: say why the partner is not coming straight here yet. */
+  function batchHeadline(order){const b=order&&order.batch;if(!b||Number(b.size)<2||order.status!=="Handed to rider")return"";
+    if((b.dropOrder||[]).indexOf(order.id)>0)return"Your partner has your meal and is dropping one order nearby first, then coming to you.";
+    if((b.pickupOrder||[]).indexOf(order.id)===0)return"Your partner has your meal and is collecting one more order nearby, then coming straight to you.";return""}
   function orderLiveModule(order,live,canTrack){
     const collapsed=!!state.trackingMapCollapsed;
-    const headline=({
+    const headline=batchHeadline(order)||({
       "Order placed":"Order received. Sending it to the kitchen.",
       "Accepted":"The kitchen has your order.",
       "Preparing":"Your meal is being freshly prepared.",
@@ -6384,7 +7622,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const riderLive=["Assigned","Handed to rider","Out for delivery","Near you","Arrived"].includes(order.status);
     const showDeliveryOtp=["Out for delivery","Near you","Arrived"].includes(order.status),deliveryOtp=state.deliveryOtps[order.id];
     const savedReview=state.reviews[order.id]||null,restaurantReviewRating=Number(savedReview&&savedReview.rating||0),riderReviewRating=Number(savedReview&&savedReview.riderRating||0);
-    const submittedReviewMarkup=savedReview?'<section class="card stack"><div><p class="eyebrow">Your feedback</p><h2 class="section-title">Ratings submitted</h2></div><div class="price-row"><span>Restaurant & food</span><strong>'+h(restaurantReviewRating.toFixed(1))+' / 5</strong></div>'+(riderReviewRating>0?'<div class="price-row"><span>Delivery partner</span><strong>'+h(riderReviewRating.toFixed(1))+' / 5</strong></div>':'')+'<p class="caption">Saved to this delivered order.</p></section>':'';
+    const submittedReviewMarkup=savedReview?'<section class="card stack"><div><p class="eyebrow">Your feedback</p><h2 class="section-title">Ratings submitted</h2></div>'+(restaurantReviewRating>0?'<div class="price-row"><span>Restaurant & food</span><strong>'+h(restaurantReviewRating.toFixed(1))+' / 5</strong></div>':'')+(riderReviewRating>0?'<div class="price-row"><span>Delivery partner</span><strong>'+h(riderReviewRating.toFixed(1))+' / 5</strong></div>':'')+'<p class="caption">Saved to this delivered order.</p></section>':'';
     const reviewAction=order.status!=="Delivered"?'':savedReview?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' View your rating</button>':reviewStateReady()?'<button class="button tonal grow" data-action="review-order" data-order-id="'+h(order.id)+'">'+icon("star")+' Rate order</button>':'<button class="button tonal grow" disabled><span class="spinner"></span> Checking feedback…</button>';
     const live=state.tracking[order.id]||{},guest=isGuestOrder(order);
     if(riderLive)ensureTrackingRoute(order,live);
@@ -6399,7 +7637,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +packedPhotoCard(order)
       +onlinePaymentNotice(order)
       +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
-      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?'Paid by UPI':order.paymentMethod==="card"?'Paid by card':order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
+      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?(order.paymentState==="paid"?'Paid by UPI':'UPI · payment pending'):order.paymentMethod==="card"?(order.paymentState==="paid"?'Paid by card':'Card · payment pending'):order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
       +'<section class="card stack"><h2 class="section-title">Delivery details</h2>'+addressSummary(order.address||{})+(order.instructions?'<div class="notice info">'+icon("info","small")+'<span>'+h(order.instructions)+'</span></div>':'')+'</section>'+submittedReviewMarkup
       +(order.status!=="Cancelled"?adminContactMarkup():'')
       +(guest?'':'<div class="cluster wrap">'+(order.status==="Delivered"?'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>'+reviewAction:'')+(["Order placed","Accepted"].includes(order.status)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Request cancellation</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>')
@@ -6457,12 +7695,16 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!state.trackingMapCollapsed){const b=trackingFrameBounds(points,live);if(b)return trackingBoundsCenter(b);}
     return points.riderPoint||trackingDestination(points,live)||null;
   }
-  function trackingFrameBounds(points,live){
+  function trackingFrameBounds(points,live,forOrder){
     const dest=trackingDestination(points,live);
     if(!points.riderPoint||!dest)return null;
-    const pts=[points.riderPoint,dest],ms=state.trackingMap,order=ms&&orderById(ms.orderId);
+    const pts=[points.riderPoint,dest],ms=state.trackingMap,order=forOrder||(ms&&orderById(ms.orderId));
     const view=order&&trackingRouteView(order,live||{});
-    if(view&&view.route)trackingRemainingRoute(view.route,Number.isFinite(ms.routeProgress)?ms.routeProgress:view.progress).forEach(p=>pts.push(p));
+    if(view&&view.route&&!view.lost)trackingRemainingRoute(view.route,Number.isFinite(ms.routeProgress)?ms.routeProgress:view.progress).forEach(p=>pts.push(p));
+    // Before the delivery leg the planned kitchen-to-door arc is drawn, so a far
+    // trip zooms out to show all of it instead of running off the screen.
+    if(order&&!trackingDeliveryLegActive(order,live||{})&&points.restaurantPoint&&points.customerPoint)
+      pts.push(points.restaurantPoint,points.customerPoint,trackingArcPeak(points.restaurantPoint,points.customerPoint));
     let minLat=pts[0].lat,maxLat=minLat,minLng=pts[0].lng,maxLng=minLng;
     for(const p of pts){minLat=Math.min(minLat,p.lat);maxLat=Math.max(maxLat,p.lat);minLng=Math.min(minLng,p.lng);maxLng=Math.max(maxLng,p.lng);}
     return {minLat,maxLat,minLng,maxLng};
@@ -6577,8 +7819,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const route=trackingRoutePoints(order,live||{});
     return!!(route&&route.source==="google");
   }
-  function trackingCameraView(points,live){
-    const b=trackingFrameBounds(points,live);
+  function trackingCameraView(points,live,order){
+    const b=trackingFrameBounds(points,live,order);
     if(b)return{center:trackingBoundsCenter(b),zoom:trackingFrameZoom(b)};
     if(points.riderPoint)return{center:points.riderPoint,zoom:TRACKING_MAP_MAX_ZOOM};
     const all=trackingAllPoints(points);
@@ -6589,7 +7831,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(current&&current.orderId===order.id)return current;
     // Frame this order's trip only, never the previous order's route.
     state.trackingMap=null;
-    const fitted=trackingCameraView(points,state.tracking[order.id]||{});
+    const fitted=trackingCameraView(points,state.tracking[order.id]||{},order);
     if(!fitted)return null;
     state.trackingMap={orderId:order.id,zoom:fitted.zoom,anchorLat:fitted.center.lat,anchorLng:fitted.center.lng,
       panX:0,panY:0,userPanned:false,userZoomed:false,tileKey:"",tilePanX:0,tilePanY:0,tileTimer:null,
@@ -6725,66 +7967,87 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!entry||!entry.polyline||Date.now()-Number(entry.at||0)>TRACKING_ROUTE_TTL_MS)return null;
     return entry.polyline;
   }
+  function trackingHeldKey(order,destination){return String(order&&order.id||"")+">"+destination.lat.toFixed(5)+","+destination.lng.toFixed(5);}
+  function trackingRouteFits(route,point){return trackingProjectOnRoute(route,point).offset<=TRACKING_ON_ROUTE_TOLERANCE_M;}
   function trackingRoutePoints(order,live){
     const points=trackingGeoPoints(order,live);
     const destination=trackingDestination(points,live);
     if(!points.riderPoint||!destination)return null;
+    // The road on screen stays while the partner is on it, whichever grid square
+    // they are in, and until a road that fits their new position has arrived.
+    const heldKey=trackingHeldKey(order,destination),held=state.trackingHeldRoutes[heldKey];
+    if(held&&trackingRouteFits(held,points.riderPoint))return held;
     const key=trackingRouteKey(trackingRouteRiderAnchor(points.riderPoint),destination);
-    const cached=state.trackingRoutes[key];
-    if(cached&&cached.points)return cached;
-    const polyline=cachedTrackingRoute(key);
-    if(polyline){
-      const decoded=decodePolyline(polyline);
+    let found=state.trackingRoutes[key];
+    if(!(found&&found.points)){
+      const polyline=cachedTrackingRoute(key),decoded=polyline?decodePolyline(polyline):[];
       if(decoded.length>=2){
         const entry=readTrackingRouteCache()[key]||{};
-        state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(decoded),{durationS:Number(entry.durationS)||0,source:entry.source||"osrm"});
-        return state.trackingRoutes[key];
+        found=state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(decoded),{durationS:Number(entry.durationS)||0,source:entry.source||"osrm"});
       }
     }
-    // The free public OSRM router can be slow, rate-limited or briefly unreachable
-    // from a mobile connection, and ensureTrackingRoute only retries every
-    // TRACKING_ROUTE_RETRY_MS after a failure - rather than showing no line at all
-    // in the meantime, draw a straight line between the two points. It is not
-    // cached, so it is transparently replaced by the real road-following polyline
-    // the moment ensureTrackingRoute succeeds (state.trackingRoutes[key] then has
-    // .points and the check above returns it directly).
-    return trackingRouteMetrics([points.riderPoint,destination]);
+    if(found&&found.points&&(!held||trackingRouteFits(found,points.riderPoint))){state.trackingHeldRoutes[heldKey]=found;return found;}
+    if(held)return held;
+    // No road known yet. trackingRouteView draws no line for this; the two
+    // points still give the distance for the arrival time.
+    return Object.assign(trackingRouteMetrics([points.riderPoint,destination]),{straight:true});
+  }
+  const TRACKING_ROUTE_REASK_MS=20*1000,TRACKING_SERVER_ROUTE_WAIT_MS=12000,TRACKING_FREE_ROUTE_WAIT_MS=8000;
+  function trackingRouteFetch(url,options,waitMs){
+    const abort=typeof AbortController==="function"?new AbortController():null;
+    const timer=abort?setTimeout(()=>abort.abort(),waitMs):0;
+    return fetch(url,Object.assign({},options,abort?{signal:abort.signal}:{})).finally(()=>clearTimeout(timer));
+  }
+  function trackingRouteFromPayload(payload,source){
+    const polyline=payload&&payload.code==="Ok"&&Array.isArray(payload.routes)&&payload.routes[0]?payload.routes[0].geometry:"";
+    const decoded=typeof polyline==="string"&&polyline.length>1?decodePolyline(polyline):[];
+    if(decoded.length<2)return null;
+    return {polyline,decoded,source,durationS:source==="google"?Number(payload.routes[0].duration)||0:0};
   }
   async function ensureTrackingRoute(order,live){
     const points=trackingGeoPoints(order,live);
     const destination=trackingDestination(points,live);
     if(!points.riderPoint||!destination||!state.online)return;
+    // Still on the road being drawn: nothing to ask, so no paid route call.
+    const held=state.trackingHeldRoutes[trackingHeldKey(order,destination)];
+    if(held&&trackingRouteFits(held,points.riderPoint))return;
     const key=trackingRouteKey(trackingRouteRiderAnchor(points.riderPoint),destination);
     const existing=state.trackingRoutes[key];
-    if(existing&&(existing.points||existing.pending))return;
-    if(existing&&existing.failedAt&&Date.now()-existing.failedAt<TRACKING_ROUTE_RETRY_MS)return;
-    if(cachedTrackingRoute(key))return;
+    if(existing&&existing.pending)return;
+    if(existing&&existing.points&&(trackingRouteFits(existing,points.riderPoint)||Date.now()-Number(existing.askedAt||0)<TRACKING_ROUTE_REASK_MS))return;
+    if(existing&&existing.failedAt&&Date.now()-existing.failedAt<(trackingDeliveryLegActive(order,live)?TRACKING_ROUTE_REASK_MS:TRACKING_ROUTE_RETRY_MS))return;
+    if(!existing&&cachedTrackingRoute(key))return;
     state.trackingRoutes[key]={pending:true};
     try{
       const from=points.riderPoint,to=destination;
       const url=TRACKING_ROUTE_ENDPOINT
         +from.lng.toFixed(6)+","+from.lat.toFixed(6)+";"+to.lng.toFixed(6)+","+to.lat.toFixed(6)
         +"?overview=full&geometries=polyline";
-      let response=null,source="osrm";
+      let road=null,oldRoad=null;
       // After handover our server shares one Google two-wheeler route per order
       // (it decides when a new one is really needed); before that, the free router.
       if(trackingDeliveryLegActive(order,live)&&destination===points.customerPoint){
         try{
           await ensureSession();
-          response=await fetch(DELIVERY_ROUTE_URL+"?orderId="+encodeURIComponent(order.id)+"&from="+from.lng.toFixed(5)+","+from.lat.toFixed(5),
-            {method:"GET",headers:{Authorization:"Bearer "+state.session.idToken}});
-          if(response.ok)source="google";else response=null;
-        }catch(_){response=null;}
+          const response=await trackingRouteFetch(DELIVERY_ROUTE_URL+"?orderId="+encodeURIComponent(order.id)+"&from="+from.lng.toFixed(5)+","+from.lat.toFixed(5),
+            {method:"GET",cache:"no-store",headers:{Authorization:"Bearer "+state.session.idToken}},TRACKING_SERVER_ROUTE_WAIT_MS);
+          if(response.ok)road=trackingRouteFromPayload(await response.json(),"google");
+        }catch(_){road=null;}
+        // The server spaces out new routes, so right after a turn it can still
+        // send the old road. The free router answers for the road actually taken.
+        if(road&&!trackingRouteFits(trackingRouteMetrics(road.decoded),from)){oldRoad=road;road=null;}
       }
-      if(!response)response=await fetch(url,{method:"GET",cache:"force-cache"});
-      if(!response.ok)throw new Error("route request failed");
-      const payload=await response.json();
-      const polyline=payload&&payload.code==="Ok"&&Array.isArray(payload.routes)&&payload.routes[0]?payload.routes[0].geometry:"";
-      const decoded=typeof polyline==="string"&&polyline.length>1?decodePolyline(polyline):[];
-      if(decoded.length<2)throw new Error("route had no usable geometry");
-      const durationS=source==="google"?Number(payload.routes[0].duration)||0:0;
-      state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(decoded),{durationS,source});
-      writeTrackingRouteCache(key,{polyline:polyline,durationS,source,at:Date.now()});
+      if(!road){
+        try{
+          const response=await trackingRouteFetch(url,{method:"GET",cache:"force-cache"},TRACKING_FREE_ROUTE_WAIT_MS);
+          if(response.ok)road=trackingRouteFromPayload(await response.json(),"osrm");
+        }catch(_){road=null;}
+      }
+      const fits=!!road;
+      road=road||oldRoad;
+      if(!road)throw new Error("route had no usable geometry");
+      state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(road.decoded),{durationS:road.durationS,source:road.source,askedAt:Date.now()});
+      if(fits)writeTrackingRouteCache(key,{polyline:road.polyline,durationS:road.durationS,source:road.source,at:Date.now()});
       if(liveOrderRoute())render({preserveScroll:true});
     }catch(_){
       state.trackingRoutes[key]={failedAt:Date.now()};
@@ -6795,6 +8058,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // projected onto the route, and the trim point is then eased along the road
   // between fixes so the line retracts continuously instead of in steps.
   const TRACKING_ON_ROUTE_TOLERANCE_M=140, TRACKING_MAX_REWIND_M=25;
+  // Further than this from the road, the line is hidden until a new road arrives.
+  const TRACKING_LINE_LOST_M=300;
+  const TRACKING_STRAND_GAP_M=60, TRACKING_SAME_ROAD_M=30;
   function trackingMetres(a,b){
     const km=geoDistanceKm(a.lat,a.lng,b.lat,b.lng);
     return km==null?0:km*1000;
@@ -6806,11 +8072,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // Closest point on the route, as a distance along it plus how far off it the
   // fix landed - the offset is what tells us the partner is actually on this road.
-  function trackingProjectOnRoute(route,point){
+  function trackingProjectOnRoute(route,point,near){
     const cosLat=Math.cos(point.lat*Math.PI/180);
     const toX=lng=>lng*111320*cosLat,toY=lat=>lat*110540;
     const px=toX(point.lng),py=toY(point.lat);
     let bestProgress=0,bestOffset=Infinity;
+    const hits=[];
     for(let i=1;i<route.points.length;i++){
       const a=route.points[i-1],b=route.points[i];
       const ax=toX(a.lng),ay=toY(a.lat),bx=toX(b.lng),by=toY(b.lat);
@@ -6818,10 +8085,20 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       let t=lengthSquared>0?((px-ax)*dx+(py-ay)*dy)/lengthSquared:0;
       t=Math.max(0,Math.min(1,t));
       const offset=Math.hypot(px-(ax+dx*t),py-(ay+dy*t));
+      const progress=route.cumulative[i-1]+(route.cumulative[i]-route.cumulative[i-1])*t;
       if(offset<bestOffset){
         bestOffset=offset;
-        bestProgress=route.cumulative[i-1]+(route.cumulative[i]-route.cumulative[i-1])*t;
+        bestProgress=progress;
       }
+      hits.push({progress,offset});
+    }
+    // A road that passes the door and U-turns back has two strands side by side,
+    // and GPS wobble can't tell them apart. If the closest point is suddenly far
+    // along the route, stay on the strand the partner is already riding.
+    if(Number.isFinite(near)&&Math.abs(bestProgress-near)>TRACKING_STRAND_GAP_M){
+      let kept=null;
+      hits.forEach(hit=>{if(hit.offset<=bestOffset+TRACKING_SAME_ROAD_M&&(!kept||Math.abs(hit.progress-near)<Math.abs(kept.progress-near)))kept=hit;});
+      if(kept)return kept;
     }
     return {progress:bestProgress,offset:bestOffset};
   }
@@ -6850,18 +8127,25 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function trackingRouteView(order,live){
     const route=trackingRoutePoints(order,live);
-    if(!route||route.points.length<2)return null;
+    if(!route||route.straight||route.points.length<2)return null;
     if(!trackingDeliveryLegActive(order,live))return null;
     const ms=state.trackingMap;
     if(!ms)return null;
     const riderLat=Number(live.lat),riderLng=Number(live.lng);
-    if(!Number.isFinite(riderLat)||!Number.isFinite(riderLng))return {route:route,progress:ms.routeProgress||0,snapped:false};
-    const projected=trackingProjectOnRoute(route,{lat:riderLat,lng:riderLng});
-    if(projected.offset>TRACKING_ON_ROUTE_TOLERANCE_M)return {route:route,progress:ms.routeProgress||0,snapped:false};
-    return {route:route,progress:projected.progress,snapped:true};
+    const near=ms.routeRef===route?(Number.isFinite(ms.routeTarget)?ms.routeTarget:ms.routeProgress):undefined;
+    const projected=Number.isFinite(riderLat)&&Number.isFinite(riderLng)?trackingProjectOnRoute(route,{lat:riderLat,lng:riderLng},near):null;
+    const snapped=!!projected&&projected.offset<=TRACKING_ON_ROUTE_TOLERANCE_M;
+    // Metres ridden on the old road mean nothing on a new one.
+    if(ms.routeRef!==route){
+      ms.routeRef=route;
+      stopTrackingRouteGlide();
+      ms.routeProgress=snapped?projected.progress:0;
+      ms.routeFrom=ms.routeTarget=ms.routeProgress;
+    }
+    return snapped?{route:route,progress:projected.progress,snapped:true}:{route:route,progress:ms.routeProgress||0,snapped:false,lost:!!projected&&projected.offset>TRACKING_LINE_LOST_M};
   }
   // The svg keeps a frame sized to the whole route so that trimming the line
-  // only rewrites its points - the element itself never has to move or resize.
+  // only rewrites its points. A new route gets a new frame (applyTrackingRouteFrame).
   function trackingRouteFrame(ms,route){
     let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
     route.points.forEach(point=>{
@@ -6899,6 +8183,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function trackingRouteCoords(ms,route,frame,progress,lane){
     return (lane||trackingLanePoints(ms,route,progress)).map(p=>(p.x-frame.minX).toFixed(1)+","+(p.y-frame.minY).toFixed(1)).join(" ");
   }
+  function applyTrackingRouteFrame(svg,frame){
+    const width=frame.width.toFixed(0),height=frame.height.toFixed(0),left=frame.minX.toFixed(1)+"px",top=frame.minY.toFixed(1)+"px";
+    if(svg.getAttribute("width")!==width||svg.getAttribute("height")!==height){
+      svg.setAttribute("width",width);svg.setAttribute("height",height);svg.setAttribute("viewBox","0 0 "+width+" "+height);
+    }
+    svg.style.left=left;svg.style.top=top;
+  }
   function trackingRouteMarkup(ms,order,live){
     const view=trackingRouteView(order,live);
     if(!view)return "";
@@ -6907,7 +8198,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const coords=trackingRouteCoords(ms,route,frame,ms.routeProgress);
     return '<svg class="map-route" aria-hidden="true" width="'+frame.width.toFixed(0)+'" height="'+frame.height.toFixed(0)+'"'
       +' viewBox="0 0 '+frame.width.toFixed(0)+' '+frame.height.toFixed(0)+'"'
-      +' style="left:'+frame.minX.toFixed(1)+'px;top:'+frame.minY.toFixed(1)+'px">'
+      +' style="left:'+frame.minX.toFixed(1)+'px;top:'+frame.minY.toFixed(1)+'px'+(view.lost?';display:none':'')+'">'
       +'<polyline class="map-route-casing" points="'+coords+'"/>'
       +'<polyline class="map-route-line" points="'+coords+'"/>'
       +'</svg>';
@@ -6926,7 +8217,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const lane=trackingLanePoints(ms,route,progress);
     const svg=card.querySelector(".map-route");
     if(svg){
-      const coords=trackingRouteCoords(ms,route,trackingRouteFrame(ms,route),progress,lane);
+      const frame=trackingRouteFrame(ms,route);
+      applyTrackingRouteFrame(svg,frame);
+      svg.style.display="";
+      const coords=trackingRouteCoords(ms,route,frame,progress,lane);
       const lines=svg.querySelectorAll("polyline");
       for(let i=0;i<lines.length;i++)lines[i].setAttribute("points",coords);
     }
@@ -7043,10 +8337,27 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function trackingPlannedLineMarkup(ms,points){
     if(!points.restaurantPoint||!points.customerPoint)return"";
     const a=trackingLocalPoint(ms,points.restaurantPoint),b=trackingLocalPoint(ms,points.customerPoint),pad=8;
-    const minX=Math.min(a.x,b.x)-pad,minY=Math.min(a.y,b.y)-pad;
-    const width=Math.max(1,Math.abs(a.x-b.x))+pad*2,height=Math.max(1,Math.abs(a.y-b.y))+pad*2;
+    // A gentle arc, not a ruler line: it reads as "the trip", not as the road.
+    const c=trackingArcControl(a,b);
+    const minX=Math.min(a.x,b.x,c.x)-pad,minY=Math.min(a.y,b.y,c.y)-pad;
+    const width=Math.max(a.x,b.x,c.x)-minX+pad,height=Math.max(a.y,b.y,c.y)-minY+pad;
+    const pt=q=>(q.x-minX).toFixed(1)+','+(q.y-minY).toFixed(1);
     return '<svg class="map-plan" aria-hidden="true" width="'+width.toFixed(0)+'" height="'+height.toFixed(0)+'" viewBox="0 0 '+width.toFixed(0)+' '+height.toFixed(0)+'" style="left:'+minX.toFixed(1)+'px;top:'+minY.toFixed(1)+'px">'
-      +'<polyline points="'+(a.x-minX).toFixed(1)+','+(a.y-minY).toFixed(1)+' '+(b.x-minX).toFixed(1)+','+(b.y-minY).toFixed(1)+'"/></svg>';
+      +'<path d="M'+pt(a)+' Q'+pt(c)+' '+pt(b)+'"/></svg>';
+  }
+  // Control point of the planned-trip arc: off the midpoint, always bowing upward on screen. A
+  // high bend gives the curve a clear hump in the middle, like a parabola seen in perspective.
+  const TRACKING_ARC_BEND=0.34;
+  function trackingArcControl(a,b){
+    const dx=b.x-a.x,dy=b.y-a.y;
+    let px=-dy,py=dx;
+    if(py>0){px=-px;py=-py;}
+    return {x:(a.x+b.x)/2+px*TRACKING_ARC_BEND,y:(a.y+b.y)/2+py*TRACKING_ARC_BEND};
+  }
+  // The arc's highest point, so the camera can keep the whole curve in frame.
+  function trackingArcPeak(from,to){
+    const z=TRACKING_MAP_MAX_ZOOM,a=mapWorld(from.lat,from.lng,z),b=mapWorld(to.lat,to.lng,z),c=trackingArcControl(a,b);
+    return worldToLatLng((a.x+b.x)/4+c.x/2,(a.y+b.y)/4+c.y/2,z);
   }
   // ---- arrival estimate -------------------------------------------------------
   // Minutes to the door from where the partner actually is: the road still
@@ -7137,6 +8448,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     // In compact mode the tap target is the .map-thumb wrapper around this,
     // not the card itself - see trackingMapThumbMarkup().
     const follow=trackingFollowActive(ms),rain=trackingIsRaining(order);
+    const shownRoute=trackingDeliveryLegActive(order,live)?trackingRouteView(order,live):null;
+    // A full redraw shows the partner where they are now, line and scooter together.
+    if(shownRoute&&shownRoute.snapped&&Number.isFinite(ms.routeProgress)&&!(shownRoute.progress<ms.routeProgress&&shownRoute.progress>=ms.routeProgress-TRACKING_MAX_REWIND_M)){
+      stopTrackingRouteGlide();
+      ms.routeProgress=ms.routeFrom=ms.routeTarget=shownRoute.progress;
+    }
+    const riderShown=shownRoute&&shownRoute.snapped&&Number.isFinite(ms.routeProgress)?trackingPointAtProgress(shownRoute.route,ms.routeProgress):points.riderPoint;
     return '<section class="card map-card'+(compact?' compact':'')+(follow?' follow':'')+(trackingIsNight()?' night':'')+(rain?' rain':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'" style="--rider-w:'+trackingRiderWidth(ms.zoom)+'px;--map-bearing:'+(follow?ms.bearing:0).toFixed(1)+'deg">'
       +'<div class="map-plane" id="tracking-map-plane" style="transform:'+trackingPlaneTransform(ms)+'">'
       +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
@@ -7144,7 +8462,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +(trackingDeliveryLegActive(order,live)?trackingRouteMarkup(ms,order,live):trackingPlannedLineMarkup(ms,points))
       +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
-      +trackingPinMarkup(ms,"rider",points.riderPoint,"Delivery partner","bike",fresh)
+      +trackingPinMarkup(ms,"rider",riderShown,"Delivery partner","bike",fresh)
       +'</div></div>'
       +'<div class="map-haze" aria-hidden="true"></div>'+(rain?'<div class="map-rain'+(trackingRainHeavy(order)?' heavy':'')+'" aria-hidden="true"><b class="r1"></b><b class="r2"></b><b class="r3"></b></div>':'')
       // Zoom/recentre controls and the LIVE/STALE badge only make sense at
@@ -7252,6 +8570,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     // On the delivery leg the scooter is driven along the route itself, which
     // both keeps it on the road and lets the line retract in step with it.
     const routeView=trackingRouteView(order,live);
+    if(trackingDeliveryLegActive(order,live))ensureTrackingRoute(order,live);
+    // A road is known but no line is on screen yet: a full draw adds it.
+    if(routeView&&!card.querySelector(".map-route"))return false;
     updateTrackingHeading(ms,routeView,points.riderPoint);
     applyTrackingRiderHeading(card,ms);
     if(points.riderPoint){
@@ -7262,13 +8583,18 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(routeView&&routeView.snapped){
       let target=routeView.progress;
       // GPS noise must not make the line grow back; only real backtracking does.
-      if(Number.isFinite(ms.routeProgress)&&target<ms.routeProgress-TRACKING_MAX_REWIND_M)target=ms.routeProgress;
+      if(Number.isFinite(ms.routeProgress)&&target<ms.routeProgress&&target>=ms.routeProgress-TRACKING_MAX_REWIND_M)target=ms.routeProgress;
+      // Back on the road after leaving it: no slide from where they left.
+      if(ms.routeLeft){ms.routeLeft=false;ms.routeProgress=target;}
       const rider=card.querySelector(".map-pin.rider");
       if(rider)rider.classList.toggle("live",fresh);
       startTrackingRouteGlide(target,Number(live.updatedAt)||Date.now());
     }else{
       stopTrackingRouteGlide();
       setTrackingPin(card,".map-pin.rider",ms,points.riderPoint,fresh);
+      if(routeView)ms.routeLeft=true;
+      const line=card.querySelector(".map-route");
+      if(line)line.style.display=routeView&&routeView.lost?"none":"";
     }
     trackingCameraFollow(points,live);
     const pillEl=card.querySelector(".map-status-pill");if(pillEl){pillEl.textContent=trackingSignalText(live,fresh);pillEl.className="status-pill map-status-pill "+(fresh?"success":"warning");}
@@ -7304,7 +8630,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const order=orderById(ms.orderId);
     if(!order)return;
     const points=trackingGeoPoints(order,state.tracking[ms.orderId]||{});
-    const fitted=trackingCameraView(points,state.tracking[ms.orderId]||{});
+    const fitted=trackingCameraView(points,state.tracking[ms.orderId]||{},order);
     if(!fitted)return;
     ms.userPanned=false;ms.userZoomed=false;ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
     ms.panX=0;ms.panY=0;ms.tileKey="";
@@ -7628,21 +8954,29 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function addressCard(address) {
-    const selected=address.id===state.profile.selectedAddressId;
-    return '<article class="card stack"><div class="cluster"><span class="settings-icon">'+icon(address.source==="gps"?"target":"address")+'</span><div class="grow"><div class="cluster wrap"><h2 class="card-title">'+h(address.label||"Address")+'</h2>'+(selected?'<span class="status-pill success">Selected</span>':'')+'</div><p class="supporting">'+h(address.address||address.details||"")+'</p><p class="caption">'+h(address.phone||"Mobile number missing")+(Number.isFinite(Number(address.lat))?' · GPS pin saved':' · GPS pin not saved')+'</p></div></div><div class="cluster"><button class="button secondary grow" data-action="select-address" data-address-id="'+h(address.id)+'" '+(selected?'disabled':'')+'>'+(selected?'Current delivery address':'Deliver here')+'</button><button class="icon-button" data-action="edit-address" data-address-id="'+h(address.id)+'" aria-label="Edit '+h(address.label||"address")+'">'+icon("settings")+'</button><button class="icon-button" data-action="delete-address" data-address-id="'+h(address.id)+'" aria-label="Delete '+h(address.label||"address")+'">'+icon("trash")+'</button></div></article>';
+    const selected=address.id===state.profile.selectedAddressId,photo=addressPhotoUrl(address),pinned=!!coordinatePoint(address),door=addressNeedsDoor(address);
+    const title=address.id==="current-location"?"Current location":(address.label||"Address");
+    return '<article class="card addr-card'+(selected?' selected':'')+'"><div class="cluster addr-card-head"><span class="settings-icon">'+icon(addressLabelIcon(address))+'</span><div class="grow"><div class="cluster wrap"><h2 class="card-title">'+h(title)+'</h2>'+(selected?'<span class="status-pill success">Delivering here</span>':'')+'</div>'
+      +'<p class="supporting">'+h(address.address||address.details||"")+'</p>'
+      +(!pinned?'<p class="addr-card-warn">'+icon("warning","small")+' Pin missing. Tap Edit to set it on the map.</p>':door?'<p class="addr-card-warn">'+icon("warning","small")+' Add your house or flat number</p>':'')
+      +'</div>'+(photo?'<img class="addr-card-photo" src="'+h(photo)+'" alt="Photo of this place">':'')+'</div>'
+      +'<div class="cluster"><button class="button secondary grow" data-action="select-address" data-address-id="'+h(address.id)+'" '+(selected?'disabled':'')+'>'+(selected?'Selected':'Deliver here')+'</button><button class="icon-button" data-action="edit-address" data-address-id="'+h(address.id)+'" aria-label="Edit '+h(title)+'">'+icon("settings")+'</button><button class="icon-button" data-action="delete-address" data-address-id="'+h(address.id)+'" aria-label="Delete '+h(title)+'">'+icon("trash")+'</button></div></article>';
   }
   function screenAddresses() {
     const addresses=state.profile.addresses||[];
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Delivery addresses","A mobile number and location pin make delivery reliable.")+networkBanner()
-      +'<button class="button primary full" data-action="detect-location" '+(state.locationBusy?'disabled':'')+'>'+(state.locationBusy?'<span class="spinner"></span> Detecting your location…':icon("target")+' Use my current location')+'</button>'
-      +'<div class="notice info">'+icon("info","small")+'<span>If phone Location is off, Scraveit will ask you to turn it on. The pin is used for serviceability and delivery proximity alerts.</span></div>'
-      +(addresses.length?'<section class="stack">'+addresses.map(addressCard).join("")+'</section>':emptyState("address","No saved addresses","Use your current location, then confirm the mobile number and delivery details."))
-      +'<button class="button tonal full" data-action="add-address">'+icon("plus")+' Add address manually</button></div>'+nav()+'</main>';
+    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Delivery addresses","Where should your food come?")+networkBanner()
+      +'<button class="button primary full" data-action="add-address">'+icon("plus")+' Add new address</button>'
+      +'<button class="button tonal full" data-action="detect-location" '+(state.locationBusy?'disabled':'')+'>'+(state.locationBusy?'<span class="spinner"></span> Finding you…':icon("target")+' Use my current location')+'</button>'
+      +(addresses.length?'<section class="stack">'+addresses.map(addressCard).join("")+'</section>':emptyState("address","No saved addresses yet","Add one in a few taps: put the pin on your building, then type your door number."))
+      +'</div>'+nav()+'</main>';
   }
 
+
   function screenFavourites() {
-    const list=(state.profile.favourites||[]).map(id=>state.catalog[id]).filter(Boolean);
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Favourites","Restaurants you saved for later.")+networkBanner()+(list.length?'<div class="restaurant-list two-column">'+list.map(r=>restaurantCard(r,false)).join("")+'</div>':emptyState("heart","No favourites yet","Tap the heart on a restaurant to keep it here.","go-home","Find restaurants"))+'</div>'+nav()+'</main>';
+    const list=(state.profile.favourites||[]).map(id=>state.catalog[id]).filter(Boolean),groups=favouriteGroups();
+    const groupSection=groups.length?'<section class="stack"><div><h2 class="section-title">Your groups</h2><p class="supporting">Food from more than one restaurant, ordered together</p></div><div class="group-list">'+groups.map(groupCard).join("")+'</div></section>':'';
+    const restaurants=list.length?'<section class="stack">'+(groups.length?'<h2 class="section-title">Restaurants</h2>':'')+'<div class="restaurant-list two-column">'+list.map(r=>restaurantCard(r,false)).join("")+'</div></section>':'';
+    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Favourites","Restaurants and groups you saved for later.")+networkBanner()+groupSection+(restaurants||(!groups.length?emptyState("heart","No favourites yet","Tap the heart on a restaurant, or save a group after ordering from more than one restaurant.","go-home","Find restaurants"):''))+'</div>'+nav()+'</main>';
   }
 
   function preferenceSwitch(key,title,copy,enabled) {
@@ -7708,7 +9042,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // Packaged products (grocery and dairy stores) carry their pack label, which
   // FSSAI requires on the product page.
-  const LABEL_FIELDS=[["brand","Brand"],["netQuantity","Net quantity"],["mrp","MRP (incl. of all taxes)"],["ingredients","Ingredients"],["allergens","Allergens"],["storage","Storage"],["shelfLife","Shelf life"],["manufacturer","Manufacturer / packer"],["manufacturerFssai","Manufacturer FSSAI licence"],["countryOfOrigin","Country of origin"]];
+  const LABEL_FIELDS=[["brand","Brand"],["netQuantity","Net quantity"],["mrp","MRP (incl. of all taxes)"],["ingredients","Ingredients"],["allergens","Allergens"],["storage","Storage"],["shelfLife","Shelf life"],["manufacturer","Manufacturer / packer"],["manufacturerFssai","Manufacturer FSSAI licence"],["manufacturingLicence","Manufacturing licence"],["expiry","Expiry"],["countryOfOrigin","Country of origin"]];
   function packLabel(item){const c=item&&item.compliance;return c&&typeof c==="object"&&(c.netQuantity||c.mrp)?c:null}
   function packPriceMarkup(item){const c=packLabel(item);if(!c)return"";const mrp=Number(c.mrp);return(c.netQuantity?'<span class="caption">'+h(c.netQuantity)+'</span>':'')+(mrp>Number(item.price)?' <span class="caption mrp">MRP <s>'+money(mrp)+'</s></span>':'')}
   function packLabelMarkup(item){const c=packLabel(item);if(!c)return"";return'<details class="pack-label"><summary class="card-title">Product information</summary><dl>'+LABEL_FIELDS.filter(([k])=>c[k]!=null&&c[k]!=="").map(([k,label])=>'<div><dt>'+h(label)+'</dt><dd>'+h(k==="mrp"?money(Number(c[k])):String(c[k]))+'</dd></div>').join("")+'</dl></details>'}
@@ -7724,40 +9058,19 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const current=cartRestaurant(),next=restaurant(sheet.restaurantId);
     return sheetShell("Start a new cart?","A delivery order can contain items from only one restaurant.",'<div class="stack-lg"><div class="notice warning">'+icon("warning","small")+'<span>Your '+h(current&&current.name||"current")+' items will be removed before adding '+h(next&&next.name||"the new item")+'.</span></div><button class="button danger full" data-action="confirm-replace-cart">Clear cart and continue</button><button class="button tonal full" data-action="close-sheet">Keep current cart</button></div>');
   }
-  // "Home"/"Work" need no free text at all; anything else is "Other" with
-  // its own label typed in. Defaulting a brand-new address to "Home" (instead
-  // of an empty required text field, which is what silently blocked saving
-  // before - the input just sat empty until entering the mobile number then
-  // tapping save re-triggered the same unnoticed validation toast) means the
-  // label can never be blank, so this class of stuck-on-save is gone by
-  // construction, not by a stronger validation message.
-  function addressLabelIsOther(label){return !!label&&label!=="Home"&&label!=="Work"}
-  function addressFormSheet(sheet) {
-    const address=sheet.address||{},point=state.addressMapDraft||{},label=address.label||"Home",isOther=addressLabelIsOther(label);
-    // No `required` attributes here (deliberately) - submitAddress() already
-    // re-validates every one of these fields itself and shows a toast naming
-    // exactly what's missing. Relying on the browser's own constraint
-    // validation instead is what caused the real bug: this WebView blocks
-    // the submit before any JS runs when a required field fails, with no
-    // bubble, no console output, nothing - "tap Save, nothing happens at
-    // all" for both the person testing it and any code trying to observe
-    // what went wrong.
-    return sheetShell(address.id?"Edit address":"Add address","Place the delivery pin, then add the door/flat details a rider needs.",'<form id="address-form" class="form-grid"><input type="hidden" name="id" value="'+h(address.id||"")+'"><input type="hidden" name="lat" value="'+h(point.lat==null?"":point.lat)+'"><input type="hidden" name="lng" value="'+h(point.lng==null?"":point.lng)+'">'+addressMapMarkup()+'<div class="field"><label>Save address as</label><div class="segmented three">'+["Home","Work","Other"].map(opt=>'<button type="button" class="segment '+((opt==="Other"?isOther:label===opt)?'active':'')+'" data-action="address-label-chip" data-value="'+opt+'">'+opt+'</button>').join("")+'</div></div>'+(isOther?'<div class="field"><label for="address-label-custom">Label</label><input id="address-label-custom" class="input" name="label" value="'+h(label)+'" placeholder="e.g. Friend\'s place"></div>':'<input type="hidden" name="label" value="'+h(label)+'">')+'<div class="field"><label for="address-area">Area</label><input id="address-area" class="input" name="area" value="'+h(address.area||"")+'" placeholder="Neighbourhood or locality"></div><div class="field"><label for="address-city">City</label><input id="address-city" class="input" name="city" value="'+h(address.city||"")+'" placeholder="City"></div><div class="field"><label for="address-full">Full delivery address</label><textarea id="address-full" class="textarea" name="address" placeholder="Flat, building, street, landmark and city">'+h(address.address||address.details||"")+'</textarea></div><div class="field"><label for="address-phone">Mobile number</label><input id="address-phone" class="input" name="phone" type="tel" inputmode="tel" value="'+h(address.phone||state.profile.phone||"")+'" placeholder="10-digit mobile number"></div><div class="notice success">'+icon("check","small")+'<span>A map pin will be saved with this address.</span></div><button class="button primary full" type="button" data-action="submit-address">Save delivery address</button></form>');
-  }
   function addressPickerCard(address){
-    const selected=address.id===state.profile.selectedAddressId;
-    return '<button class="settings-row" data-action="select-address-and-close" data-address-id="'+h(address.id)+'"><span class="settings-icon">'+icon(address.source==="gps"?"target":"address")+'</span><span class="grow"><strong>'+h(address.label||"Address")+'</strong><span class="supporting">'+h(address.address||address.details||"")+'</span></span>'+(selected?icon("check","small"):'')+'</button>';
+    const selected=address.id===state.profile.selectedAddressId,door=addressNeedsDoor(address);
+    return '<button class="settings-row addr-pick-row" data-action="select-address-and-close" data-address-id="'+h(address.id)+'"><span class="settings-icon">'+icon(addressLabelIcon(address))+'</span><span class="grow"><strong>'+h(address.id==="current-location"?"Current location":(address.label||"Address"))+'</strong><span class="supporting">'+h(address.address||address.details||"")+'</span>'+(door?'<span class="addr-card-warn">Add house / flat no. before ordering</span>':'')+'</span>'+(selected?icon("check","small"):'')+'</button>';
   }
   function addressPickerSheet(){
-    const addresses=state.profile.addresses||[],shown=addresses.slice(0,4);
-    // Always offered first, like every delivery app: one tap to deliver where you are.
+    const addresses=state.profile.addresses||[],shown=addresses.slice(0,5);
+    // Like every delivery app: one tap for where you are now, one for a new place.
     // With location off, the same tap asks the phone to turn it on.
-    const permissionNotice='<button class="use-location" data-action="detect-location">'+icon("target")+'<span class="grow"><strong>Use current location</strong><small>'+(locationReady()?'Deliver to where you are now':'Location is off · tap to turn it on')+'</small></span>'+icon("chevron","small")+'</button>';
-    const list=shown.length?'<div class="stack">'+shown.map(addressPickerCard).join("")+'</div>':emptyState("address","No saved addresses yet","Add a delivery address to get started.");
-    return sheetShell("Select delivery address","",permissionNotice
-      +'<div class="cluster between" style="margin-top:16px"><h2 class="section-title" style="font-size:16px">Select a saved address</h2>'+(addresses.length?'<button class="text-button" data-action="go" data-route="addresses">'+(addresses.length>4?'See all':'Manage')+'</button>':'')+'</div>'
-      +list
-      +'<button class="button tonal full" data-action="add-address" style="margin-top:16px">'+icon("search","small")+' Enter location manually</button>');
+    const useLocation='<button class="use-location" data-action="detect-location"'+(state.locationBusy?' disabled':'')+'>'+icon("target")+'<span class="grow"><strong>'+(state.locationBusy?'Finding you…':'Use current location')+'</strong><small>'+(locationReady()?'Deliver to where you are now':'Location is off · tap to turn it on')+'</small></span>'+(state.locationBusy?'<span class="spinner"></span>':icon("chevron","small"))+'</button>';
+    const addNew='<button class="use-location addr-add-new" data-action="add-address">'+icon("plus")+'<span class="grow"><strong>Add new address</strong><small>Pin it on the map, add your door number</small></span>'+icon("chevron","small")+'</button>';
+    const list=shown.length?'<div class="stack">'+shown.map(addressPickerCard).join("")+'</div>':'';
+    return sheetShell("Where should we deliver?","",'<div class="stack">'+useLocation+addNew+'</div>'
+      +(shown.length?'<div class="cluster between" style="margin-top:20px"><h2 class="section-title" style="font-size:16px">Saved addresses</h2><button class="text-button" data-action="go" data-route="addresses">'+(addresses.length>5?'See all':'Manage')+'</button></div>'+list:''));
   }
   function deleteAddressSheet(sheet){
     const address=(state.profile.addresses||[]).find(value=>value.id===sheet.addressId);
@@ -7769,6 +9082,128 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function forgotSheet() {
     return sheetShell("Reset your password","We will ask Firebase to send a secure reset link.",'<form id="reset-form" class="form-grid"><div class="field"><label for="reset-email">Account email</label><input id="reset-email" class="input" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required></div><div class="notice info">'+icon("info","small")+'<span>Open only the newest reset email. Older links can expire after another reset request is created.</span></div><button class="button primary full" type="submit">Send reset link</button></form>');
+  }
+  // Shown after the payment app or page hands back: asks the server every few
+  // seconds whether the money came in. Resolves true once it did (the order is
+  // then placed), false when the payment didn't happen or the customer left.
+  function waitForPayment(order,checkout){
+    return new Promise(resolve=>{
+      const wait={type:"payWait",order:order,checkout:checkout||null,phase:"checking",startedAt:Date.now(),notPaid:0,receivedAt:0,done:false};
+      const finish=(paid)=>{
+        if(wait.done)return;wait.done=true;clearTimeout(wait.timer);
+        // Answered while "Leave this payment?" was open: close that too, without bringing this screen back.
+        if(pendingConfirm&&pendingConfirm.previous===wait){pendingConfirm.previous=null;settleConfirm(false);}
+        if(state.sheet===wait){state.sheet=null;renderSheet();}
+        resolve(paid);
+      };
+      wait.finish=finish;
+      const poll=async()=>{
+        if(wait.done)return;
+        let status="";
+        try{await ensureSession();status=String((await nativeInvoke("checkOrderPayment",{orderId:String(order.id)},{idToken:state.session.idToken,timeoutMs:15000})||{}).status||"");}catch(_){status="";}
+        if(wait.done)return;
+        const now=Date.now();
+        if(status==="paid"){finish(true);return;}
+        if(status==="received"){
+          // The bank took the money; our confirmation lands in seconds. Don't keep the customer waiting long for it.
+          if(!wait.receivedAt)wait.receivedAt=now;
+          if(now-wait.receivedAt>20000){paymentReceivedIds.add(String(order.id));finish(true);return;}
+          wait.phase="received";
+        }else if(status==="not_paid"){
+          // Twice in a row, so a payment that's only just being created isn't missed.
+          if(++wait.notPaid>=2){finish(false);payFallback(order,checkout,"The payment wasn't completed.");return;}
+        }else{wait.notPaid=0;if(now-wait.startedAt>45000)wait.phase="slow";}
+        if(state.sheet===wait)renderSheet();
+        wait.timer=setTimeout(poll,2500);
+      };
+      setSheet(wait);
+      wait.timer=setTimeout(poll,1200);
+    });
+  }
+  function payWaitSheet(sheet){
+    const copy=sheet.phase==="received"?"Payment received. Placing your order…"
+      :sheet.phase==="slow"?"Your bank is taking longer than usual. You can keep waiting, or pay another way."
+      :"Checking with your bank. This usually takes a few seconds. Please keep the app open.";
+    return sheetShell("Confirming your payment",copy,'<div class="stack" style="align-items:center;padding:24px 0"><span class="spinner"></span>'
+      +(sheet.phase==="slow"?'<button class="button tonal full" data-action="pay-wait-other">Pay another way</button>':'')+'</div>');
+  }
+  // Back or close on the waiting screen: make sure the customer really means to leave.
+  async function leavePayWait(wait){
+    const leave=await askConfirm("Leave this payment?","If you've already paid, stay here. Your order is placed as soon as your bank confirms.","Leave payment","Keep waiting");
+    if(!leave||wait.done)return;
+    wait.finish(false);
+    try{
+      await ensureSession();
+      await nativeInvoke("cancelUnpaidOrder",{orderId:String(wait.order.id),reason:"cancel"},{idToken:state.session.idToken,timeoutMs:30000});
+      if(state.checkout.unpaidOrderId===String(wait.order.id)){state.checkout.unpaidOrderId="";state.checkout.pendingIdempotencyKey="";persistCheckout();}
+      toast("Payment stopped. Your cart is still here.","success");
+    }catch(error){
+      const code=String(error&&error.message||"");
+      if(/ALREADY[_-]EXISTS/i.test(code)){
+        toast(error.userMessage||"Your payment was received.","success");
+        if(wait.checkout)finishOrderPlacement(wait.order,String(wait.order.id),wait.checkout.deliveryOtp||"",false);
+        return;
+      }
+      // Usually a UPI payment the bank is still settling.
+      toast("Your bank is still finishing this payment. If money was taken, your order is placed automatically. If not, nothing is charged.","warning");
+    }
+    render({preserveScroll:true});
+  }
+  function payFallback(order,checkout,reason,code){
+    setSheet({type:"payFallback",order:order,checkout:checkout||null,reason:String(reason||""),busy:false});
+  }
+  function payFallbackSheet(sheet){
+    const cod=paymentMethodEnabled("cod"),busy=sheet.busy?" disabled":"";
+    return sheetShell("Payment not completed",sheet.reason+" The restaurant hasn't got this order yet.",
+      '<div class="stack">'
+      +(cod?'<button class="button primary full" data-action="pay-fallback-cod"'+busy+'>'+icon("wallet")+' Place it as Cash on delivery</button>':'')
+      +'<button class="button '+(cod?'secondary':'primary')+' full" data-action="pay-fallback-retry"'+busy+'>'+icon("refresh")+' Try paying again</button>'
+      +'<button class="button tonal full" data-action="pay-fallback-cancel"'+busy+'>Cancel this order</button></div>');
+  }
+  // Cancels the unpaid order on the server (which first makes sure no payment can still land).
+  async function abandonUnpaidOrder(sheet,reason){
+    sheet.busy=true;renderSheet();
+    try{
+      await ensureSession();
+      await nativeInvoke("cancelUnpaidOrder",{orderId:String(sheet.order.id),reason:reason},{idToken:state.session.idToken,timeoutMs:30000});
+      state.orders=state.orders.map(o=>o.id===sheet.order.id?Object.assign({},o,{status:"Cancelled"}):o);persistOrders();
+      if(state.checkout.unpaidOrderId===String(sheet.order.id)){state.checkout.unpaidOrderId="";state.checkout.pendingIdempotencyKey="";persistCheckout();}
+      return true;
+    }catch(error){
+      sheet.busy=false;
+      const code=String(error&&error.message||"");
+      if(/^(NOT_FOUND|FAILED_PRECONDITION)$/i.test(code)){
+        // Nothing unpaid left to cancel (already cancelled or gone): carry on.
+        if(state.checkout.unpaidOrderId===String(sheet.order.id)){state.checkout.unpaidOrderId="";state.checkout.pendingIdempotencyKey="";persistCheckout();}
+        return true;
+      }
+      if(/ALREADY[_-]EXISTS/i.test(code)){
+        // The money did arrive: this is a paid order after all.
+        closeSheet();toast(error.userMessage||"Your payment was received.","success");
+        if(sheet.checkout)finishOrderPlacement(sheet.order,String(sheet.order.id),sheet.checkout.deliveryOtp||"",false);
+        return false;
+      }
+      renderSheet();toast(friendlyError(error),"danger");return false;
+    }
+  }
+  async function payFallbackAction(action){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="payFallback"||sheet.busy)return;
+    if(action==="retry"){
+      closeSheet();
+      if(await startOnlinePayment(sheet.order,sheet.checkout)&&sheet.checkout)finishOrderPlacement(sheet.order,String(sheet.order.id),sheet.checkout.deliveryOtp||"",false);
+      return;
+    }
+    if(!await abandonUnpaidOrder(sheet,action==="cod"?"cod":"cancel"))return;
+    closeSheet();
+    // A fresh request key: the old one belongs to the cancelled online order.
+    state.checkout.pendingIdempotencyKey="";state.checkout.pendingOrderId="";
+    if(action==="cancel"){persistCheckout();toast(sheet.checkout?"Order cancelled. Your cart is still here.":"Order cancelled.","success");render({preserveScroll:true});return;}
+    state.checkout.payment="cod";persistCheckout();
+    if(sheet.checkout&&state.cart.length){await submitOrder();return;}
+    // From the order screen the cart is gone: rebuild it from this order, ready to place as cash.
+    await reorder(sheet.order);
+    state.checkout.payment="cod";persistCheckout();render({preserveScroll:true});
+    toast("Cash on delivery is selected. Tap Place order.","success");
   }
   function cancelSheet(sheet) {
     return sheetShell("Request cancellation","The restaurant must review this request. It is not shown as cancelled until the server confirms it.",'<form id="cancel-form" class="form-grid" data-order-id="'+h(sheet.orderId)+'"><div class="field"><label for="cancel-reason">Reason</label><select id="cancel-reason" name="reason" class="select"><option>Ordered by mistake</option><option>Wrong delivery address</option><option>Need to change items</option><option>Delivery is taking too long</option><option>Other</option></select></div><button class="button danger full" type="submit">Submit cancellation request</button><button class="button tonal full" type="button" data-action="close-sheet">Keep my order</button></form>');
@@ -7795,6 +9230,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="menuJump")html=menuJumpSheet();
     else if(sheet.type==="item")html=itemSheet(sheet);
     else if(sheet.type==="replaceCart")html=replaceCartSheet(sheet);
+    else if(sheet.type==="togetherBill")html=togetherBillSheet();
+    else if(sheet.type==="togetherSuggest")html=togetherSuggestSheet();
+    else if(sheet.type==="togetherPart")html=togetherPartSheet();
     else if(sheet.type==="address")html=addressFormSheet(sheet);
     else if(sheet.type==="addressPicker")html=addressPickerSheet();
     else if(sheet.type==="deleteAddress")html=deleteAddressSheet(sheet);
@@ -7802,6 +9240,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="aboutYou")html=aboutYouSheet();
     else if(sheet.type==="forgot")html=forgotSheet();
     else if(sheet.type==="cancel")html=cancelSheet(sheet);
+    else if(sheet.type==="payFallback")html=payFallbackSheet(sheet);
+    else if(sheet.type==="payWait")html=payWaitSheet(sheet);
     else if(sheet.type==="deletion")html=deletionSheet();
     else if(sheet.type==="signout")html=signoutSheet();
     else if(sheet.type==="payment")html=paymentInfoSheet();
@@ -7823,6 +9263,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="friendMenu")html=friendMenuSheet(sheet);
     else if(sheet.type==="dob")html=dobSheet();
     else if(sheet.type==="react")html=reactSheet(sheet);
+    else if(sheet.type==="chatRow")html=chatRowSheet(sheet);
     else if(sheet.type==="eating")html=eatingSheet(sheet);
     else if(sheet.type==="dock")html=dockSheet();
     else if(sheet.type==="fun")html=funSheet(sheet);
@@ -7831,6 +9272,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="friendStory")html=storySheet(sheet);
     else if(sheet.type==="storyCam")html=camSheet();
     else if(sheet.type==="videoCompose")html=videoComposeSheet();
+    else if(sheet.type==="reelSource")html=reelSourceSheet();
+    else if(sheet.type==="reelCompose")html=reelComposeSheet();
+    else if(sheet.type==="reelMenu")html=reelMenuSheet(sheet);
+    else if(sheet.type==="reelReport")html=reelReportSheet(sheet);
+    else if(sheet.type==="reelGuide")html=reelGuideSheet();
     else if(sheet.type==="storyPrefs")html=storyPrefsSheet(sheet);
     else if(sheet.type==="storyArchive")html=archiveSheet();
     else if(sheet.type==="feedReply")html=feedReplySheet(sheet);
@@ -7867,8 +9313,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const saved=Object.assign({id:orderId},order||{});
     state.orders=[saved].concat(state.orders.filter(x=>x.id!==orderId));persistOrders();
     if(deliveryOtp)state.deliveryOtps[orderId]=deliveryOtp;
-    state.cart=[];state.coupon=null;state.tip=0;state.lastServerCheckout=null;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
-    toast(recovered?"Your existing order was restored safely.":"Order placed successfully.","success");go("order",{orderId:orderId});
+    state.cart=[];state.coupon=null;state.tip=0;state.lastServerCheckout=null;state.dynamicPricing={rainFee:0,surgeFee:0,riderIncentiveFee:0,weatherSeverity:"",weatherChecked:false,activeOrders:0,checkedAt:0};state.checkout.pendingOrderId="";state.checkout.pendingIdempotencyKey="";state.checkout.unpaidOrderId="";state.loading=false;persistCart();persistCheckout();state.selectedOrderId=orderId;
+    toast(recovered?"Your existing order was restored safely.":"Order placed successfully.","success");
+      // Back from the new order goes straight Home, not through checkout, cart and the menu.
+      state.history=[];if(state.route!=="home"){state.route="home";state.routeData={};}
+      go("order",{orderId:orderId});
     if(!recovered)orderPlacedMoment(saved);
     const squad=state.squad;
     if(squad&&squadIsHost()&&state.squadShares&&state.squadShares.code===squad.code&&saved.restaurantId===squad.data.restaurantId){
@@ -7895,10 +9344,41 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     });
   }
 
-  async function startOnlinePayment(order){
-    if(!order||!isOnlinePaymentMethod(order.paymentMethod)){toast("This order does not need an online payment step.","danger");return;}
+  // Returns true once the payment app finished. When the payment didn't go
+  // through, a sheet asks: cash on delivery instead, try again, or cancel.
+  // checkout: {deliveryOtp} while the order is still being placed from the cart.
+  let paymentStarting=false;
+  // Cashfree sometimes never reports back after the UPI app closes: the customer
+  // returned to Scraveit and nothing happened, and every later "Place order" was
+  // ignored as a payment still in progress. So once the customer is back in the app
+  // and Cashfree stays quiet for a moment, the waiting screen asks our server instead.
+  let paymentInFlight=null;
+  function cashfreeOutcome(sdk){
+    return new Promise((resolve,reject)=>{
+      let settled=false,timer=0;
+      const done=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);document.removeEventListener("visibilitychange",onVisibility);paymentInFlight=null;fn(value);};
+      const back=()=>{clearTimeout(timer);timer=setTimeout(()=>done(resolve,"back"),2500);};
+      // Hidden again (still in the UPI app, or a flicker while it opened): keep waiting for Cashfree.
+      const onVisibility=()=>{if(document.visibilityState==="visible")back();else clearTimeout(timer);};
+      paymentInFlight={back:back,now:()=>done(resolve,"back")};
+      document.addEventListener("visibilitychange",onVisibility);
+      sdk.then(value=>done(resolve,value),error=>done(reject,error));
+    });
+  }
+  // MainActivity.onResume calls this while a Cashfree payment is open: the customer is
+  // back in Scraveit, so show "Confirming your payment" at once, as Zomato does.
+  window.scraveitBackFromPayment=()=>{if(paymentInFlight)paymentInFlight.now();};
+  async function startOnlinePayment(order,checkout){
+    // Tapped again while the last payment is still open: check that payment now instead of ignoring the tap.
+    if(paymentStarting){if(paymentInFlight)paymentInFlight.now();return false;}
+    if(!state.online){toast("You're offline. Connect to the internet to pay.","danger");return false;}
+    paymentStarting=true;
+    try{return await startOnlinePaymentOnce(order,checkout);}finally{paymentStarting=false;}
+  }
+  async function startOnlinePaymentOnce(order,checkout){
+    if(!order||!isOnlinePaymentMethod(order.paymentMethod)){toast("This order does not need an online payment step.","danger");return false;}
     const paymentOperation=paymentIntentOperation();
-    if(!paymentOperation||!nativeAvailable("openExternalPayment")){toast("Online payment is not available in this build.","danger");return;}
+    if(!paymentOperation||!nativeAvailable("openExternalPayment")){payFallback(order,checkout,"Online payment is not available in this version of the app.");return false;}
     state.loading=true;render({preserveScroll:true});
     try{
       await ensureSession();
@@ -7914,35 +9394,51 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         // UPI with a chosen app opens that app directly; otherwise Cashfree's in-app checkout (cards, netbanking, any UPI).
         const upiApp=order.paymentMethod==="upi"?String(state.checkout.upiApp||""):"";
         try{
-          await nativeInvoke("startCashfreePayment",{paymentUrl:redirectUrl,...(upiApp?{upiAppId:upiApp}:{})},{timeoutMs:20*60*1000});
-          toast("Payment done. Confirming it with your bank…","success");
+          await cashfreeOutcome(nativeInvoke("startCashfreePayment",{paymentUrl:redirectUrl,...(upiApp?{upiAppId:upiApp}:{})},{timeoutMs:20*60*1000}));
+          state.loading=false;
+          return await waitForPayment(order,checkout);
         }catch(error){
           const code=String(error&&error.message||"");
-          toast(/CANCEL|DROP/i.test(code)?"Payment cancelled. Your order is saved; tap Pay now to try again.":"Payment not completed. "+(error&&error.userMessage||"Try again or choose another method."),"danger");
+          // The chosen UPI app can't pay on this phone: "Try paying again" opens Cashfree's own page (cards, netbanking, UPI ID).
+          if(code==="UPI_APP_NOT_READY"){state.checkout.upiApp="";persistCheckout();}
+          // Live Cashfree only runs in apps installed from the Play Store; payment stays in the app, never a webpage.
+          payFallback(order,checkout,code==="UNTRUSTED_INSTALLER"?"Online payment works only in the Play Store version of Scraveit."
+            :/CANCEL|DROP/i.test(code)?"You cancelled the payment.":(error&&error.userMessage||"The payment didn't go through."),code);
+          return false;
         }
-        return;
       }
       await nativeInvoke("openExternalPayment",{url:redirectUrl},{timeoutMs:10000});
       toast(order.paymentState==="failed"?"Payment retry opened. Complete it in your payment app.":"Payment app opened. Complete the payment to continue your order.","success");
+      return true;
     }catch(error){
-      toast((order.paymentState==="failed"?"Payment retry could not start. ":"Payment could not start. ")+friendlyError(error),"danger");
+      payFallback(order,checkout,"Payment could not start. "+friendlyError(error));
+      return false;
     }finally{
       state.loading=false;render({preserveScroll:true});
     }
   }
 
   async function submitOrder() {
-    if(state.loading||!state.cart.length)return;
+    if(paymentInFlight){paymentInFlight.now();return;}
+    if(state.loading||!state.cart.length||placeHeld())return;
     const address=currentAddress(),r=cartRestaurant();
-    if(!address){toast("Choose a delivery address first.","danger");go("addresses");return;}
-    if(!validPhone(address.phone||state.profile.phone)){toast("Add a reachable mobile number to the delivery address.","danger");go("addresses");return;}
-    if(!Number.isFinite(Number(address.lat))||!Number.isFinite(Number(address.lng))){toast("Use your current location to attach a delivery pin before checkout.","danger");go("addresses");return;}
+    if(!addressReadyForCheckout(address))return;
     if(!state.online){toast("Reconnect to place this order safely.","danger");return;}
     if(!r||!r.open){toast("This restaurant is not accepting orders right now.","danger");return;}
     if(!paymentMethodEnabled(state.checkout.payment)){toast("This payment method is not available right now. Choose another option.","danger");reconcileCheckoutPaymentSelection();render({preserveScroll:true});return;}
     state.checkout.instructions=(document.getElementById("checkout-instructions")||{}).value||state.checkout.instructions;
+    // Switched to cash after an online payment didn't go through: drop that unpaid order first.
+    if(state.checkout.unpaidOrderId&&!isOnlinePaymentMethod(state.checkout.payment)&&!await abandonUnpaidOrder({order:{id:state.checkout.unpaidOrderId},checkout:null},"cod"))return;
+    const shownTotal=money(orderTotal()),shownRain=rainFee();
     state.loading=true;render({preserveScroll:true});
-    await refreshDynamicPricing();
+    if(!(state.priceLock===true&&serverCheckout())){
+      await refreshDynamicPricing();
+      // The customer pays what the screen showed at this tap. If the server's price differs or can't be reached,
+      // nothing is placed and they see the new total first. A preview the server skipped goes on, because it
+      // usually means a dish or address problem and order creation gives the real reason.
+      if(state.dynamicPricing&&state.dynamicPricing.noPrice==="failed"){state.loading=false;toast("Could not confirm the price. Check your connection and tap Place order again.","danger");render({preserveScroll:true});return;}
+      if(serverCheckout()&&money(orderTotal())!==shownTotal){const added=rainFee()-shownRain;state.loading=false;toast((added>0?"Rain fee "+money(added)+" added. ":"The price changed. ")+"New total "+money(orderTotal())+". Tap Place order again.","warning");render({preserveScroll:true});return;}
+    }
     const idempotencyKey=orderIdempotencyKey();
     const requestPayload={
       idempotencyKey:idempotencyKey,restaurantId:r.id,addressId:address.id,items:callableCartItems(),
@@ -7950,17 +9446,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       deliveryMode:"asap",instructions:String(state.checkout.instructions||"").slice(0,500),contactless:state.checkout.contactless===true,
       paymentMethod:String(state.checkout.payment||"cod"),useWallet:state.useWallet===true&&walletBalance()>0,
       ...(isOnlinePaymentMethod(state.checkout.payment)?{paymentProvider:paymentMethodProvider(state.checkout.payment)}:{}),
-      ...(squadCodeForCheckout(r.id)?{squadCode:squadCodeForCheckout(r.id)}:{})
+      ...(squadCodeForCheckout(r.id)?{squadCode:squadCodeForCheckout(r.id)}:{}),
+      ...(state.priceLock===true?{quotedTotal:Math.round(orderTotal()*100)/100}:{})
     };
     try{
       await ensureSession();
       if(nativeAvailable("createOrder")){
         const result=await nativeInvoke("createOrder",requestPayload,{idToken:state.session.idToken,timeoutMs:38000});
         if(!result||!result.order||!result.orderId||result.order.id!==result.orderId)throw new Error("INVALID_SERVER_RESPONSE");
-        finishOrderPlacement(result.order,String(result.orderId),String(result.deliveryOtp||""),result.recovered===true);
-        if(isOnlinePaymentMethod(result.order.paymentMethod||state.checkout.payment)){
-          await startOnlinePayment(result.order);
+        if(isOnlinePaymentMethod(result.order.paymentMethod||state.checkout.payment)&&result.order.paymentState!=="paid"){
+          // Not placed until paid: the cart and its request key stay, so "Place order" again resumes this same order.
+          state.loading=false;
+          const deliveryOtp=String(result.deliveryOtp||"");
+          if(await startOnlinePayment(result.order,{deliveryOtp:deliveryOtp}))finishOrderPlacement(result.order,String(result.orderId),deliveryOtp,result.recovered===true);
+          else{state.checkout.unpaidOrderId=String(result.orderId);persistCheckout();}
+          return;
         }
+        finishOrderPlacement(result.order,String(result.orderId),String(result.deliveryOtp||""),result.recovered===true);
         return;
       }
       if(state.checkout.payment==="cod"&&nativeAvailable("createCodOrder")){
@@ -7971,8 +9473,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(LEGACY_ORDER_WRITE_COMPATIBILITY===true){await submitLegacyCodOrder(address,r,idempotencyKey);return;}
       throw new Error("ORDER_SERVICE_UNAVAILABLE");
     }catch(error){
+      if(priceChangedError(error)){await showChangedPrice(error);return;}
+      const partnersSaid=partnersBusyText(error);
+      if(partnersSaid){notePartnersBusy(r&&r.id,partnersSaid);toast(partnersSaid,"warning");return;}
       toast("Order was not placed. "+friendlyError(error)+" Retrying uses the same protected request and will not duplicate an order.","danger");
     }finally{state.loading=false;render({preserveScroll:true});}
+  }
+
+  // The server made no order because the total on screen is no longer right (a dish price or coupon changed, or the
+  // saved price ran out). The customer sees the new total first; it is the one the next tap sends.
+  function priceChangedText(error){return String(error&&error.userMessage||"")+" "+String(error&&error.message||"")}
+  function priceChangedError(error){return priceChangedText(error).includes("PRICE_CHANGED")}
+  async function showChangedPrice(error){
+    await refreshDynamicPricing();
+    const said=/PRICE_CHANGED:([\d.]+)/.exec(priceChangedText(error));
+    // The server's own figure is what it will charge, whether the price check is down or says something else.
+    if(said&&state.dynamicPricing){const coupon=eligibleCoupon(),c=serverCheckout()||(state.dynamicPricing.checkout={serverAuthoritative:true,subtotalAtRequest:cartSubtotal(),couponAtRequest:coupon?String(coupon.code||""):"",tipAtRequest:Number(state.tip||0),walletAtRequest:state.useWallet===true});c.total=Number(said[1]);}
+    toast("The price changed. New total "+money(orderTotal())+". Tap Place order again.","warning");
   }
 
   // Unreachable (LEGACY_ORDER_WRITE_COMPATIBILITY is permanently false) - kept
@@ -8016,6 +9533,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function reconcileReorderItems(order,r){
     const next=[],skipped=[];
     for(const old of order.items||[]){
+      if(old&&old.free)continue;
       const current=(r.menu||[]).find(item=>String(item.id)===String(old.itemId)&&item.available!==false&&item.archived!==true);
       if(!current){skipped.push({item:old,reason:"unavailable"});continue;}
       const variants=Array.isArray(current.variants)?current.variants:[],oldVariantId=old.variantId||"",oldVariantName=old.variant||"";
@@ -8065,14 +9583,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       toast(reconciled.skipped.length?"Available items were added at current prices. Some changed items were skipped.":"Order added at current menu prices.","success");
       go("cart");
     }catch(error){toast("Reorder could not be refreshed. "+friendlyError(error),"danger");}
-    finally{state.loading=false;if(state.route!=="cart")render({preserveScroll:true});}
+    finally{state.loading=false;render({preserveScroll:true});}
   }
 
   // ---- Wallet, cashback and referrals. Balances, rewards and eligibility all
   // come from the server (getCustomerWallet); this screen only shows them.
   function installId(){try{let id=localStorage.getItem("scraveit.installId");if(!id){id=uid("inst_").replace(/[^A-Za-z0-9_-]/g,"").slice(0,40);localStorage.setItem("scraveit.installId",id)}return id}catch(_){return""}}
   function paise(v){return money(Number(v||0)/100)}
-  async function loadWallet(force){if(!state.session||state.walletLoading||!nativeAvailable("getCustomerWallet"))return;if(!force&&state.walletData&&Date.now()-state.walletLoadedAt<60000)return;state.walletLoading=true;state.walletError="";try{const raw=await nativeInvoke("getCustomerWallet",{installId:installId()},{timeoutMs:15000});state.walletData=raw&&raw.wallet?raw:null;state.walletLoadedAt=Date.now()}catch(e){state.walletError=friendlyError(e)}finally{state.walletLoading=false;if(["wallet","checkout","offers","account"].includes(state.route))render({preserveScroll:true})}}
+  async function loadWallet(force){if(!state.session||state.walletLoading||!nativeAvailable("getCustomerWallet"))return;if(!force&&state.walletData&&Date.now()-state.walletLoadedAt<60000)return;state.walletLoading=true;state.walletError="";try{const raw=await nativeInvoke("getCustomerWallet",{installId:installId()},{timeoutMs:15000});state.walletData=raw&&raw.wallet?raw:null;state.walletLoadedAt=Date.now()}catch(e){state.walletError=friendlyError(e)}finally{state.walletLoading=false;if(["wallet","cart","offers","account"].includes(state.route))render({preserveScroll:true})}}
   function walletBalance(){return Number(state.walletData&&state.walletData.wallet&&state.walletData.wallet.balancePaise||0)}
   function walletEntryLabel(type){return({cashback:"Cashback earned",customer_referral:"Referral reward",redeem:"Used on an order",restore:"Returned (order cancelled)",cashback_reversal:"Cashback reversed",expiry:"Expired"})[type]||"Wallet update"}
   function cashbackOfferCard(c){const amount=c.kind==="flat"?paise(c.flatAmountPaise)+" cashback":c.percent+"% cashback"+(c.maxCashbackPaise?" up to "+paise(c.maxCashbackPaise):"");return'<article class="card stack wallet-offer"><div class="cluster between"><span class="eyebrow">'+(c.funding==="restaurant"?"Restaurant cashback":"Scraveit cashback")+'</span><span class="status-pill">'+h(amount)+'</span></div><h3 class="card-title">'+h(c.title)+'</h3><p class="caption">'+(c.minimumOrderPaise?"On orders above "+paise(c.minimumOrderPaise)+" · ":"")+'Added to your wallet after delivery · usable for '+h(c.expiryDays)+' days</p></article>'}
@@ -8092,10 +9610,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function shareReferral(){const ref=state.walletData&&state.walletData.referral;if(!ref)return;const text=ref.shareText;if(navigator.share){navigator.share({text}).catch(()=>{});return}try{navigator.clipboard.writeText(text);toast("Invite copied. Paste it in any chat.","success")}catch(_){toast(text,"info")}}
   Object.assign(SCREENS, {
     launch:screenLaunch, welcome:screenWelcome, table:screenTable, login:screenLogin, signup:screenSignup, verifyEmail:screenVerifyEmail, home:screenHome, search:screenSearch,
-    restaurant:screenRestaurant, cart:screenCart, checkout:screenCheckout, orders:screenOrders,
+    restaurant:screenRestaurant, cart:screenCart, orders:screenOrders,
     order:screenOrder, chat:screenChat, tracking:screenOrder, offers:screenOffers, deals:screenDeals, account:screenAccount,
     addresses:screenAddresses, favourites:screenFavourites, preferences:screenPreferences,
-    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, feed:screenFeed, friends:screenFriends, dm:screenDm
+    support:screenSupport, legal:screenLegal, review:screenReview, wallet:screenWallet, aboutYou:screenAboutYou, mealPlans:screenMealPlans, chats:screenChats, feed:screenFeed, reels:screenReels, friends:screenFriends, dm:screenDm
   });
 
   async function refreshAll() {
@@ -8180,8 +9698,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="open-pay-sheet"){setSheet({type:"pay"});return;}
     if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}if(action==="open-packed-photo"){const img=control.querySelector("img");if(img)showPhotoViewer(img.src,img.alt);return;}
     if(action==="home-kind"){const nextKind=control.dataset.value||"restaurant";if(nextKind!==(state.homeKind||"restaurant"))state.cuisine="All";state.homeKind=nextKind;if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
-    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);if(control.dataset.route==="cart"&&state.cart.length){refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});}return;}
-    if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
+    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);return;}
+    if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad)pushSignal({t:"brandClick",adId:String(ad.id).slice(0,128)});if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
     if(action==="capsule-dismiss"){slideCapsuleAway(control.closest(".home-capsule"),1);return;}
     if(action==="quick-rate"){go("review",{orderId:control.dataset.orderId,rating:Number(control.dataset.rating)||0});return;}
     if(action==="escalate-support"){escalateSupport();return;}
@@ -8216,7 +9734,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
     if(action==="welcome-signup"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("signup");return;}
     if(action==="welcome-login"){localStorage.setItem("savrivo.customer.seenWelcome","1");go("login");return;}
-    if(action==="google-signin"){if(state.route==="signup"){const box=document.getElementById("signup-consent");if(!box||!box.checked){toast(window.ScraveitPrivacy?ScraveitPrivacy.tickFirstMessage():"Accept the Terms and Privacy Notice to continue.","danger");return;}state.pendingPrivacyConsent=true;}else state.pendingPrivacyConsent=false;openGoogleSignIn();return;}
+    if(action==="google-signin"){state.pendingPrivacyConsent=true;openGoogleSignIn();return;}
     if(action==="forgot-password"){setSheet({type:"forgot"});return;}
     if(action==="check-verification"){
       state.loading=true;render({preserveScroll:true});
@@ -8235,7 +9753,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
     if(action==="refresh"){refreshAll();return;}
     if(action==="go-home"){go("home");return;}
-    if(action==="open-restaurant"){const restaurantId=control.dataset.restaurantId;if(state.route==="search")recordRecentSearch(state.query);state.selectedMenuCategory="All";state.menuPrice="all";state.menuSort="recommended";state.diet="all";go("restaurant",{restaurantId});ensureRestaurantMenu(restaurantId);return;}
+    if(action==="open-restaurant"){const restaurantId=control.dataset.restaurantId;if(control.querySelector&&control.querySelector(".rc2-ad"))restaurantSignal("adClick",restaurantId);if(state.route==="search")recordRecentSearch(state.query);state.selectedMenuCategory="All";state.menuPrice="all";state.menuSort="recommended";state.diet="all";go("restaurant",{restaurantId});ensureRestaurantMenu(restaurantId);return;}
     if(action==="retry-menu"){ensureRestaurantMenu(state.selectedRestaurantId);return;}
     if(action==="toggle-favourite"){event.preventDefault();event.stopPropagation();toggleFavourite(control.dataset.restaurantId);return;}
     if(action==="cuisine-all"){state.cuisine="All";render({preserveScroll:true});return;}
@@ -8257,6 +9775,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="deal-sort"){const i=DEAL_SORTS.findIndex(x=>x[0]===(state.dealSort||"relevance"));state.dealSort=DEAL_SORTS[(i+1)%DEAL_SORTS.length][0];toast("Sorted by "+DEAL_SORTS[(i+1)%DEAL_SORTS.length][1].toLowerCase()+".");render({preserveScroll:true});return;}
     if(action==="deal-clear"){state.dealCat="all";state.dealPrice="";state.dealVeg=false;render({preserveScroll:true});return;}
     if(action==="quick-add"){haptic(10);addCartItem(control.dataset.restaurantId,control.dataset.itemId,{quiet:true});return;}
+    if(action==="usual-add"){const r=restaurant(control.dataset.restaurantId),u=usualsFor(r).find(x=>x.sig===control.dataset.sig);if(!u){toast("This dish is not on the menu right now.","danger");return;}haptic(10);addCartItem(r.id,u.item.id,{variant:u.variant,addOns:u.addOns,quiet:true});return;}
+    if(action==="usuals-toggle"||action==="usuals-more"){const id=control.dataset.restaurantId,all=state.usualsUi||(state.usualsUi={}),ui=all[id]||(all[id]={});if(action==="usuals-toggle")ui.closed=!ui.closed;else ui.more=!ui.more;render({preserveScroll:true});return;}
     if(action==="open-menu-jump"){setSheet({type:"menuJump"});return;}
     if(action==="menu-jump"){const r=restaurant(),cat=control.dataset.value;if(!r)return;state.selectedMenuCategory="All";state.menuOpen=state.menuOpen||{};(state.menuOpen[r.id]||(state.menuOpen[r.id]={}))[cat]=true;closeSheet();render({preserveScroll:true});requestAnimationFrame(()=>{const el=Array.from(document.querySelectorAll(".menu-cat")).find(x=>x.dataset.cat===cat);if(el)el.scrollIntoView({block:"start",behavior:"smooth"})});return;}
     if(action==="menu-category"){state.selectedMenuCategory=control.dataset.value||"All";render({preserveScroll:true});return;}
@@ -8265,13 +9785,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="dock-cart"){activateCart(control.dataset.restaurantId);closeSheet();go("cart");return;}
     if(action==="dock-menu"){closeSheet();go("restaurant",{restaurantId:control.dataset.restaurantId});return;}
     if(action==="dock-all"){setSheet({type:"dock"});return;}
-    if(action==="dock-rate-rider"){go("review",{orderId:control.dataset.orderId,riderRating:Number(control.dataset.rating)||0});return;}
-    if(action==="dock-rate-skip"){dismissCapsule("rate:"+control.dataset.orderId);render({preserveScroll:true});return;}
+    if(action==="dock-rate"||action==="dock-rate-rider"){dockRateTap(control,action);return;}
+    if(action==="dock-rate-skip"){dockRateSkip(control);return;}
     if(action==="dock-remove"){removeCart(control.dataset.restaurantId);if(!dockSlides().length)closeSheet();return;}
-    if(action==="confirm-replace-cart"){const pending=state.sheet;state.cart=[];persistCart();addCartItem(pending.restaurantId,pending.itemId,pending.custom||{});return;}
+    if(action==="confirm-replace-cart"){const pending=state.sheet;if(partnersBusy(pending.restaurantId)&&!tableHere(pending.restaurantId)){closeSheet();toast("Delivery partners are busy. You can add dishes in a few minutes.","warning");return;}state.cart=[];persistCart();addCartItem(pending.restaurantId,pending.itemId,pending.custom||{});return;}
     if(action==="clear-unavailable-cart"){state.cart=[];state.coupon=null;state.tip=0;persistCart();toast("Unavailable cart removed.","success");go("home");return;}
     if(action==="cart-quantity"){updateCart(control.dataset.key,Number(control.dataset.delta||0));return;}
-    if(action==="go-checkout"){if(!state.cart.length)return;go("checkout");refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});return;}
     if(action==="apply-offer-code"){const code=control.dataset.code,rid=control.dataset.restaurantId;state.pendingCoupon={code,restaurantId:rid};if(state.cart.length&&state.cart[0].restaurantId===rid)refreshAutoOffer();toast(code+" will be applied in your cart.","success");render({preserveScroll:true});return;}
     if(action==="offers-sort"){state.sort="offers";state.homeFilter="offers";go("search");return;}
     if(action==="apply-coupon"){
@@ -8292,7 +9811,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.coupon=null;state.couponAuto=false;
       toast("Offer removed.","success");render({preserveScroll:true});scheduleCheckoutRefresh();return;
     }
-    if(action==="toggle-wallet"){state.useWallet=!state.useWallet;render({preserveScroll:true});refreshDynamicPricing().then(()=>{if(state.route==="checkout")render({preserveScroll:true})}).catch(()=>{});return;}
+    if(action==="toggle-wallet"){state.useWallet=!state.useWallet;render({preserveScroll:true});refreshDynamicPricing().then(()=>{if(state.route==="cart")render({preserveScroll:true})}).catch(()=>{});return;}
     if(action==="wallet-refresh"){loadWallet(true);return;}
     if(action==="share-referral"){shareReferral();return;}
     if(action==="set-tip"){
@@ -8315,6 +9834,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="place-order"){submitOrder();return;}
     if(action==="open-order"){go("order",{orderId:control.dataset.orderId});return;}if(action==="open-order-chat"){const o=state.orders.find(x=>x.id===control.dataset.orderId);if(o)openOrderChat(o,control.dataset.channel,control.dataset.channel==="customerRider"?"Chat with delivery partner":"Chat with restaurant");return;}
     if(action==="pay-order"){const o=orderById(control.dataset.orderId);if(o)startOnlinePayment(o);return;}
+    if(action==="pay-fallback-cod"){payFallbackAction("cod");return;}
+    if(action==="pay-wait-other"){const w=state.sheet;if(w&&w.type==="payWait"){w.finish(false);payFallback(w.order,w.checkout,"Your bank hasn't confirmed this payment yet.");}return;}
+    if(action==="pay-fallback-retry"){payFallbackAction("retry");return;}
+    if(action==="pay-fallback-cancel"){payFallbackAction("cancel");return;}
     if(action==="open-tracking"){go("order",{orderId:control.dataset.orderId});return;}
     if(action==="reorder"){const order=orderById(control.dataset.orderId);if(order)reorder(order);return;}
     if(action==="review-order"){go("review",{orderId:control.dataset.orderId});return;}
@@ -8334,7 +9857,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="edit-address"){const address=(state.profile.addresses||[]).find(x=>x.id===control.dataset.addressId);if(address)openAddressSheet(clone(address));return;}
     if(action==="delete-address"){const address=(state.profile.addresses||[]).find(x=>x.id===control.dataset.addressId);if(address)setSheet({type:"deleteAddress",addressId:address.id});return;}
     if(action==="confirm-delete-address"){await deleteAddress(control.dataset.addressId);return;}
-    if(action==="address-label-chip"){const value=control.dataset.value,address=state.sheet&&state.sheet.address;if(address)address.label=value==="Other"?(addressLabelIsOther(address.label)?address.label:""):value;renderSheet();return;}
+    if(action==="address-label-chip"){const value=control.dataset.value,address=state.sheet&&state.sheet.address;if(address){address.labelKind=value;if(value!=="Other")address.label=value;else if(address.label==="Home"||address.label==="Work")address.label=""}renderAddressKeepingFocus();return;}
     // Routed through the same data-action click dispatcher every other
     // control in this sheet already uses (X, chips, map zoom, "Use phone
     // location") instead of a native <button type="submit"> - this WebView
@@ -8347,8 +9870,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     // rather than chasing it further.
     if(action==="submit-address"){const form=document.getElementById("address-form");if(form)await submitAddress(form);return;}
     if(action==="detect-address-location"){requestLocation("address");return;}
-    if(action==="address-map-zoom"){state.addressMapZoom=Math.max(12,Math.min(18,state.addressMapZoom+Number(control.dataset.delta||0)));renderSheet();return;}
-    if(action==="address-map-pick"){const rect=control.getBoundingClientRect(),point=state.addressMapDraft||addressMapSeed(null),world=mapWorld(point.lat,point.lng,state.addressMapZoom),next=worldToLatLng(world.x+(event.clientX-rect.left-rect.width/2),world.y+(event.clientY-rect.top-rect.height/2),state.addressMapZoom);state.addressMapDraft=next;if(state.sheet&&state.sheet.address){state.sheet.address.lat=next.lat;state.sheet.address.lng=next.lng;}renderSheet();return;}
+    if(action==="address-confirm-pin"){goAddressStep("details");return;}
+    if(action==="address-step"){goAddressStep(control.dataset.step==="details"?"details":"map");return;}
+    if(action==="address-search-pick"){pickAddressSearchResult(Number(control.dataset.index));return;}
+    if(action==="address-photo"){pickAddressPhoto(control.dataset.source);return;}
+    if(action==="address-photo-remove"){if(state.sheet&&state.sheet.address){delete state.sheet.address.photoUrl;delete state.sheet.address.photoPath;paintAddressSheet()}return;}
+    if(action==="address-phone-edit"){if(state.sheet&&state.sheet.type==="address"){state.sheet.editPhone=true;renderSheet();const el=document.getElementById("address-phone");if(el){el.focus();el.select()}}return;}
+    if(action==="address-complete"){const a=currentAddress();if(a)openAddressSheet(a,{step:coordinatePoint(a)?"details":"map"});else openAddressSheet({});return;}
+    if(action==="address-map-zoom"){state.addressMapZoom=Math.max(ADDRESS_MAP_MIN_ZOOM,Math.min(ADDRESS_MAP_MAX_ZOOM,addressZoom()+Number(control.dataset.delta||0)));paintAddressSheet();return;}
     if(action==="select-address"){selectAddress(control.dataset.addressId);return;}
     if(action==="open-address-picker"){setSheet({type:"addressPicker"});return;}
     if(action==="select-address-and-close"){await selectAddress(control.dataset.addressId);closeSheet();return;}
@@ -8468,11 +9997,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     setFieldError("login-email",validEmail(email)?"":"Enter a valid email address.");setFieldError("login-password",password?"":"Enter your password.");
     if(!validEmail(email)||!password)return;
     state.loading=true;render({preserveScroll:true});
-    try{const cred=await fbAuth.signInWithEmailAndPassword(email,password);applyAuthUser(cred.user);await afterAuth();}
+    state.pendingPrivacyConsent=true;try{const cred=await fbAuth.signInWithEmailAndPassword(email,password);applyAuthUser(cred.user);await afterAuth();}
     catch(error){toast(friendlyError(error),"danger");state.loading=false;render({preserveScroll:true});}
   }
   async function submitSignup(form) {
-    const name=form.elements["name"].value.trim(),email=form.elements["email"].value.trim().toLowerCase(),phone=form.elements["phone"].value.trim(),password=form.elements["signup-password"].value,confirm=form.elements["signup-confirm"].value,consent=document.getElementById("signup-consent").checked;
+    const name=form.elements["name"].value.trim(),email=form.elements["email"].value.trim().toLowerCase(),phone=form.elements["phone"].value.trim(),password=form.elements["signup-password"].value,confirm=form.elements["signup-confirm"].value,consent=true;
     const birthDate=form.elements["birthDate"]?form.elements["birthDate"].value:"",signupAge=(()=>{const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(birthDate);if(!m)return -1;const t=new Date();let a=t.getFullYear()-+m[1];if(t.getMonth()+1<+m[2]||(t.getMonth()+1===+m[2]&&t.getDate()<+m[3]))a--;return a})();setFieldError("signup-dob",signupAge<0?"Enter your date of birth.":signupAge<13?"Scraveit is for 13 and over. A parent can order for you from their account.":"");if(signupAge<13)return;
     setFieldError("signup-name",name.length>=2?"":"Enter your full name.");setFieldError("signup-email",validEmail(email)?"":"Enter a valid email.");setFieldError("signup-phone",validPhone(phone)?"":"Enter a valid mobile number.");
     const strong=password.length>=8&&/[A-Za-z]/.test(password)&&/\d/.test(password);setFieldError("signup-password",strong?"":"Use 8+ characters with letters and numbers.");setFieldError("signup-confirm",password===confirm?"":"Passwords do not match.");
@@ -8499,16 +10028,25 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     addCartItem(rid,iid,{variant:variant,addOns:addOns,note:form.elements["note"].value.trim()});
   }
   async function submitAddress(form) {
-    const values=new FormData(form),phone=String(values.get("phone")||"").trim();if(!validPhone(phone)){toast("Enter a reachable mobile number.","danger");return;}
-    const existingId=String(values.get("id")||""),fullAddress=String(values.get("address")||"").trim(),city=String(values.get("city")||"").trim(),area=String(values.get("area")||"").trim(),record={id:existingId&&existingId!=="current-location"?existingId:uid("addr_"),label:String(values.get("label")||"").trim(),area,city,address:fullAddress,formattedAddress:fullAddress,serviceAreaId:"area-"+searchKey(city||area),phone:phone,source:existingId==="current-location"?"gps":"manual",updatedAt:Date.now()};
-    const lat=Number(values.get("lat")),lng=Number(values.get("lng"));if(Number.isFinite(lat)&&Number.isFinite(lng)&&String(values.get("lat"))!==""){record.lat=lat;record.lng=lng;}
-    if(!record.label||!record.area||!record.city||!record.address){toast("Complete the label, area, city and full address.","danger");return;}
-    record.needsLocationPin=!(Number.isFinite(Number(record.lat))&&Number.isFinite(Number(record.lng)));
+    const sheet=state.sheet;if(!sheet||sheet.type!=="address")return;
+    const a=sheet.address||{},values=new FormData(form),point=coordinatePoint(state.addressMapDraft),geo=sheet.geo||{};
+    const text=name=>String(values.has(name)?values.get(name):(a[name]||"")).replace(/\s+/g," ").trim();
+    const house=text("house"),landmark=text("landmark"),phone=text("phone")||String(state.profile.phone||""),kind=addressLabelKind(a),label=kind==="Other"?(text("label")||"Other"):kind;
+    if(!point){goAddressStep("map");toast("Put the pin on your building first.","danger");return;}
+    if(!house){toast("Add your house or flat number so the rider finds your door.","danger");const el=document.getElementById("address-house");if(el)el.focus();return;}
+    if(!validPhone(phone)){sheet.editPhone=true;renderSheet();toast("Add a phone number the rider can call.","danger");const el=document.getElementById("address-phone");if(el)el.focus();return;}
+    if(sheet.photoBusy){toast("Your photo is still being added. One moment…");return;}
+    const legacy=addressIsLegacyTyped(a),street=legacy?"":(text("street")||geo.line||String(a.street||"")).slice(0,300);
+    const area=String(geo.area||a.area||geo.city||a.city||street.split(",")[0]||"Pinned location").trim(),city=String(geo.city||a.city||"").trim();
+    // One readable line for every screen that only knows "address" (restaurant, admin, older rider apps).
+    const full=([house,street].filter(Boolean).join(", ")+(landmark?" · Landmark: "+landmark:"")).slice(0,600);
+    const existingId=String(a.id||""),record={id:existingId&&existingId!=="current-location"?existingId:uid("addr_"),label,house,landmark,street,area,city,address:full,formattedAddress:full,serviceAreaId:"area-"+searchKey(city||area),phone,source:existingId==="current-location"||a.source==="gps"?"gps":"manual",lat:point.lat,lng:point.lng,needsLocationPin:false,updatedAt:Date.now()};
+    const photo=addressPhotoUrl(a);if(photo){record.photoUrl=photo;record.photoPath=String(a.photoPath||"")}
     // Saving the "current location" entry makes it a saved address of its own,
     // so the next GPS reading (which reuses "current-location") can't overwrite it.
     const list=(state.profile.addresses||[]).filter(x=>!(existingId==="current-location"&&x.id==="current-location")),index=list.findIndex(x=>x.id===record.id);if(index>=0)list[index]=record;else list.push(record);state.profile.addresses=list;state.profile.selectedAddressId=record.id;if(!state.profile.phone)state.profile.phone=phone;migrateSavedAddresses();persistProfile();state.addressMapDraft=null;closeSheet();
     if(!restoreHomeCache(true)){state.catalog={};state.catalogLoaded=false;state.catalogMode="loading";state.homeStatus="initial"}render({preserveScroll:true});
-    try{await Promise.all([saveProfile(),state.online?syncCatalog():Promise.resolve()]);toast("Delivery address saved.","success");}catch(_){toast("Address saved on this device; cloud sync will retry.");}
+    try{await Promise.all([saveProfile(),state.online?syncCatalog():Promise.resolve()]);toast("Address saved. We’ll deliver here.","success");}catch(_){toast("Address saved on this device; cloud sync will retry.");}
     if(state.online)startRealtime().catch(()=>{});
   }
   async function submitProfile(form) {
@@ -8529,14 +10067,39 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function buildReviewPayload(order,rating,riderRating,comment) {
     return {orderId:order.id,customerId:state.session.uid,restaurantId:order.restaurantId,riderId:order.riderId||"",rating,riderRating,comment,postDeliveryTip:0,growthContribution:0,createdAt:Date.now(),status:"published"};
   }
+  // Saved with one plain web request, not the Firestore connection. On 2026-11-06 a stalled connection
+  // left set() waiting for minutes with no error, while its local copy made the screen say "submitted"
+  // with nothing on the server. A review that already exists answers 409, which counts as saved.
+  function reviewRestBody(review){
+    const fields={};
+    Object.keys(review).forEach(key=>{const value=review[key];fields[key]=typeof value==="number"?{integerValue:String(Math.round(value))}:{stringValue:String(value==null?"":value)}});
+    return JSON.stringify({fields});
+  }
+  async function postReview(docId,review){
+    const token=await storageToken(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+    try{
+      const response=await fetch("https://firestore.googleapis.com/v1/projects/"+firebase.app().options.projectId+"/databases/(default)/documents/reviews?documentId="+encodeURIComponent(docId),{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:reviewRestBody(review),signal:controller.signal});
+      if(response.ok||response.status===409)return;
+      const error=new Error("Review save failed: "+response.status);error.status=response.status;throw error;
+    }finally{clearTimeout(timer)}
+  }
+  async function saveReview(orderId,review,uidValue){
+    const waits=[2000,5000];
+    for(let attempt=0;attempt<=waits.length;attempt++){
+      try{await postReview(uidValue+"_"+orderId,review);delete pendingReviews[orderId];return}
+      catch(error){if(error.status===400||error.status===403||attempt===waits.length)break;await new Promise(done=>setTimeout(done,waits[attempt]))}
+    }
+    delete pendingReviews[orderId];
+    if(state.session&&String(state.session.uid||"")===uidValue){delete state.reviews[orderId];persistReviews();toast("Your feedback couldn't be saved. Please rate this order again.","danger");render({preserveScroll:true})}
+  }
+  // The thank-you shows at once; saveReview finishes behind it and only speaks up if it fails.
   async function submitReview(form) {
-    if(!reviewStateReady()){toast("Feedback status is still syncing. Please wait a moment.");syncOrders(false);return;}
     const data=new FormData(form),rating=Number(data.get("rating"));if(!rating){toast("Choose a restaurant rating.","danger");return;}
     const order=orderById();if(!order)return;if(state.reviews[order.id]){toast("Feedback was already submitted for this order.");render({preserveScroll:true});return;}
     const riderRating=Number(data.get("riderRating")||0);
     const review=buildReviewPayload(order,rating,riderRating,String(data.get("comment")||"").trim());
-    try{await reviewDocRef(state.session.uid,order.id).set(review);state.reviews[order.id]=review;state.reviewsHydrated=true;state.reviewsHydratedUid=String(state.session.uid||"");persistReviews();toast("Thank you for helping Scraveit improve.","success");go("home",{},true);}
-    catch(error){toast("Review could not be saved. "+friendlyError(error),"danger");}
+    pendingReviews[order.id]=review;state.reviews[order.id]=review;persistReviews();toast("Thank you for helping Scraveit improve.","success");go("home",{},true);
+    saveReview(order.id,review,String(state.session.uid||""));
   }
   async function submitCancellation(form) {
     const orderId=form.dataset.orderId,id=uid("cancel_"),requestData={id:id,type:"cancellation",orderId:orderId,reason:form.elements["reason"].value,status:"requested",createdAt:Date.now(),uid:state.session.uid,customerId:state.session.uid};
@@ -8552,7 +10115,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   document.addEventListener("submit",function(event){
     const form=event.target;if(!(form instanceof HTMLFormElement))return;event.preventDefault();
-    if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form","vc-form","story-edit-form","hl-new-form","ix-ask-form","se-ix-form"].includes(form.id)){handleFeedSubmit(form);return;}
+    if(["compose-form","story-reply-form","story-comment-form","story-send-form","feed-reply-form","vc-form","story-edit-form","hl-new-form","ix-ask-form","se-ix-form","reel-compose-form","reel-report-form"].includes(form.id)){handleFeedSubmit(form);return;}
     if(["chat-setup-form","account-parent-form","account-dob-form","add-friend-form","dm-form","chat-report-form","chat-username-form","iou-form","e2e-restore-form"].includes(form.id)){handleChatSubmit(form);return;}
     if(form.id==="referral-form")applyReferral(form);
     else if(form.id==="meal-subscribe-form")submitMealSubscribe(form);
@@ -8562,6 +10125,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(form.id==="reset-form")submitReset(form);
     else if(form.id==="item-form")submitItem(form);
     else if(form.id==="address-form")submitAddress(form);
+    else if(form.id==="addr-search-form"){if(state.sheet&&state.sheet.type==="address"){state.sheet.search.q=String(new FormData(form).get("q")||"");runAddressSearch()}}
     else if(form.id==="profile-form")submitProfile(form);
     else if(form.id==="support-form")submitSupport(form);
     else if(form.id==="menu-report-form")submitMenuReport(form);
@@ -8612,7 +10176,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
 
   window.addEventListener("online",function(){state.online=true;state.syncError="";render({preserveScroll:true});if(state.session)refreshAll();});
   window.addEventListener("offline",function(){state.online=false;render({preserveScroll:true});});
-  document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible"&&state.session&&state.online)syncOrders(false);if(document.visibilityState==="visible"&&state.route==="home")render({preserveScroll:true});});
+  document.addEventListener("visibilitychange",function(){if(document.visibilityState!=="visible"){appHiddenAt=Date.now();return}if(state.session&&state.online){if(appHiddenAt&&Date.now()-appHiddenAt>=FIRESTORE_RESTART_AWAY_MS&&state.orders.some(order=>ACTIVE_STATES.has(order.status)))restartFirestoreConnection();syncOrders(false)}appHiddenAt=0;if(state.route==="home")render({preserveScroll:true});});
   if(window.matchMedia){const media=matchMedia("(prefers-color-scheme: dark)");if(media.addEventListener)media.addEventListener("change",function(){if((state.profile.preferences||{}).theme==="system"){applyTheme();render({preserveScroll:true});}});}
 
   if(window.ScraveitPrivacy)ScraveitPrivacy.bind({

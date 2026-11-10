@@ -34,7 +34,7 @@ describe("a live store's partner agreement", () => {
     const view = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {}}, db, NOW);
     expect(view.status).toBe("ready");
     expect(view.issues).toEqual(["Owner's full name", "PAN"]);
-    expect(view.known).toEqual({ownerName: false, pan: false, fssaiNumber: true, gstin: false});
+    expect(view.known).toEqual({ownerName: false, pan: false, fssaiNumber: true, drugLicenceNumber: false, gstin: false});
     expect(view.sections[0]?.body).toContain("Ravi Foods, trading as The Waffle Spot");
     const filled = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {ownerName: "Ravi Kumar", pan: "ABCPK1234D"}}, db, NOW);
     expect(filled.issues).toEqual([]);

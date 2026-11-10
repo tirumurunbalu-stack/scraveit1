@@ -11,7 +11,7 @@ import {
 } from "../domain/riderTripPay";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import {dispatchQueueRef, riderRef} from "../firestorePaths";
-import type {SavrivoOrder} from "../types";
+import type {SavrivoOrder, StatusEvent} from "../types";
 import {loadEconomicsControl, orderEconomicsRef} from "./economics";
 import type {DeliveryLedgerOptions, LedgerAttribution} from "./ledger";
 
@@ -87,9 +87,24 @@ function frozenPolicy(value: unknown): RiderTripPayPolicy {
   };
 }
 
-function handoverAt(order: SavrivoOrder): number {
-  const events = Object.values(order.statusHistory ?? {}).filter((event) => event.status === "Handed to rider");
-  return events.length ? Math.min(...events.map((event) => Number(event.at) || Number.MAX_SAFE_INTEGER)) : 0;
+const RIDER_HANDOVER_GRACE_MS = 2 * 60_000;
+
+function firstEvent(order: SavrivoOrder, status: SavrivoOrder["status"]): StatusEvent | undefined {
+  return Object.values(order.statusHistory ?? {}).filter((event) => event.status === status)
+    .sort((a, b) => (Number(a.at) || Number.MAX_SAFE_INTEGER) - (Number(b.at) || Number.MAX_SAFE_INTEGER))[0];
+}
+
+/**
+ * When waiting at the restaurant ended. A rider who records the pickup by
+ * typing the code stops the clock no later than 2 minutes after the food was
+ * marked ready, so typing the code late never adds waiting pay.
+ */
+export function handoverAt(order: SavrivoOrder): number {
+  const handed = firstEvent(order, "Handed to rider");
+  if (!handed) return 0;
+  const at = Number(handed.at) || Number.MAX_SAFE_INTEGER;
+  const readyAt = Number(firstEvent(order, "Ready for pickup")?.at) || 0;
+  return handed.actorRole === "rider" && readyAt > 0 ? Math.min(at, readyAt + RIDER_HANDOVER_GRACE_MS) : at;
 }
 
 /**
@@ -108,6 +123,9 @@ export async function finalizeRiderTripPay(
   const record = (existing.exists ? existing.data() : null) as Record<string, unknown> | null;
   if (!record) return null;
   if (record.riderFinal && typeof record.riderFinal === "object") return record.riderFinal as StoredFinalTrip;
+  // No trip-pay formula was frozen at checkout (rider pay = the bill's delivery
+  // fee): the pay frozen on the order is final, nothing is recalculated.
+  if (!record.tripPayPolicy || typeof record.tripPayPolicy !== "object") return null;
   const policy = frozenPolicy(record.tripPayPolicy);
   const estimate = order.economics.rider.tripPay;
   const [queue, arrival, rider] = await Promise.all([

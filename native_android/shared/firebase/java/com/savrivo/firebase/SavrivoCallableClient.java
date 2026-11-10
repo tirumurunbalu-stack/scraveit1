@@ -47,7 +47,9 @@ public final class SavrivoCallableClient {
             "getRestaurantOffers", "getRestaurantOfferPerformance", "upsertCashbackCampaign",
             "listCashbackCampaigns", "listCustomerReferrals", "reviewCustomerReferral",
             "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
-            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral"));
+            "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
+            // TDS restaurants deducted on SCRAVEIT's commission, checked by SCRAVEIT finance.
+            "listTdsCommissionClaimsForReview", "reviewTdsCommissionClaim"));
 
     /** Economics callables each app role may reach through the generic bridge. */
     private static final Set<String> ADMIN_ECONOMICS = new HashSet<>(Arrays.asList(
@@ -57,14 +59,21 @@ public final class SavrivoCallableClient {
             "listCashbackCampaigns", "listCustomerReferrals", "reviewCustomerReferral",
             "upsertCityOperatingCost", "listCityOperatingCosts", "getCityBreakEven",
             "getRiderReferralOverview", "reviewRiderReferral", "simulateRiderReferral",
+            "listTdsCommissionClaimsForReview", "reviewTdsCommissionClaim",
             "setRestaurantAgreementTerms", "getRestaurantApplicationReview",
             "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue", "getPayoutAutomationStatus", "previewWeeklyPayouts",
-            "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck"));
+            "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck", "reviewReel",
+            // Ads results across stores and brand ads, and training the models on demand.
+            "getAdsReport", "runLearningNow"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement",
             "getLiveRestaurantAgreement", "signLiveRestaurantAgreement",
-            "attachPackedPhoto", "saveMealPlan", "getRestaurantMealPlans"));
+            "attachPackedPhoto", "saveMealPlan", "getRestaurantMealPlans",
+            // Top placement: price and free days, book, cancel, and what the ads did.
+            "getSponsoredListings", "bookSponsoredListing", "cancelSponsoredListing",
+            // Staff the owner adds: staff ID and password, and what each person can use.
+            "listRestaurantStaff", "createRestaurantStaff", "updateRestaurantStaff", "removeRestaurantStaff"));
     // Every economics callable an app role may reach is also a callable this
     // client may send. Without this, functions added only to the role lists
     // (Admin today, payouts, applications, agreements, dine-in) passed the role
@@ -154,6 +163,63 @@ public final class SavrivoCallableClient {
     public static void updateOrderStatus(
             Context context, String idToken, JSONObject payload, Callback callback) {
         call(context, "updateOrderStatus", idToken, payload, callback);
+    }
+
+    private static long orderStatusWarmedAt;
+
+    /**
+     * Starts the order-status server the moment a new-order alert arrives. The page only learned
+     * of the order when the kitchen opened the app, so its own warm-up raced the Accept tap and
+     * Accept waited on two cold starts (6.6 s on 2026-11-05). The sign-in lives in the page, so
+     * this carries no ID token and the server answers "unauthenticated"; reaching it is enough
+     * to start a copy.
+     */
+    public static void warmOrderStatus(Context context) {
+        long now = System.currentTimeMillis();
+        synchronized (SavrivoCallableClient.class) {
+            if (now - orderStatusWarmedAt < 120_000) return;
+            orderStatusWarmedAt = now;
+        }
+        FirebaseApp app = SavrivoFirebase.ensureInitialized(context);
+        if (app == null) return;
+        MAIN.post(() -> {
+            try {
+                FirebaseAppCheck.getInstance(app).getAppCheckToken(false).addOnCompleteListener(task -> {
+                    String appCheck = task.isSuccessful() && task.getResult() != null
+                            ? task.getResult().getToken() : "";
+                    NETWORK.execute(() -> ping(context, "updateOrderStatus", appCheck));
+                });
+            } catch (Throwable error) {
+                NETWORK.execute(() -> ping(context, "updateOrderStatus", ""));
+            }
+        });
+    }
+
+    private static void ping(Context context, String function, String appCheck) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL("https://" + SavrivoFirebase.functionsRegion(context) + "-"
+                    + SavrivoFirebase.projectId(context) + ".cloudfunctions.net/" + function);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(15_000);
+            connection.setReadTimeout(30_000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            if (appCheck != null && appCheck.length() >= 20) {
+                connection.setRequestProperty("X-Firebase-AppCheck", appCheck);
+            }
+            byte[] body = "{\"data\":{\"warmup\":true}}".getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(body.length);
+            try (java.io.OutputStream output = connection.getOutputStream()) {
+                output.write(body);
+            }
+            Log.i(TAG, "WARMUP " + function + " " + connection.getResponseCode());
+        } catch (Exception error) {
+            Log.w(TAG, "WARMUP_FAILED " + function + " " + error.getClass().getSimpleName());
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     public static void getAdminDashboard(

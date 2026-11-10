@@ -25,13 +25,9 @@ import {
   type EconomicsControl,
   type EconomicsControlUpdate,
 } from "../domain/economicsControl";
-import {
-  calculateRiderTripPay,
-  minuteOfDayInTimeZone,
-  resolveRiderTripPayPolicy,
-  type RiderTripPayBreakdown,
-  type RiderTripPayPolicy,
-} from "../domain/riderTripPay";
+import {type RiderTripPayBreakdown, type RiderTripPayPolicy} from "../domain/riderTripPay";
+import {markupBill, markupCommissionPaise, type MarkupCart} from "../domain/markupPricing";
+import type {OrderTax} from "../domain/orderTax";
 import {activeTaxVersion, computeTaxLines, type TaxComputation} from "../domain/taxRules";
 import {
   CUSTOMER_DEMOGRAPHICS_COLLECTION,
@@ -352,6 +348,8 @@ export interface CheckoutEconomicsPlan {
   policy: EconomicsPolicy;
   policyScopes: string[];
   commissionBps: number;
+  /** Markup restaurants: Scraveit's whole cut (commission plus its GST), used instead of commissionBps. */
+  markupCutPaise?: number;
   commercialPlanId: string;
   riderTripPayPaise: number;
   /** Per-order campaign bonuses the rider will be paid (customer fee may differ). */
@@ -396,6 +394,8 @@ export function planCheckoutEconomics(input: {
   promotion: CheckoutPromotion | null;
   defaultCommissionBps: number;
   now: number;
+  /** Markup restaurants only: see domain/markupPricing.ts markupCutPaise. */
+  markupCutPaise?: number;
 }): CheckoutEconomicsPlan {
   const cityKey = economicsScopeKey(input.restaurant.city);
   const zoneKey = economicsScopeKey(input.address.area || input.address.label);
@@ -409,17 +409,13 @@ export function planCheckoutEconomics(input: {
   const commissionBps = plan ? plan.commissionBps : restaurantCommissionBps(input.restaurant, input.defaultCommissionBps);
   const subtotalPaise = rupeesToPaise(input.subtotal);
   const deliveryFeePaise = rupeesToPaise(input.fees.deliveryFee);
-  // Rider pay comes from the rider trip-pay policy, never from what the
-  // customer was charged for delivery. The difference is shown, not hidden.
-  const tripPayPolicy = engineEnabled ?
-    resolveRiderTripPayPolicy(input.control.riderTripPay, {cityKey, zoneKey}, input.now) : null;
-  const tripPay = tripPayPolicy ? calculateRiderTripPay(tripPayPolicy, {
-    pickupMeters: tripPayPolicy.expectedPickupMeters,
-    dropMeters: Math.round(Math.max(0, Number(input.fees.distanceKm ?? 0)) * 1_000),
-    waitMinutes: 0,
-    minuteOfDay: minuteOfDayInTimeZone(input.now, input.control.cities[cityKey]?.timezone ?? "Asia/Kolkata"),
-  }) : null;
-  const riderTripPayPaise = tripPay ? tripPay.totalPaise : deliveryFeePaise;
+  // Founder's rule (10 Nov 2026): the rider's trip pay is exactly the delivery
+  // fee on the customer's bill. Bonuses, incentives and tips are paid on top on
+  // their own lines. The trip-pay formula (domain/riderTripPay.ts) is kept for
+  // later but not used, so no formula or minimum is frozen on the order.
+  const tripPayPolicy: RiderTripPayPolicy | null = null;
+  const tripPay: RiderTripPayBreakdown | null = null;
+  const riderTripPayPaise = deliveryFeePaise;
   const guardrailEnabled = engineEnabled && input.control.flags.profitabilityGuardrail;
 
   const terms = input.promotion?.terms ?? null;
@@ -449,6 +445,7 @@ export function planCheckoutEconomics(input: {
     taxPaise: 0,
     tipPaise: rupeesToPaise(input.tip),
     commissionBps,
+    ...(input.markupCutPaise !== undefined ? {commissionPaiseOverride: markupCommissionPaise(input.markupCutPaise)} : {}),
     riderDeliveryPayPaise: riderTripPayPaise,
     riderIncentivePayPaise: rupeesToPaise(input.fees.riderIncentivePay ?? input.fees.riderIncentiveFee),
   }, policy, appliedScopes);
@@ -471,6 +468,7 @@ export function planCheckoutEconomics(input: {
     policy,
     policyScopes: appliedScopes,
     commissionBps,
+    ...(input.markupCutPaise !== undefined ? {markupCutPaise: input.markupCutPaise} : {}),
     commercialPlanId: plan?.planId ?? "",
     riderTripPayPaise,
     riderIncentivePayPaise: rupeesToPaise(input.fees.riderIncentivePay ?? input.fees.riderIncentiveFee),
@@ -546,6 +544,9 @@ export function finalizeOrderEconomics(
     }} : {}),
     walletRedeemPaise: rupeesToPaise(pricing.walletRedeem ?? 0),
     commissionTaxPaise: extras.commissionTaxPaise ?? 0,
+    // Markup: the cut covers the commission and its GST; the restaurant's payout is untouched by either.
+    ...(plan.markupCutPaise !== undefined ?
+      {commissionPaiseOverride: Math.max(0, plan.markupCutPaise - (extras.commissionTaxPaise ?? 0))} : {}),
     ...(extras.taxVersionId ? {taxVersionId: extras.taxVersionId} : {}),
     ruleIds: [
       ...ruleIds,
@@ -593,8 +594,44 @@ export function checkoutTax(
     surgeFeePaise: rupeesToPaise(fees.surgeFee),
     rainFeePaise: rupeesToPaise(fees.rainFee),
     riderIncentiveFeePaise: rupeesToPaise(fees.riderIncentiveFee),
-    commissionPaise: Math.round(commissionBase * plan.commissionBps / 10_000),
+    commissionPaise: planCommissionPaise(plan, commissionBase),
   });
+}
+
+/**
+ * Markup restaurants: the customer's tax with the food GST taken from inside
+ * the customer's prices instead of added on top (see domain/markupPricing.ts).
+ * `tax` is the engine result the order would otherwise use (null: the legacy
+ * flat food tax), `orderTax` the law engine's breakdown when `tax` came from it.
+ */
+export function markupCheckoutBill(cart: MarkupCart, input: {
+  subtotal: number;
+  plan: CheckoutEconomicsPlan;
+  tax: TaxComputation | null;
+  orderTax?: OrderTax | null;
+}): ReturnType<typeof markupBill> {
+  const subtotalPaise = rupeesToPaise(input.subtotal);
+  const {restaurantDiscountPaise, platformDiscountPaise} = input.plan.discount;
+  const foodBasePaise = Math.max(0, subtotalPaise - restaurantDiscountPaise - platformDiscountPaise);
+  // Only GST on the food itself; GST on store-owned fees in the same line stays on top.
+  const engineFoodTaxPaise = !input.tax ? 0 : input.orderTax ?
+    input.orderTax.services.filter((line) => line.chargedTo === "customer" && line.component === "restaurant_service")
+      .reduce((sum, line) => sum + Math.min(line.gstPaise, Math.round(foodBasePaise * line.rateBps / 10_000)), 0) :
+    input.tax.lines.filter((line) => line.component === "food" && !line.inclusive)
+      .reduce((sum, line) => sum + line.taxPaise, 0);
+  return markupBill({
+    cart, subtotalPaise,
+    discountPaise: restaurantDiscountPaise + platformDiscountPaise,
+    restaurantDiscountPaise,
+    engineTaxPaise: input.tax ? input.tax.customerTaxPaise : null,
+    engineFoodTaxPaise,
+  });
+}
+
+/** The commission the tax engines charge GST on. */
+export function planCommissionPaise(plan: Pick<CheckoutEconomicsPlan, "commissionBps" | "markupCutPaise">, commissionBasePaise: number): number {
+  return plan.markupCutPaise !== undefined ? markupCommissionPaise(plan.markupCutPaise) :
+    Math.round(commissionBasePaise * plan.commissionBps / 10_000);
 }
 
 // ---------------------------------------------------------------------------

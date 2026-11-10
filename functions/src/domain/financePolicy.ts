@@ -224,10 +224,11 @@ function firstEnabledMethod(policy: Pick<FinancePaymentPolicy, "codEnabled" | "u
 
 export function normalizeFinancePaymentPolicy(value: unknown): FinancePaymentPolicy {
   const input = record(value);
-  let codEnabled = booleanValue(input.codEnabled, DEFAULT_FINANCE_PAYMENT_POLICY.codEnabled);
+  // An owner's "COD off" always holds, even with every online method off too:
+  // checkout then shows each method as not available instead of quietly taking cash.
+  const codEnabled = booleanValue(input.codEnabled, DEFAULT_FINANCE_PAYMENT_POLICY.codEnabled);
   const upiEnabled = booleanValue(input.upiEnabled, DEFAULT_FINANCE_PAYMENT_POLICY.upiEnabled);
   const cardEnabled = booleanValue(input.cardEnabled, DEFAULT_FINANCE_PAYMENT_POLICY.cardEnabled);
-  if (!codEnabled && !upiEnabled && !cardEnabled) codEnabled = true;
   let defaultMethod = paymentMethod(input.defaultMethod, DEFAULT_FINANCE_PAYMENT_POLICY.defaultMethod);
   if (
     (defaultMethod === "cod" && !codEnabled) ||

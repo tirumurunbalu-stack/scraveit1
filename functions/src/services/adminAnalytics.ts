@@ -34,7 +34,7 @@ const CACHE_MS = 5 * 60 * 1000;
 type Rec = Record<string, unknown>;
 type GenderKey = Gender | "unknown";
 type AgeKey = AgeBand | "unknown";
-export type StoreKind = "restaurant" | "grocery" | "dairy";
+export type StoreKind = "restaurant" | "grocery" | "dairy" | "pharmacy";
 
 const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const rec = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? v as Rec : {});
@@ -453,7 +453,7 @@ export async function readAdminAnalytics(
   const kinds = new Map<string, StoreKind>(), names = new Map<string, string>();
   for (const doc of restaurantsSnap.docs) {
     const r = doc.data() as Rec, type = String(r.storeType ?? "restaurant");
-    kinds.set(doc.id, type === "grocery" || type === "dairy" ? type : "restaurant");
+    kinds.set(doc.id, type === "grocery" || type === "dairy" || type === "pharmacy" ? type : "restaurant");
     names.set(doc.id, String(r.name ?? doc.id));
   }
   // Only customers who ordered in the period need their (consented) details.

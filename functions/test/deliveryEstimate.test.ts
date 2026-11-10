@@ -57,28 +57,24 @@ describe("delivery estimate", () => {
     expect(estimateDelivery(input({activeOrders: 4})).basis.kitchenLoadMinutes).toBeGreaterThan(0);
   });
 
-  it("adds a wait and lowers confidence when no rider is free", () => {
+  it("quotes the same time whether or not a rider is free, and only lowers confidence", () => {
     const withRiders = estimateDelivery(input({availableRiders: 5}));
     const noRiders = estimateDelivery(input({availableRiders: 0}));
-    expect(noRiders.etaMinMinutes).toBeGreaterThan(withRiders.etaMinMinutes);
-    expect(noRiders.basis.riderWaitMinutes).toBe(8);
-    expect(noRiders.confidence).toBe("low");
-  });
-
-  it("treats unknown rider availability as unknown, not as zero", () => {
     const unknown = estimateDelivery(input({availableRiders: null}));
-    const none = estimateDelivery(input({availableRiders: 0}));
-    expect(unknown.basis.riderWaitMinutes).toBe(0);
-    expect(unknown.etaMinMinutes).toBeLessThan(none.etaMinMinutes);
+    for (const quote of [noRiders, unknown]) {
+      expect(quote.etaMinMinutes).toBe(withRiders.etaMinMinutes);
+      expect(quote.etaMaxMinutes).toBe(withRiders.etaMaxMinutes);
+      expect(quote.basis.riderWaitMinutes).toBe(0);
+    }
+    expect(noRiders.confidence).toBe("low");
     expect(unknown.confidence).toBe("medium");
   });
 
-  it("widens the window rather than staying falsely precise when unsure", () => {
-    const confident = estimateDelivery(input({availableRiders: 5}));
-    const unsure = estimateDelivery(input({availableRiders: 0}));
-    const confidentSpread = confident.etaMaxMinutes - confident.etaMinMinutes;
-    const unsureSpread = unsure.etaMaxMinutes - unsure.etaMinMinutes;
-    expect(unsureSpread).toBeGreaterThanOrEqual(confidentSpread);
+  it("quotes 30-40 min for a 3.5 km order from a 15-20 min kitchen at dinner with no rider free", () => {
+    const dinner = Date.UTC(2026, 10, 4, 15, 30); // 21:00 IST
+    const quote = estimateDelivery(input({kitchenEtaMinMinutes: 15, kitchenEtaMaxMinutes: 20, distanceKm: 3.45,
+      availableRiders: 0, occurredAt: dinner}));
+    expect([quote.etaMinMinutes, quote.etaMaxMinutes]).toEqual([30, 40]);
   });
 
   it("adds peak-hour time at lunch and dinner only", () => {
@@ -139,7 +135,7 @@ describe("delivery estimate", () => {
       expect(estimate.etaMaxMinutes, `case ${index} ceiling`).toBeLessThanOrEqual(120);
       const spread = estimate.etaMaxMinutes - estimate.etaMinMinutes;
       expect(spread, `case ${index} spread floor`).toBeGreaterThanOrEqual(5);
-      expect(spread, `case ${index} spread ceiling`).toBeLessThanOrEqual(20);
+      expect(spread, `case ${index} spread ceiling`).toBeLessThanOrEqual(10);
     });
   });
 });

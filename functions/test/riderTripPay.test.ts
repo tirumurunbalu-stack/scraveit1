@@ -151,7 +151,11 @@ describe("final trip pay at delivery", () => {
     clearEconomicsControlCache();
   });
 
-  function deliveredOrder(): SavrivoOrder {
+  /**
+   * `frozenPolicy` = the trip-pay formula an order placed before 10 Nov 2026 froze at checkout.
+   * Orders placed after it freeze none: their trip pay is the bill's delivery fee.
+   */
+  function deliveredOrder(frozenPolicy: RiderTripPayPolicy | null = null): SavrivoOrder {
     const control = normalizeEconomicsControl({});
     const plan = planCheckoutEconomics({
       control, restaurant: {id: "r1", city: "Nellore"}, address: {area: "Stonehousepet", label: "Home"}, subtotal: 350,
@@ -167,14 +171,27 @@ describe("final trip pay at delivery", () => {
       pricingContext: {distanceKm: 4}, economics: settlementTerms(snapshot),
       statusHistory: {h: {status: "Handed to rider", at: NOW + 1_800_000, actorId: "s", actorRole: "staff"}},
     } as unknown as SavrivoOrder;
-    database.seed("orderEconomics/SV-1", orderEconomicsRecord(order, snapshot, {tripPayPolicy: plan.tripPayPolicy, distanceMeters: 4_000}));
+    database.seed("orderEconomics/SV-1", orderEconomicsRecord(order, snapshot, {tripPayPolicy: frozenPolicy, distanceMeters: 4_000}));
     return order;
   }
 
-  it("uses the real pickup distance and verified waiting time, and fixes the result once", async () => {
+  it("pays a new order exactly the bill's delivery fee, with nothing recalculated at delivery", async () => {
     const order = deliveredOrder();
-    // Estimate at checkout: expected 1.5 km pickup, 4 km drop = ₹34.
-    expect(order.economics?.rider.deliveryPayPaise).toBe(3_400);
+    expect(order.economics?.rider.deliveryPayPaise).toBe(2_500);
+    database.seed("dispatchQueue/SV-1", {candidates: [{riderId: "rider1", distanceKm: 3}]});
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 25 * 60_000});
+    database.seed("riders/rider1", {city: "Nellore", vehicleType: "bike"});
+    expect(await finalizeRiderTripPay(order, database)).toBeNull();
+    const options = await resolveDeliverySettlementOptions(order, database);
+    expect(options.finalTripPayPaise).toBeUndefined();
+    const amounts = orderDeliveryAmounts(order, 1_500, {finalTripPayPaise: options.finalTripPayPaise});
+    expect(amounts.riderDeliveryEarningPaise).toBe(2_500);
+    expect(amounts.riderTripSubsidyPaise ?? 0).toBe(0);
+    expect((await database.collection("orderEconomics").doc("SV-1").get()).data()?.riderFinal).toBeUndefined();
+  });
+
+  it("keeps the old formula for an order placed before the change: real pickup distance and waiting, fixed once", async () => {
+    const order = deliveredOrder({...DEFAULT_RIDER_TRIP_PAY_POLICY, slotAddons: [], vehicleMultiplierBps: {}});
     database.seed("dispatchQueue/SV-1", {candidates: [{riderId: "rider1", distanceKm: 3}]});
     // Rider arrived 25 minutes before handover: 15 paid minutes at ₹1.
     database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 25 * 60_000});

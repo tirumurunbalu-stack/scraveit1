@@ -54,12 +54,16 @@ public final class SavrivoWebPushBinder {
     }
 
     public void publishPending() {
-        if (!trustedPage.isTrusted()) return;
-        String events = SavrivoPushStore.takePending(activity);
-        if ("[]".equals(events)) return;
-        String script = "window.SavrivoNativePushBatch&&window.SavrivoNativePushBatch(" + events + ")";
         activity.runOnUiThread(() -> {
-            if (trustedPage.isTrusted()) webView.evaluateJavascript(script, null);
+            if (!trustedPage.isTrusted()) return;
+            // The page URL is set before its scripts run. Taking events then dropped them (a
+            // tapped notification on a cold start), so they stay queued until the handler exists.
+            webView.evaluateJavascript("typeof window.SavrivoNativePushBatch==='function'", ready -> {
+                if (!"true".equals(ready) || !trustedPage.isTrusted()) return;
+                String events = SavrivoPushStore.takePending(activity);
+                if ("[]".equals(events)) return;
+                webView.evaluateJavascript("window.SavrivoNativePushBatch(" + events + ")", null);
+            });
         });
     }
 

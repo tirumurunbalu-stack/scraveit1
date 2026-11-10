@@ -58,6 +58,8 @@ export interface OrderDeliveryJournalInput extends OrderDeliveryAmounts {
   /** Required when walletRedeemPaise > 0. */
   customerId?: string;
   attribution?: LedgerAttribution;
+  /** The store delivered the order itself: the rider's share is the store's to be paid. */
+  storeDelivered?: boolean;
 }
 
 export interface OnlineOrderDeliveryJournalInput extends OrderDeliveryJournalInput {
@@ -132,7 +134,11 @@ export function orderDeliveryAmounts(
     0,
     moneyToPaise(order.pricing.subtotal) - moneyToPaise(order.pricing.discount),
   );
-  const platformCommissionPaise = Math.round(menuConsiderationPaise * restaurantCommissionBps / 10_000);
+  // Markup restaurants: the restaurant is paid its own prices less the GST in them, whatever the commission rate.
+  const markupPayout = order.pricing.markup?.restaurantPayout !== undefined ? moneyToPaise(order.pricing.markup.restaurantPayout) : null;
+  const platformCommissionPaise = markupPayout === null ?
+    Math.round(menuConsiderationPaise * restaurantCommissionBps / 10_000) :
+    Math.max(0, menuConsiderationPaise - markupPayout);
   const restaurantPayablePaise = menuConsiderationPaise - platformCommissionPaise;
   const riderDeliveryEarningPaise = moneyToPaise(order.pricing.deliveryFee);
   const riderTipPaise = moneyToPaise(order.pricing.tip);
@@ -222,6 +228,7 @@ export async function persistCodOrderDeliveryLedger(
     customerId: order.customerId,
     occurredAt: Number(order.deliveredAt ?? order.updatedAt),
     ...(options.attribution ? {attribution: options.attribution} : {}),
+    ...(order.selfDelivery === true ? {storeDelivered: true} : {}),
   }));
 }
 
@@ -284,7 +291,7 @@ function normalizedAmounts(amounts: OrderDeliveryAmounts): OrderDeliveryAmounts 
 }
 
 function allocationCredits(
-  input: Pick<OrderDeliveryJournalInput, "restaurantId" | "riderId">,
+  input: Pick<OrderDeliveryJournalInput, "restaurantId" | "riderId" | "storeDelivered">,
   amounts: OrderDeliveryAmounts,
 ): LedgerPostingInput[] {
   const postings: LedgerPostingInput[] = [];
@@ -299,6 +306,13 @@ function allocationCredits(
   addCredit("revenue:platform-commission", amounts.platformCommissionPaise, "Platform commission earned");
   addCredit("revenue:platform-fees", amounts.platformFeePaise, "Platform fees earned");
   addCredit("liability:tax-payable", amounts.taxPayablePaise, "Tax collected and payable");
+  if (input.storeDelivered) {
+    // A second credit to the store's own payable, so its settlement pays it with the order.
+    const storePayable = `liability:restaurant-payable:${input.restaurantId}`;
+    addCredit(storePayable, amounts.riderDeliveryEarningPaise, "Store self-delivery pay");
+    addCredit(storePayable, amounts.riderTipPaise, "Customer tip for the store's delivery");
+    return postings;
+  }
   addCredit(
     `liability:rider-earnings:${input.riderId}`,
     amounts.riderDeliveryEarningPaise,
@@ -647,6 +661,26 @@ function writePartyEntries(
     transaction.set(database.collection(LEDGER_PARTY_JOURNALS_COLLECTION).doc(ledgerPartyEntryId(party, journal.journalId)),
       {party, journalId: journal.journalId, occurredAt: journal.occurredAt, journal});
   }
+}
+
+/**
+ * Appends a journal inside the caller's own transaction, after all of its
+ * reads, so the journal lands together with the record that caused it. Only
+ * for journals that name their parties themselves (no order to look up); the
+ * caller writes it once by checking its own record first.
+ */
+export function appendLedgerJournalInTransaction(
+  transaction: PartyTransaction,
+  database: LedgerFirestore,
+  journal: LedgerJournal,
+): string {
+  validateLedgerJournal(journal);
+  if (journal.orderId) fail("LEDGER_ORDER_JOURNAL_NEEDS_LOOKUP");
+  const journalId = validatedLedgerJournalId(journal);
+  const value = serializableJournal(journal);
+  transaction.set(database.collection(LEDGER_JOURNALS_COLLECTION).doc(journalId), value);
+  writePartyEntries(transaction, database, value, ledgerJournalParties(value));
+  return journalId;
 }
 
 /** Index a journal that was written before the index existed. Safe to repeat. */

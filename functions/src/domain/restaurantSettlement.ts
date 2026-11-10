@@ -27,6 +27,12 @@ export interface RestaurantSettlementActivity {
   readonly customerGrossPaise?: number;
   /** Present only for a post-delivery refund recovery event. */
   readonly refundRecoveryPaise?: number;
+  /** Settlement only: the bank's transfer reference (UTR, or RRN for IMPS/UPI). */
+  readonly referenceId?: string;
+  /** Settlement only: how the money was sent (neft, imps, upi, bank_transfer). */
+  readonly settlementMethod?: string;
+  /** Settlement only: day of the weekly payout run (YYYY-MM-DD) for an automatic payout. */
+  readonly payoutRunDayKey?: string;
 }
 
 export interface RestaurantSettlementSummaryOptions {
@@ -277,6 +283,10 @@ export function summarizeRestaurantSettlement(
     if (journal.eventType === "restaurant_payable" && debit > 0) {
       alreadySettledPaise = safeAdd(alreadySettledPaise, debit);
       if (credit > 0) markIntegrityViolation();
+      const referenceId = journal.metadata.referenceId;
+      const settlementMethod = journal.metadata.settlementMethod;
+      // Automatic weekly payouts are "settlement:weekly:restaurant:<run day>:<hash>".
+      const runDay = /^settlement:weekly:restaurant:(\d{4}-\d{2}-\d{2}):/.exec(journal.eventId)?.[1];
       activities.push({
         journalId: journal.journalId,
         activityType: "settlement",
@@ -284,6 +294,9 @@ export function summarizeRestaurantSettlement(
         occurredAt: journal.occurredAt,
         ...(journal.orderId ? {orderId: journal.orderId} : {}),
         payableMovementPaise: credit - debit,
+        ...(typeof referenceId === "string" && referenceId ? {referenceId} : {}),
+        ...(typeof settlementMethod === "string" && settlementMethod ? {settlementMethod} : {}),
+        ...(runDay ? {payoutRunDayKey: runDay} : {}),
       });
       continue;
     }
@@ -369,10 +382,13 @@ export function summarizeRestaurantSettlement(
   const authoritativeNet = complete ? windowNetPayableMovementPaise : null;
   const sortedActivities = activities.sort((left, right) =>
     right.occurredAt - left.occurredAt || right.journalId.localeCompare(left.journalId));
+  // Per-order TDS/TCS withholdings are reported order by order (tax statement),
+  // so they don't push payouts and real adjustments out of the bounded history.
   const settlementHistory = sortedActivities.filter((activity) =>
     activity.activityType === "settlement" ||
     activity.activityType === "refund_recovery_allocated" ||
-    activity.activityType === "adjustment");
+    (activity.activityType === "adjustment" &&
+      activity.eventType !== "tax_withholding" && activity.eventType !== "tax_withholding_reversal"));
 
   return {
     schemaVersion: 1,

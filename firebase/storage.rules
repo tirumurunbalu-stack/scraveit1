@@ -68,6 +68,28 @@ service firebase.storage {
         && request.resource.contentType.matches('image/jpeg');
     }
 
+    // The rider's photo of the parcel (order ID showing) taken at pickup. Only
+    // the rider writes it, once; the server checks it before the order is
+    // handed over and keeps a signed link on the order for support.
+    match /private/rider-pickups/{uid}/{fileName} {
+      allow read: if admin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg');
+    }
+
+    // A customer's photo of their gate or building, so the rider can spot the
+    // place. Only the customer writes and reads it here; the rider opens it
+    // through the download link that goes on the order with the address (the
+    // server only copies links that point into the customer's own folder).
+    match /addressPhotos/{uid}/{fileName} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 2 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg');
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+
     // Video stories: the poster uploads the clip before posting; a friend may play it
     // while the story's card is in their feed (the same test as the story's photo).
     match /storyVideos/{uid}/{postId} {
@@ -76,6 +98,26 @@ service firebase.storage {
       allow create: if signedIn() && request.auth.uid == uid
         && request.resource.size < 15 * 1024 * 1024
         && request.resource.contentType.matches('video/(mp4|webm)');
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+
+    // Public reels: the poster uploads the clip (up to 60 s, under 25 MB) and its first-frame picture
+    // before calling createReel. Viewers play them through the download link the server puts on a
+    // live reel; removing a reel deletes the files, so the link stops working.
+    match /reelVideos/{uid}/{reelId} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 25 * 1024 * 1024
+        && request.resource.contentType.matches('video/(mp4|webm)')
+        && !firestore.exists(/databases/(default)/documents/reels/$(reelId));
+      allow delete: if signedIn() && (request.auth.uid == uid || admin());
+    }
+    match /reelThumbs/{uid}/{reelId} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 400 * 1024
+        && request.resource.contentType.matches('image/jpeg')
+        && !firestore.exists(/databases/(default)/documents/reels/$(reelId));
       allow delete: if signedIn() && (request.auth.uid == uid || admin());
     }
 

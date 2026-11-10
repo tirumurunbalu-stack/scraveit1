@@ -78,7 +78,8 @@ export function privacyRequestAlert(requestId: string, request: Rec | null): {ke
 export function applicationAlert(appId: string, before: Rec | null, after: Rec | null, now = Date.now()): RequestAlert | null {
   if (!after) return null;
   const name = String(after.restaurantName ?? "A store");
-  const kind = after.storeType === "grocery" ? "grocery store" : after.storeType === "dairy" ? "dairy" : "restaurant";
+  const kind = after.storeType === "grocery" ? "grocery store" : after.storeType === "dairy" ? "dairy" :
+    after.storeType === "pharmacy" ? "health care store" : "restaurant";
   if (after.status === "submitted" && before?.status !== "submitted") {
     const again = before?.status === "changes_requested";
     return {key: `app-submitted:${appId}:${Number(after.updatedAt ?? after.submittedAt ?? 0)}`, alarmId: requestAlarmId("app", appId), route: `app:${appId}`, issuedAt: now,

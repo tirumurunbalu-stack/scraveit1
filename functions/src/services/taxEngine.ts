@@ -51,7 +51,7 @@ import {ecomTdsRuleAt, financialYearLabel, normalizeProductTaxRules, normalizeTa
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
 import type {CatalogItem, PricedOrderItem} from "../types";
 import type {TaxComputation} from "../domain/taxRules";
-import type {CheckoutEconomicsPlan, ServerFees} from "./economics";
+import {planCommissionPaise, type CheckoutEconomicsPlan, type ServerFees} from "./economics";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {DomainError} from "../errors";
 import {requireOwnerClaim} from "./authz";
@@ -517,25 +517,29 @@ export interface WithholdingRecord {
   reversedAt?: number;
 }
 
+// CGST rule 46(b): an invoice number is at most 16 characters, unique in its
+// financial year. A prefix is at most 10 characters ("MILKY2627/") and the
+// running number 6 digits, so numbers stay within 16.
 function sellerSeriesPrefix(restaurantId: string, configured: unknown): string {
-  const own = String(configured ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 8);
-  return own || restaurantId.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 6) || "SELLER";
+  const own = String(configured ?? "").toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 5);
+  return own || restaurantId.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 5) || "SELLR";
 }
 
 /** The invoices one delivered order needs, by series. */
 export function invoicePlan(tax: OrderTax, restaurantId: string, sellerPrefix: string): {series: string; prefix: string; kind: string}[] {
   const fy = tax.financialYear ?? "";
+  const year = fy.replace(/[^0-9]/g, "").slice(0, 4);
   const plan: {series: string; prefix: string; kind: string}[] = [];
   if (tax.storeKind === "restaurant") {
-    plan.push({series: `scraveit_restaurant_9_5_${fy}`, prefix: `SCR/RS/${fy}`, kind: "restaurant_service_9_5"});
+    plan.push({series: `scraveit_restaurant_9_5_${fy}`, prefix: `RS${year}/`, kind: "restaurant_service_9_5"});
   } else {
-    plan.push({series: `seller_${restaurantId}_${fy}`, prefix: `${sellerPrefix}/${fy}`, kind: "seller_goods"});
+    plan.push({series: `seller_${restaurantId}_${fy}`, prefix: `${sellerPrefix.slice(0, 5)}${year}/`, kind: "seller_goods"});
   }
   if (tax.services.some((line) => line.chargedTo === "customer" && line.component !== "restaurant_service")) {
-    plan.push({series: `scraveit_services_${fy}`, prefix: `SCR/SV/${fy}`, kind: "scraveit_customer_services"});
+    plan.push({series: `scraveit_services_${fy}`, prefix: `SV${year}/`, kind: "scraveit_customer_services"});
   }
   if (tax.services.some((line) => line.component === "commission")) {
-    plan.push({series: `scraveit_commission_${fy}`, prefix: `SCR/CM/${fy}`, kind: "scraveit_commission"});
+    plan.push({series: `scraveit_commission_${fy}`, prefix: `CM${year}/`, kind: "scraveit_commission"});
   }
   return plan;
 }
@@ -677,8 +681,9 @@ export async function recordDeliveredOrderTax(
     const invoices = (gstApplied ? plan : []).map((item, index) => {
       const next = (Number(record(seriesSnaps[index]!.exists ? seriesSnaps[index]!.data() : {}).last ?? 0) || 0) + 1;
       transaction.set(seriesRefs[index]!, {series: item.series, prefix: item.prefix, last: next, updatedAt: recordedAt}, {merge: true});
-      const invoiceNo = `${item.prefix}/${String(next).padStart(6, "0")}`;
-      transaction.set(database.collection(INVOICES_COLLECTION).doc(invoiceNo.replace(/\//g, "_")), {
+      const invoiceNo = `${item.prefix}${String(next).padStart(6, "0")}`;
+      // Keyed by series: two sellers' own series may print the same number.
+      transaction.set(database.collection(INVOICES_COLLECTION).doc(`${item.series}_${next}`), {
         invoiceNo, series: item.series, kind: item.kind, orderId: order.id, restaurantId: order.restaurantId,
         financialYear: tax.financialYear, issuedAt: recordedAt, taxLawVersion: tax.lawVersion,
       });
@@ -1095,7 +1100,7 @@ export async function lawBasedCheckoutTax(input: {
       lateNightFee: input.fees.lateNightFee, rainFee: input.fees.rainFee, surgeFee: input.fees.surgeFee,
       riderSurgeFee: input.fees.riderSurgeFee ?? 0, riderIncentiveFee: input.fees.riderIncentiveFee,
     },
-    commissionPaise: Math.round((subtotalPaise - sellerDiscountPaise) * input.plan.commissionBps / 10_000),
+    commissionPaise: planCommissionPaise(input.plan, subtotalPaise - sellerDiscountPaise),
     at: input.at,
   });
   return {

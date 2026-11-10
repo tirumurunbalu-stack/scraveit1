@@ -16,6 +16,16 @@ import java.util.Map;
 
 public final class SavrivoMessagingService extends FirebaseMessagingService {
     private static final String TAG = "SavrivoMessaging";
+
+    /** This store app's kind, from its package (com.feastly.healthcare sells as "pharmacy"). */
+    private String storeType() {
+        String pkg = getPackageName();
+        if (pkg.endsWith(".grocery")) return "grocery";
+        if (pkg.endsWith(".dairy")) return "dairy";
+        if (pkg.endsWith(".healthcare")) return "pharmacy";
+        return "restaurant";
+    }
+
     @Override public void onNewToken(String token) {
         JSONObject event = new JSONObject();
         put(event, "type", "PUSH_TOKEN_REFRESH");
@@ -46,6 +56,23 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
         String role = SavrivoFirebase.appRole(this);
         String orderId = event.optString("orderId");
 
+        // Dispatch found this online rider's signal old: start the tracking service again.
+        if ("RIDER_WAKE_TRACKING".equals(type) && "rider".equals(role)) {
+            if (message.getPriority() == RemoteMessage.PRIORITY_HIGH) {
+                Intent wake = new Intent().setClassName(getPackageName(), "com.feastly.rider.TrackingRestartReceiver");
+                sendBroadcast(wake);
+            }
+            return;
+        }
+
+        // The four store apps share one sign-in, so each skips orders for another store type.
+        if ("RESTAURANT_NEW_ORDER".equals(type) && "restaurant".equals(role)
+                && !event.optString("storeType").isEmpty()
+                && !event.optString("storeType").equals(storeType())) {
+            Log.i(TAG, "NEW_ORDER_PUSH_OTHER_STORE orderId=" + orderId);
+            return;
+        }
+
         if ("RESTAURANT_NEW_ORDER".equals(type) && "restaurant".equals(role)
                 && "Order placed".equals(event.optString("status"))) {
             String alarmId = event.optString("alarmId", "order:" + orderId);
@@ -53,6 +80,7 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
             OrderAlarmService.start(this, alarmId,
                     event.optString("title", "New Scraveit order"),
                     event.optString("body", "A new order is waiting for your response."), orderId);
+            SavrivoCallableClient.warmOrderStatus(this);
         } else if ("STOP_ORDER_ALARM".equals(type) && "restaurant".equals(role)) {
             String alarmId = event.optString("alarmId", "order:" + orderId);
             OrderAlarmService.stop(this, alarmId);
@@ -107,7 +135,14 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
         if (launch == null) launch = new Intent();
         launch.setPackage(getPackageName());
         launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        launch.putExtra(SavrivoPushStore.EXTRA_EVENT, event.toString());
+        JSONObject open = event;
+        if (offer) {
+            // Tapping the fallback offer notification opens its accept/decline sheet.
+            open = new JSONObject();
+            put(open, "type", "RIDER_OFFER_OPEN");
+            put(open, "orderId", orderId);
+        }
+        launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
         int id = SavrivoNotifications.stableId(offer ? "rider-offer" : "order-status", orderId);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;

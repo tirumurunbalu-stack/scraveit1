@@ -104,7 +104,7 @@ export class CashfreeGateway implements PaymentGateway {
     return c.env === "production" ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
   }
 
-  private async api<T>(c: CashfreeConfig, method: "GET" | "POST", path: string, body?: unknown, idempotencyKey?: string): Promise<{status: number; data: T}> {
+  private async api<T>(c: CashfreeConfig, method: "GET" | "POST" | "PATCH", path: string, body?: unknown, idempotencyKey?: string): Promise<{status: number; data: T}> {
     const res = await this.http(`${this.base(c)}${path}`, {
       method,
       headers: {
@@ -162,6 +162,91 @@ export class CashfreeGateway implements PaymentGateway {
       redirectUrl: `${c.checkoutUrl}?op=pay&order_id=${encodeURIComponent(request.merchantOrderId)}&session=${encodeURIComponent(session)}&env=${c.env}`,
       expiresAt: Number.isFinite(cfExpiry) && cfExpiry > Date.now() ? Math.min(cfExpiry, expiresAt) : expiresAt,
     };
+  }
+
+  async paymentStatus(merchantOrderId: string): Promise<"received" | "pending" | "not_paid"> {
+    const c = this.config();
+    const path = `/orders/${encodeURIComponent(merchantOrderId)}`;
+    const [ord, pays] = await Promise.all([
+      this.api<CashfreeOrder>(c, "GET", path),
+      this.api<CashfreePayment[]>(c, "GET", `${path}/payments`),
+    ]);
+    if (ord.status === 200 && ord.data.order_status === "PAID") return "received";
+    if (ord.status !== 200 || pays.status !== 200 || !Array.isArray(pays.data)) return "pending";
+    if (pays.data.some((p) => p.payment_status === "SUCCESS")) return "received";
+    return pays.data.some((p) => p.payment_status === "PENDING") ? "pending" : "not_paid";
+  }
+
+  /** Terminates an unpaid Cashfree order so it can't take money any more. */
+  async closeOrder(merchantOrderId: string): Promise<"closed" | "paid" | "busy"> {
+    const c = this.config();
+    if (!c.appId || !c.secretKey) return "busy";
+    const path = `/orders/${encodeURIComponent(merchantOrderId)}`;
+    const current = await this.api<CashfreeOrder>(c, "GET", path);
+    if (current.status === 404) return "closed";
+    if (current.status !== 200) return "busy";
+    const status = String(current.data.order_status ?? "");
+    if (status === "PAID") return "paid";
+    if (status === "EXPIRED" || status === "TERMINATED") return "closed";
+    if (status === "TERMINATION_REQUESTED") return this.closedUnlessMoneyMoving(c, path);
+    if (status !== "ACTIVE") return "busy";
+    const ended = await this.api<CashfreeOrder & {code?: string; message?: string}>(c, "PATCH", path, {order_status: "TERMINATED"});
+    if (ended.status >= 200 && ended.status < 300 && String(ended.data.order_status ?? "") === "TERMINATED") return "closed";
+    if (ended.status >= 200 && ended.status < 300 && String(ended.data.order_status ?? "") === "TERMINATION_REQUESTED") {
+      const settled = await this.closedUnlessMoneyMoving(c, path);
+      if (settled !== "busy") return settled;
+    }
+    // TERMINATION_REQUESTED or a refusal: a payment on it may still be in flight.
+    logger.warn("CASHFREE_TERMINATE_NOT_FINAL", {status: ended.status, orderStatus: ended.data.order_status, code: ended.data.code, message: String(ended.data.message ?? "").slice(0, 200)});
+    return "busy";
+  }
+
+  /**
+   * Full refund of a paid Cashfree order. refund_id is fixed per payment, so a
+   * repeat returns the refund Cashfree already has instead of a second one.
+   * Throws when Cashfree can't be reached, so the caller tries again later.
+   */
+  async refund(merchantOrderId: string, refundId: string, amountPaise: number, note: string): Promise<"accepted" | "rejected"> {
+    const c = this.config();
+    if (!c.appId || !c.secretKey) throw new DomainError("unavailable", "Cashfree is not configured.");
+    const path = `/orders/${encodeURIComponent(merchantOrderId)}/refunds`;
+    const verdict = (status: string): "accepted" | "rejected" | "" =>
+      ["SUCCESS", "PENDING", "ONHOLD"].includes(status) ? "accepted" : status === "CANCELLED" ? "rejected" : "";
+    const created = await this.api<CashfreeRefund & {code?: string; message?: string}>(c, "POST", path, {
+      refund_amount: Number((amountPaise / 100).toFixed(2)),
+      refund_id: refundId,
+      refund_note: note.slice(0, 100),
+    }, refundId);
+    if (created.status >= 200 && created.status < 300) {
+      const answer = verdict(String(created.data.refund_status ?? ""));
+      if (answer) return answer;
+    }
+    // Already asked before (or the answer was unclear): read the refund Cashfree holds under our refund_id.
+    const existing = await this.api<CashfreeRefund>(c, "GET", `${path}/${encodeURIComponent(refundId)}`);
+    if (existing.status === 200) {
+      const answer = verdict(String(existing.data.refund_status ?? ""));
+      if (answer) return answer;
+    }
+    logger.error("CASHFREE_REFUND_NOT_ACCEPTED", {merchantOrderId, refundId, status: created.status,
+      code: created.data.code, message: String(created.data.message ?? "").slice(0, 200)});
+    // A clear refusal for this order (e.g. nothing paid to refund) needs a person; anything else is retried.
+    if ([400, 404, 422].includes(created.status)) return "rejected";
+    throw new DomainError("unavailable", "Cashfree didn't take the refund yet.");
+  }
+
+  /**
+   * Cashfree answers "termination requested" whenever the customer opened a UPI app
+   * on the order, even one they backed out of, and only finishes when the order
+   * expires (up to 20 minutes). New payments are already blocked by then, so the
+   * order counts as closed unless a payment is actually under way (PENDING) or
+   * went through (SUCCESS). NOT_ATTEMPTED, FAILED, USER_DROPPED and the like
+   * moved no money.
+   */
+  private async closedUnlessMoneyMoving(c: ReturnType<CashfreeGateway["config"]>, path: string): Promise<"closed" | "paid" | "busy"> {
+    const pays = await this.api<CashfreePayment[]>(c, "GET", `${path}/payments`);
+    if (pays.status !== 200 || !Array.isArray(pays.data)) return "busy";
+    if (pays.data.some((p) => p.payment_status === "SUCCESS")) return "paid";
+    return pays.data.some((p) => p.payment_status === "PENDING") ? "busy" : "closed";
   }
 
   /** Signature first, then Cashfree's own record must agree before anything is trusted. */

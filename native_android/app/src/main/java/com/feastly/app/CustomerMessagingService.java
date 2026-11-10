@@ -264,8 +264,6 @@ public final class CustomerMessagingService extends FirebaseMessagingService {
         .setOngoing(true)
         .setAutoCancel(true)
         .setContentIntent(callIntent(event, "open", id))
-        // Screen off or locked: the call opens full screen over the lock screen and wakes the phone.
-        .setFullScreenIntent(callIntent(event, "open", id + 3), true)
         .addAction(new Notification.Action.Builder(null, "Decline", callIntent(event, "decline", id + 1)).build())
         .addAction(new Notification.Action.Builder(null, video ? "Answer video" : "Answer", callIntent(event, "answer", id + 2)).build());
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(45_000);

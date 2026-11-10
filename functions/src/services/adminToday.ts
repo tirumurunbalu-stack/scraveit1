@@ -16,7 +16,7 @@ const MAX_ORDERS = 3_000;
 const COOKING = new Set(["Accepted", "Preparing"]);
 const ON_THE_WAY = new Set(["Assigned", "Handed to rider", "Out for delivery", "Near you", "Arrived"]);
 
-export type StoreKind = "restaurant" | "grocery" | "dairy";
+export type StoreKind = "restaurant" | "grocery" | "dairy" | "pharmacy";
 
 export interface PeriodTotals {
   orders: number;
@@ -61,8 +61,8 @@ export function summarize(
   kindOf: (restaurantId: string) => StoreKind,
 ): {all: PeriodTotals; byKind: Record<StoreKind, PeriodTotals>} {
   const all = emptyTotals();
-  const byKind: Record<StoreKind, PeriodTotals> = {restaurant: emptyTotals(), grocery: emptyTotals(), dairy: emptyTotals()};
-  const minutes: Record<string, number[]> = {all: [], restaurant: [], grocery: [], dairy: []};
+  const byKind: Record<StoreKind, PeriodTotals> = {restaurant: emptyTotals(), grocery: emptyTotals(), dairy: emptyTotals(), pharmacy: emptyTotals()};
+  const minutes: Record<string, number[]> = {all: [], restaurant: [], grocery: [], dairy: [], pharmacy: []};
   for (const order of orders) {
     const kind = kindOf(String(order.restaurantId ?? ""));
     const targets = [all, byKind[kind]];
@@ -87,7 +87,7 @@ export function summarize(
   }
   const avg = (list: number[]) => (list.length ? Math.round(list.reduce((a, b) => a + b, 0) / list.length) : null);
   all.avgDeliveryMinutes = avg(minutes.all!);
-  for (const k of ["restaurant", "grocery", "dairy"] as StoreKind[]) byKind[k].avgDeliveryMinutes = avg(minutes[k]!);
+  for (const k of ["restaurant", "grocery", "dairy", "pharmacy"] as StoreKind[]) byKind[k].avgDeliveryMinutes = avg(minutes[k]!);
   return {all, byKind};
 }
 
@@ -128,11 +128,14 @@ export async function readAdminToday(
   for (const doc of restaurants.docs) {
     const r = doc.data() as Rec;
     const type = String(r.storeType ?? "restaurant");
-    kinds.set(doc.id, type === "grocery" || type === "dairy" ? type : "restaurant");
-    const expires = String(r.fssaiExpiresOn ?? "");
-    if (/^\d{4}-\d{2}-\d{2}$/.test(expires) && r.archived !== true) {
-      const left = Math.round((Date.parse(`${expires}T00:00:00+05:30`) - today) / DAY_MS);
-      if (left <= 30) fssaiExpiring.push({restaurantId: doc.id, name: String(r.name ?? doc.id), expiresOn: expires, days: left});
+    kinds.set(doc.id, type === "grocery" || type === "dairy" || type === "pharmacy" ? type : "restaurant");
+    // A pharmacy's drug licence lapses the same way; it joins the same list.
+    for (const [field, suffix] of [["fssaiExpiresOn", ""], ["drugLicenceExpiresOn", " · drug licence"]] as const) {
+      const expires = String(r[field] ?? "");
+      if (/^\d{4}-\d{2}-\d{2}$/.test(expires) && r.archived !== true) {
+        const left = Math.round((Date.parse(`${expires}T00:00:00+05:30`) - today) / DAY_MS);
+        if (left <= 30) fssaiExpiring.push({restaurantId: doc.id, name: String(r.name ?? doc.id) + suffix, expiresOn: expires, days: left});
+      }
     }
   }
   const kindOf = (id: string) => kinds.get(id) ?? "restaurant";

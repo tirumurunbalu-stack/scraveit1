@@ -1,0 +1,2178 @@
+/*
+ * SCRAVEIT partner dashboard (www.scraveit.in/partner): a laptop view of the
+ * restaurant app for owners and their staff. Live orders, order history,
+ * reports, finance (payouts, monthly report, invoices & taxes, UTR, terms), menu, offers, ads (top placement),
+ * staff (owners add people and choose what each one sees) and outlet details.
+ *
+ * Access is the same as the Restaurant app: Firebase sign-in, then Firestore
+ * rules allow only outlets the person is a member of (restaurantMembers), with
+ * that member's permissions. Order actions go through the same server
+ * functions as the app; they need App Check, which the website turns on with
+ * the reCAPTCHA Enterprise key in /shop/web-config.js.
+ */
+(function () {
+  "use strict";
+  const CFG = window.SCRAVEIT_WEB || {};
+  firebase.initializeApp(CFG.firebase);
+  const WEB_CHECK = !!CFG.recaptchaEnterpriseSiteKey;
+  if (WEB_CHECK) {
+    try { firebase.appCheck().activate(new firebase.appCheck.ReCaptchaEnterpriseProvider(CFG.recaptchaEnterpriseSiteKey), true); } catch (_) { /* reads still work */ }
+  }
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+  const fns = firebase.app().functions(CFG.functionsRegion || "asia-south1");
+  const call = (name, data) => fns.httpsCallable(name, {timeout: 30000})(data).then((r) => r.data);
+
+  const app = document.getElementById("app");
+  const modalRoot = document.getElementById("modal-root");
+  const DAY = 86400000;
+  const NEW = ["Order placed"];
+  const PREPARING = ["Accepted", "Preparing"];
+  const READY = ["Ready for pickup", "Assigned"];
+  const PICKED = ["Handed to rider", "Out for delivery", "Near you", "Arrived"];
+  const REJECT_REASONS = ["Item out of stock", "Kitchen is too busy", "Closing soon", "Can't make this order", "Other"];
+
+  const state = {
+    user: null, loadingOutlets: false, outlets: {}, rid: "", page: "orders", orderTab: "new",
+    live: [], liveLoaded: false, liveUnsub: null, seenNew: new Set(), firstLiveLoad: true,
+    sound: true, alert: null, busy: "",
+    history: {range: "today", all: false, list: null, loading: false, sel: "", q: "", status: "all"},
+    reports: {range: "today", data: null, loading: false},
+    fin: {tab: "payouts", week: "", q: "", utrQ: "", tax: {}, wk: {}, mon: {}, month: "", showAll: false},
+    menu: {items: null, loading: false, cat: "", q: ""},
+    offers: {data: null, loading: false, error: ""},
+    ads: {data: null, loaded: false, loading: false, error: "", start: "", days: 7, busy: false},
+    insights: {doc: null, rid: "", loading: false, error: ""},
+    staff: {data: null, rid: "", loading: false, error: "", busy: false, share: ""},
+  };
+
+  // ---------- helpers ----------
+  const h = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  const inr = (n) => { const v = Math.round(Number(n || 0) * 100) / 100; return "₹" + v.toLocaleString("en-IN", {minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2}); };
+  const ms = (v) => v && typeof v.toMillis === "function" ? v.toMillis() : Number(v || 0);
+  const clock = (t) => new Date(t).toLocaleTimeString("en-IN", {hour: "numeric", minute: "2-digit"});
+  const dayLabel = (t) => new Date(t).toLocaleDateString("en-IN", {day: "numeric", month: "short"});
+  const startOfDay = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  function toast(text, bad) {
+    const el = document.getElementById("toast");
+    el.textContent = text; el.className = "show" + (bad ? " bad" : "");
+    clearTimeout(toast.t); toast.t = setTimeout(() => { el.className = ""; }, 3800);
+  }
+  function friendly(e) {
+    const code = String(e && (e.code || e.message) || "");
+    if (/app-check|unauthenticated|failed-precondition.*App Check/i.test(code) && !WEB_CHECK) return "Order actions from the website aren't switched on yet. Use the Scraveit Restaurant app for this.";
+    if (/permission-denied|insufficient permissions/i.test(code)) return "Your account doesn't have permission for this outlet.";
+    if (/wrong-password|invalid-credential|user-not-found/i.test(code)) return "Email/staff ID or password is wrong.";
+    if (/user-disabled/i.test(code)) return "This account was switched off. Ask your outlet owner.";
+    if (/network|unavailable/i.test(code)) return "No connection. Check your internet and try again.";
+    return (e && e.message) ? String(e.message).replace(/^Firebase:\s*/, "").slice(0, 200) : "Something went wrong. Try again.";
+  }
+  const ICON = {
+    orders: '<path d="M4 7h16l-1.5 11.5a2 2 0 0 1-2 1.5h-9a2 2 0 0 1-2-1.5Z"/><path d="M9 7a3 3 0 0 1 6 0"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
+    reports: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    menu: '<path d="M5 3v18M5 9h4a2 2 0 0 0 2-2V3M15 3c2.5 0 4 2 4 6s-1.5 5-4 5v7"/>',
+    offers: '<path d="M20 12 12 20l-8-8V4h8Z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
+    payouts: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/>',
+    ads: '<path d="M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16 9a3.5 3.5 0 0 1 0 6M19 6a7.5 7.5 0 0 1 0 12"/>',
+    outlet: '<path d="M4 10 5.5 4h13L20 10"/><path d="M5 10v10h14V10M4 10h16"/><path d="M10 20v-5h4v5"/>',
+    insights: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3Z"/>',
+    out: '<path d="M15 4h4v16h-4M10 17l5-5-5-5M15 12H3"/>',
+    staff: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/>',
+  };
+  const svg = (k) => '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[k] + "</svg>";
+
+  // ---------- orders: fields ----------
+  const orderId = (o) => String(o.id || o.orderId || o._doc || "");
+  const shortId = (o) => orderId(o).replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase();
+  const customerId = (o) => String(o.customerId || o.userId || "");
+  const placedAt = (o) => ms(o.createdAt) || ms(o.placedAt) || ms(o.updatedAt);
+  const firstName = (o) => String(o.customerName || "Customer").trim().split(/\s+/)[0];
+  const area = (o) => [o.address && o.address.area, o.address && o.address.city].filter(Boolean).join(", ");
+  const itemValue = (o) => Number(o.pricing && o.pricing.subtotal != null ? o.pricing.subtotal : o.total || 0);
+  const customerPaid = (o) => Number(o.total || (o.pricing && o.pricing.total) || 0);
+  const earnings = (o) => { const e = o.economics; return e && e.calculationVersion === 1 && e.restaurant ? Number(e.restaurant.receivablePaise || 0) / 100 : null; };
+  const awaitingPayment = (o) => o.paymentMethod !== "cod" && o.paymentState !== "paid" && o.paymentState !== "refunded";
+  function payPill(o) {
+    if (o.paymentMethod === "cod") return '<span class="pill cod">Cash</span>';
+    if (awaitingPayment(o)) return '<span class="pill wait">Payment pending</span>';
+    return '<span class="pill paid">Paid</span>';
+  }
+  function groupOf(o) {
+    if (NEW.includes(o.status)) return "new";
+    if (PREPARING.includes(o.status)) return "preparing";
+    if (READY.includes(o.status)) return "ready";
+    if (PICKED.includes(o.status)) return "picked";
+    return "done";
+  }
+  function itemsHtml(o) {
+    return '<ul class="olist">' + (o.items || []).map((it) => {
+      const extras = [it.variant, ...(it.addOns || []).map((a) => a && (a.name || a))].filter(Boolean).join(" · ");
+      // Veg / non-veg mark from the dish's own label; no mark when the menu doesn't say.
+      const diet = String(it.diet || it.foodType || "").toLowerCase(), nonveg = /non|egg/.test(diet), veg = !nonveg && /veg/.test(diet);
+      return '<li>' + (nonveg || veg ? '<span class="diet' + (nonveg ? " nonveg" : "") + '"></span>' : '<span class="diet none"></span>') + '<span class="grow"><span class="q">' + Number(it.quantity || 1) + ' ×</span> ' + h(it.name) +
+        (extras ? "<small>" + h(extras) + "</small>" : "") + (it.note ? "<small>Note: " + h(it.note) + "</small>" : "") + '</span><span class="num">' + inr(Number(it.price || 0) * Number(it.quantity || 1)) + "</span></li>";
+    }).join("") + "</ul>";
+  }
+
+  // ---------- sign in ----------
+  function screenSignIn(error) {
+    app.innerHTML = '<div class="signin"><form class="signin-card" id="signin"><div class="wordmark">scraveit<span>*</span></div><div><h1 style="font-size:22px">Partner dashboard</h1><p>For restaurant owners and staff. Use the same account as the Scraveit Restaurant app.</p></div>' +
+      (error ? '<div class="notice bad">' + h(error) + "</div>" : "") +
+      '<div class="field"><label for="em">Email or staff ID</label><input class="input" id="em" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>' +
+      '<div class="field"><label for="pw">Password</label><input class="input" id="pw" type="password" autocomplete="current-password" required></div>' +
+      '<button class="btn primary block" type="submit">Sign in</button><div class="divider">or</div><button class="btn block" type="button" data-act="google">Continue with Google</button>' +
+      '<p class="small">Staff: use the staff ID and password from your outlet owner. Don\'t have an outlet yet? Download the Scraveit Restaurant app to apply. <a href="/grievance">Help</a></p></form></div>';
+  }
+  document.addEventListener("submit", async (e) => {
+    if (e.target.id === "signin") {
+      e.preventDefault();
+      // A staff ID ("ravi4821") is the sign-in the owner made for that person: <id>@staff.scraveit.in.
+      const raw = document.getElementById("em").value.trim(), em = raw.includes("@") ? raw : raw.toLowerCase() + "@" + STAFF_DOMAIN, pw = document.getElementById("pw").value;
+      try { await auth.signInWithEmailAndPassword(em, pw); } catch (err) { screenSignIn(friendly(err)); }
+    }
+    if (e.target.id === "item-form") { e.preventDefault(); saveItem(e.target); }
+    if (e.target.id === "freebie-form") { e.preventDefault(); submitFreebie(e.target); }
+    if (e.target.id === "pairing-form") { e.preventDefault(); submitPairing(e.target); }
+    if (e.target.id === "discount-form") { e.preventDefault(); submitDiscount(e.target); }
+    if (e.target.id === "tds-claim-form") { e.preventDefault(); sendTdsClaim(e.target); }
+    if (e.target.id === "staff-form") { e.preventDefault(); saveStaff(e.target); }
+    if (e.target.id === "staff-pass-form") { e.preventDefault(); setStaffPassword(e.target); }
+    if (e.target.id === "reject-form") { e.preventDefault(); const f = e.target; setStatus(f.dataset.id, "Cancelled", f.reason.value === "Other" ? (f.note.value || "Other") : f.reason.value); closeModal(); }
+  });
+
+  // ---------- outlets ----------
+  async function loadOutlets() {
+    state.loadingOutlets = true; render();
+    const uid = state.user.uid, outlets = {};
+    try {
+      const links = await db.collection("userRestaurants").doc(uid).get();
+      const ids = links.exists ? Object.keys(links.data() || {}).filter((k) => links.data()[k] === true) : [];
+      await Promise.all(ids.map(async (rid) => {
+        const [m, r] = await Promise.all([db.collection("restaurantMembers").doc(rid + "_" + uid).get().catch(() => null), db.collection("restaurants").doc(rid).get().catch(() => null)]);
+        const member = m && m.exists ? m.data() : null;
+        if (member && member.active === true && r && r.exists) outlets[rid] = {id: rid, doc: r.data(), member};
+      }));
+    } catch (e) { toast(friendly(e), true); }
+    state.outlets = outlets; state.loadingOutlets = false;
+    let saved = ""; try { saved = localStorage.getItem("scraveit.partner.rid") || ""; } catch (_) { /* private mode */ }
+    state.rid = outlets[saved] ? saved : Object.keys(outlets)[0] || "";
+    startLive(); render();
+  }
+  const outlet = () => state.outlets[state.rid] || null;
+  // Same test as firestore.rules memberGrants(): owners and managers can do everything, other staff what they were given.
+  const isManager = () => { const m = outlet() && outlet().member; return !!(m && m.active === true && ["restaurant_owner", "restaurant_manager"].includes(m.role)); };
+  const can = (p) => { const m = outlet() && outlet().member; return isManager() || !!(m && m.active === true && m.permissions && m.permissions[p] === true); };
+  function selectOutlet(rid) {
+    state.rid = rid; try { localStorage.setItem("scraveit.partner.rid", rid); } catch (_) { /* ignore */ }
+    state.menu.items = null; state.menu.arrange = null; state.offers.data = null; state.fin = {tab: state.fin.tab, week: "", q: "", utrQ: "", tax: {}, wk: {}, mon: {}, month: "", showAll: false};
+    state.ads = {data: null, loaded: false, loading: false, error: "", start: "", days: 7, busy: false}; state.staff = {data: null, rid: "", loading: false, error: "", busy: false, share: ""}; state.reports.data = null; state.history.list = null; state.seenNew = new Set(); state.firstLiveLoad = true;
+    startLive(); render();
+  }
+
+  // ---------- live orders ----------
+  function startLive() {
+    if (state.liveUnsub) { state.liveUnsub(); state.liveUnsub = null; }
+    state.live = []; state.liveLoaded = false;
+    if (!state.rid || !pageAllowed("orders")) return;
+    const since = Date.now() - 36 * 3600000;
+    const onSnap = (snap) => {
+      state.live = snap.docs.map((d) => Object.assign({_doc: d.id}, d.data())).filter((o) => placedAt(o) >= since).sort((a, b) => placedAt(b) - placedAt(a));
+      state.liveLoaded = true;
+      const fresh = state.live.filter((o) => groupOf(o) === "new" && !state.seenNew.has(orderId(o)));
+      fresh.forEach((o) => state.seenNew.add(orderId(o)));
+      if (!state.firstLiveLoad && fresh.length) announce(fresh[0]);
+      state.firstLiveLoad = false;
+      if (!state.alert && state.page === "orders") render(); else updateBadges();
+    };
+    const fallback = () => { state.liveUnsub = db.collection("restaurantOrders").where("restaurantId", "==", state.rid).onSnapshot(onSnap, (e) => { state.liveLoaded = true; toast(friendly(e), true); render(); }); };
+    try {
+      state.liveUnsub = db.collection("restaurantOrders").where("restaurantId", "==", state.rid).where("createdAt", ">=", since).orderBy("createdAt", "desc").limit(300)
+        .onSnapshot(onSnap, () => fallback());
+    } catch (_) { fallback(); }
+  }
+  const liveIn = (g) => state.live.filter((o) => groupOf(o) === g);
+  function updateBadges() { const el = document.querySelector('[data-page="orders"] .count'); const n = liveIn("new").length; if (el) { el.textContent = n; el.hidden = !n; } }
+
+  // New order: a sound (once the owner has switched sound on) and a pop-up with Accept / Reject.
+  let audioCtx = null, ringTimer = null;
+  // With the dashboard open in two tabs, only one of them plays each sound.
+  function soundTurn(kind, gapMs) {
+    try {
+      const key = "scraveit.partner.sound." + kind, last = Number(localStorage.getItem(key)) || 0;
+      if (Date.now() - last < gapMs) return false;
+      localStorage.setItem(key, String(Date.now()));
+    } catch (_) { /* storage blocked: just play */ }
+    return true;
+  }
+  function ring() {
+    if (!state.sound || !soundTurn("ring", 2000)) return;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const beep = (at, f) => { const o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = f; o.type = "triangle"; g.gain.setValueAtTime(.0001, at); g.gain.exponentialRampToValueAtTime(.35, at + .02); g.gain.exponentialRampToValueAtTime(.0001, at + .35); o.connect(g); g.connect(audioCtx.destination); o.start(at); o.stop(at + .4); };
+      // Two rings with a small gap; announce() repeats the pair after a pause.
+      const t = audioCtx.currentTime; beep(t, 880); beep(t + .4, 1175); beep(t + 1.1, 880); beep(t + 1.5, 1175);
+    } catch (_) { /* no audio */ }
+  }
+  function announce(o) {
+    state.alert = orderId(o);
+    ring(); clearInterval(ringTimer); ringTimer = setInterval(() => { if (state.alert) ring(); else clearInterval(ringTimer); }, 2400);
+    try { if (window.Notification && Notification.permission === "granted") new Notification("New Scraveit order #" + shortId(o), {body: (o.items || []).map((i) => i.quantity + " × " + i.name).join(", ").slice(0, 120)}); } catch (_) { /* ignore */ }
+    showOrderModal(o);
+  }
+  function showOrderModal(o) {
+    const id = orderId(o), e = earnings(o);
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal" role="dialog" aria-modal="true" aria-label="New order"><header><h2>New order #' + h(shortId(o)) + '</h2><button class="x" data-act="close-alert" aria-label="Close">×</button></header>' +
+      '<div class="row between"><span>' + h(firstName(o)) + (area(o) ? " · " + h(area(o)) : "") + '</span>' + payPill(o) + "</div>" + itemsHtml(o) +
+      '<div class="bill"><div><span>Order value</span><span>' + inr(itemValue(o)) + "</span></div>" + (e != null ? '<div><span>You get</span><span>' + inr(e) + "</span></div>" : "") + '<div class="tot"><span>Customer pays</span><span>' + inr(customerPaid(o)) + "</span></div></div>" +
+      (awaitingPayment(o) ? '<div class="notice warn">The customer\'s online payment isn\'t confirmed yet. You can accept once it is.</div>' : "") +
+      '<div class="row"><button class="btn danger grow" data-act="reject" data-id="' + h(id) + '">Reject</button><button class="btn good grow" data-act="status" data-to="Accepted" data-id="' + h(id) + '"' + (awaitingPayment(o) || !can("orders") ? " disabled" : "") + ">Accept order</button></div></div></div>";
+  }
+  function closeModal() { modalRoot.innerHTML = ""; state.alert = null; state.staff.share = ""; clearInterval(ringTimer); if (state.page === "orders") render(); }
+  async function setStatus(id, to, reason) {
+    const o = state.live.find((x) => orderId(x) === id) || (state.history.list || []).find((x) => orderId(x) === id);
+    if (!o) return;
+    state.busy = id; render();
+    try {
+      const send = (toStatus) => call("updateOrderStatus", {customerId: customerId(o), orderId: id, toStatus, reason: reason || "", cashCollected: false});
+      // There is no "Start preparing" step: accepting puts the order in the kitchen.
+      if (to === "Ready for pickup" && o.status === "Accepted") await send("Preparing").catch(() => {});
+      await send(to);
+      if (to === "Accepted") await send("Preparing").catch(() => {});
+      toast(to === "Cancelled" ? "Order rejected." : to === "Accepted" ? "Order accepted. The kitchen timer has started." : to === "Ready for pickup" ? "Marked ready. The rider is on the way." : "Order updated.");
+      if (state.alert === id) closeModal();
+    } catch (e) { toast(friendly(e), true); } finally { state.busy = ""; render(); }
+  }
+  function rejectModal(id) {
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="reject-form" data-id="' + h(id) + '"><header><h2>Reject this order?</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="muted" style="margin:0">The customer is told and refunded if they paid online. Frequent rejections lower your outlet\'s ranking.</p>' +
+      '<div class="field"><label for="reason">Reason</label><select class="input" id="reason" name="reason">' + REJECT_REASONS.map((r) => "<option>" + h(r) + "</option>").join("") + "</select></div>" +
+      '<div class="field"><label for="note">Details (optional)</label><input class="input" id="note" name="note" maxlength="200"></div>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Keep order</button><button class="btn danger grow" type="submit">Reject order</button></div></form></div>';
+  }
+  // Kitchen timer, counted from Accept: 15 minutes for a small order, 20 for a
+  // bigger one (more than 3 dishes in all, or more than 2 different dishes).
+  // Free items don't count. "Order ready" can be tapped at any time.
+  function acceptedAt(o) {
+    const at = Object.values(o.statusHistory || {}).filter((ev) => ev && ev.status === "Accepted").map((ev) => ms(ev.at)).filter(Boolean);
+    return at.length ? Math.min(...at) : ms(o.updatedAt) || placedAt(o);
+  }
+  function prepMinutes(o) {
+    const items = (o.items || []).filter((i) => !i.free), units = items.reduce((n, i) => n + (Number(i.quantity) || 1), 0);
+    return units > 3 || items.length > 2 ? 20 : 15;
+  }
+  const readyDue = (o) => acceptedAt(o) + prepMinutes(o) * 60000;
+  function readyLabel(due) {
+    const left = due - Date.now(), s = Math.floor(Math.abs(left) / 1000), t = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    return left >= 0 ? t : "late " + t;
+  }
+  // Pickup: the rider photographs the parcel with the bill or order ID showing to pick it up, so staff tap
+  // nothing. A store delivering its own order keeps the handover button.
+  function riderPhotoPickup(o) {
+    return o.selfDelivery !== true && READY.includes(o.status);
+  }
+  function pickupNote(o) {
+    return '<div class="notice info small" style="margin:0;align-items:center;gap:12px"><span>Put the bill on the bag or write the order ID on it. The rider photographs the parcel to pick it up.</span>' +
+      '<strong style="flex:none;font-size:26px;letter-spacing:.06em">#' + h(shortId(o)) + "</strong></div>";
+  }
+  function readyButton(o, busy) {
+    const due = readyDue(o), late = due < Date.now();
+    return '<button class="btn primary ready-btn' + (late ? " late" : "") + '" data-act="status" data-to="Ready for pickup" data-id="' + h(orderId(o)) + '" data-due="' + due + '"' + (busy ? " disabled" : "") +
+      '>Order ready (<span class="timer">' + readyLabel(due) + "</span>)</button>" + '<div class="small muted" style="text-align:right">' + prepMinutes(o) + " min order</div>";
+  }
+  // Once a timer runs out: "Your order is getting late", then again every 30 seconds until it's marked ready.
+  const LATE_REPEAT_MS = 30000, lateSaidAt = {};
+  // The voice plays through the same Web Audio context as the ring, which the
+  // first tap already woke up, so nothing has to be played in advance.
+  let lateBuffer = null;
+  function playLateVoice() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const play = (buf) => { const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start(); };
+      if (lateBuffer) { play(lateBuffer); return; }
+      fetch("/partner/order-late.m4a").then((r) => r.arrayBuffer())
+        .then((b) => new Promise((ok, fail) => audioCtx.decodeAudioData(b, ok, fail)))
+        .then((buf) => { lateBuffer = buf; play(buf); }).catch(() => {});
+    } catch (_) { /* no audio */ }
+  }
+  // Sounds are always on. Browsers only allow a page to play sound after the
+  // first tap or key press on it, so that first one also wakes the audio up.
+  let audioUnlocked = !!(navigator.userActivation && navigator.userActivation.hasBeenActive);
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (_) { /* no audio */ }
+    try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch (_) { /* ignore */ }
+    if (state.page === "orders" && !modalRoot.innerHTML) render();
+  }
+  ["pointerdown", "keydown"].forEach((t) => document.addEventListener(t, unlockAudio, {capture: true}));
+  function tickKitchen() {
+    document.querySelectorAll(".ready-btn[data-due]").forEach((b) => {
+      const due = Number(b.dataset.due), t = b.querySelector(".timer");
+      if (t) t.textContent = readyLabel(due);
+      b.classList.toggle("late", due < Date.now());
+    });
+    const late = state.live.filter((o) => PREPARING.includes(o.status) && readyDue(o) < Date.now());
+    const due = late.find((o) => Date.now() - (lateSaidAt[orderId(o)] || 0) >= LATE_REPEAT_MS);
+    if (!due || !state.sound) return;
+    late.forEach((o) => { if (Date.now() - (lateSaidAt[orderId(o)] || 0) >= LATE_REPEAT_MS) lateSaidAt[orderId(o)] = Date.now(); });
+    if (!soundTurn("late", LATE_REPEAT_MS - 2000)) return;
+    playLateVoice();
+  }
+  function orderCard(o) {
+    const g = groupOf(o), id = orderId(o), mins = Math.floor((Date.now() - placedAt(o)) / 60000), e = earnings(o), busy = state.busy === id;
+    let actions = "";
+    if (g === "new") actions = '<button class="btn good" data-act="status" data-to="Accepted" data-id="' + h(id) + '"' + (awaitingPayment(o) || busy || !can("orders") ? " disabled" : "") + ">Accept</button><button class=\"btn danger\" data-act=\"reject\" data-id=\"" + h(id) + '"' + (busy ? " disabled" : "") + ">Reject</button>";
+    else if (PREPARING.includes(o.status)) actions = readyButton(o, busy);
+    else if (riderPhotoPickup(o)) actions = pickupNote(o);
+    const rider = o.riderName ? "<strong>" + h(o.riderName) + "</strong><div class=\"small muted\">" + h(g === "ready" && o.riderArrivalVerified === true ? "At your restaurant" : o.status) + "</div>" : g === "ready" ? '<div class="small muted">Finding a delivery partner…</div>' : "";
+    return '<article class="card order"><div class="band' + (g === "new" ? " new" : "") + '">' + (g === "new" ? "NEW ORDER" : "SCRAVEIT DELIVERY") + " · " + h(o.status) + "</div>" +
+      '<div class="o-info"><div class="oid">#' + h(shortId(o)) + '</div><div class="small muted">Placed ' + h(clock(placedAt(o))) + ' · <span class="timer">' + mins + ' min ago</span></div><p style="margin:10px 0 2px"><strong>' + h(firstName(o)) + "</strong></p>" +
+      (area(o) ? '<div class="small muted">' + h(area(o)) + "</div>" : "") + (o.instructions ? '<div class="notice info small" style="margin-top:8px">' + h(o.instructions) + "</div>" : "") + "</div>" +
+      // Dishes on the left, prices on the right, the action box in the middle between them.
+      '<div class="o-body">' + itemsHtml(o) + '<div class="total-line"><span>Total ' + payPill(o) + '</span><span>' + inr(customerPaid(o)) + "</span></div>" + (e != null ? '<div class="small muted you-get">You get ' + inr(e) + "</div>" : "") +
+      '<div class="actions" style="grid-row: 1 / span ' + ((o.items || []).length + 2) + '">' + actions + rider + (awaitingPayment(o) && g === "new" ? '<div class="small muted">Waiting for the customer\'s online payment.</div>' : "") + "</div></div></article>";
+  }
+  function pageOrders() {
+    const groups = {new: liveIn("new"), preparing: liveIn("preparing"), ready: liveIn("ready"), picked: liveIn("picked")};
+    const tabs = [["new", "New"], ["preparing", "Preparing"], ["ready", "Ready"], ["picked", "Picked up"]];
+    const list = groups[state.orderTab] || [];
+    return '<div class="row between"><div class="tabs">' + tabs.map((t) => '<button class="tab' + (state.orderTab === t[0] ? " on" : "") + '" data-act="order-tab" data-tab="' + t[0] + '">' + t[1] + " (" + groups[t[0]].length + ")</button>").join("") + "</div>" +
+      (audioUnlocked ? '<span class="small muted">🔔 Order sounds are on</span>' : '<span class="notice warn small" style="margin:0">🔔 Tap anywhere on this page once so order sounds can play</span>') + "</div>" +
+      (!state.liveLoaded ? '<div class="spinner"></div>' : list.length ? '<div class="orders">' + list.map(orderCard).join("") + "</div>" :
+        '<div class="card empty"><strong>' + (state.orderTab === "new" ? "No new orders right now" : "Nothing here") + "</strong>" + (state.orderTab === "new" ? "Keep this page open: new orders pop up here with a sound." : "") + "</div>");
+  }
+
+  // ---------- history and reports: data ----------
+  function rangeOf(key) {
+    const now = Date.now(), today = startOfDay(now);
+    if (key === "yesterday") return [today - DAY, today];
+    if (key === "7d") return [today - 6 * DAY, now];
+    if (key === "30d") return [today - 29 * DAY, now];
+    return [today, now];
+  }
+  // Pages through every order in the window: totals and tax figures must never stop at a page size.
+  async function fetchOrders(rids, from, to) {
+    const out = [];
+    await Promise.all(rids.map(async (rid) => {
+      let docs = [];
+      try {
+        let query = db.collection("restaurantOrders").where("restaurantId", "==", rid).where("createdAt", ">=", from).where("createdAt", "<", to).orderBy("createdAt", "desc").limit(1000);
+        for (;;) {
+          const page = (await query.get()).docs;
+          docs = docs.concat(page);
+          if (page.length < 1000) break;
+          query = query.startAfter(page[page.length - 1]);
+        }
+      } catch (_) {
+        docs = (await db.collection("restaurantOrders").where("restaurantId", "==", rid).get()).docs;
+      }
+      docs.forEach((d) => { const o = Object.assign({_doc: d.id}, d.data()); const t = placedAt(o); if (t >= from && t < to) out.push(o); });
+    }));
+    return out.sort((a, b) => placedAt(b) - placedAt(a));
+  }
+  const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]];
+  function rangeTabs(cur, act) { return '<div class="tabs">' + RANGES.map((r) => '<button class="tab' + (cur === r[0] ? " on" : "") + '" data-act="' + act + '" data-range="' + r[0] + '">' + r[1] + "</button>").join("") + "</div>"; }
+  const outletIds = (all) => all ? Object.keys(state.outlets) : [state.rid];
+
+  async function loadHistory() {
+    const H = state.history; H.loading = true; render();
+    const [from, to] = rangeOf(H.range);
+    try { H.list = await fetchOrders(outletIds(H.all), from, to); } catch (e) { toast(friendly(e), true); H.list = []; }
+    H.loading = false; render();
+  }
+  function csv(rows) { return rows.map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(",")).join("\n"); }
+  function download(name, text) { const a = document.createElement("a"); a.href = URL.createObjectURL(text instanceof Blob ? text : new Blob([text], {type: "text/csv"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+  function pageHistory() {
+    const H = state.history;
+    if (!H.list && !H.loading) setTimeout(loadHistory, 0);
+    let list = (H.list || []).filter((o) => H.status === "all" || (H.status === "delivered" ? o.status === "Delivered" : H.status === "cancelled" ? o.status === "Cancelled" : !["Delivered", "Cancelled"].includes(o.status)));
+    if (H.q) list = list.filter((o) => orderId(o).toLowerCase().includes(H.q.toLowerCase()) || shortId(o).toLowerCase() === H.q.toLowerCase());
+    const sel = list.find((o) => orderId(o) === H.sel);
+    const multi = Object.keys(state.outlets).length > 1;
+    return '<div class="row between">' + rangeTabs(H.range, "hist-range") + '<div class="row"><input class="input" style="width:200px" placeholder="Search order ID" value="' + h(H.q) + '" data-input="hist-q">' +
+      '<select class="input" style="width:150px" data-input="hist-status">' + [["all", "All orders"], ["delivered", "Delivered"], ["cancelled", "Rejected / cancelled"], ["open", "In progress"]].map((s) => '<option value="' + s[0] + '"' + (H.status === s[0] ? " selected" : "") + ">" + s[1] + "</option>").join("") + "</select>" +
+      (multi ? '<label class="row small"><input type="checkbox" data-input="hist-all"' + (H.all ? " checked" : "") + "> All outlets</label>" : "") +
+      '<button class="btn" data-act="hist-csv"' + (list.length ? "" : " disabled") + ">Download CSV</button></div></div>" +
+      (H.loading ? '<div class="spinner"></div>' : '<div class="split"><div class="card" style="padding:0;overflow:auto"><table class="table"><thead><tr><th>Order</th><th>Placed</th><th>Customer</th><th>Status</th><th class="num">Value</th></tr></thead><tbody>' +
+        (list.length ? list.map((o) => '<tr class="clickable' + (orderId(o) === H.sel ? " sel" : "") + '" data-act="hist-sel" data-id="' + h(orderId(o)) + '"><td><strong>#' + h(shortId(o)) + '</strong><div class="small muted">' + h(orderId(o)) + (multi && H.all ? " · " + h((state.outlets[o.restaurantId] || {doc: {}}).doc.name || "") : "") + "</div></td><td>" + h(dayLabel(placedAt(o))) + ", " + h(clock(placedAt(o))) + "</td><td>" + h(firstName(o)) + '</td><td><span class="pill ' + (o.status === "Delivered" ? "done" : o.status === "Cancelled" ? "wait" : "state") + '">' + h(o.status) + '</span></td><td class="num">' + inr(itemValue(o)) + "</td></tr>").join("") :
+          '<tr><td colspan="5" class="empty"><strong>No orders</strong>Nothing matches this period.</td></tr>') + "</tbody></table></div>" +
+        '<div class="card detail">' + (sel ? historyDetail(sel) : '<div class="empty"><strong>No order selected</strong>Pick an order to see its bill.</div>') + "</div></div>");
+  }
+  function historyDetail(o) {
+    const e = earnings(o), pr = o.pricing || {};
+    return '<div class="row between"><h2>#' + h(shortId(o)) + '</h2><span class="pill state">' + h(o.status) + '</span></div><p class="small muted" style="margin:0 0 10px">' + h(orderId(o)) + " · " + h(new Date(placedAt(o)).toLocaleString("en-IN")) + "</p>" + itemsHtml(o) +
+      '<div class="bill" style="margin-top:12px"><div><span>Item total</span><span>' + inr(itemValue(o)) + "</span></div>" + (pr.discount ? '<div><span>Discount</span><span>−' + inr(pr.discount) + "</span></div>" : "") + (pr.packagingFee ? '<div><span>Packaging</span><span>' + inr(pr.packagingFee) + "</span></div>" : "") +
+      '<div class="tot"><span>Customer paid ' + payPill(o) + "</span><span>" + inr(customerPaid(o)) + "</span></div>" + (e != null ? '<div class="tot"><span>You get</span><span>' + inr(e) + "</span></div>" : "") + "</div>" +
+      (o.cancelReason || o.reason ? '<div class="notice warn small" style="margin-top:10px">Reason: ' + h(o.cancelReason || o.reason) + "</div>" : "") + (o.rating ? '<p class="small">Customer rating: <strong>' + h(o.rating) + " ★</strong></p>" : "");
+  }
+
+  // ---------- reports ----------
+  function summarize(list) {
+    const delivered = list.filter((o) => o.status === "Delivered"), cancelled = list.filter((o) => o.status === "Cancelled");
+    const sales = delivered.reduce((s, o) => s + itemValue(o), 0), earned = delivered.reduce((s, o) => s + (earnings(o) || 0), 0);
+    const rated = list.filter((o) => Number(o.rating) > 0);
+    const byCustomer = {}; list.forEach((o) => { const c = customerId(o); if (c) byCustomer[c] = (byCustomer[c] || 0) + 1; });
+    const customers = Object.keys(byCustomer).length, repeat = Object.values(byCustomer).filter((n) => n > 1).length;
+    return {orders: list.length, delivered: delivered.length, cancelled: cancelled.length, sales, earned, aov: delivered.length ? sales / delivered.length : 0,
+      rejectRate: list.length ? cancelled.length / list.length * 100 : 0, rating: rated.length ? rated.reduce((s, o) => s + Number(o.rating), 0) / rated.length : 0, ratedCount: rated.length, customers, repeat};
+  }
+  async function loadReports() {
+    const R = state.reports; R.loading = true; render();
+    const [from, to] = rangeOf(R.range), span = R.range === "today" ? DAY : to - from;
+    // Compared with the same stretch one week earlier (today against the same weekday last week).
+    const prevFrom = R.range === "today" || R.range === "yesterday" ? from - 7 * DAY : from - span, prevTo = R.range === "today" ? to - 7 * DAY : R.range === "yesterday" ? to - 7 * DAY : from;
+    try {
+      const rids = outletIds(true);
+      const [cur, prev] = await Promise.all([fetchOrders(rids, from, to), fetchOrders(rids, prevFrom, prevTo)]);
+      const mine = (l) => l.filter((o) => o.restaurantId === state.rid || R.all);
+      R.data = {cur: mine(cur), prev: mine(prev), from, to};
+    } catch (e) { toast(friendly(e), true); R.data = {cur: [], prev: [], from, to}; }
+    R.loading = false; render();
+  }
+  function delta(a, b, invert) {
+    if (!b) return '<span class="delta muted">—</span>';
+    const d = (a - b) / b * 100, good = invert ? d < 0 : d > 0;
+    return '<span class="delta ' + (good ? "up" : "down") + '">' + (d > 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(0) + "%</span>";
+  }
+  function barChart(list, from, to, hourly) {
+    const buckets = [];
+    if (hourly) for (let i = 0; i < 24; i++) buckets.push({label: i % 3 === 0 ? (i % 12 || 12) + (i < 12 ? "a" : "p") : "", v: 0});
+    else for (let t = startOfDay(from); t < to; t += DAY) buckets.push({label: dayLabel(t), v: 0, t});
+    list.filter((o) => o.status === "Delivered").forEach((o) => {
+      const t = placedAt(o), i = hourly ? new Date(t).getHours() : Math.floor((startOfDay(t) - startOfDay(from)) / DAY);
+      if (buckets[i]) buckets[i].v += itemValue(o);
+    });
+    const max = Math.max(1, ...buckets.map((b) => b.v)), W = 760, H = 200, bw = W / buckets.length;
+    return '<svg class="chart" viewBox="0 0 ' + W + " " + (H + 22) + '" preserveAspectRatio="none" role="img" aria-label="Sales chart">' + buckets.map((b, i) => {
+      const bh = Math.round(b.v / max * H);
+      return '<rect class="bar" x="' + (i * bw + bw * .15) + '" y="' + (H - bh) + '" width="' + bw * .7 + '" height="' + Math.max(bh, 1) + '" rx="3"><title>' + h(b.label) + ": " + inr(b.v) + "</title></rect>" + (b.label && (hourly || buckets.length <= 10 || i % Math.ceil(buckets.length / 8) === 0) ? '<text x="' + (i * bw + bw / 2) + '" y="' + (H + 16) + '" text-anchor="middle">' + h(b.label) + "</text>" : "");
+    }).join("") + "</svg>";
+  }
+  function topList(entries, unit) {
+    const max = Math.max(1, ...entries.map((e) => e[1]));
+    return entries.length ? '<div class="bars">' + entries.map((e) => '<div><span>' + h(e[0]) + '</span><i style="width:' + Math.max(4, e[1] / max * 100) + '%"></i><strong>' + h(unit(e[1])) + "</strong></div>").join("") + "</div>" : '<p class="muted small">No delivered orders in this period.</p>';
+  }
+  function pageReports() {
+    const R = state.reports;
+    if (!R.data && !R.loading) setTimeout(loadReports, 0);
+    const multi = Object.keys(state.outlets).length > 1;
+    const head = '<div class="row between">' + rangeTabs(R.range, "rep-range") + (multi ? '<label class="row small"><input type="checkbox" data-input="rep-all"' + (R.all ? " checked" : "") + "> All outlets</label>" : "") + "</div>";
+    if (R.loading || !R.data) return head + '<div class="spinner"></div>';
+    const a = summarize(R.data.cur), b = summarize(R.data.prev);
+    const dishes = {}, hours = {};
+    R.data.cur.filter((o) => o.status === "Delivered").forEach((o) => { (o.items || []).forEach((i) => { dishes[i.name] = (dishes[i.name] || 0) + Number(i.quantity || 1); }); const hr = new Date(placedAt(o)).getHours(); hours[hr] = (hours[hr] || 0) + 1; });
+    const topDishes = Object.entries(dishes).sort((x, y) => y[1] - x[1]).slice(0, 8);
+    const busy = Object.entries(hours).sort((x, y) => y[1] - x[1]).slice(0, 6).map((e) => [new Date(2000, 0, 1, Number(e[0])).toLocaleTimeString("en-IN", {hour: "numeric"}) + " – " + new Date(2000, 0, 1, Number(e[0]) + 1).toLocaleTimeString("en-IN", {hour: "numeric"}), e[1]]);
+    const kpi = (label, val, d) => '<div class="kpi"><span>' + label + "</span><strong>" + val + "</strong>" + d + "</div>";
+    return head + '<p class="small muted" style="margin:-6px 0 0">Compared with ' + (R.range === "today" ? "the same time on the same weekday last week" : R.range === "yesterday" ? "the same day last week" : "the period just before") + ". Sales are menu value of delivered orders.</p>" +
+      '<div class="kpis">' + kpi("Sales", inr(a.sales), delta(a.sales, b.sales)) + kpi("Delivered orders", a.delivered, delta(a.delivered, b.delivered)) + kpi("Average order value", inr(Math.round(a.aov)), delta(a.aov, b.aov)) +
+      kpi("Your earnings", a.earned ? inr(Math.round(a.earned)) : "—", a.earned ? delta(a.earned, b.earned) : "") + kpi("Rejected / cancelled", a.rejectRate.toFixed(1) + "%", delta(a.rejectRate, b.rejectRate, true)) +
+      kpi("Average rating", a.ratedCount ? a.rating.toFixed(1) + " ★" : "—", '<span class="small muted">' + a.ratedCount + " rated orders</span>") + kpi("Customers", a.customers, '<span class="small muted">' + a.repeat + " ordered more than once</span>") + "</div>" +
+      '<div class="card"><h2>' + (R.range === "today" || R.range === "yesterday" ? "Sales by hour" : "Sales by day") + "</h2>" + barChart(R.data.cur, R.data.from, R.data.to, R.range === "today" || R.range === "yesterday") + "</div>" +
+      '<div class="split"><div class="card"><h2>Top dishes</h2>' + topList(topDishes, (n) => n + " sold") + '</div><div class="card"><h2>Busiest hours</h2>' + topList(busy, (n) => n + " orders") + "</div></div>";
+  }
+
+  // ---------- finance: payouts, invoices & taxes, UTR ----------
+  // Weekly cycles run Monday to Sunday. Order money comes from each order's own
+  // split (economics, orderTax). The bank reference (UTR) of each payout, the
+  // TDS/TCS actually withheld and invoice numbers come from Scraveit's ledger
+  // and tax records (getRestaurantSettlementSummary, getRestaurantTaxStatement);
+  // like order actions, those calls need the website's App Check key.
+  const FIN_TABS = [["payouts", "Payouts"], ["report", "Monthly report"], ["taxes", "Invoices & taxes"], ["utr", "UTR"], ["terms", "Terms explained"]];
+  const WEEKS = 12;
+  const METHODS = {neft: "NEFT", imps: "IMPS", upi: "UPI", rtgs: "RTGS", bank_transfer: "Bank transfer"};
+  const STATES = {"01": "Jammu and Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh", "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+    "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur", "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal", "20": "Jharkhand",
+    "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat", "26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra", "29": "Karnataka", "30": "Goa", "31": "Lakshadweep",
+    "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry", "35": "Andaman and Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh", "38": "Ladakh", "97": "Other Territory"};
+  const deliveredAt = (o) => ms(o.deliveredAt) || placedAt(o);
+  const mondayOf = (t) => { const d = startOfDay(t); return d - ((new Date(d).getDay() + 6) % 7) * DAY; };
+  const rs = (paise) => Number(paise || 0) / 100;
+  const fullDay = (t) => new Date(t).toLocaleDateString("en-IN", {day: "numeric", month: "short", year: "numeric"});
+  const isoDay = (t) => new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const stateName = (code) => (STATES[code] || "State") + " (" + (code || "—") + ")";
+  const pct = (bps) => (Number(bps || 0) / 100).toLocaleString("en-IN", {maximumFractionDigits: 2}) + "%";
+  const maskPan = (pan) => { const p = String(pan || "").toUpperCase(); return p.length === 10 ? p.slice(0, 5) + "XXXX" + p.slice(9) : ""; };
+  const storeKind = () => { const t = String((outlet() && outlet().doc.storeType) || ""); return ["grocery", "dairy", "pharmacy", "other"].includes(t) ? t : "restaurant"; };
+  const statement = (from, to) => call("getRestaurantTaxStatement", {restaurantId: state.rid, from, to});
+  const kpiBox = (label, value, sub) => '<div class="kpi"><span>' + label + "</span><strong>" + value + '</strong><span class="small muted">' + sub + "</span></div>";
+  const commissionInvoice = (row) => row ? (row.invoices || []).find((i) => i.kind === "scraveit_commission") || null : null;
+
+  // One delivered order's money in rupees. GST lines only when GST was charged on the order.
+  function orderMoney(o) {
+    const e = o.economics || {}, c = e.customer || {}, r = e.restaurant || {}, t = o.orderTax || {};
+    const gst = t.gstApplied === true, lines = gst && Array.isArray(t.services) ? t.services : [];
+    const line = (k) => { const l = lines.find((s) => s && s.component === k); return l ? {base: rs(l.basePaise), rateBps: Number(l.rateBps || 0), gst: rs(l.gstPaise), cgst: rs(l.cgstPaise), sgst: rs(l.sgstPaise), igst: rs(l.igstPaise)} : null; };
+    const items = c.itemSubtotalPaise != null ? rs(c.itemSubtotalPaise) : itemValue(o), discount = rs(c.restaurantDiscountPaise), comm = line("commission");
+    return {items, discount, base: r.commissionBasePaise != null ? rs(r.commissionBasePaise) : items - discount, commission: rs(r.commissionPaise),
+      commissionGst: r.commissionTaxPaise != null ? rs(r.commissionTaxPaise) : comm ? comm.gst : 0, rush: rs(r.rushFeeSharePaise), earned: earnings(o) || 0,
+      commissionLine: comm, food: line("restaurant_service"), gst};
+  }
+
+  async function loadFinance() {
+    const F = state.fin; F.loading = true; render();
+    const from = mondayOf(Date.now()) - (WEEKS - 1) * 7 * DAY, to = Date.now() + 1;
+    const jobs = [
+      fetchOrders([state.rid], from - DAY, to).then((list) => { F.orders = list.filter((o) => deliveredAt(o) >= from); }, (e) => { F.orders = []; toast(friendly(e), true); }),
+      db.collection("restaurantPayoutProfiles").doc(state.rid).get().then((s) => { F.profile = s.exists ? s.data() : null; }, () => { F.profile = null; }),
+    ];
+    if (WEB_CHECK) {
+      jobs.push(call("getRestaurantSettlementSummary", {restaurantId: state.rid, ledgerLimit: 1000, historyLimit: 100}).then((r) => { F.settle = r; }, (e) => { F.serverErr = friendly(e); }));
+      jobs.push(statement(from, to).then((r) => { F.stmt = r; }, (e) => { F.serverErr = friendly(e); }));
+    }
+    await Promise.all(jobs);
+    F.loaded = true; F.loading = false; render();
+  }
+
+  // Money actually sent (with its bank reference), plus weekly runs that were held, newest first.
+  function payouts() {
+    const F = state.fin;
+    const paid = ((F.settle && F.settle.settlementHistory) || []).filter((a) => a.activityType === "settlement")
+      .map((a) => ({at: a.occurredAt, amount: -rs(a.payableMovementPaise), utr: a.referenceId || "", method: a.settlementMethod || "", status: "paid", reason: ""}));
+    const held = ((F.stmt && F.stmt.payoutRuns) || []).filter((r) => r.status !== "completed")
+      .map((r) => ({at: Date.parse(r.runDayKey + "T10:00:00+05:30") || 0, amount: rs(r.amountPaise), utr: "", method: r.method || "", status: "held", reason: r.reason || ""}));
+    return paid.concat(held).sort((a, b) => b.at - a.at);
+  }
+  function payoutAccount() {
+    const p = state.fin.profile; if (!p) return {label: "", sub: ""};
+    const acct = String(p.bankAccountNumber || "").replace(/\s/g, "");
+    if ((p.preferredMethod === "upi" || !acct) && p.upiId) return {label: "UPI", sub: String(p.upiId)};
+    return acct ? {label: (p.bankName || "Bank") + " ••••" + acct.slice(-4), sub: p.bankIfsc ? "IFSC " + p.bankIfsc : ""} : {label: "", sub: ""};
+  }
+
+  function weekRows() {
+    const F = state.fin, rows = {}, monday = mondayOf(Date.now()), list = payouts(), out = [];
+    ((F.stmt && F.stmt.rows) || []).forEach((r) => { rows[r.orderId] = r; });
+    for (let i = 0; i < WEEKS; i++) {
+      const start = monday - i * 7 * DAY, end = start + 7 * DAY;
+      const inWeek = (F.orders || []).filter((o) => deliveredAt(o) >= start && deliveredAt(o) < end);
+      const w = {start, end, current: i === 0, orders: inWeek.filter((o) => o.status === "Delivered"), cancelled: inWeek.filter((o) => o.status === "Cancelled").length,
+        items: 0, discount: 0, base: 0, commission: 0, commissionGst: 0, rush: 0, earned: 0, tds: 0, tcs: 0, cod: 0, adj: 0};
+      w.orders.forEach((o) => {
+        const m = orderMoney(o), r = rows[orderId(o)];
+        ["items", "discount", "base", "commission", "commissionGst", "rush", "earned"].forEach((k) => { w[k] += m[k]; });
+        if (r) { w.tds += rs(r.incomeTaxTdsPaise); w.tcs += rs(r.gstTcsPaise); }
+        if (o.paymentMethod === "cod") w.cod += 1;
+      });
+      // Ads, refunds recovered, TDS refunded and other corrections, from the ledger.
+      ((F.settle && F.settle.settlementHistory) || []).forEach((a) => {
+        if (a.activityType !== "settlement" && a.occurredAt >= start && a.occurredAt < end) w.adj += rs(a.payableMovementPaise);
+      });
+      // Once this week's exact report is loaded, it is the figure.
+      const L = F.wk[String(start)];
+      w.net = L && L.data ? rs(L.data.periodNetPaise) : w.earned - w.tds - w.tcs + w.adj;
+      // A payout sends the whole balance due, so a closed week is covered by the first payout after it ends.
+      w.payout = w.current ? null : list.filter((p) => p.status === "paid" && p.at >= end).sort((a, b) => a.at - b.at)[0] || null;
+      w.held = w.current ? null : list.find((p) => p.status === "held" && p.at >= end && p.at < end + 7 * DAY) || null;
+      out.push(w);
+    }
+    return out;
+  }
+  function weekStatus(w) {
+    const p = w.payout;
+    if (w.current) return '<span class="pill state">In progress</span>';
+    if (p) return '<span class="pill paid">Paid ' + h(dayLabel(p.at)) + "</span>";
+    if (w.held) return '<span class="pill wait">Held</span>';
+    if (!w.orders.length) return '<span class="pill done">No orders</span>';
+    if (!WEB_CHECK) return '<span class="pill done">—</span>';
+    return Date.now() < w.end + 7 * DAY ? '<span class="pill cod">Due</span>' : '<span class="pill wait">Not paid yet</span>';
+  }
+
+  function pageFinance() {
+    const F = state.fin;
+    if (!can("finance")) return '<div class="card empty"><strong>Finance is for owners, managers and staff given Payouts & invoices</strong>Ask the outlet owner for payouts and tax documents.</div>';
+    const head = '<div class="tabs">' + FIN_TABS.map((t) => '<button class="tab' + (F.tab === t[0] ? " on" : "") + '" data-act="fin-tab" data-tab="' + t[0] + '">' + t[1] + "</button>").join("") + "</div>";
+    if (!F.loaded && !F.loading) setTimeout(loadFinance, 0);
+    if (!F.loaded) return head + '<div class="spinner"></div>';
+    const server = !WEB_CHECK ? '<div class="notice warn">Bank references (UTR), the TDS and TCS withheld, and invoice numbers come from Scraveit\'s secure records and show here once the website\'s security check is switched on. Until then, amounts are worked out from your orders.</div>' :
+      F.serverErr ? '<div class="notice warn">Some finance records didn\'t load: ' + h(F.serverErr) + "</div>" : "";
+    return head + server + (F.tab === "taxes" ? pageTaxes() : F.tab === "utr" ? pageUtr() : F.tab === "report" ? pageMonthly() : F.tab === "terms" ? pageTerms() : pagePayouts());
+  }
+
+  function pagePayouts() {
+    const F = state.fin, W = weekRows(), s = F.settle, last = payouts().find((p) => p.status === "paid"), acct = payoutAccount();
+    if (!F.week) F.week = String(W[1].start);
+    const sel = W.find((w) => String(w.start) === F.week) || W[1];
+    const auto = s && s.automation, balance = s && s.complete && s.pendingSettlementPaise != null ? inr(rs(s.pendingSettlementPaise)) : "—";
+    return '<div class="kpis">' + kpiBox("This week so far", inr(W[0].net), W[0].orders.length + " delivered orders · after commission" + (F.stmt ? " and TDS" : "")) +
+      kpiBox("Balance due to you", balance, !WEB_CHECK ? "From Scraveit's ledger" : !s ? "Couldn't load" : !s.complete ? "Being checked by Scraveit finance" : auto && auto.enabled && auto.scheduleLabel ? "Paid every " + h(auto.scheduleLabel.replace(/\s*\(Asia\/Kolkata\)$/, "")) : "Paid weekly") +
+      kpiBox("Last payout", last ? inr(last.amount) : "—", last ? h(fullDay(last.at)) + (last.utr ? " · UTR " + h(last.utr) : "") : WEB_CHECK ? "No payouts yet" : "From Scraveit's ledger") +
+      kpiBox("Paid to", acct.label ? h(acct.label) : "Not set", acct.label ? h(acct.sub) : '<span style="color:var(--bad)">Add your bank account in the Restaurant app, or payouts are held</span>') + "</div>" +
+      '<div class="split fin"><div class="card" style="padding:0;overflow:auto"><div class="row between" style="padding:14px 16px"><h2 style="margin:0">Weekly payouts</h2><span class="small muted">Monday to Sunday · pick a week</span></div>' +
+      '<table class="table"><thead><tr><th>Week</th><th class="num">Orders</th><th class="num">Item total</th><th class="num">Commission + GST</th><th class="num">TDS + TCS</th><th class="num">Your payout</th><th>Status</th></tr></thead><tbody>' +
+      W.map((w) => '<tr class="clickable' + (w === sel ? " sel" : "") + '" data-act="fin-week" data-id="' + w.start + '"><td class="nowrap">' + h(dayLabel(w.start)) + " – " + h(dayLabel(w.end - DAY)) + '</td><td class="num">' + w.orders.length +
+        '</td><td class="num">' + inr(w.items) + '</td><td class="num">' + inr(w.commission + w.commissionGst) + '</td><td class="num">' + (F.stmt ? inr(w.tds + w.tcs) : "—") +
+        '</td><td class="num"><strong>' + inr(w.net) + "</strong></td><td>" + weekStatus(w) + "</td></tr>").join("") + "</tbody></table></div>" + weekStatement(sel) + "</div>";
+  }
+  function statementLines(w) {
+    const F = state.fin, rate = w.base ? w.commission / w.base * 100 : 0;
+    const line = (label, v, cls) => "<div" + (cls ? ' class="' + cls + '"' : "") + "><span>" + label + "</span><span>" + v + "</span></div>";
+    return '<div class="bill">' + line("Item total (your menu prices)", inr(w.items)) + (w.discount ? line("− Discounts you funded", "−" + inr(w.discount)) : "") +
+      line("Value the commission is on", inr(w.base), "sub") + line("− Scraveit commission" + (rate ? " (" + (Math.round(rate * 10) / 10) + "%)" : ""), "−" + inr(w.commission)) +
+      line("− GST on commission (18%)", "−" + inr(w.commissionGst)) + (w.rush ? line("+ Your share of busy-kitchen fees", inr(w.rush)) : "") +
+      line("Your earnings", inr(w.earned), "tot") + line("− Income-tax TDS", F.stmt ? "−" + inr(w.tds) : "—") +
+      (w.tcs || storeKind() !== "restaurant" ? line("− GST TCS", F.stmt ? "−" + inr(w.tcs) : "—") : "") +
+      (w.adj ? line("± Ads, refunds recovered and other adjustments", (w.adj < 0 ? "−" : "+") + inr(Math.abs(w.adj))) : "") + line(F.stmt ? "Net payout" : "Net payout, before TDS", inr(w.net), "tot") + "</div>";
+  }
+  function weekStatement(w) {
+    const F = state.fin, p = w.payout, acct = payoutAccount(), L = weekLedger(w);
+    let pay = w.held ? '<div class="notice warn small">' + h(w.held.reason || "Held: Scraveit finance will contact you.") + "</div>" : "";
+    if (w.current) pay = '<div class="notice info small">This week is still running. It\'s paid in the first payout after Sunday.</div>';
+    else if (p) pay += '<div class="notice info small"><div>Paid ' + h(fullDay(p.at)) + (p.method ? " by " + h(METHODS[p.method] || p.method) : "") + (p.utr ? ' · UTR <strong class="utr">' + h(p.utr) + "</strong>" : "") + (acct.label ? " · " + h(acct.label) : "") +
+      (Math.abs(p.amount - w.net) > 0.5 ? '<div class="small muted">That payout was ' + inr(p.amount) + ": the whole balance due on that day, which can cover more than one week.</div>" : "") + "</div></div>";
+    return '<div class="card detail"><div class="row between"><h2 style="margin:0">Payout statement</h2><span class="small muted">' + h(fullDay(w.start)) + " – " + h(fullDay(w.end - DAY)) + "</span></div>" +
+      '<p class="small muted" style="margin:6px 0 12px">' + w.orders.length + " delivered (" + w.cod + " cash, " + (w.orders.length - w.cod) + " online)" + (w.cancelled ? " · " + w.cancelled + " rejected or cancelled, not paid" : "") + "</p>" +
+      (L && L.data ? ledgerLines(L.data, w) + (w.held ? pay : "") : (L && L.loading ? '<div class="spinner"></div>' : "") + statementLines(w) + pay + (L && L.err ? '<div class="notice warn small">Exact figures didn\'t load: ' + h(L.err) + "</div>" : "")) +
+      '<div class="row" style="margin-top:12px">' + (L && L.data ? '<button class="btn small" data-act="fin-orders">Orders and the payout that paid them</button>' : "") + '<button class="btn small" data-act="fin-annex"' + (w.orders.length ? "" : " disabled") + '>Order-wise annexure (CSV)</button><button class="btn small" data-act="fin-print">Print statement</button></div>' +
+      '<p class="small muted" style="margin:10px 0 0">Customers\' GST on your food is paid by Scraveit under section 9(5) and isn\'t part of your payout.' + (F.stmt && !F.stmt.tdsActive ? " Income-tax TDS isn't being deducted yet." : "") + "</p></div>";
+  }
+  function annexureRows(w) {
+    const rows = {}, led = {}, L = state.fin.wk[String(w.start)]; ((state.fin.stmt && state.fin.stmt.rows) || []).forEach((r) => { rows[r.orderId] = r; });
+    ((L && L.data && L.data.orders) || []).forEach((r) => { led[r.orderId] = r; });
+    return [["Order ID", "Placed", "Delivered", "Payment", "Item total", "Your discount", "Commission on", "Commission %", "Commission", "GST on commission", "Busy-kitchen share", "Your earnings", "TDS", "TCS", "Refund recovered", "Net payout", "Settlement status", "Paid on", "Bank UTR", "Commission invoice no."]].concat(w.orders.map((o) => {
+      const m = orderMoney(o), r = rows[orderId(o)] || null, l = led[orderId(o)] || null, tds = l ? rs(l.tdsPaise) : r ? rs(r.incomeTaxTdsPaise) : 0, tcs = l ? rs(l.tcsPaise) : r ? rs(r.gstTcsPaise) : 0, inv = commissionInvoice(r);
+      return [orderId(o), new Date(placedAt(o)).toLocaleString("en-IN"), new Date(deliveredAt(o)).toLocaleString("en-IN"), o.paymentMethod === "cod" ? "Cash" : "Online", m.items, m.discount, m.base,
+        m.base ? (m.commission / m.base * 100).toFixed(2) : "", m.commission, m.commissionGst, m.rush, m.earned, r || l ? tds : "", r || l ? tcs : "", l ? rs(l.refundRecoveredPaise) : "",
+        l ? rs(l.netPaise) : r ? Math.round((m.earned - tds - tcs) * 100) / 100 : "", l ? settledText(l.settlement) : "", l && l.settlement.at ? fullDay(l.settlement.at) : "", l ? l.settlement.utr : "", inv ? inv.invoiceNo : ""];
+    }));
+  }
+  function printDoc(title, inner) {
+    const win = window.open("", "_blank");
+    if (!win) { toast("Allow pop-ups for this site to print.", true); return; }
+    const css = (document.querySelector('link[href*="partner"]') || {}).href || "";
+    win.document.write('<!doctype html><html lang="en-IN"><head><meta charset="utf-8"><title>' + h(title) + '</title><link rel="stylesheet" href="' + h(css) + '"></head><body class="printable"><div class="no-print"><button class="btn primary" onclick="print()">Print or save as PDF</button></div>' + inner + "</body></html>");
+    win.document.close();
+  }
+  function printStatement(w) {
+    const o = outlet(), prof = state.fin.profile || {}, p = w.payout, rows = annexureRows(w);
+    printDoc("Payout statement " + isoDay(w.start), '<div class="doc"><div class="row between"><div><div class="wordmark">scraveit<span>*</span></div><div class="small muted">Weekly payout statement</div></div><div class="num"><strong>' + h(fullDay(w.start)) + " – " + h(fullDay(w.end - DAY)) + "</strong></div></div>" +
+      '<p><strong>' + h(prof.legalBusinessName || o.doc.name) + "</strong>" + (prof.legalBusinessName ? " (" + h(o.doc.name) + ")" : "") + "<br>Outlet ID " + h(o.id) + (prof.gstin ? " · GSTIN " + h(prof.gstin) : "") + "</p>" + (state.fin.wk[String(w.start)] && state.fin.wk[String(w.start)].data ? ledgerLines(state.fin.wk[String(w.start)].data, w) : statementLines(w)) +
+      (p && p.status === "paid" ? "<p>Paid " + h(fullDay(p.at)) + (p.method ? " by " + h(METHODS[p.method] || p.method) : "") + (p.utr ? " · UTR " + h(p.utr) : "") + "</p>" : "") +
+      '<table class="table"><thead><tr>' + [0, 2, 4, 8, 9, 11, 12, 14].map((i) => "<th>" + h(rows[0][i]) + "</th>").join("") + "</tr></thead><tbody>" +
+      rows.slice(1).map((r) => "<tr>" + [0, 2, 4, 8, 9, 11, 12, 14].map((i) => '<td class="' + (i >= 4 ? "num" : "") + '">' + h(typeof r[i] === "number" ? inr(r[i]) : r[i]) + "</td>").join("") + "</tr>").join("") + "</tbody></table>" +
+      '<p class="small muted">Generated from Scraveit\'s records on ' + h(new Date().toLocaleString("en-IN")) + ". Customers' GST on food is paid by Scraveit under section 9(5) of the CGST Act.</p></div>");
+  }
+
+  // ---------- finance: the ledger report ----------
+  // Exact figures from Scraveit's books (getRestaurantPayoutReport): the
+  // balance carried in, every deduction and addition, each payout's UTR, and
+  // which payout paid each order. The order-by-order money split (commission,
+  // GST, discounts) still comes from each order's own record.
+  const payoutReport = (from, to) => call("getRestaurantPayoutReport", {restaurantId: state.rid, from, to});
+  const SETTLED = {paid: ["paid", "Paid"], part_paid: ["cod", "Part paid"], pending: ["state", "Pending"]};
+  function settledCell(s) {
+    const k = SETTLED[(s && s.status) || "pending"] || SETTLED.pending;
+    return '<span class="pill ' + k[0] + '">' + k[1] + "</span>" + (s && s.at ? '<div class="small muted nowrap">' + h(fullDay(s.at)) + "</div>" + (s.utr ? '<div class="small utr">' + h(s.utr) + "</div>" : "") : "");
+  }
+  const settledText = (s) => s ? (SETTLED[s.status] || SETTLED.pending)[1] : "";
+  function weekLedger(w) {
+    if (!WEB_CHECK) return null;
+    const F = state.fin, key = String(w.start);
+    if (!F.wk[key]) {
+      F.wk[key] = {loading: true};
+      setTimeout(() => payoutReport(w.start, w.end).then((r) => { F.wk[key] = {data: r}; render(); }, (e) => { F.wk[key] = {err: friendly(e)}; render(); }), 0);
+    }
+    return F.wk[key];
+  }
+  const BASIS = {after_payout: "left after your last payout", from_start: "since your first order", unknown: "not known: older than six weeks"};
+  const LINE_LABEL = {order: "Order earnings", tax_withheld: "TDS / TCS withheld", tax_returned: "TDS / TCS returned (order refunded)", refund_recovery: "Customer refund recovered",
+    ads: "Ads: top placement (incl. GST)", ads_refund: "Ads refunded (cancelled before start)", tds_commission_refund: "TDS on commission refunded to you", delivery: "Delivery you did yourself", other: "Other adjustment"};
+  const money = (paise, plus) => { const v = rs(paise); return v < 0 ? "−" + inr(-v) : (plus && v > 0 ? "+" : "") + inr(v); };
+  function ledgerLines(r, w) {
+    const T = r.totals, row = (label, paise, cls) => "<div" + (cls ? ' class="' + cls + '"' : "") + "><span>" + label + "</span><span>" + (paise == null ? "—" : money(paise)) + "</span></div>";
+    const opt = (label, k) => T[k] && T[k].paise ? row(label + (T[k].count > 1 ? " (" + T[k].count + ")" : ""), T[k].paise) : "";
+    const inPeriod = r.payouts.filter((p) => p.at >= r.from && p.at < r.to);
+    const split = w && w.orders.length ? row("Item total " + inr(w.items) + (w.discount ? " − your discounts " + inr(w.discount) : "") + " − commission " + inr(w.commission) +
+      " − GST on it " + inr(w.commissionGst) + (w.rush ? " + busy-kitchen share " + inr(w.rush) : ""), null, "sub").replace("<span>—</span>", "<span></span>") : "";
+    return '<div class="bill">' + row("Balance carried in (" + BASIS[r.opening.basis] + ")", r.opening.balancePaise, "sub") +
+      row("+ Your earnings on " + T.order.count + (T.order.count === 1 ? " order" : " orders"), T.order.paise) + split +
+      row("− Income-tax TDS", -r.tdsPaise) + (r.tcsPaise || storeKind() !== "restaurant" ? row("− GST TCS", -r.tcsPaise) : "") +
+      opt("+ TDS / TCS returned on refunded orders", "tax_returned") + opt("− Customer refunds recovered", "refund_recovery") +
+      opt("− Ads: top placement (incl. 18% GST)", "ads") + opt("+ Ads refunded", "ads_refund") + opt("+ TDS on commission refunded to you", "tds_commission_refund") +
+      opt("+ Delivery you did yourself", "delivery") + opt("± Other adjustments", "other") +
+      row("Net for this period", r.periodNetPaise, "tot") +
+      inPeriod.map((p) => row("− Paid " + h(fullDay(p.at)) + (p.method ? " by " + h(METHODS[p.method] || p.method) : "") + (p.utr ? ' · UTR <span class="utr">' + h(p.utr) + "</span>" : ""), -p.amountPaise)).join("") +
+      row("Balance due at the end", r.closingPaise, "tot") + "</div>" +
+      '<p class="small muted" style="margin:8px 0 0">Of this period\'s ' + money(r.periodNetPaise) + ": " + money(r.settledPaise) + " already paid, " + money(r.pendingPaise) + " waiting for the next payout" +
+      (r.schedule && r.schedule.nextRunDayKey ? " (" + h(fullDay(Date.parse(r.schedule.nextRunDayKey + "T10:00:00+05:30"))) + ")" : "") + ".</p>";
+  }
+  function ledgerOrdersModal(w, r) {
+    const money1 = {}; w.orders.forEach((o) => { money1[orderId(o)] = orderMoney(o); });
+    const rows = r.orders.map((x) => { const m = money1[x.orderId];
+      return "<tr><td><strong>#" + h(x.orderId.replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase()) + '</strong><div class="small muted">' + h(new Date(x.at).toLocaleString("en-IN", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"})) + "</div></td><td>" +
+        (x.paymentMethod === "cod" ? "Cash" : x.paymentMethod ? "Online" : "—") + '</td><td class="num">' + (m ? inr(m.items) : "—") + '</td><td class="num">' + money(x.earningPaise) + '</td><td class="num">' + money(-(x.tdsPaise + x.tcsPaise)) +
+        '</td><td class="num">' + (x.refundRecoveredPaise ? money(-x.refundRecoveredPaise) : "—") + '</td><td class="num"><strong>' + money(x.netPaise) + "</strong></td><td>" + settledCell(x.settlement) + "</td></tr>"; }).join("");
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide" role="dialog" aria-modal="true" aria-label="Orders and payouts"><header><h2>Orders and the payout that paid them</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div style="overflow:auto"><table class="table"><thead><tr><th>Order</th><th>Pay</th><th class="num">Items</th><th class="num">Earnings</th><th class="num">TDS + TCS</th><th class="num">Refund</th><th class="num">Net</th><th>Paid</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="8" class="empty"><strong>No orders in this period</strong></td></tr>') + "</tbody></table></div>" +
+      '<div class="row"><button class="btn" data-act="fin-annex">Download (CSV)</button></div></div></div>';
+  }
+
+  // ---------- finance: monthly report ----------
+  // One calendar month, laid out like a marketplace payout report but with more
+  // detail: who you are and who Scraveit is (for your CA), the payout breakup
+  // line by line, every payout with its UTR, each order and whether it's been
+  // paid, cancelled orders with the reason, offers, adjustments, and the terms.
+  function monthList() {
+    const out = [], now = new Date();
+    for (let i = 0; i < 6; i++) {
+      const a = new Date(now.getFullYear(), now.getMonth() - i, 1), b = new Date(a.getFullYear(), a.getMonth() + 1, 1);
+      out.push({key: a.getFullYear() + "-" + String(a.getMonth() + 1).padStart(2, "0"), from: a.getTime(), to: b.getTime(), label: a.toLocaleDateString("en-IN", {month: "long", year: "numeric"})});
+    }
+    return out;
+  }
+  async function loadMonth(m) {
+    const F = state.fin, M = F.mon[m.key] = {loading: true}; render();
+    const jobs = [fetchOrders([state.rid], m.from - 2 * DAY, Math.min(m.to, Date.now() + 1)).then((l) => { M.all = l; }, (e) => { M.all = []; M.err = friendly(e); })];
+    if (WEB_CHECK) {
+      jobs.push(payoutReport(m.from, m.to).then((r) => { M.rep = r; }, (e) => { M.err = friendly(e); }));
+      jobs.push(statement(m.from, m.to).then((r) => { M.stmt = r; }, () => { M.stmt = null; }));
+      jobs.push(call("getSponsoredListings", {restaurantId: state.rid}).then((r) => { M.ads = r.bookings || []; }, () => { M.ads = []; }));
+    }
+    if (F.profile === undefined) jobs.push(db.collection("restaurantPayoutProfiles").doc(state.rid).get().then((s) => { F.profile = s.exists ? s.data() : null; }, () => { F.profile = null; }));
+    await Promise.all(jobs);
+    M.loading = false; render();
+  }
+  const CANCEL_BY = {restaurant_rejected: "You rejected it", customer_cancelled: "Customer cancelled", system_cancelled: "Scraveit (automatic)", delivery_failed: "Delivery failed"};
+  const ROLE_BY = {customer: "Customer", staff: "Restaurant or Scraveit staff", owner: "Scraveit", ops_admin: "Scraveit", rider: "Delivery partner", system: "Scraveit (automatic)"};
+  function cancelInfo(o) {
+    const hist = Object.values(o.statusHistory || {}).filter((e) => e && e.status).sort((a, b) => Number(a.at) - Number(b.at));
+    const end = hist.filter((e) => e.status === "Cancelled").pop(), before = hist.filter((e) => e.status !== "Cancelled").pop();
+    return {at: end ? Number(end.at) : ms(o.updatedAt), by: CANCEL_BY[o.cancellationKind] || ROLE_BY[o.cancelledByRole || (end && end.actorRole)] || "—",
+      stage: o.statusBeforeTerminal || (before && before.status) || "Order placed", reason: o.cancelReason || (end && (end.reason || end.detail)) || ""};
+  }
+  function monthFigures(m, M) {
+    const stmt = {}, led = {}; ((M.stmt && M.stmt.rows) || []).forEach((r) => { stmt[r.orderId] = r; }); ((M.rep && M.rep.orders) || []).forEach((r) => { led[r.orderId] = r; });
+    const all = M.all || [];
+    const del = all.filter((o) => o.status === "Delivered" && deliveredAt(o) >= m.from && deliveredAt(o) < m.to).sort((a, b) => deliveredAt(a) - deliveredAt(b));
+    const can = all.filter((o) => o.status === "Cancelled" && placedAt(o) >= m.from && placedAt(o) < m.to).sort((a, b) => placedAt(a) - placedAt(b));
+    const t = {items: 0, discount: 0, scraveitDiscount: 0, base: 0, commission: 0, cgst: 0, sgst: 0, igst: 0, commissionGst: 0, rush: 0, earned: 0, foodBase: 0, foodGst: 0, cod: 0, cancelValue: 0};
+    const offers = {};
+    del.forEach((o) => {
+      const x = orderMoney(o), c = (o.economics && o.economics.customer) || {}, a = o.appliedOffer;
+      ["items", "discount", "base", "commission", "commissionGst", "rush", "earned"].forEach((k) => { t[k] += x[k]; });
+      t.scraveitDiscount += rs(c.platformDiscountPaise);
+      if (x.commissionLine) { t.cgst += x.commissionLine.cgst; t.sgst += x.commissionLine.sgst; t.igst += x.commissionLine.igst; }
+      if (x.food) { t.foodBase += x.food.base; t.foodGst += x.food.gst; }
+      if (o.paymentMethod === "cod") t.cod += 1;
+      if (a && (a.promotionId || a.code)) {
+        const k = a.promotionId || a.code, f = offers[k] = offers[k] || {title: a.title || a.code || "Offer", code: a.code || "", funding: a.fundingSource || "", orders: 0, items: 0, you: 0, scraveit: 0};
+        f.orders += 1; f.items += x.items; f.you += a.restaurantFundedPaise != null ? rs(a.restaurantFundedPaise) : x.discount; f.scraveit += rs(a.platformFundedPaise);
+      }
+    });
+    can.forEach((o) => { t.cancelValue += itemValue(o); });
+    return {del, can, t, offers: Object.values(offers).sort((a, b) => b.orders - a.orders), stmt, led};
+  }
+  const FUNDED = {restaurant: "You", platform: "Scraveit", shared: "Shared", co_funded: "Shared"};
+  function monthHeader(m, M, fig) {
+    const r = M.rep, o = outlet(), prof = state.fin.profile || {}, R = r ? r.restaurant : {}, S = r ? r.scraveit : (M.stmt && M.stmt.issuer) || {};
+    const acct = payoutAccount(), utrs = r ? r.payouts.filter((p) => p.at >= m.from && p.at < m.to && p.utr).map((p) => p.utr) : [];
+    return [["Report period", fullDay(m.from) + " – " + fullDay(m.to - DAY)], ["Outlet", o.doc.name + " · ID " + o.id], ["Legal entity", R.legalName || prof.legalBusinessName || "Not given"],
+      ["Address", R.address || [o.doc.address, o.doc.area, o.doc.city].filter(Boolean).join(", ")], ["PAN", R.panMasked || maskPan(prof.panNumber) || "Not given"],
+      ["GSTIN", R.gstin || String(prof.gstin || "").toUpperCase() || "Not registered"], ["TAN", R.tan || "Not given"], ["FSSAI licence", R.fssai || o.doc.fssaiNumber || "—"],
+      ["Paid to", R.payoutTo ? R.payoutTo + (R.ifsc ? " · IFSC " + R.ifsc : "") : acct.label ? acct.label + " " + acct.sub : "Not set"],
+      ["Payout cycle", r && r.schedule && r.schedule.label ? "Weekly, " + r.schedule.label.replace(/\s*\(Asia\/Kolkata\)$/, "") : "Weekly"],
+      ["Scraveit", (S.legalName || "SCRAVEIT PRIVATE LIMITED") + (S.address ? ", " + S.address : "")], ["Scraveit GSTIN (regular)", S.gstin || "—"],
+      ["Scraveit GSTIN (TCS)", S.tcsGstin || "—"], ["Scraveit PAN / TAN (check TDS in Form 168)", [S.pan, S.tan].filter(Boolean).join(" / ") || "—"],
+      ["Orders", fig.del.length + " delivered + " + fig.can.length + " cancelled or rejected = " + (fig.del.length + fig.can.length)],
+      ["Net payout for the month", r ? money(r.periodNetPaise) + " (" + money(r.settledPaise) + " paid + " + money(r.pendingPaise) + " pending)" : inr(fig.t.earned) + " before TDS (exact figure loads with website security)"],
+      ["Bank UTRs", utrs.join(", ") || "—"]];
+  }
+  function monthBreakup(m, M, fig) {
+    const r = M.rep, T = r ? r.totals : null, t = fig.t, rate = t.base ? Math.round(t.commission / t.base * 1000) / 10 : 0;
+    const yr = M.stmt && M.stmt.year, tot = (k) => T ? T[k].paise : null, v = (rupees) => Math.round(rupees * 100);
+    const tdsRow = r ? -r.tdsPaise : null, tcsRow = r ? -r.tcsPaise : null, gov = r ? -(r.tdsPaise + r.tcsPaise) + tot("tax_returned") : null;
+    return [
+      ["", "Orders", null, fig.del.length + " delivered · " + fig.can.length + " cancelled or rejected"],
+      ["1", "Item total (your menu prices)", v(t.items)], ["2", "− Discounts you funded", -v(t.discount)],
+      ["A", "Value Scraveit's commission is on (1 − 2)", v(t.base), "", "sub"],
+      ["3", "− Commission" + (rate ? " (" + rate + "% of A)" : ""), -v(t.commission)],
+      ["4", "− GST on commission, 18% (CGST " + inr(t.cgst) + " · SGST " + inr(t.sgst) + " · IGST " + inr(t.igst) + ")", -v(t.commissionGst)],
+      ["5", "+ Your share of busy-kitchen fees", v(t.rush)],
+      ["B", "Your earnings (A − 3 − 4 + 5)", T ? tot("order") : v(t.earned), "", "tot"],
+      ["6", "− Income-tax TDS" + (yr ? " (section " + yr.section + ", " + pct(yr.rateBps) + ")" : ""), tdsRow],
+      ["7", "− GST TCS (section 52, on goods only)", tcsRow], ["8", "+ TDS / TCS returned on refunded orders", tot("tax_returned")],
+      ["C", "Government deductions (6 + 7 − 8)", gov, "", "sub"],
+      ["9", "− Customer refunds recovered from you", tot("refund_recovery")], ["10", "− Ads: top placement (incl. 18% GST)", tot("ads")],
+      ["11", "+ Ads refunded (cancelled before start)", tot("ads_refund")], ["12", "+ TDS on commission refunded to you", tot("tds_commission_refund")],
+      ["13", "+ Delivery you did yourself", tot("delivery")], ["14", "± Other adjustments", tot("other")],
+      ["D", "Net payout for the month (B − C − 9 − 10 + 11 + 12 + 13 ± 14)", r ? r.periodNetPaise : null, "", "tot"],
+      ["", "For your information (not part of the payout)", null, "", "head"],
+      ["i", "Discounts Scraveit funded on your orders", v(t.scraveitDiscount)],
+      ["ii", "GST customers paid on your food: paid to the government by Scraveit, section 9(5)", v(t.foodGst)],
+      ["iii", "Value of cancelled or rejected orders (not paid)", v(t.cancelValue)],
+    ];
+  }
+  function pageMonthly() {
+    const F = state.fin, L = monthList(), m = L.find((x) => x.key === F.month) || L[0]; F.month = m.key;
+    const head = '<div class="tabs">' + L.map((x) => '<button class="tab' + (x === m ? " on" : "") + '" data-act="fin-month" data-id="' + x.key + '">' + h(x.label) + "</button>").join("") + "</div>";
+    const M = F.mon[m.key];
+    if (!M) { setTimeout(() => loadMonth(m), 0); return head + '<div class="spinner"></div>'; }
+    if (M.loading) return head + '<div class="spinner"></div>';
+    const fig = monthFigures(m, M), r = M.rep;
+    const facts = '<div class="card"><div class="row between"><h2 style="margin:0">Report summary</h2><div class="row"><button class="btn small primary" data-act="fin-xlsx">Download full report (Excel)</button><button class="btn small" data-act="fin-month-print">Print</button></div></div>' +
+      (M.err ? '<div class="notice warn small" style="margin-top:10px">Some records didn\'t load: ' + h(M.err) + "</div>" : "") +
+      (!WEB_CHECK ? '<div class="notice warn small" style="margin-top:10px">Payouts, UTRs, TDS and deductions come from Scraveit\'s secure records and show once the website\'s security check is on. Until then this report shows your orders only.</div>' : "") +
+      '<div class="facts report-facts" style="margin-top:12px">' + monthHeader(m, M, fig).map((f) => "<div><span>" + h(f[0]) + "</span><strong>" + h(f[1]) + "</strong></div>").join("") + "</div></div>";
+    const breakup = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Payout breakup</h2><p class="small muted">Every line that makes up your payout. Letters are totals; numbers are the parts.</p></div><table class="table"><tbody>' +
+      monthBreakup(m, M, fig).map((b) => b[4] === "head" ? '<tr><td colspan="3" class="sub-h" style="padding-top:16px"><strong>' + h(b[1]) + "</strong></td></tr>" :
+        "<tr" + (b[4] === "tot" ? ' class="foot"' : "") + '><td style="width:36px" class="muted">' + h(b[0]) + "</td><td>" + (b[4] === "tot" ? "<strong>" + h(b[1]) + "</strong>" : h(b[1])) + '</td><td class="num">' +
+        (b[3] ? h(b[3]) : b[2] == null ? "—" : b[4] === "tot" ? "<strong>" + money(b[2]) + "</strong>" : money(b[2])) + "</td></tr>").join("") + "</tbody></table></div>";
+    const settle = !r ? "" : '<div class="card"><h2>Settlement</h2>' + ledgerLines(r, null) + '<table class="table" style="margin-top:12px"><thead><tr><th>Paid on</th><th>Method</th><th>UTR</th><th class="num">Amount</th><th class="num">Of it, for this month</th></tr></thead><tbody>' +
+      (r.payouts.length ? r.payouts.map((p) => "<tr><td>" + h(fullDay(p.at)) + "</td><td>" + h(METHODS[p.method] || p.method || "") + '</td><td><span class="utr">' + h(p.utr || "—") + '</span></td><td class="num">' + money(p.amountPaise) + '</td><td class="num">' + money(p.coversPaise) + "</td></tr>").join("") :
+        '<tr><td colspan="5" class="empty"><strong>No payouts yet for this month</strong>They\'re sent on the next payout day.</td></tr>') + "</tbody></table></div>";
+    const shown = F.showAll ? fig.del : fig.del.slice(0, 20);
+    const orders = '<div class="card" style="padding:0;overflow:auto"><div class="pad row between"><h2 style="margin:0">Orders (' + fig.del.length + ")</h2><span class=\"small muted\">" + fig.t.cod + " cash · " + (fig.del.length - fig.t.cod) + " online</span></div>" +
+      '<table class="table"><thead><tr><th>Order</th><th>Delivered</th><th>Offer</th><th class="num">Items</th><th class="num">Your discount</th><th class="num">Commission + GST</th><th class="num">Earnings</th><th class="num">TDS + TCS</th><th class="num">Refund</th><th class="num">Net</th><th>Paid</th></tr></thead><tbody>' +
+      (shown.length ? shown.map((o) => { const x = orderMoney(o), l = fig.led[orderId(o)], s = fig.stmt[orderId(o)];
+        const tax = l ? l.tdsPaise + l.tcsPaise : s ? Number(s.incomeTaxTdsPaise || 0) + Number(s.gstTcsPaise || 0) : null;
+        return "<tr><td><strong>#" + h(shortId(o)) + '</strong><div class="small muted">' + (o.paymentMethod === "cod" ? "Cash" : "Online") + '</div></td><td class="nowrap">' + h(dayLabel(deliveredAt(o))) + '</td><td class="small">' + h((o.appliedOffer && (o.appliedOffer.code || o.appliedOffer.title)) || "—") +
+          '</td><td class="num">' + inr(x.items) + '</td><td class="num">' + (x.discount ? "−" + inr(x.discount) : "—") + '</td><td class="num">−' + inr(x.commission + x.commissionGst) + '</td><td class="num">' + inr(x.earned) +
+          '</td><td class="num">' + (tax == null ? "—" : money(-tax)) + '</td><td class="num">' + (l && l.refundRecoveredPaise ? money(-l.refundRecoveredPaise) : "—") + '</td><td class="num"><strong>' + (l ? money(l.netPaise) : tax == null ? "—" : inr(x.earned - rs(tax))) + "</strong></td><td>" + (l ? settledCell(l.settlement) : "—") + "</td></tr>"; }).join("") :
+        '<tr><td colspan="11" class="empty"><strong>No delivered orders this month</strong></td></tr>') + "</tbody></table>" +
+      (fig.del.length > 20 ? '<div class="pad"><button class="btn small" data-act="fin-show-all">' + (F.showAll ? "Show fewer" : "Show all " + fig.del.length + " orders") + "</button></div>" : "") + "</div>";
+    const cancelled = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Cancelled and rejected orders (' + fig.can.length + ')</h2><p class="small muted">Who cancelled, at which step, and why. Cancelled orders aren\'t paid unless a line below shows money for them.</p></div>' +
+      '<table class="table"><thead><tr><th>Order</th><th>Placed</th><th>Cancelled</th><th>By</th><th>At step</th><th>Reason</th><th class="num">Order value</th><th class="num">Paid to you</th></tr></thead><tbody>' +
+      (fig.can.length ? fig.can.map((o) => { const c = cancelInfo(o), l = fig.led[orderId(o)];
+        return "<tr><td><strong>#" + h(shortId(o)) + '</strong></td><td class="nowrap small">' + h(new Date(placedAt(o)).toLocaleString("en-IN", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"})) + '</td><td class="nowrap small">' +
+          h(c.at ? new Date(c.at).toLocaleString("en-IN", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"}) : "—") + "</td><td>" + h(c.by) + "</td><td>" + h(c.stage) + '</td><td class="small">' + h(c.reason || "—") + '</td><td class="num">' + inr(itemValue(o)) + '</td><td class="num">' + (l ? money(l.netPaise) : inr(0)) + "</td></tr>"; }).join("") :
+        '<tr><td colspan="8" class="empty"><strong>No cancelled or rejected orders</strong></td></tr>') + "</tbody></table></div>";
+    const offers = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Offers and discounts</h2><p class="small muted">What each offer sold and what it cost you. Effective discount is your discount as a share of the item total.</p></div>' +
+      '<table class="table"><thead><tr><th>Offer</th><th>Funded by</th><th class="num">Orders</th><th class="num">Item total</th><th class="num">Avg order</th><th class="num">Your discount</th><th class="num">Per order</th><th class="num">Scraveit\'s discount</th><th class="num">Effective %</th></tr></thead><tbody>' +
+      (fig.offers.length ? fig.offers.map((f) => "<tr><td><strong>" + h(f.title) + "</strong>" + (f.code ? '<div class="small muted">Code ' + h(f.code) + "</div>" : "") + "</td><td>" + h(FUNDED[f.funding] || f.funding || "—") + '</td><td class="num">' + f.orders + '</td><td class="num">' + inr(f.items) +
+        '</td><td class="num">' + inr(f.items / f.orders) + '</td><td class="num">' + inr(f.you) + '</td><td class="num">' + inr(f.you / f.orders) + '</td><td class="num">' + inr(f.scraveit) + '</td><td class="num">' + (f.items ? (f.you / f.items * 100).toFixed(1) + "%" : "—") + "</td></tr>").join("") :
+        '<tr><td colspan="9" class="empty"><strong>No offers used this month</strong></td></tr>') + "</tbody></table></div>";
+    const adj = !r ? "" : '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Additions and deductions</h2><p class="small muted">Everything other than order earnings and order TDS/TCS: refunds recovered, ads, refunds to you and other adjustments.</p></div>' +
+      '<table class="table"><thead><tr><th>Date</th><th>What</th><th>Details</th><th class="num">Amount</th><th>Paid</th></tr></thead><tbody>' +
+      (r.adjustments.length ? r.adjustments.map((a) => "<tr><td class=\"nowrap\">" + h(fullDay(a.at)) + "</td><td>" + h(LINE_LABEL[a.kind] || a.kind) + '</td><td class="small">' + h(adjustmentDetail(a, M)) + '</td><td class="num"><strong>' + money(a.movementPaise) + "</strong></td><td>" + settledCell(a.settlement) + "</td></tr>").join("") :
+        '<tr><td colspan="5" class="empty"><strong>None this month</strong></td></tr>') + "</tbody></table></div>";
+    return head + facts + breakup + settle + orders + cancelled + offers + adj +
+      '<div class="notice info"><div>Keep payout and tax records for at least 72 months (section 36, CGST Act). Terms used here are explained under <button class="btn small" data-act="fin-tab" data-tab="terms">Terms explained</button></div></div>';
+  }
+  function adjustmentDetail(a, M) {
+    const b = (M.ads || []).find((x) => x.bookingId === a.reference);
+    if (b) return "Top placement " + fullDay(b.startAt) + " – " + fullDay(b.endAt - DAY) + " (" + b.days + (b.days === 1 ? " day" : " days") + ")" + (b.invoiceNo ? " · invoice " + b.invoiceNo : "") + (b.creditNoteNo && a.kind === "ads_refund" ? " · credit note " + b.creditNoteNo : "");
+    return [a.orderId ? "Order #" + a.orderId.replace(/[^A-Za-z0-9]/g, "").slice(-4).toUpperCase() : "", a.reason].filter(Boolean).join(" · ") || "—";
+  }
+  function printMonth() {
+    const F = state.fin, m = monthList().find((x) => x.key === F.month), M = m && F.mon[m.key]; if (!M || M.loading) return;
+    const fig = monthFigures(m, M), r = M.rep;
+    printDoc("Payout report " + m.label, '<div class="doc"><div class="row between"><div><div class="wordmark">scraveit<span>*</span></div><div class="small muted">Monthly payout report</div></div><div class="num"><strong>' + h(m.label) + "</strong></div></div>" +
+      '<table class="table"><tbody>' + monthHeader(m, M, fig).map((f) => '<tr><td class="muted" style="width:220px">' + h(f[0]) + "</td><td>" + h(f[1]) + "</td></tr>").join("") + "</tbody></table>" +
+      '<table class="table"><tbody>' + monthBreakup(m, M, fig).map((b) => "<tr><td>" + h(b[0]) + "</td><td>" + h(b[1]) + '</td><td class="num">' + (b[3] ? h(b[3]) : b[2] == null ? "" : money(b[2])) + "</td></tr>").join("") + "</tbody></table>" +
+      (r ? ledgerLines(r, null) : "") + '<p class="small muted">Generated from Scraveit\'s records on ' + h(new Date().toLocaleString("en-IN")) + ". The full order list is in the Excel download.</p></div>");
+  }
+
+  // ---------- finance: Excel download ----------
+  // A real .xlsx (zip of SpreadsheetML), built here so no outside library loads.
+  // Money cells are numbers formatted #,##0.00 so a CA can add them up. Parts
+  // are deflated where the browser can (CompressionStream), else stored.
+  const MONEY = (v) => ({m: Math.round(Number(v || 0) * 100) / 100});
+  async function deflateRaw(bytes) {
+    if (typeof CompressionStream !== "function") return null;
+    try { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer()); } catch (_) { return null; }
+  }
+  async function xlsxBlob(sheets) {
+    const enc = new TextEncoder(), esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
+    const col = (i) => { let s = ""; for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
+    const ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    const sheetXml = (sh) => {
+      const widths = []; sh.rows.forEach((r) => r.forEach((c, i) => { const t = c && typeof c === "object" ? String(c.m) : String(c ?? ""); widths[i] = Math.min(60, Math.max(widths[i] || 8, t.length + 2)); }));
+      return head + "<worksheet " + ns + ">" + (sh.head != null ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="' + (sh.head + 1) + '" topLeftCell="A' + (sh.head + 2) + '" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' : "") +
+        "<cols>" + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols><sheetData>" +
+        sh.rows.map((r, ri) => '<row r="' + (ri + 1) + '">' + r.map((c, ci) => {
+          const ref = col(ci) + (ri + 1), bold = (sh.bold || []).includes(ri) || ri === sh.head ? ' s="1"' : "";
+          if (c == null || c === "") return "";
+          if (typeof c === "object") return '<c r="' + ref + '" s="' + (bold ? 3 : 2) + '"><v>' + c.m + "</v></c>";
+          if (typeof c === "number") return '<c r="' + ref + '"' + bold + "><v>" + c + "</v></c>";
+          return '<c r="' + ref + '" t="inlineStr"' + bold + '><is><t xml:space="preserve">' + esc(c) + "</t></is></c>";
+        }).join("") + "</row>").join("") + "</sheetData></worksheet>";
+    };
+    const files = [["[Content_Types].xml", head + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+        sheets.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join("") + "</Types>"],
+      ["_rels/.rels", head + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+      ["xl/workbook.xml", head + "<workbook " + ns + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + sheets.map((s, i) => '<sheet name="' + esc(s.name.slice(0, 31)) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join("") + "</sheets></workbook>"],
+      ["xl/_rels/workbook.xml.rels", head + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map((_, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join("") +
+        '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+      ["xl/styles.xml", head + "<styleSheet " + ns + '><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+        '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="4" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>']]
+      .concat(sheets.map((s, i) => ["xl/worksheets/sheet" + (i + 1) + ".xml", sheetXml(s)]));
+    // Zip: each part deflated, or stored when it doesn't shrink.
+    const crcTable = xlsxBlob.crc || (xlsxBlob.crc = Array.from({length: 256}, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; }));
+    const crc32 = (b) => { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+    const parts = [], central = []; let offset = 0;
+    const u16 = (v) => [v & 255, (v >>> 8) & 255], u32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+    for (const [name, body] of files) {
+      const nb = enc.encode(name), raw = enc.encode(body), crc = crc32(raw), packed = await deflateRaw(raw), deflated = !!packed && packed.length < raw.length, data = deflated ? packed : raw;
+      const common = [...u16(20), ...u16(0x0800), ...u16(deflated ? 8 : 0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(raw.length), ...u16(nb.length), ...u16(0)];
+      const local = new Uint8Array([...u32(0x04034b50), ...common]);
+      parts.push(local, nb, data);
+      central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...common, ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), nb);
+      offset += local.length + nb.length + data.length;
+    }
+    const cdSize = central.reduce((n, p) => n + p.length, 0);
+    const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+    return new Blob(parts.concat(central, [end]), {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  }
+  async function monthWorkbook(m, M) {
+    const fig = monthFigures(m, M), r = M.rep, o = outlet();
+    const breakup = monthBreakup(m, M, fig);
+    const sheets = [
+      {name: "Summary", bold: [0], rows: [["Scraveit monthly payout report"]].concat(monthHeader(m, M, fig).map((f) => [f[0], f[1]]),
+        [[""], ["Generated", new Date().toLocaleString("en-IN")], ["Sheets", "Payout breakup · Settlement · Order level · Cancelled orders · Additions and deductions · Offers · Invoices · Terms explained"]])},
+      {name: "Payout breakup", head: 0, rows: [["No.", "Particular", "Amount (₹)", "Note"]].concat(breakup.map((b) => [b[0], b[1], b[2] == null ? "" : MONEY(rs(b[2])), b[3] || ""]))},
+      {name: "Settlement", head: 0, rows: [["Item", "Date", "Method", "UTR", "Amount (₹)", "Of it, for this month (₹)"]].concat(r ? [["Balance carried in (" + BASIS[r.opening.basis] + ")", "", "", "", r.opening.balancePaise == null ? "" : MONEY(rs(r.opening.balancePaise)), ""],
+        ["Net payout for the month", "", "", "", MONEY(rs(r.periodNetPaise)), ""]].concat(r.payouts.map((p) => ["Payout sent", fullDay(p.at), METHODS[p.method] || p.method, p.utr, MONEY(rs(p.amountPaise)), MONEY(rs(p.coversPaise))]),
+        [["Balance due at the end of the month", "", "", "", r.closingPaise == null ? "" : MONEY(rs(r.closingPaise)), ""], ["This month: already paid", "", "", "", MONEY(rs(r.settledPaise)), ""], ["This month: waiting for the next payout", "", "", "", MONEY(rs(r.pendingPaise)), ""]]) :
+        [["Loads with the website's security check", "", "", "", "", ""]])},
+      {name: "Order level", head: 0, rows: [["S.No.", "Order ID", "Placed", "Delivered", "Week from", "Payment", "Customer in", "Offer", "Offer funded by", "Item total", "Your discount", "Scraveit's discount", "Commission on", "Commission %", "Commission",
+        "CGST on commission", "SGST on commission", "IGST on commission", "GST on commission", "Busy-kitchen share", "Your earnings", "Food value taxed u/s 9(5)", "GST paid by Scraveit u/s 9(5)", "Income-tax TDS", "GST TCS",
+        "TDS/TCS returned", "Refund recovered", "Other", "Net payout", "Settlement status", "Paid on", "Bank UTR", "Commission invoice no.", "Customer invoice no."]].concat(fig.del.map((x, i) => {
+        const mm = orderMoney(x), l = fig.led[orderId(x)], s = fig.stmt[orderId(x)], c = (x.economics && x.economics.customer) || {}, a = x.appliedOffer || {}, cl = mm.commissionLine || {};
+        const inv = commissionInvoice(s), cust = s ? (s.invoices || []).find((v) => v.kind !== "scraveit_commission") : null;
+        return [i + 1, orderId(x), new Date(placedAt(x)).toLocaleString("en-IN"), new Date(deliveredAt(x)).toLocaleString("en-IN"), fullDay(mondayOf(deliveredAt(x))), x.paymentMethod === "cod" ? "Cash" : "Online",
+          x.orderTax ? (x.orderTax.intraState === false ? "Other state" : "Same state") : "", a.code || a.title || "", FUNDED[a.fundingSource] || "", MONEY(mm.items), MONEY(mm.discount), MONEY(rs(c.platformDiscountPaise)), MONEY(mm.base),
+          mm.base ? Math.round(mm.commission / mm.base * 10000) / 100 : "", MONEY(mm.commission), MONEY(cl.cgst), MONEY(cl.sgst), MONEY(cl.igst), MONEY(mm.commissionGst), MONEY(mm.rush), MONEY(mm.earned),
+          MONEY(mm.food ? mm.food.base : 0), MONEY(mm.food ? mm.food.gst : 0), l ? MONEY(rs(l.tdsPaise)) : s ? MONEY(rs(s.incomeTaxTdsPaise)) : "", l ? MONEY(rs(l.tcsPaise)) : s ? MONEY(rs(s.gstTcsPaise)) : "",
+          l ? MONEY(rs(l.taxReturnedPaise)) : "", l ? MONEY(rs(l.refundRecoveredPaise)) : "", l ? MONEY(rs(l.otherPaise + l.deliveryPaise)) : "", l ? MONEY(rs(l.netPaise)) : "",
+          l ? settledText(l.settlement) : "", l && l.settlement.at ? fullDay(l.settlement.at) : "", l ? l.settlement.utr : "", inv ? inv.invoiceNo : "", cust ? cust.invoiceNo : ""];
+      }))},
+      {name: "Cancelled orders", head: 0, rows: [["Order ID", "Placed", "Cancelled", "Cancelled by", "At step", "Reason", "Payment", "Order value (₹)", "Paid to you (₹)"]].concat(fig.can.map((x) => {
+        const c = cancelInfo(x), l = fig.led[orderId(x)];
+        return [orderId(x), new Date(placedAt(x)).toLocaleString("en-IN"), c.at ? new Date(c.at).toLocaleString("en-IN") : "", c.by, c.stage, c.reason, x.paymentMethod === "cod" ? "Cash" : "Online", MONEY(itemValue(x)), MONEY(l ? rs(l.netPaise) : 0)];
+      }))},
+      {name: "Additions and deductions", head: 0, rows: [["Date", "Type", "Details", "Reference", "Amount (₹)", "Settlement status", "Paid on", "Bank UTR"]].concat(r ? r.adjustments.map((a) => [fullDay(a.at), LINE_LABEL[a.kind] || a.kind, adjustmentDetail(a, M), a.reference,
+        MONEY(rs(a.movementPaise)), settledText(a.settlement), a.settlement.at ? fullDay(a.settlement.at) : "", a.settlement.utr]) : [])},
+      {name: "Offers", head: 0, rows: [["Offer", "Code", "Funded by", "Orders", "Item total (₹)", "Average order (₹)", "Your discount (₹)", "Your discount per order (₹)", "Scraveit's discount (₹)", "Effective discount %"]].concat(fig.offers.map((f) =>
+        [f.title, f.code, FUNDED[f.funding] || f.funding, f.orders, MONEY(f.items), MONEY(f.items / f.orders), MONEY(f.you), MONEY(f.you / f.orders), MONEY(f.scraveit), f.items ? Math.round(f.you / f.items * 10000) / 100 : ""]))},
+      {name: "Invoices", head: 0, rows: [["Invoice no.", "Date", "Kind", "Order / booking", "Taxable value (₹)", "GST (₹)", "Total (₹)"]].concat(
+        fig.del.map((x) => { const s = fig.stmt[orderId(x)], inv = commissionInvoice(s), mm = orderMoney(x); return inv ? [inv.invoiceNo, fullDay(s.recordedAt), "Commission (Scraveit to you)", orderId(x), MONEY(mm.commission), MONEY(mm.commissionGst), MONEY(mm.commission + mm.commissionGst)] : null; }).filter(Boolean),
+        (M.ads || []).filter((b) => b.invoiceNo && b.createdAt >= m.from && b.createdAt < m.to).map((b) => [b.invoiceNo, fullDay(b.createdAt), "Advertising: top placement", b.bookingId, MONEY(rs(b.pricePaise)), MONEY(rs(b.gstPaise)), MONEY(rs(b.totalPaise))]),
+        (M.ads || []).filter((b) => b.creditNoteNo && b.cancelledAt >= m.from && b.cancelledAt < m.to).map((b) => [b.creditNoteNo, fullDay(b.cancelledAt), "Credit note: top placement cancelled", b.bookingId, MONEY(-rs(b.pricePaise)), MONEY(-rs(b.gstPaise)), MONEY(-rs(b.totalPaise))]))},
+      {name: "Terms explained", head: 0, rows: [["Term", "What it means"]].concat(GLOSSARY)},
+    ];
+    download("scraveit-payout-report-" + m.key + "-" + o.id + ".xlsx", await xlsxBlob(sheets));
+  }
+
+  // ---------- finance: terms explained ----------
+  const GLOSSARY = [
+    ["Item total", "What your dishes cost at your menu prices, before any discount."],
+    ["Discount you funded", "The part of an offer's discount that comes out of your money."],
+    ["Scraveit's discount", "The part of an offer's discount Scraveit pays. It is never taken from you."],
+    ["Value commission is on", "Item total minus the discount you funded. Scraveit's commission is a percentage of this."],
+    ["Commission", "Scraveit's fee for each order, a percentage of the value commission is on."],
+    ["GST on commission", "18% GST on the commission, shown as CGST + SGST (same state) or IGST (other state). Scraveit's commission invoice shows it."],
+    ["Busy-kitchen share", "Your part of the busy-kitchen fee customers paid when your kitchen was very busy."],
+    ["Your earnings", "Value commission is on, minus commission and GST on it, plus your busy-kitchen share."],
+    ["GST paid by Scraveit, section 9(5)", "GST customers paid on your food. The law makes Scraveit pay it to the government, so it isn't part of your payout and you don't pay it again. Report these sales in GSTR-1 Table 14(b)."],
+    ["Income-tax TDS", "Tax Scraveit deducts from your sales (section 393 of the Income-tax Act, 2025; earlier 194-O), usually 0.1%, or 5% without a PAN. It is credited to your PAN and shows in your Form 168 (earlier 26AS)."],
+    ["GST TCS", "Tax Scraveit collects on goods sales (section 52 of the CGST Act), not on restaurant food. Claim it on the GST portal; it reaches your cash ledger."],
+    ["TDS / TCS returned", "Tax withheld on an order that was later refunded, given back to you."],
+    ["Customer refund recovered", "Money Scraveit refunded a customer for a problem with your order (for example a wrong or missing item) and took back from your payout."],
+    ["Ads: top placement", "What you paid to be listed first in your city, with 18% GST once Scraveit's GST is live. Each booking has a tax invoice."],
+    ["Ads refunded", "A top placement booking you cancelled before it started, given back in full with a credit note."],
+    ["TDS on commission refunded", "TDS you deducted on Scraveit's commission and paid to the government (old section 194H). After Scraveit sees it in its Form 168, it adds the amount back to your payout."],
+    ["Delivery you did yourself", "Delivery charge paid to you for orders your own staff delivered."],
+    ["Other adjustments", "Any other correction to your balance, with the reason shown next to it."],
+    ["Net payout", "Your earnings minus TDS, TCS, refunds recovered and ads, plus anything added back."],
+    ["Balance carried in", "Money due to you (or owed by you) from before this period that wasn't paid yet."],
+    ["Balance due at the end", "What Scraveit owes you after this period's payouts. It is paid on the next payout day."],
+    ["Payout", "One bank transfer to you. It pays the whole balance due on that day, oldest amounts first."],
+    ["Paid / Pending / Part paid", "Paid: a payout has sent this money. Pending: it goes in the next payout. Part paid: a smaller payout covered only some of it."],
+    ["UTR", "The bank's reference for a transfer: 16 characters for NEFT, 22 for RTGS, 12 digits for IMPS and UPI. Use it to find the payout in your bank statement."],
+    ["Payout cycle", "Payouts run weekly, Monday to Sunday orders, sent on the day shown."],
+    ["Cancelled or rejected order", "An order that wasn't delivered. Who cancelled it and at which step are shown. It isn't paid unless a line shows money for it."],
+    ["Effective discount %", "Your discount as a share of the item total for that offer."],
+    ["Commission invoice", "Scraveit's tax invoice to you for its commission (CGST rule 46). If you're GST-registered it reaches your GSTR-2B."],
+    ["Customer invoice", "The invoice Scraveit issues to the customer for your food under section 9(5)."],
+    ["Form 168 (earlier 26AS)", "Your annual tax statement on the income-tax portal. TDS Scraveit deducted shows here against your PAN."],
+    ["Form 131 (earlier 16A)", "TDS certificate. Scraveit gives you one every quarter for the TDS it deducted."],
+    ["GSTIN, PAN, TAN", "GST number, income-tax number, and tax-deduction account number. Scraveit's are on every report so your CA can match them."],
+  ];
+  function pageTerms() {
+    return '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Terms explained</h2><p class="small muted">Every word used in your payouts, reports and downloads, in plain language. The Excel report has the same list.</p></div>' +
+      '<table class="table"><tbody>' + GLOSSARY.map((g) => '<tr><td style="width:240px"><strong>' + h(g[0]) + "</strong></td><td>" + h(g[1]) + "</td></tr>").join("") + "</tbody></table></div>";
+  }
+
+  // ---------- finance: TDS on commission ----------
+  // Large restaurants (companies, firms, audited businesses) deduct TDS on the
+  // commission they pay Scraveit and send the details here; Scraveit finance
+  // checks it in its Form 168 and adds it back to the payout.
+  const fyLabel = (y) => String(y % 100).padStart(2, "0") + "-" + String((y + 1) % 100).padStart(2, "0");
+  const CLAIM_STATUS = {submitted: ["state", "Being checked"], approved: ["paid", "Added to payout"], rejected: ["wait", "Not accepted"]};
+  function loadClaims() {
+    const F = state.fin; F.claims = {loading: true};
+    call("getTdsCommissionClaims", {restaurantId: state.rid}).then((r) => { F.claims = {list: r.claims || []}; render(); }, (e) => { F.claims = {list: [], err: friendly(e)}; render(); });
+  }
+  function claimsCard(q, commissionBase) {
+    const F = state.fin;
+    if (!WEB_CHECK) return "";
+    if (!F.claims) setTimeout(loadClaims, 0);
+    const C = F.claims || {loading: true}, list = C.list || [];
+    return '<div class="card"><h2>TDS you deducted on Scraveit\'s commission</h2>' +
+      '<p style="margin:0 0 8px">If you\'re a company, firm or a business that has its accounts audited, you must deduct TDS on the commission you pay Scraveit (section 194H of the 1961 Act; section 393 of the Income-tax Act, 2025), usually 2% of the commission before GST, once it crosses ₹20,000 in a year. Scraveit already kept its full commission, so after you pay that TDS to the government, send the details here. Scraveit checks it in its Form 168 and adds it back to your next payout.</p>' +
+      '<div class="facts"><div><span>Commission this quarter (before GST)</span><strong>' + inr(commissionBase) + "</strong></div><div><span>TDS at 2%</span><strong>" + inr(Math.round(commissionBase * 2) / 100) + "</strong></div><div><span>Deduct to Scraveit's PAN</span><strong>" + h((state.fin.tax[q.key] && state.fin.tax[q.key].stmt && state.fin.tax[q.key].stmt.issuer.pan) || "—") + "</strong></div></div>" +
+      '<div class="row" style="margin:12px 0"><button class="btn primary small" data-act="tds-claim">Send TDS details</button><span class="small muted">One claim per TDS certificate (Form 131, earlier 16A).</span></div>' +
+      (C.err ? '<div class="notice warn small">' + h(C.err) + "</div>" : "") +
+      (C.loading ? '<div class="spinner"></div>' : '<div style="overflow:auto"><table class="table"><thead><tr><th>Quarter</th><th>Certificate</th><th class="num">Commission</th><th class="num">TDS</th><th>Sent</th><th>Status</th></tr></thead><tbody>' +
+        (list.length ? list.map((c) => { const st = CLAIM_STATUS[c.status] || CLAIM_STATUS.submitted;
+          return "<tr><td>FY " + h(c.financialYear) + " Q" + c.quarter + '</td><td><span class="utr">' + h(c.certificateNo) + '</span><div class="small muted">Challan ' + h(c.challanBsrCode) + "/" + h(c.challanSerialNo) + " · " + h(c.challanDate) + '</div></td><td class="num">' + inr(rs(c.commissionPaise)) +
+            '</td><td class="num"><strong>' + inr(rs(c.tdsPaise)) + "</strong></td><td>" + h(fullDay(c.submittedAt)) + '</td><td><span class="pill ' + st[0] + '">' + st[1] + "</span>" + (c.note ? '<div class="small muted">' + h(c.note) + "</div>" : "") + "</td></tr>"; }).join("") :
+          '<tr><td colspan="6" class="empty"><strong>No TDS sent yet</strong>Only needed if you deduct TDS on commission.</td></tr>') + "</tbody></table></div>") + "</div>";
+  }
+  function claimModal() {
+    const F = state.fin, Q = quarterList(), q = Q.find((x) => x.key === F.q) || Q[0], T = F.tax[q.key], base = T ? taxFigures(q, T).months.reduce((s, m) => s + m.comm.base, 0) : 0;
+    const field = (id, label, attrs, value) => '<div class="field grow"><label for="' + id + '">' + label + '</label><input class="input" id="' + id + '" name="' + id + '" ' + attrs + ' value="' + h(value || "") + '" required></div>';
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="tds-claim-form"><header><h2>Send TDS details</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="field"><label for="quarter">Quarter</label><select class="input" id="quarter" name="quarter">' + Q.map((x) => '<option value="' + fyLabel(x.fy) + "|" + x.n + '"' + (x === q ? " selected" : "") + ">FY " + fyLabel(x.fy) + " Q" + x.n + " · " + h(x.label) + "</option>").join("") + "</select></div>" +
+      '<div class="row">' + field("commission", "Commission you deducted on (₹, before GST)", 'type="number" min="1" step="0.01"', base ? base.toFixed(2) : "") + field("tds", "TDS you deducted (₹)", 'type="number" min="1" step="0.01"', base ? (Math.round(base * 2) / 100).toFixed(2) : "") + "</div>" +
+      '<div class="row">' + field("tan", "Your TAN", 'maxlength="10" placeholder="ABCD12345E" style="text-transform:uppercase"', "") + field("certificate", "Certificate no. (Form 131 / 16A)", 'maxlength="20"', "") + "</div>" +
+      '<div class="row">' + field("bsr", "Challan BSR code", 'inputmode="numeric" maxlength="7" placeholder="7 digits"', "") + field("serial", "Challan serial no.", 'inputmode="numeric" maxlength="5"', "") + field("cdate", "Challan date", 'type="date"', "") + "</div>" +
+      '<p class="small muted" style="margin:0">Scraveit adds this to your payout after it appears in Scraveit\'s Form 168, usually after you file your quarterly TDS return.</p>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Send</button></div></form></div>';
+  }
+  async function sendTdsClaim(f) {
+    const [fy, n] = f.quarter.value.split("|"), paise = (v) => Math.round(Number(v) * 100);
+    const input = {restaurantId: state.rid, financialYear: fy, quarter: Number(n), commissionPaise: paise(f.commission.value), tdsPaise: paise(f.tds.value), deductorTan: f.tan.value.trim().toUpperCase(),
+      certificateNo: f.certificate.value.trim(), challanBsrCode: f.bsr.value.trim(), challanSerialNo: f.serial.value.trim(), challanDate: f.cdate.value};
+    if (!/^[A-Z]{4}[0-9]{5}[A-Z]$/.test(input.deductorTan)) { toast("Enter your 10-character TAN.", true); return; }
+    if (input.tdsPaise * 10 > input.commissionPaise) { toast("TDS can't be more than 10% of the commission. Check the amounts.", true); return; }
+    try { await call("submitTdsCommissionClaim", input); closeModal(); toast("Sent. Scraveit will check it and add it to your payout."); loadClaims(); }
+    catch (e) { toast(friendly(e), true); }
+  }
+
+  // Invoices & taxes, by quarter (April–June is Q1). Monthly figures inside each quarter.
+  function quarterList() {
+    const out = [], now = new Date(); let y = now.getFullYear(), m = Math.floor(now.getMonth() / 3) * 3;
+    for (let i = 0; i < 5; i++) {
+      const from = new Date(y, m, 1).getTime(), to = new Date(y, m + 3, 1).getTime(), fy = m >= 3 ? y : y - 1;
+      out.push({key: y + "-" + m, from, to, n: (m + 9) % 12 / 3 + 1, fy, label: new Date(from).toLocaleDateString("en-IN", {month: "short"}) + "–" + new Date(to - DAY).toLocaleDateString("en-IN", {month: "short", year: "numeric"})});
+      m -= 3; if (m < 0) { m += 12; y -= 1; }
+    }
+    return out;
+  }
+  // Quarterly TDS statement (Form 140) due dates; the certificate (Form 131) follows within 15 days.
+  function tdsDates(q) {
+    const d = [[q.fy, 6, 31], [q.fy, 9, 31], [q.fy + 1, 0, 31], [q.fy + 1, 4, 31]][q.n - 1], ret = new Date(d[0], d[1], d[2]).getTime();
+    return {ret, cert: ret + 15 * DAY};
+  }
+  async function loadTax(q) {
+    const F = state.fin, T = F.tax[q.key] = {loading: true}; render();
+    const jobs = [fetchOrders([state.rid], q.from - DAY, Math.min(q.to, Date.now() + 1)).then((list) => {
+      T.orders = list.filter((o) => o.status === "Delivered" && deliveredAt(o) >= q.from && deliveredAt(o) < q.to).sort((a, b) => deliveredAt(a) - deliveredAt(b));
+    }, (e) => { T.orders = []; toast(friendly(e), true); })];
+    if (WEB_CHECK) jobs.push(statement(q.from, q.to).then((r) => { T.stmt = r; }, (e) => { T.err = friendly(e); }));
+    if (F.profile === undefined) jobs.push(db.collection("restaurantPayoutProfiles").doc(state.rid).get().then((s) => { F.profile = s.exists ? s.data() : null; }, () => { F.profile = null; }));
+    await Promise.all(jobs);
+    T.loading = false; render();
+  }
+  function taxFigures(q, T) {
+    const rows = {}; ((T.stmt && T.stmt.rows) || []).forEach((r) => { rows[r.orderId] = r; });
+    const months = [0, 1, 2].map((i) => { const a = new Date(q.from); a.setMonth(a.getMonth() + i); const b = new Date(a); b.setMonth(b.getMonth() + 1);
+      return {from: a.getTime(), to: b.getTime(), label: a.toLocaleDateString("en-IN", {month: "long", year: "numeric"}), food: {n: 0, base: 0, cgst: 0, sgst: 0, igst: 0, gst: 0},
+        comm: {n: 0, base: 0, cgst: 0, sgst: 0, igst: 0, gst: 0}, tds: 0, tdsBase: 0, tcs: {base: 0, cgst: 0, sgst: 0, igst: 0, total: 0}}; });
+    const invoices = [];
+    (T.orders || []).forEach((o) => {
+      const at = deliveredAt(o), mo = months.find((x) => at >= x.from && at < x.to); if (!mo) return;
+      const m = orderMoney(o), r = rows[orderId(o)] || null, inv = commissionInvoice(r);
+      if (m.food) { mo.food.n += 1; ["base", "cgst", "sgst", "igst", "gst"].forEach((k) => { mo.food[k] += m.food[k]; }); }
+      if (m.commission > 0) {
+        mo.comm.n += 1; mo.comm.base += m.commission; mo.comm.gst += m.commissionGst;
+        if (m.commissionLine) ["cgst", "sgst", "igst"].forEach((k) => { mo.comm[k] += m.commissionLine[k]; });
+        invoices.push({o, m, no: inv ? inv.invoiceNo : "", at: r ? r.recordedAt : at, row: r});
+      }
+      if (r) {
+        mo.tds += rs(r.incomeTaxTdsPaise); mo.tdsBase += rs(r.incomeTaxTdsBasePaise);
+        mo.tcs.base += rs(r.gstTcs.basePaise); mo.tcs.cgst += rs(r.gstTcs.cgstPaise); mo.tcs.sgst += rs(r.gstTcs.sgstPaise); mo.tcs.igst += rs(r.gstTcs.igstPaise); mo.tcs.total += rs(r.gstTcsPaise);
+      }
+    });
+    return {months, invoices: invoices.sort((a, b) => b.at - a.at), rows};
+  }
+  function moneyTable(head, body, foot) {
+    return '<table class="table"><thead><tr>' + head.map((c, i) => "<th" + (i ? ' class="num"' : "") + ">" + c + "</th>").join("") + "</tr></thead><tbody>" +
+      body.map((r) => "<tr>" + r.map((c, i) => "<td" + (i ? ' class="num"' : "") + ">" + c + "</td>").join("") + "</tr>").join("") +
+      (foot ? '<tr class="foot">' + foot.map((c, i) => "<td" + (i ? ' class="num"' : "") + "><strong>" + c + "</strong></td>").join("") + "</tr>" : "") + "</tbody></table>";
+  }
+  function pageTaxes() {
+    const F = state.fin, Q = quarterList(), q = Q.find((x) => x.key === F.q) || Q[0], T = F.tax[q.key];
+    F.q = q.key;
+    const head = '<div class="tabs">' + Q.map((x) => '<button class="tab' + (x === q ? " on" : "") + '" data-act="fin-q" data-id="' + x.key + '">Q' + x.n + " · " + h(x.label) + "</button>").join("") + "</div>";
+    if (!T) { setTimeout(() => loadTax(q), 0); return head + '<div class="spinner"></div>'; }
+    if (T.loading) return head + '<div class="spinner"></div>';
+    const S = T.stmt || null, I = S ? S.issuer : null, prof = F.profile || {}, fig = taxFigures(q, T), M = fig.months;
+    const sum = (f) => M.reduce((s, m) => s + f(m), 0);
+    const gstin = S ? S.seller.gstin : String(prof.gstin || "").toUpperCase(), pan = S ? S.seller.panMasked : maskPan(prof.panNumber);
+    const legal = (S && S.seller.legalName) || prof.legalBusinessName || "", year = S ? S.year : null, rate = year ? year.rateBps : 10, noPan = year ? year.noPanRateBps : 500;
+    const warns = [];
+    if (!pan) warns.push("Add your PAN in the Scraveit Restaurant app (Profile → Bank and tax). Without a PAN, income-tax TDS is " + pct(noPan) + " of your sales instead of " + pct(rate) + ".");
+    if (!gstin) warns.push("There's no GSTIN on file, so Scraveit's commission invoices are issued without one. If you're GST-registered, add it so the invoices reach your GSTR-2B.");
+    const details = '<div class="card"><h2>Your tax details</h2><div class="facts"><div><span>Legal name</span><strong>' + h(legal || "Not given") + "</strong></div><div><span>GSTIN</span><strong>" + h(gstin || "Not registered") +
+      "</strong></div><div><span>PAN</span><strong>" + h(pan || "Not given") + "</strong></div><div><span>Scraveit's GSTIN</span><strong>" + h((I && I.gstin) || "—") + "</strong></div></div>" +
+      warns.map((w) => '<div class="notice warn small" style="margin-top:10px">' + h(w) + "</div>").join("") +
+      (T.err ? '<div class="notice warn small" style="margin-top:10px">Invoice numbers and TDS/TCS didn\'t load: ' + h(T.err) + "</div>" : "") +
+      (S && !S.gstActive ? '<div class="notice info small" style="margin-top:10px">Scraveit isn\'t charging GST yet, so no GST invoices have been issued and nothing is reported under section 9(5) for this period.</div>' : "") + "</div>";
+
+    const fRows = M.map((m) => [h(m.label), m.food.n, inr(m.food.base), inr(m.food.cgst), inr(m.food.sgst), inr(m.food.igst), inr(m.food.gst)]);
+    const food = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>GST on your food sales: paid by Scraveit</h2><p class="small muted">On food ordered through Scraveit, Scraveit charges the customer GST and pays it to the government (section 9(5) of the CGST Act). You don\'t pay this GST again. Show these sales in GSTR-1 Table 14(b) against Scraveit\'s GSTIN' + (I && I.gstin ? " " + h(I.gstin) : "") + "; they carry to GSTR-3B Table 3.1.1(ii). Keep them out of Table 3.1(a).</p></div>" +
+      moneyTable(["Month", "Orders", "Taxable value", "CGST", "SGST", "IGST", "GST paid by Scraveit"], fRows, ["Quarter", sum((m) => m.food.n), inr(sum((m) => m.food.base)), inr(sum((m) => m.food.cgst)), inr(sum((m) => m.food.sgst)), inr(sum((m) => m.food.igst)), inr(sum((m) => m.food.gst))]) +
+      '<div class="pad row"><button class="btn small" data-act="fin-csv" data-id="food">Download for your GST return (CSV)</button></div></div>';
+
+    const shown = fig.invoices.slice(0, 10);
+    const invTable = shown.length ? '<table class="table"><thead><tr><th>Invoice no.</th><th>Date</th><th>Order</th><th class="num">Commission</th><th class="num">GST</th><th class="num">Total</th><th></th></tr></thead><tbody>' +
+      shown.map((x) => "<tr><td>" + (x.no ? '<strong class="utr">' + h(x.no) + "</strong>" : '<span class="muted">' + (S ? (S.gstActive ? "Not numbered" : "No GST invoice") : "Loads with website security") + "</span>") + "</td><td>" + h(fullDay(x.at)) + "</td><td>#" + h(shortId(x.o)) + '</td><td class="num">' + inr(x.m.commission) +
+        '</td><td class="num">' + inr(x.m.commissionGst) + '</td><td class="num">' + inr(x.m.commission + x.m.commissionGst) + "</td><td>" + (x.no ? '<button class="btn small" data-act="fin-inv" data-id="' + h(orderId(x.o)) + '">View</button>' : "") + "</td></tr>").join("") + "</tbody></table>" : '<div class="empty"><strong>No commission this quarter</strong></div>';
+    const cRows = M.map((m) => [h(m.label), m.comm.n, inr(m.comm.base), inr(m.comm.cgst), inr(m.comm.sgst), inr(m.comm.igst), inr(m.comm.gst)]);
+    const comm = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>Scraveit\'s commission invoices to you</h2><p class="small muted">Scraveit issues a GST tax invoice for its commission on every delivered order (18% GST). Match them with your GSTR-2B. Most restaurants pay 5% GST without input tax credit, so for them this GST is a cost, not a credit; restaurants in hotels charging over ₹7,500 a night can claim it. Check with your CA.</p></div>' +
+      moneyTable(["Month", "Invoices", "Commission (taxable)", "CGST", "SGST", "IGST", "GST"], cRows, ["Quarter", sum((m) => m.comm.n), inr(sum((m) => m.comm.base)), inr(sum((m) => m.comm.cgst)), inr(sum((m) => m.comm.sgst)), inr(sum((m) => m.comm.igst)), inr(sum((m) => m.comm.gst))]) +
+      '<div class="pad"><h3 class="sub-h">Invoices' + (fig.invoices.length > shown.length ? " (latest " + shown.length + " of " + fig.invoices.length + ")" : "") + "</h3></div>" + invTable +
+      '<div class="pad row"><button class="btn small" data-act="fin-csv" data-id="invoices"' + (fig.invoices.length ? "" : " disabled") + ">Download all invoices (CSV)</button></div></div>";
+
+    const dates = tdsDates(q), tdsQ = sum((m) => m.tds), baseQ = sum((m) => m.tdsBase);
+    const tds = '<div class="card"><h2>Income-tax TDS on your sales</h2><div class="kpis">' +
+      kpiBox("TDS this quarter", S ? inr(tdsQ) : "—", S ? "on " + inr(baseQ) + " of sales" : "Loads with website security") +
+      kpiBox("This financial year", year ? inr(rs(year.tdsDeductedPaise)) : "—", year ? "on " + inr(rs(year.grossPaise)) + " of sales through Scraveit (FY " + h(year.financialYear) + ")" : "") +
+      kpiBox("Rate", pct(rate), "Without a PAN: " + pct(noPan)) + "</div>" +
+      (S && !S.tdsActive ? '<div class="notice info small" style="margin-top:12px">Scraveit isn\'t deducting income-tax TDS yet, so nothing has been withheld from your payouts.</div>' : "") +
+      '<ol class="steps"><li>Scraveit deducts TDS on your sales through the app under section ' + h((year && year.section) || "393 (Income-tax Act, 2025)") + ' (before April 2026, section 194-O) and pays it to the government.</li>' +
+      "<li>It files its quarterly TDS statement (Form 140) by <strong>" + h(fullDay(dates.ret)) + "</strong> and gives you a TDS certificate (Form 131) by <strong>" + h(fullDay(dates.cert)) + "</strong>.</li>" +
+      "<li>Check the credit in your annual tax statement on the income-tax portal (Form 168, earlier Form 26AS) and claim it in your income-tax return.</li></ol>" +
+      '<p class="small muted" style="margin:0">If you\'re an individual or HUF, have given your PAN and your sales through Scraveit stay within ' + inr(rs((year && year.individualExemptUptoPaise) || 50000000)) + " in the year, no TDS is deducted. Once they cross it, TDS applies to the whole year's sales.</p></div>";
+
+    const goods = storeKind() !== "restaurant", tcsQ = sum((m) => m.tcs.total);
+    const tcs = !goods && !tcsQ ? '<div class="card"><h2>GST TCS</h2><p class="muted" style="margin:0">None. Restaurant food is taxed on Scraveit under section 9(5), so Scraveit doesn\'t collect TCS (section 52) on your orders.</p></div>' :
+      '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2>GST TCS collected from you</h2><p class="small muted">Scraveit collects TCS (section 52 of the CGST Act) on your taxable goods sales and reports it in its GSTR-8 by the 10th of the next month. Accept it on the GST portal (Services → Returns → TDS and TCS credit received); it then reaches your electronic cash ledger.</p></div>' +
+      moneyTable(["Month", "Taxable sales", "CGST", "SGST", "IGST", "TCS"], M.map((m) => [h(m.label), inr(m.tcs.base), inr(m.tcs.cgst), inr(m.tcs.sgst), inr(m.tcs.igst), inr(m.tcs.total)]),
+        ["Quarter", inr(sum((m) => m.tcs.base)), inr(sum((m) => m.tcs.cgst)), inr(sum((m) => m.tcs.sgst)), inr(sum((m) => m.tcs.igst)), inr(tcsQ)]) + "</div>";
+
+    return head + details + food + comm + tds + claimsCard(q, sum((m) => m.comm.base)) + tcs +
+      '<div class="notice info"><div>Keep these records for at least 72 months (section 36, CGST Act). <button class="btn small" data-act="fin-csv" data-id="quarter" style="margin-left:8px">Download this quarter, order by order (CSV)</button></div></div>';
+  }
+  function taxCsv(kind) {
+    const F = state.fin, q = quarterList().find((x) => x.key === F.q), T = q && F.tax[q.key]; if (!T || T.loading) return;
+    const fig = taxFigures(q, T), name = "scraveit-" + kind + "-Q" + q.n + "-FY" + q.fy + ".csv";
+    if (kind === "food") return download(name, csv([["Month", "Orders", "Taxable value", "CGST", "SGST", "IGST", "GST paid by Scraveit", "E-commerce operator GSTIN"]]
+      .concat(fig.months.map((m) => [m.label, m.food.n, m.food.base, m.food.cgst, m.food.sgst, m.food.igst, m.food.gst, (T.stmt && T.stmt.issuer.gstin) || ""])).map((r) => r.map((c) => typeof c === "number" ? Math.round(c * 100) / 100 : c))));
+    if (kind === "invoices") return download(name, csv([["Invoice no.", "Date", "Order ID", "Commission (taxable)", "CGST", "SGST", "IGST", "Total GST", "Invoice total"]]
+      .concat(fig.invoices.map((x) => [x.no, isoDay(x.at), orderId(x.o), x.m.commission, x.m.commissionLine ? x.m.commissionLine.cgst : 0, x.m.commissionLine ? x.m.commissionLine.sgst : 0, x.m.commissionLine ? x.m.commissionLine.igst : 0, x.m.commissionGst, Math.round((x.m.commission + x.m.commissionGst) * 100) / 100]))));
+    download(name, csv([["Order ID", "Delivered", "Item total", "Your discount", "9(5) taxable value", "9(5) GST paid by Scraveit", "Commission", "GST on commission", "Commission invoice no.", "Customer invoice no.", "Income-tax TDS", "GST TCS", "Your earnings"]]
+      .concat((T.orders || []).map((o) => { const m = orderMoney(o), r = fig.rows[orderId(o)] || null, inv = commissionInvoice(r), cust = r ? (r.invoices || []).find((i) => i.kind !== "scraveit_commission") : null;
+        return [orderId(o), new Date(deliveredAt(o)).toLocaleString("en-IN"), m.items, m.discount, m.food ? m.food.base : 0, m.food ? m.food.gst : 0, m.commission, m.commissionGst, inv ? inv.invoiceNo : "", cust ? cust.invoiceNo : "", r ? rs(r.incomeTaxTdsPaise) : "", r ? rs(r.gstTcsPaise) : "", m.earned]; }))));
+  }
+
+  // A commission tax invoice with the particulars CGST rule 46 asks for. Shown as a
+  // tax invoice only when Scraveit's GSTIN, address and SAC are all on record.
+  function invoiceHtml(o) {
+    const F = state.fin, T = F.tax[F.q], S = T && T.stmt, r = S && S.rows.find((x) => x.orderId === orderId(o)), inv = commissionInvoice(r); if (!S || !inv) return "";
+    const I = S.issuer, P = S.seller, m = orderMoney(o), l = m.commissionLine || {base: m.commission, rateBps: 1800, cgst: 0, sgst: 0, igst: 0}, out = outlet().doc;
+    const missing = [!I.gstin && "GSTIN", !I.address && "registered address", !I.commissionSac && "SAC code"].filter(Boolean), igst = l.igst > 0, half = pct(l.rateBps / 2);
+    return '<div class="inv">' + (missing.length ? '<div class="notice warn small">Not a complete tax invoice yet: Scraveit still has to add its ' + h(missing.join(", ")) + ". The number and amounts are final.</div>" : "") +
+      '<div class="row between"><div><div class="inv-title">' + (missing.length ? "Invoice details" : "Tax invoice") + '</div><div class="small muted">Original for recipient</div></div><div class="num"><strong class="utr">' + h(inv.invoiceNo) + '</strong><div class="small">Date ' + h(fullDay(r.recordedAt)) + "</div></div></div>" +
+      '<div class="inv-parties"><div><div class="small muted">Supplier</div><strong>' + h(I.legalName) + "</strong><div>" + h(I.address || "—") + "</div><div>GSTIN " + h(I.gstin || "—") + "</div><div>State " + h(stateName(I.stateCode)) + "</div></div>" +
+      '<div><div class="small muted">Recipient</div><strong>' + h(P.legalName || out.name) + "</strong>" + (P.legalName && P.legalName !== out.name ? "<div>Trading as " + h(out.name) + "</div>" : "") +
+      "<div>" + h([out.address, out.area, out.city].filter(Boolean).join(", ")) + "</div><div>GSTIN " + h(P.gstin || "Unregistered") + "</div><div>Place of supply " + h(stateName(P.stateCode)) + "</div></div></div>" +
+      '<table class="table"><thead><tr><th>Description</th><th>SAC</th><th class="num">Taxable value</th>' + (igst ? '<th class="num">IGST ' + pct(l.rateBps) + "</th>" : '<th class="num">CGST ' + half + '</th><th class="num">SGST ' + half + "</th>") + '<th class="num">Total</th></tr></thead><tbody>' +
+      "<tr><td>Commission on order #" + h(shortId(o)) + " (" + h(orderId(o)) + ") delivered through Scraveit</td><td>" + h(I.commissionSac || "—") + '</td><td class="num">' + inr(l.base) + "</td>" + (igst ? '<td class="num">' + inr(l.igst) + "</td>" : '<td class="num">' + inr(l.cgst) + '</td><td class="num">' + inr(l.sgst) + "</td>") +
+      '<td class="num"><strong>' + inr(l.base + m.commissionGst) + "</strong></td></tr></tbody></table>" +
+      '<p class="small">Tax payable on reverse charge: No. Collected from your payout for the week of ' + h(fullDay(mondayOf(deliveredAt(o)))) + ".</p>" +
+      '<p class="small" style="text-align:right">For ' + h(I.legalName) + "<br>Authorised signatory</p></div>";
+  }
+  function invoiceModal(id) {
+    const T = state.fin.tax[state.fin.q], o = T && (T.orders || []).find((x) => orderId(x) === id), body = o ? invoiceHtml(o) : ""; if (!body) return;
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide" role="dialog" aria-modal="true" aria-label="Invoice"><header><h2>Commission invoice</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' + body +
+      '<div class="row"><button class="btn primary" data-act="fin-inv-print" data-id="' + h(id) + '">Print or save as PDF</button></div></div></div>';
+  }
+
+  function pageUtr() {
+    const F = state.fin, qv = F.utrQ.toLowerCase(), acct = payoutAccount();
+    const list = payouts().filter((p) => !qv || [p.utr, String(p.amount), fullDay(p.at), METHODS[p.method] || p.method, p.reason].join(" ").toLowerCase().includes(qv));
+    const help = '<div class="card"><h2>What is a UTR?</h2><p style="margin:0 0 8px">The Unique Transaction Reference your bank gives every transfer. It proves the payout was sent and lets your bank trace it.</p>' +
+      '<ul class="steps"><li>NEFT: 16 characters · RTGS: 22 characters</li><li>IMPS and UPI: a 12-digit reference (RRN)</li><li>Find it in the narration or reference column of your bank statement to match each payout.</li></ul>' +
+      '<p class="small muted" style="margin:0">Not in your account 2 working days after the date shown? Write to <a href="mailto:balaji@scraveit.in">balaji@scraveit.in</a> with the UTR.' + (acct.label ? " Payouts now go to " + h(acct.label) + "." : "") + "</p></div>";
+    if (!WEB_CHECK) return '<div class="card empty"><strong>Bank references show here once website security is on</strong>Each payout\'s UTR comes from Scraveit\'s ledger.</div>' + help;
+    return '<div class="row between"><input class="input" style="max-width:320px" placeholder="Search UTR, amount or date" value="' + h(F.utrQ) + '" data-input="utr-q"><button class="btn" data-act="fin-utr-csv"' + (list.length ? "" : " disabled") + ">Download for bank matching (CSV)</button></div>" +
+      '<div class="card" style="padding:0;overflow:auto"><table class="table"><thead><tr><th>Date</th><th class="num">Amount</th><th>UTR / bank reference</th><th>Method</th><th>Status</th></tr></thead><tbody>' +
+      (list.length ? list.map((p) => "<tr><td>" + h(fullDay(p.at)) + (p.status === "paid" ? '<div class="small muted">' + h(clock(p.at)) + "</div>" : "") + '</td><td class="num"><strong>' + inr(p.amount) + "</strong></td><td>" +
+        (p.utr ? '<span class="utr">' + h(p.utr) + '</span> <button class="btn small" data-act="copy-utr" data-id="' + h(p.utr) + '">Copy</button>' : '<span class="muted">—</span>') + "</td><td>" + h(METHODS[p.method] || p.method || "") + "</td><td>" +
+        (p.status === "paid" ? '<span class="pill paid">Sent</span>' : '<span class="pill wait">Held</span><div class="small muted">' + h(p.reason) + "</div>") + "</td></tr>").join("") :
+        '<tr><td colspan="5" class="empty"><strong>' + (qv ? "Nothing matches" : "No payouts yet") + "</strong>" + (qv ? "Try the UTR's last few characters." : "Your first payout shows here with its bank reference.") + "</td></tr>") + "</tbody></table></div>" + help;
+  }
+
+  // ---------- menu ----------
+  async function loadMenu() {
+    const M = state.menu; M.loading = true; M.arrange = null; render();
+    try { M.items = (await db.collection("menus").doc(state.rid).collection("items").get()).docs.map((d) => Object.assign({id: d.id}, d.data())).filter((i) => i.archived !== true); } catch (e) { toast(friendly(e), true); M.items = []; }
+    M.loading = false; render();
+  }
+  const itemImage = (i) => String(i.imageUrl || i.image || "");
+  function menuScore(items) {
+    if (!items.length) return {score: 0, tips: []};
+    const n = items.length, photo = items.filter((i) => itemImage(i)).length / n, desc = items.filter((i) => String(i.description || "").trim().length >= 20).length / n;
+    const stock = items.filter((i) => i.available !== false).length / n, extras = items.filter((i) => (i.variants || []).length || (i.addOns || []).length).length / n;
+    const score = Math.round((photo * .35 + desc * .3 + stock * .2 + Math.min(1, extras * 2) * .15) * 100), tips = [];
+    if (photo < .9) tips.push("Add photos: " + items.filter((i) => !itemImage(i)).length + " dishes have none. Dishes with photos sell more.");
+    if (desc < .8) tips.push("Describe your dishes: " + items.filter((i) => String(i.description || "").trim().length < 20).length + " have a short or missing description.");
+    if (stock < 1) { const off = items.filter((i) => i.available === false).length; tips.push(off + (off === 1 ? " dish is" : " dishes are") + " switched off. Turn them back on when they're available."); }
+    if (extras < .3) tips.push("Offer sizes or add-ons (extra cheese, dips, a drink) to raise your average order value.");
+    return {score, tips};
+  }
+  function pageMenu() {
+    const M = state.menu;
+    if (!M.items && !M.loading) setTimeout(loadMenu, 0);
+    if (M.loading || !M.items) return '<div class="spinner"></div>';
+    // Arranging: the order being built (category names, and item ids in each); otherwise the saved order.
+    const A = M.arrange, ordered = menuInOrder(M.items), cats = {}; ordered.forEach((i) => { const c = catOf(i); cats[c] = (cats[c] || 0) + 1; });
+    const catNames = A ? A.cats : Object.keys(cats);
+    let items = A ? (M.cat && A.by[M.cat] ? A.by[M.cat].map((id) => M.items.find((i) => i.id === id)).filter(Boolean) : []) : ordered.filter((i) => !M.cat || catOf(i) === M.cat);
+    if (M.q && !A) items = items.filter((i) => String(i.name || "").toLowerCase().includes(M.q.toLowerCase()));
+    const s = menuScore(M.items), R = 40, C = 2 * Math.PI * R, editable = can("menu");
+    const moves = (kind, i, n) => '<span class="moves">' + [["top", "Move to the top", "⤒", i === 0], ["up", "Move up", "↑", i === 0], ["down", "Move down", "↓", i === n - 1]].map((m) =>
+      '<button class="mv" type="button" data-act="mv" data-kind="' + kind + '" data-i="' + i + '" data-to="' + m[0] + '" title="' + m[1] + '" aria-label="' + m[1] + '"' + (m[3] ? " disabled" : "") + ">" + m[2] + "</button>").join("") + "</span>";
+    const bar = !editable ? "" : A ? '<div class="card row between arrange-bar"><span class="small">' + (M.cat ? "Move the dishes in <strong>" + h(M.cat) + "</strong>, or pick another category." : "Move categories with ⤒ ↑ ↓. Pick a category to move its dishes.") + '</span><div class="row"><button class="btn" data-act="arrange-cancel">Cancel</button><button class="btn primary" data-act="arrange-save"' + (A.dirty && !A.saving ? "" : " disabled") + ">" + (A.saving ? "Saving…" : "Save order") + "</button></div></div>" :
+      (M.items.length > 1 ? '<div class="row" style="justify-content:flex-end"><button class="btn" data-act="arrange">Arrange menu</button></div>' : "");
+    return '<div class="card score"><svg class="ring" viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="' + R + '"/><circle class="fg" cx="50" cy="50" r="' + R + '" stroke-dasharray="' + C + '" stroke-dashoffset="' + C * (1 - s.score / 100) + '"/><text x="50" y="58" text-anchor="middle">' + s.score + "%</text></svg>" +
+      '<div><h2>Menu health</h2>' + (s.tips.length ? '<ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px">' + s.tips.map((t) => "<li>" + h(t) + "</li>").join("") + "</ul>" : '<p class="muted" style="margin:0">Your menu looks great: photos, descriptions and options are all in place.</p>') + "</div></div>" +
+      (editable ? "" : '<div class="notice warn">You can view the menu. Ask the outlet owner for menu permission to change it.</div>') + gstRow() + bar +
+      '<div class="menu-layout"><div class="card cats">' + (A ? "" : '<button class="cat' + (!M.cat ? " on" : "") + '" data-act="cat" data-cat=""><span>All dishes</span><span>' + M.items.length + "</span></button>") + catNames.map((c, ci) => '<div class="cat-row"><button class="cat' + (M.cat === c ? " on" : "") + '" data-act="cat" data-cat="' + h(c) + '"><span>' + h(c) + "</span><span>" + (A ? A.by[c].length : cats[c]) + "</span></button>" + (A ? moves("cat", ci, catNames.length) : "") + "</div>").join("") + "</div>" +
+      '<div class="items">' + (A ? "" : '<input class="input" placeholder="Search dishes" value="' + h(M.q) + '" data-input="menu-q">') + (items.length ? items.map((i, ii) => '<div class="card item">' + (itemImage(i) ? '<img src="' + h(itemImage(i)) + '" alt="" loading="lazy">' : '<div class="ph"></div>') +
+        '<div><h3>' + h(i.name || "Untitled") + '</h3><div class="small muted">' + h(i.category || "Other") + " · " + inr(i.price) + ((i.variants || []).length ? " · " + i.variants.length + " sizes" : "") + ((i.addOns || []).length ? " · " + i.addOns.length + " add-ons" : "") + '</div><div class="small muted">' + h(String(i.description || "").slice(0, 120)) + "</div></div>" +
+        (A ? moves("item", ii, items.length) : '<div class="row"><span class="small muted">' + (i.available === false ? "Off" : "In stock") + '</span><button class="switch' + (i.available === false ? "" : " on") + '" data-act="stock" data-id="' + h(i.id) + '" aria-label="In stock"' + (editable ? "" : " disabled") + "></button>" + (editable ? '<button class="btn small" data-act="edit-item" data-id="' + h(i.id) + '">Edit</button>' : "") + "</div>") + "</div>").join("") :
+        A ? '<div class="card empty"><strong>Pick a category</strong>Choose a category on the left to move its dishes.</div>' : '<div class="card empty"><strong>No dishes</strong>Add dishes in the Scraveit Restaurant app.</div>') + "</div></div>";
+  }
+  async function toggleStock(id) {
+    const it = (state.menu.items || []).find((i) => i.id === id); if (!it || !can("menu")) return;
+    const next = it.available === false;
+    it.available = next; render();
+    try { await db.collection("menus").doc(state.rid).collection("items").doc(id).update({available: next, updatedAt: Date.now()}); toast(next ? it.name + " is back in stock." : it.name + " is switched off."); }
+    catch (e) { it.available = !next; render(); toast(friendly(e), true); }
+  }
+  function editItemModal(id) {
+    const i = (state.menu.items || []).find((x) => x.id === id); if (!i) return;
+    dishPhoto = null;
+    const img = itemImage(i);
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="item-form" data-id="' + h(id) + '"><header><h2>Edit dish</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="dish-photo"><div class="dish-photo-box" id="dp-box">' + (img ? '<img id="dp-img" src="' + h(img) + '" alt="">' : '<img id="dp-img" alt="" hidden><span class="small muted" id="dp-empty">No photo yet</span>') + "</div>" +
+      '<div class="dish-photo-side"><label class="btn small">' + (img ? "Change photo" : "Upload photo") + '<input type="file" accept="image/jpeg,image/png,image/webp" data-input="dish-photo" hidden></label>' +
+      '<div class="dp-modes" id="dp-modes" hidden><button type="button" class="dp-mode on" data-act="dp-mode" data-mode="enhanced">✨ Enhanced</button><button type="button" class="dp-mode" data-act="dp-mode" data-mode="original">Original</button></div>' +
+      '<p class="small muted" id="dp-note" style="margin:0">Bright, clear photos sell more. We brighten and sharpen your photo automatically.</p></div></div>' +
+      '<div class="field"><label for="iname">Name</label><input class="input" id="iname" name="name" maxlength="70" required value="' + h(i.name) + '"></div>' +
+      '<div class="field"><div class="row between"><label for="idesc">Description</label><button type="button" class="btn small ai-btn" data-act="ai-desc">✨ Write with AI</button></div>' +
+      '<textarea class="input" id="idesc" name="description" rows="3" maxlength="500">' + h(i.description || "") + "</textarea>" +
+      '<div class="ai-row" id="ai-row" hidden><input class="input" id="ai-ask" maxlength="300" placeholder="Want changes? e.g. mention it\'s made with ghee, less spicy"><button type="button" class="btn small" data-act="ai-rewrite">Rewrite</button><button type="button" class="btn small" data-act="ai-undo" id="ai-undo" hidden>Undo</button></div>' +
+      '<p class="small muted" id="ai-note" hidden style="margin:0">AI draft. Read it, change anything, then save.</p></div>' +
+      '<div class="row"><div class="field grow"><label for="iprice">' + priceLabel() + '</label><input class="input" id="iprice" name="price" type="number" min="1" step="1" required value="' + h(i.price) + '"></div>' +
+      '<div class="field grow"><label for="icat">Category</label><input class="input" id="icat" name="category" maxlength="60" value="' + h(i.category || "") + '"></div></div>' +
+      '<p class="small muted" style="margin:0">Sizes and add-ons are edited in the Scraveit Restaurant app.</p><div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Save changes</button></div></form></div>';
+    // A dish without a real description gets an AI draft straight away.
+    if (String(i.description || "").trim().length < 25) aiDescription(false);
+  }
+  // Markup restaurants (set by Scraveit): prices include GST and customers pay them plus the markup.
+  function priceLabel() { return outlet() && outlet().doc && outlet().doc.pricingModel === "markup" ? "Your price, GST included (₹)" : gstIncluded() ? "Price, GST included (₹)" : "Price before GST (₹)"; }
+  async function saveItem(form) {
+    const id = form.dataset.id, it = (state.menu.items || []).find((x) => x.id === id); if (!it) return;
+    const patch = {name: form.name.value.trim().slice(0, 70), description: form.description.value.trim().slice(0, 500), price: Math.round(Number(form.price.value)), category: form.category.value.trim().slice(0, 60) || "Other", updatedAt: Date.now()};
+    if (!patch.name || !(patch.price > 0)) { toast("Enter a name and a price.", true); return; }
+    const saveBtn = form.querySelector('[type="submit"]');
+    if (dishPhoto) {
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Uploading photo…"; }
+      try { Object.assign(patch, await uploadDishPhoto(id)); }
+      catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save changes"; } toast("Photo upload failed. " + friendly(e), true); return; }
+    }
+    const placed = patch.category !== (it.category || "") ? menuPlacement(patch.category, id) : {}, write = Object.assign({}, patch);
+    Object.keys(placed).forEach((k) => { write[k] = placed[k] === null ? firebase.firestore.FieldValue.delete() : placed[k]; });
+    try {
+      await db.collection("menus").doc(state.rid).collection("items").doc(id).update(write);
+      Object.assign(it, patch); Object.keys(placed).forEach((k) => { if (placed[k] === null) delete it[k]; else it[k] = placed[k]; });
+      dishPhoto = null; closeModal(); toast("Saved."); render();
+    } catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save changes"; } toast(friendly(e), true); }
+  }
+
+  // ---------- dish photo: auto-enhance ----------
+  // Like the big delivery apps: the photo is brightened, colour-balanced and
+  // sharpened in the browser before upload. The owner can keep the original.
+  let dishPhoto = null;
+  function loadImage(file) {
+    return new Promise((ok, fail) => { const url = URL.createObjectURL(file), im = new Image(); im.onload = () => { URL.revokeObjectURL(url); ok(im); }; im.onerror = () => { URL.revokeObjectURL(url); fail(new Error("That file isn't a photo we can open.")); }; im.src = url; });
+  }
+  function drawScaled(src, max) {
+    const k = Math.min(1, max / Math.max(src.width, src.height)), c = document.createElement("canvas");
+    c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+    const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(src, 0, 0, c.width, c.height); return c;
+  }
+  function enhanceCanvas(src) {
+    const c = drawScaled(src, 1000), g = c.getContext("2d"), im = g.getImageData(0, 0, c.width, c.height), d = im.data, n = d.length / 4;
+    // Levels from the 0.5% darkest to the 0.5% brightest pixels, and a gentle grey-world white balance.
+    const hist = new Uint32Array(256); let sr = 0, sg = 0, sb = 0;
+    for (let i = 0; i < d.length; i += 4) { sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; hist[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8]++; }
+    const at = (p) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * p) return v; } return 255; };
+    const lo = at(.002), hi = Math.max(at(.998), lo + 80), m = (sr + sg + sb) / 3;
+    // The balance may take a colour cast out, but never takes red away or adds blue: food looks best warm.
+    const gain = (s) => Math.min(1.04, Math.max(.96, 1 + .5 * (m / Math.max(s, 1) - 1)));
+    const gr = Math.max(1, gain(sr)), gg = gain(sg), gb = Math.min(1, gain(sb)), scale = 255 / (hi - lo);
+    const meanLuma = (sr * .3 + sg * .59 + sb * .11) / n, gamma = meanLuma < 110 ? .85 : meanLuma > 170 ? 1.08 : .97;
+    // Levels and brightness, then a soft S-curve for a little more contrast.
+    const lut = new Uint8ClampedArray(256);
+    for (let v = 0; v < 256; v++) { const x = Math.pow(Math.min(1, Math.max(0, (v - lo) * scale / 255)), gamma); lut[v] = 255 * (x * .8 + x * x * (3 - 2 * x) * .2); }
+    for (let i = 0; i < d.length; i += 4) {
+      const r = lut[Math.min(255, d[i] * gr) | 0], gch = lut[Math.min(255, d[i + 1] * gg) | 0], b = lut[Math.min(255, d[i + 2] * gb) | 0], l = r * .3 + gch * .59 + b * .11;
+      d[i] = l + (r - l) * 1.15; d[i + 1] = l + (gch - l) * 1.15; d[i + 2] = l + (b - l) * 1.15;
+    }
+    // Light sharpening: the pixel minus a little of its neighbours.
+    const w = c.width, src2 = new Uint8ClampedArray(d);
+    for (let y = 1; y < c.height - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      for (let k = 0; k < 3; k++) d[i + k] = src2[i + k] * 1.36 - (src2[i - 4 + k] + src2[i + 4 + k] + src2[i - w * 4 + k] + src2[i + w * 4 + k]) * .09;
+    }
+    g.putImageData(im, 0, 0); return c;
+  }
+  const toBlob = (c, q) => new Promise((ok, fail) => c.toBlob((b) => b ? ok(b) : fail(new Error("Couldn't prepare the photo.")), "image/jpeg", q));
+  async function pickDishPhoto(file) {
+    if (!file) return;
+    const note = document.getElementById("dp-note");
+    if (file.size > 15 * 1024 * 1024) { toast("Pick a photo under 15 MB.", true); return; }
+    if (note) note.textContent = "Enhancing your photo…";
+    try {
+      const im = await loadImage(file), original = drawScaled(im, 1000), enhanced = enhanceCanvas(im);
+      dishPhoto = {original, enhanced, use: "enhanced"};
+      showDishPhoto();
+      const modes = document.getElementById("dp-modes"); if (modes) modes.hidden = false;
+      if (note) note.textContent = "Enhanced: brighter colours and sharper detail. Tap Original to keep it as it was.";
+    } catch (e) { dishPhoto = null; if (note) note.textContent = friendly(e); }
+  }
+  function showDishPhoto() {
+    const img = document.getElementById("dp-img"), empty = document.getElementById("dp-empty"); if (!img || !dishPhoto) return;
+    img.src = dishPhoto[dishPhoto.use].toDataURL("image/jpeg", .85); img.hidden = false; if (empty) empty.hidden = true;
+    document.querySelectorAll(".dp-mode").forEach((b) => b.classList.toggle("on", b.dataset.mode === dishPhoto.use));
+  }
+  async function uploadDishPhoto(id) {
+    const chosen = dishPhoto[dishPhoto.use], base = "restaurants/" + state.rid + "/users/" + state.user.uid + "/menu/" + id + "/" + Date.now();
+    const put = async (c, q, path) => { const ref = firebase.storage().ref(path); await ref.put(await toBlob(c, q), {contentType: "image/jpeg", cacheControl: "public, max-age=31536000"}); return ref.getDownloadURL(); };
+    const [imageUrl, imageThumbUrl] = await Promise.all([put(chosen, .82, base + ".jpg"), put(drawScaled(chosen, 480), .72, base + "-thumb.jpg")]);
+    return {imageUrl, imageThumbUrl};
+  }
+
+  // ---------- dish description: AI draft ----------
+  let aiBusy = false, aiPrevious = null;
+  async function aiDescription(rewrite) {
+    const form = document.getElementById("item-form"); if (!form || aiBusy) return;
+    const it = (state.menu.items || []).find((x) => x.id === form.dataset.id) || {}, box = form.description, ask = document.getElementById("ai-ask");
+    const instructions = rewrite && ask ? ask.value.trim() : "";
+    if (rewrite && !instructions) { if (ask) ask.focus(); toast("Type what you'd like changed.", true); return; }
+    const btns = form.querySelectorAll('[data-act="ai-desc"],[data-act="ai-rewrite"]');
+    aiBusy = true; btns.forEach((b) => { b.disabled = true; }); const was = box.value; box.disabled = true; box.placeholder = "Writing a description…"; if (!was) box.value = "";
+    try {
+      const photo = dishPhoto ? drawScaled(dishPhoto[dishPhoto.use], 512).toDataURL("image/jpeg", .7) : "";
+      const r = await call("suggestDishDescription", {restaurantId: state.rid, name: form.name.value.trim() || it.name || "", category: form.category.value.trim(),
+        price: Number(form.price.value) || 0, diet: String(it.diet || it.foodType || ""), current: was.trim(), instructions,
+        imageUrl: photo ? "" : itemImage(it), imageData: photo});
+      if (!document.body.contains(box)) return;
+      aiPrevious = was; box.value = r.description;
+      const row = document.getElementById("ai-row"), note = document.getElementById("ai-note"), undo = document.getElementById("ai-undo");
+      if (row) row.hidden = false; if (note) note.hidden = false; if (undo) undo.hidden = !was; if (ask) ask.value = "";
+    } catch (e) { if (document.body.contains(box)) box.value = was; toast(friendly(e), true); }
+    finally { aiBusy = false; btns.forEach((b) => { b.disabled = false; }); box.disabled = false; box.placeholder = ""; }
+  }
+
+  // ---------- menu order and GST ----------
+  // categoryRank and itemRank on each dish; anything not arranged yet follows, A to Z.
+  // Same order as the customer app (native_android/app premium.js menuInOrder).
+  const catOf = (i) => (i && i.category) || "Menu";
+  function menuInOrder(items) {
+    const rank = (v) => v === null || v === "" || v === undefined || !Number.isFinite(Number(v)) ? Infinity : Number(v), catRank = {};
+    items.forEach((i) => { const c = catOf(i), r = rank(i.categoryRank); if (!(c in catRank) || r < catRank[c]) catRank[c] = r; });
+    return items.map((item, i) => ({item, i})).sort((a, b) => {
+      const ca = catOf(a.item), cb = catOf(b.item);
+      if (ca !== cb) return (catRank[ca] - catRank[cb]) || ca.localeCompare(cb);
+      return (rank(a.item.itemRank) - rank(b.item.itemRank)) || String(a.item.name || "").localeCompare(String(b.item.name || "")) || (a.i - b.i);
+    }).map((x) => x.item);
+  }
+  /** Where a dish moved to another category goes: last in it. null leaves it unranked. */
+  function menuPlacement(category, id) {
+    const num = (v) => v !== null && v !== "" && v !== undefined && Number.isFinite(Number(v)), others = (state.menu.items || []).filter((i) => i.id !== id);
+    const same = others.filter((i) => catOf(i) === category), own = same.filter((i) => num(i.categoryRank)).map((i) => Number(i.categoryRank));
+    const all = others.filter((i) => num(i.categoryRank)).map((i) => Number(i.categoryRank)), ranks = same.filter((i) => num(i.itemRank)).map((i) => Number(i.itemRank));
+    return {categoryRank: own.length ? Math.min(...own) : same.length || !all.length ? null : Math.max(...all) + 1, itemRank: ranks.length ? Math.max(...ranks) + 1 : null};
+  }
+  function startArrange() {
+    const M = state.menu, cats = [], by = {};
+    menuInOrder(M.items || []).forEach((i) => { const c = catOf(i); if (!by[c]) { by[c] = []; cats.push(c); } by[c].push(i.id); });
+    M.arrange = {cats, by, dirty: false, saving: false}; M.q = ""; if (M.cat && !by[M.cat]) M.cat = ""; render();
+  }
+  function arrangeMove(kind, i, to) {
+    const M = state.menu, A = M.arrange, list = A && (kind === "cat" ? A.cats : A.by[M.cat]); if (!list) return;
+    const j = to === "top" ? 0 : to === "up" ? i - 1 : to === "down" ? i + 1 : i;
+    if (j < 0 || j >= list.length || j === i) return;
+    list.splice(j, 0, list.splice(i, 1)[0]); A.dirty = true; render();
+  }
+  async function saveArrange() {
+    const M = state.menu, A = M.arrange; if (!A || A.saving || !A.dirty || !can("menu")) return;
+    A.saving = true; render();
+    const changes = [];
+    A.cats.forEach((c, ci) => A.by[c].forEach((id, ii) => { const it = M.items.find((x) => x.id === id); if (it && (it.categoryRank !== ci || it.itemRank !== ii)) changes.push({it, ci, ii}); }));
+    try {
+      for (let k = 0; k < changes.length; k += 400) {
+        const batch = db.batch(), now = Date.now();
+        changes.slice(k, k + 400).forEach((x) => batch.update(db.collection("menus").doc(state.rid).collection("items").doc(x.it.id), {categoryRank: x.ci, itemRank: x.ii, updatedAt: now}));
+        await batch.commit();
+      }
+      changes.forEach((x) => { x.it.categoryRank = x.ci; x.it.itemRank = x.ii; });
+      M.arrange = null; toast("Menu order saved. Customers see it now."); render();
+    } catch (e) { A.saving = false; render(); toast(friendly(e), true); }
+  }
+  // The restaurant's own switch (always on under markup): menu prices include GST, customers pay them as they
+  // are and Scraveit pays the 5% GST inside them. Grocery and dairy stores set GST per product instead.
+  function gstIncluded() { const d = outlet() && outlet().doc; return !!d && d.storeType !== "grocery" && d.storeType !== "dairy" && (d.pricingModel === "markup" || d.pricesIncludeGst === true); }
+  function gstRow() {
+    const d = outlet() && outlet().doc; if (!d || d.storeType === "grocery" || d.storeType === "dairy") return "";
+    const markup = d.pricingModel === "markup", on = gstIncluded(), ok = !markup && (can("profile") || can("availability"));
+    return '<div class="card row between gst-row"><div><strong>My prices include GST</strong><div class="small muted">' + (markup ? "Set by Scraveit for your plan: customers pay your price plus the markup, GST included." : on ? "Customers pay your menu price as it is. Scraveit pays the 5% GST from it." : "Customers pay your menu price plus 5% GST at checkout.") +
+      '</div></div><button class="switch' + (on ? " on" : "") + '" data-act="gst" role="switch" aria-checked="' + on + '" aria-label="My prices include GST"' + (ok ? "" : " disabled") + "></button></div>";
+  }
+  async function toggleGst() {
+    const o = outlet(); if (!o || o.doc.pricingModel === "markup" || !(can("profile") || can("availability"))) return;
+    const next = o.doc.pricesIncludeGst !== true;
+    if (!confirm(next ? "Your menu prices include GST? Customers pay them as they are, and Scraveit pays the 5% GST from them." : "Your menu prices are before GST? Customers pay your price plus 5% GST at checkout.")) return;
+    try {
+      await db.collection("restaurants").doc(o.id).update({pricesIncludeGst: next, updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid});
+      o.doc.pricesIncludeGst = next; toast(next ? "Your menu prices now include GST." : "GST is now added at checkout."); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
+
+  // ---------- offers ----------
+  async function loadOffers() {
+    const O = state.offers; O.loading = true; O.error = ""; render();
+    try {
+      const [list, perf] = await Promise.all([call("getRestaurantOffers", {restaurantId: state.rid}), call("getRestaurantOfferPerformance", {restaurantId: state.rid, days: 30}).catch(() => null)]);
+      O.data = {offers: list && list.offers || [], perf};
+    } catch (e) { O.error = friendly(e); O.data = {offers: [], perf: null}; }
+    O.loading = false; render();
+  }
+  function pageOffers() {
+    const O = state.offers, M = state.menu;
+    if (!O.data && !O.loading) setTimeout(loadOffers, 0);
+    if (!M.items && !M.loading) setTimeout(loadMenu, 0);
+    if (O.loading || !O.data) return '<div class="spinner"></div>';
+    const p = O.data.perf && (O.data.perf.summary || O.data.perf);
+    const val = (k) => p && p[k] != null ? p[k] : null;
+    const edit = isManager() || can("offers"), gifts = freebies(), pairs = pairings();
+    return '<div class="row between"><p class="muted" style="margin:0;max-width:620px">Offers lift you into “Top offers near you”. A free item is your gift on top of the order; a pairing suggests your dishes, at their prices, under the dishes you choose; a discount takes money off the bill.</p>' +
+      (edit ? '<div class="row"><button class="btn primary" data-act="freebie-new">+ Free item offer</button><button class="btn" data-act="pairing-new">+ Pair dishes</button><button class="btn" data-act="discount-new">+ Discount offer</button></div>' : "") + "</div>" +
+      (O.error ? '<div class="notice warn">' + h(O.error) + "</div>" : "") +
+      '<h2 class="offer-head">Free items</h2>' +
+      (gifts.length ? '<div class="gift-grid">' + gifts.map((f) => giftCard(f, edit)).join("") + "</div>" :
+        '<div class="card empty"><strong>No free-item offers yet</strong>Give a free side with chosen dishes (“Free French fries with any Crispy Box”), one with each.' + (edit ? '<div style="margin-top:12px"><button class="btn primary" data-act="freebie-new">+ Free item offer</button></div>' : "") + "</div>") +
+      '<h2 class="offer-head">Pairings</h2>' +
+      (pairs.length ? '<div class="gift-grid">' + pairs.map((x) => pairingCard(x, edit)).join("") + "</div>" :
+        '<div class="card empty"><strong>No pairings yet</strong>Suggest dishes from your menu under the dishes you choose, once a customer adds one, with your own name for it (“Finish sweetly: Gulab Jamun, Double Ka Meetha” under burgers). Customers pay your menu price for it.' + (edit ? '<div style="margin-top:12px"><button class="btn primary" data-act="pairing-new">+ Pair dishes</button></div>' : "") + "</div>") +
+      '<h2 class="offer-head">Discounts</h2>' +
+      (p ? '<div class="kpis">' + [["Orders with offers (30 days)", val("orders") ?? val("orderCount")], ["Sales from offers", val("grossPaise") != null ? inr(val("grossPaise") / 100) : val("sales") != null ? inr(val("sales")) : null], ["Discount you gave", val("restaurantDiscountPaise") != null ? inr(val("restaurantDiscountPaise") / 100) : null]].filter((x) => x[1] != null).map((x) => '<div class="kpi"><span>' + h(x[0]) + "</span><strong>" + h(x[1]) + "</strong></div>").join("") + "</div>" : "") +
+      '<div class="card" style="padding:0;overflow:auto"><table class="table"><thead><tr><th>Offer</th><th>Status</th><th>Runs</th></tr></thead><tbody>' +
+      (O.data.offers.length ? O.data.offers.map((o) => "<tr><td><strong>" + h(o.title || o.name || (o.percent ? o.percent + "% off" : o.flatAmountPaise ? inr(o.flatAmountPaise / 100) + " off" : "Offer")) + '</strong><div class="small muted">' + h(o.code ? "Code " + o.code : "") + (o.minimumOrderPaise ? " · min order " + inr(o.minimumOrderPaise / 100) : "") + "</div></td><td><span class=\"pill " + (o.approvalStatus === "pending" ? "cod" : o.status === "active" || o.active ? "paid" : "done") + '">' + h(o.approvalStatus === "pending" ? "waiting for approval" : o.status || (o.active ? "active" : "inactive")) + "</span></td><td>" + (o.startsAt ? h(dayLabel(ms(o.startsAt))) : "") + (o.expiresAt ? " – " + h(dayLabel(ms(o.expiresAt))) : "") + "</td></tr>").join("") :
+        '<tr><td colspan="3" class="empty"><strong>No discounts yet</strong>' + (edit ? "Use + Discount offer above." : "") + "</td></tr>") + "</tbody></table></div>";
+  }
+
+  // ---------- free-item offers ----------
+  // Kept on the outlet's listing as `freebies` and saved through saveRestaurantFreebies, which
+  // checks them. At checkout the server adds the free item to the order at ₹0 (functions
+  // domain/freebies.ts): one with each chosen dish, or one once the item total reaches the amount.
+  const freebies = () => (outlet() && outlet().doc && Array.isArray(outlet().doc.freebies) ? outlet().doc.freebies : []);
+  const dishName = (id) => { const i = (state.menu.items || []).find((x) => x.id === id); return i ? i.name : ""; };
+  function giftLine(f) {
+    if (f.trigger === "amount") return "Free " + f.freeItem + " on orders above " + inr(f.minimumOrder);
+    const names = (f.itemIds || []).map(dishName).filter(Boolean);
+    return "Free " + f.freeItem + " with " + (names.length === 1 ? names[0] : names.length ? names[0] + " and " + (names.length - 1) + " more" : (f.itemIds || []).length + " dishes");
+  }
+  function giftCard(f, edit) {
+    return '<div class="gift-card' + (f.active === false ? " paused" : "") + '"><div class="gift-top"><span class="gift-icon" aria-hidden="true">🎁</span><div class="grow"><strong>' + h(f.title) + '</strong><div class="small muted">' + h(giftLine(f)) + "</div></div>" +
+      '<span class="pill ' + (f.active === false ? "done" : "paid") + '">' + (f.active === false ? "paused" : "live") + "</span></div>" +
+      (f.trigger === "items" ? '<div class="gift-dishes">' + (f.itemIds || []).map((id) => '<span class="tag">' + h(dishName(id) || "Removed dish") + "</span>").join("") + "</div>" : "") +
+      '<div class="gift-note small muted">' + (f.trigger === "items" ? "One " + h(f.freeItem) + " with each of these dishes, added to the order at ₹0." : "One " + h(f.freeItem) + " per order once the item total reaches " + inr(f.minimumOrder) + ".") + "</div>" +
+      (edit ? '<div class="row"><button class="btn small" data-act="freebie-edit" data-id="' + h(f.id) + '">Edit</button><button class="btn small" data-act="freebie-pause" data-id="' + h(f.id) + '">' + (f.active === false ? "Resume" : "Pause") + '</button><button class="btn small danger" data-act="freebie-delete" data-id="' + h(f.id) + '">Delete</button></div>' : "") + "</div>";
+  }
+  function freebieModal(id) {
+    const f = freebies().find((x) => x.id === id) || {id: "", title: "", freeItem: "", diet: "veg", trigger: "items", itemIds: [], minimumOrder: 0, active: true};
+    const diet = (v, label) => '<label class="seg"><input type="radio" name="diet" value="' + v + '"' + (f.diet === v ? " checked" : "") + "><span>" + label + "</span></label>";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide gift-form" id="freebie-form" data-id="' + h(f.id) + '" data-trigger="' + h(f.trigger) + '"><header><h2>' + (f.id ? "Edit free item offer" : "New free item offer") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="row"><div class="field grow"><label for="fb-item">Free item</label><input class="input" id="fb-item" name="freeItem" maxlength="60" required placeholder="e.g. French Fries" value="' + h(f.freeItem) + '" data-input="fb-preview"></div>' +
+      '<div class="field grow"><label for="fb-title">Offer name customers see</label><input class="input" id="fb-title" name="title" maxlength="60" placeholder="e.g. Free French fries" value="' + h(f.title) + '" data-input="fb-preview"></div></div>' +
+      '<div class="field"><label>The free item is</label><div class="segs">' + diet("veg", "Veg") + diet("nonveg", "Non-veg") + diet("egg", "Contains egg") + "</div></div>" +
+      '<div class="field"><label>Give it</label><div class="segs">' +
+      '<label class="seg"><input type="radio" name="trigger" value="items" data-input="fb-trigger"' + (f.trigger !== "amount" ? " checked" : "") + "><span>With chosen dishes</span></label>" +
+      '<label class="seg"><input type="radio" name="trigger" value="amount" data-input="fb-trigger"' + (f.trigger === "amount" ? " checked" : "") + "><span>On orders above an amount</span></label></div></div>" +
+      '<div class="field when-amount"><label for="fb-min">Item total at least (₹)</label><input class="input" id="fb-min" name="minimumOrder" type="number" min="1" step="1" placeholder="e.g. 499" value="' + h(f.minimumOrder || "") + '" data-input="fb-preview"></div>' +
+      '<div class="field when-items"><label>Dishes that come with it <span class="muted">(one free with each)</span></label>' +
+      dishPicker("checkbox", "itemIds", new Set(f.itemIds || []), "fb-preview") + "</div>" +
+      '<div class="gift-preview"><div class="small muted">Customers will see</div><div class="gift-preview-line" id="fb-preview"></div></div>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">' + (f.id ? "Save offer" : "Start offer") + "</button></div></form></div>";
+    freebiePreview();
+  }
+  function freebieFromForm(form) {
+    const pick = (n) => (form.querySelector('input[name="' + n + '"]:checked') || {}).value;
+    const trigger = pick("trigger") === "amount" ? "amount" : "items", freeItem = form.freeItem.value.trim().replace(/\s+/g, " ").slice(0, 60);
+    return {id: form.dataset.id || "fb" + Date.now().toString(36), title: form.elements.title.value.trim().slice(0, 60) || (freeItem ? "Free " + freeItem : ""), freeItem, diet: pick("diet") || "veg", trigger,
+      itemIds: trigger === "items" ? Array.from(form.querySelectorAll('input[name="itemIds"]:checked')).map((x) => x.value) : [],
+      minimumOrder: trigger === "amount" ? Math.round(Number(form.minimumOrder.value) || 0) : 0,
+      active: (freebies().find((x) => x.id === form.dataset.id) || {}).active !== false};
+  }
+  function freebiePreview() {
+    const form = document.getElementById("freebie-form"), out = document.getElementById("fb-preview"); if (!form || !out) return;
+    const f = freebieFromForm(form);
+    form.dataset.trigger = f.trigger;
+    out.innerHTML = f.freeItem ? "🎁 <strong>" + h(f.title) + "</strong> · " + h(giftLine(f)) : '<span class="muted">Type the free item to see it.</span>';
+  }
+  async function saveFreebies(list, done) {
+    try {
+      const r = await call("saveRestaurantFreebies", {restaurantId: state.rid, freebies: list});
+      if (outlet() && outlet().doc) outlet().doc.freebies = r && r.freebies || list;
+      closeModal(); toast(done); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
+  async function submitFreebie(form) {
+    const f = freebieFromForm(form);
+    if (f.freeItem.length < 2) { toast("Type the free item, e.g. French Fries.", true); return; }
+    if (f.trigger === "items" && !f.itemIds.length) { toast("Tick the dishes that come with it.", true); return; }
+    if (f.trigger === "amount" && !(f.minimumOrder > 0)) { toast("Enter the item total, e.g. 499.", true); return; }
+    const list = freebies().filter((x) => x.id !== f.id).concat(f);
+    if (list.length > 6) { toast("Up to 6 free-item offers. Delete one first.", true); return; }
+    const btn = form.querySelector("button[type=submit]"); if (btn) btn.disabled = true;
+    await saveFreebies(freebies().some((x) => x.id === f.id) ? freebies().map((x) => x.id === f.id ? f : x) : list, form.dataset.id ? "Offer saved." : "Offer is live. Customers see it on your menu now.");
+    if (btn) btn.disabled = false;
+  }
+
+  /** The menu by category, to tick dishes (checkbox) or pick one (radio), with a search box over it. */
+  function dishPicker(type, name, picked, previewKey) {
+    const items = state.menu.items || [], cats = {};
+    if (!items.length) return '<div class="notice warn">Your menu is still loading. Close this and open it again in a moment.</div>';
+    menuInOrder(items).forEach((i) => (cats[catOf(i)] = cats[catOf(i)] || []).push(i));
+    return '<input class="input" placeholder="Search dishes" data-input="dish-search"><div class="dish-pick">' + Object.keys(cats).map((c) => '<div class="dish-cat"><div class="dish-cat-name">' + h(c) + "</div>" + cats[c].map((i) => '<label class="dish-opt" data-name="' + h(String(i.name || "").toLowerCase()) + '"><input type="' + type + '" name="' + name + '" value="' + h(i.id) + '" data-input="' + previewKey + '"' + (picked.has(i.id) ? " checked" : "") + "><span>" + h(i.name) + (i.available === false ? ' <span class="muted">(off)</span>' : "") + '</span><span class="muted">' + inr(i.price) + "</span></label>").join("") + "</div>").join("") + "</div>";
+  }
+
+  // ---------- pairings (paid) ----------
+  // Kept on the outlet's listing as `pairings` and saved through saveRestaurantPairings. Each has the
+  // restaurant's own name for it ("Finish sweetly"), the dishes from its menu to suggest, and the dishes
+  // they show under: once a customer adds one of those, the app suggests them there at their menu prices.
+  // They are ordinary menu items, so the bill, commission and GST work as for any dish.
+  const MAX_PAIRINGS = 10, MAX_SUGGESTED = 10;
+  const pairings = () => (outlet() && outlet().doc && Array.isArray(outlet().doc.pairings) ? outlet().doc.pairings : []);
+  const menuDish = (id) => (state.menu.items || []).find((x) => x.id === id);
+  const fewNames = (ids) => { const names = (ids || []).map(dishName).filter(Boolean); return names.length === 1 ? names[0] : names.length ? names[0] + " and " + (names.length - 1) + " more" : (ids || []).length + " dishes"; };
+  function pairingCard(p, edit) {
+    const off = (p.suggestIds || []).map(menuDish).filter((d) => d && d.available === false).map((d) => d.name);
+    const tags = (ids) => (ids || []).map((id) => { const d = menuDish(id); return '<span class="tag">' + h(d ? d.name : "Removed dish") + (d && d.price ? " · " + inr(d.price) : "") + "</span>"; }).join("");
+    return '<div class="gift-card' + (p.active === false ? " paused" : "") + '"><div class="gift-top"><span class="gift-icon pair-icon" aria-hidden="true">🍽️</span><div class="grow"><strong>' + h(p.title) + '</strong><div class="small muted">' + h(fewNames(p.suggestIds)) + " under " + h(fewNames(p.itemIds)) + "</div></div>" +
+      '<span class="pill ' + (p.active === false ? "done" : "paid") + '">' + (p.active === false ? "paused" : "live") + "</span></div>" +
+      '<div class="small muted">Suggests</div><div class="gift-dishes">' + tags(p.suggestIds) + "</div>" +
+      '<div class="small muted">Under</div><div class="gift-dishes">' + tags(p.itemIds).replace(/ · ₹[\d,.]+/g, "") + "</div>" +
+      '<div class="gift-note small muted">' + (off.length ? h(off.join(", ")) + (off.length === 1 ? " is" : " are") + " switched off on your menu, so customers don't see " + (off.length === 1 ? "it" : "them") + " right now." : "Once a customer adds one of these dishes, your suggestions show under it with Add buttons, at your menu prices.") + "</div>" +
+      (edit ? '<div class="row"><button class="btn small" data-act="pairing-edit" data-id="' + h(p.id) + '">Edit</button><button class="btn small" data-act="pairing-pause" data-id="' + h(p.id) + '">' + (p.active === false ? "Resume" : "Pause") + '</button><button class="btn small danger" data-act="pairing-delete" data-id="' + h(p.id) + '">Delete</button></div>' : "") + "</div>";
+  }
+  function pairingModal(id) {
+    const p = pairings().find((x) => x.id === id) || {id: "", title: "", suggestIds: [], itemIds: [], active: true}, addOk = can("menu");
+    const diet = (v, label) => '<label class="seg"><input type="radio" name="newDiet" value="' + v + '"' + (v === "veg" ? " checked" : "") + "><span>" + label + "</span></label>";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide gift-form" id="pairing-form" data-id="' + h(p.id) + '" data-adding=""><header><h2>' + (p.id ? "Edit pairing" : "Pair dishes") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="field"><label for="pr-title">Your name for it <span class="muted">(customers see this)</span></label><input class="input" id="pr-title" name="title" maxlength="60" placeholder="e.g. Finish sweetly" value="' + h(p.title) + '" data-input="pr-preview"></div>' +
+      '<div class="field"><label>Dishes to suggest <span class="muted">(tick as many as you like)</span></label>' + dishPicker("checkbox", "suggestIds", new Set(p.suggestIds || []), "pr-preview") +
+      (addOk ? '<label class="seg pair-add-toggle"><input type="checkbox" name="addNew" data-input="pr-preview"><span>+ Add a dish that isn\'t on my menu</span></label>' +
+        '<div class="when-new pair-new"><div class="row"><div class="field grow"><label for="pr-name">Dish name</label><input class="input" id="pr-name" name="newName" maxlength="70" placeholder="e.g. Gulab Jamun (2 pcs)" data-input="pr-preview"></div><div class="field"><label for="pr-price">' + priceLabel() + '</label><input class="input" id="pr-price" name="newPrice" type="number" min="1" step="1" placeholder="e.g. 50" data-input="pr-preview"></div></div>' +
+        '<div class="row"><div class="field grow"><label>It is</label><div class="segs">' + diet("veg", "Veg") + diet("nonveg", "Non-veg") + diet("egg", "Contains egg") + '</div></div><div class="field grow"><label for="pr-cat">Menu category</label><input class="input" id="pr-cat" name="newCategory" maxlength="60" value="Desserts"></div></div>' +
+        '<p class="small muted" style="margin:0">It joins your menu too, so customers can also order it on its own.</p></div>' : "") + "</div>" +
+      '<div class="field"><label>Show them under <span class="muted">(only these dishes, once a customer adds one)</span></label>' + dishPicker("checkbox", "itemIds", new Set(p.itemIds || []), "pr-preview") + "</div>" +
+      '<div class="gift-preview"><div class="small muted">Customers will see</div><div class="gift-preview-line" id="pr-preview"></div></div>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">' + (p.id ? "Save pairing" : "Start pairing") + "</button></div></form></div>";
+    pairingPreview();
+  }
+  function pairingFromForm(form) {
+    const el = form.elements, adding = !!(el.addNew && el.addNew.checked), ticked = (n) => Array.from(form.querySelectorAll('input[name="' + n + '"]:checked')).map((x) => x.value);
+    const suggestIds = ticked("suggestIds").concat(adding && form.dataset.newItem ? [form.dataset.newItem] : []);
+    return {id: form.dataset.id || "pr" + Date.now().toString(36), title: el.title.value.trim().replace(/\s+/g, " ").slice(0, 60), suggestIds,
+      itemIds: ticked("itemIds").filter((x) => !suggestIds.includes(x)),
+      newDish: adding && !form.dataset.newItem ? {name: el.newName.value.trim().replace(/\s+/g, " ").slice(0, 70), price: Math.round(Number(el.newPrice.value) || 0),
+        diet: (form.querySelector('input[name="newDiet"]:checked') || {}).value || "veg", category: el.newCategory.value.trim().slice(0, 60) || "Desserts"} : null,
+      active: (pairings().find((x) => x.id === form.dataset.id) || {}).active !== false};
+  }
+  function pairingPreview() {
+    const form = document.getElementById("pairing-form"), out = document.getElementById("pr-preview"); if (!form || !out) return;
+    const p = pairingFromForm(form), names = p.itemIds.map(dishName).filter(Boolean);
+    const dishes = p.suggestIds.map(menuDish).filter(Boolean).concat(p.newDish && p.newDish.name ? [p.newDish] : []);
+    form.dataset.adding = form.elements.addNew && form.elements.addNew.checked ? "1" : "";
+    out.innerHTML = dishes.length && names.length ? "Under <strong>" + h(names[0]) + "</strong>" + (names.length > 1 ? " and " + (names.length - 1) + " more" : "") + ", once added:" +
+      '<div class="pair-preview"><strong>' + h(p.title || "Goes well with") + "</strong>" + dishes.map((d) => '<div class="pair-preview-row"><span class="grow">' + h(d.name) + "</span>" + (d.price > 0 ? "<strong>" + inr(d.price) + "</strong>" : "") + '<span class="pair-add">ADD</span></div>').join("") + "</div>" :
+      '<span class="muted">Tick the dishes to suggest and the dishes to show them under.</span>';
+  }
+  /** Adds a plain dish to the menu, last in its category, and returns its id. */
+  async function addDish(d) {
+    const now = Date.now(), id = "item_" + now.toString(36) + "_" + (d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 36) || "dish");
+    const doc = {id, name: d.name, category: d.category, description: "", price: d.price, diet: d.diet, preparationTime: 10,
+      available: true, popular: false, archived: false, createdAt: now, updatedAt: now, updatedBy: state.user.email || state.user.uid}, placed = menuPlacement(d.category, id);
+    Object.keys(placed).forEach((k) => { if (placed[k] !== null) doc[k] = placed[k]; });
+    await db.collection("menus").doc(state.rid).collection("items").doc(id).set(doc);
+    (state.menu.items = state.menu.items || []).push(doc);
+    return id;
+  }
+  async function savePairings(list, done) {
+    try {
+      const r = await call("saveRestaurantPairings", {restaurantId: state.rid, pairings: list});
+      if (outlet() && outlet().doc) outlet().doc.pairings = r && r.pairings || list;
+      closeModal(); toast(done); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
+  async function submitPairing(form) {
+    const p = pairingFromForm(form), known = pairings().some((x) => x.id === p.id), count = p.suggestIds.length + (p.newDish ? 1 : 0);
+    if (!p.title) { toast("Give it a name customers see, e.g. Finish sweetly.", true); return; }
+    if (p.newDish && (p.newDish.name.length < 2 || !(p.newDish.price > 0))) { toast("Type the new dish's name and price.", true); return; }
+    if (!count) { toast("Tick the dishes to suggest.", true); return; }
+    if (count > MAX_SUGGESTED) { toast("Suggest up to " + MAX_SUGGESTED + " dishes in one pairing.", true); return; }
+    if (!p.itemIds.length) { toast("Tick the dishes to show them under.", true); return; }
+    if (!known && pairings().length >= MAX_PAIRINGS) { toast("Up to " + MAX_PAIRINGS + " pairings. Delete one first.", true); return; }
+    const btn = form.querySelector("button[type=submit]"); if (btn) btn.disabled = true;
+    // A new dish is added once; if saving the pairing then fails, trying again reuses it.
+    if (p.newDish) {
+      try { form.dataset.newItem = await addDish(p.newDish); p.suggestIds.push(form.dataset.newItem); } catch (e) { toast(friendly(e), true); if (btn) btn.disabled = false; return; }
+    }
+    const saved = {id: p.id, title: p.title, suggestIds: p.suggestIds, itemIds: p.itemIds.filter((x) => !p.suggestIds.includes(x)), active: p.active};
+    await savePairings(known ? pairings().map((x) => x.id === saved.id ? saved : x) : pairings().concat(saved), form.dataset.id ? "Pairing saved." : "Pairing is live. Customers see it under those dishes now.");
+    if (btn) btn.disabled = false;
+  }
+
+  // ---------- discount offers (codes) ----------
+  function discountModal() {
+    const day = (t) => isoDay(t);
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="discount-form" data-kind="percent"><header><h2>New discount offer</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="field"><label>Discount</label><div class="segs"><label class="seg"><input type="radio" name="kind" value="percent" data-input="dc-kind" checked><span>% off</span></label><label class="seg"><input type="radio" name="kind" value="flat" data-input="dc-kind"><span>₹ off</span></label></div></div>' +
+      '<div class="row when-percent"><div class="field grow"><label for="dc-pct">Percent off</label><input class="input" id="dc-pct" name="percent" type="number" min="1" max="100" step="1" placeholder="20"></div><div class="field grow"><label for="dc-max">Up to (₹)</label><input class="input" id="dc-max" name="maxDiscount" type="number" min="1" step="1" placeholder="100"></div></div>' +
+      '<div class="field when-flat"><label for="dc-flat">Amount off (₹)</label><input class="input" id="dc-flat" name="flat" type="number" min="1" step="1" placeholder="75"></div>' +
+      '<div class="row"><div class="field grow"><label for="dc-min">Minimum item total (₹)</label><input class="input" id="dc-min" name="minimum" type="number" min="0" step="1" placeholder="299"></div><div class="field grow"><label for="dc-code">Code</label><input class="input" id="dc-code" name="code" maxlength="24" required placeholder="SPICY20" style="text-transform:uppercase"></div></div>' +
+      '<div class="field"><label for="dc-title">Name customers see</label><input class="input" id="dc-title" name="title" maxlength="120" required placeholder="20% off up to ₹100"></div>' +
+      '<div class="row"><div class="field grow"><label for="dc-start">Starts</label><input class="input" id="dc-start" name="start" type="date" value="' + day(Date.now()) + '"></div><div class="field grow"><label for="dc-end">Ends (optional)</label><input class="input" id="dc-end" name="end" type="date"></div></div>' +
+      '<p class="small muted" style="margin:0">You pay for the discount. Small offers go live at once; bigger ones wait for a quick Scraveit check.</p>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Start offer</button></div></form></div>';
+  }
+  async function submitDiscount(form) {
+    const kind = (form.querySelector('input[name="kind"]:checked') || {}).value === "flat" ? "flat" : "percent", n = (v) => Math.round(Number(v) || 0);
+    const at = (v, end) => v ? new Date(v + (end ? "T23:59:59" : "T00:00:00")).getTime() : 0;
+    const body = {restaurantId: state.rid, code: form.code.value.trim().toUpperCase(), title: form.elements.title.value.trim(), kind,
+      percent: kind === "percent" ? n(form.percent.value) : 0, flatAmountPaise: kind === "flat" ? n(form.flat.value) * 100 : 0,
+      maxDiscountPaise: kind === "percent" ? n(form.maxDiscount.value) * 100 : n(form.flat.value) * 100, minimumOrderPaise: n(form.minimum.value) * 100,
+      perCustomerLimit: 0, startsAt: at(form.start.value), expiresAt: at(form.end.value, true), active: true};
+    if (!/^[A-Z0-9_-]{3,24}$/.test(body.code)) { toast("Use a code of 3–24 letters or numbers, e.g. SPICY20.", true); return; }
+    if (kind === "percent" && (!(body.percent > 0) || !(body.maxDiscountPaise > 0))) { toast("Enter the percent and the most it takes off.", true); return; }
+    if (kind === "flat" && !(body.flatAmountPaise > 0)) { toast("Enter the amount off.", true); return; }
+    const btn = form.querySelector("button[type=submit]"); if (btn) btn.disabled = true;
+    try {
+      const r = await call("saveRestaurantOffer", body);
+      closeModal(); toast(r && r.approvalStatus === "pending" ? "Saved. It goes live after a quick Scraveit check." : "Offer is live."); state.offers.data = null; render();
+    } catch (e) { toast(friendly(e), true); if (btn) btn.disabled = false; }
+  }
+
+  // ---------- ads: top placement ----------
+  // A store pays a fixed price per day to be listed first in its city in the
+  // customer app, marked "Ad". Scraveit sets the price and how many stores can
+  // be on top on one day; the charge comes off the weekly payout, and a booking
+  // cancelled before it starts is refunded in full. Owners book and cancel,
+  // managers can look. Like order actions, this needs the website's App Check.
+  const AD_DAYS = [1, 3, 7, 14, 30];
+  const AD_STATUS = {live: ["paid", "Live"], upcoming: ["state", "Upcoming"], ended: ["done", "Ended"], cancelled: ["done", "Cancelled"]};
+  const istDay = (key) => Date.parse(key + "T00:00:00+05:30");
+  const weekday = (key) => new Date(istDay(key)).toLocaleDateString("en-IN", {weekday: "short"});
+  async function loadAds() {
+    const A = state.ads; A.loading = true; A.error = ""; render();
+    const [data, profile] = await Promise.all([
+      call("getSponsoredListings", {restaurantId: state.rid}).catch((e) => { A.error = friendly(e); return null; }),
+      db.collection("restaurantPayoutProfiles").doc(state.rid).get().then((s) => s.exists ? s.data() : null, () => null),
+    ]);
+    A.data = data; A.profile = profile; A.loading = false; A.loaded = true;
+    if (data && !data.availability.some((x) => x.day === A.start)) {
+      // Start on the first day from which every day of the chosen length is free.
+      const free = (x) => x.left > 0 && !x.mine, at = data.availability.findIndex((x, i) => data.availability.slice(i, i + A.days).filter(free).length === A.days);
+      A.start = (data.availability[at] || data.availability.find(free) || {day: data.today}).day;
+    }
+    render();
+  }
+  // Same sum as the server (sponsoredQuote); the server refuses a booking if its total differs.
+  function adQuote(d, days) { const price = d.dailyPricePaise * days, gst = Math.round(price * d.gstRateBps / 10000); return {price, gst, total: price + gst}; }
+  function adRange() { const A = state.ads, d = A.data, i = d.availability.findIndex((x) => x.day === A.start); return i < 0 ? [] : d.availability.slice(i, i + A.days); }
+  function adProblem() {
+    const A = state.ads, d = A.data, days = adRange(), full = days.find((x) => x.left <= 0 && !x.mine), mine = days.find((x) => x.mine);
+    if (d.notBookable) return d.notBookable;
+    if (days.length < A.days) return "You can book up to " + d.bookAheadDays + " days ahead. Pick an earlier start or fewer days.";
+    if (mine) return "You already have top placement on " + fullDay(istDay(mine.day)) + ". Pick days after your current booking.";
+    if (full) return "All " + d.slotsPerCity + " top places in " + d.city + " are taken on " + fullDay(istDay(full.day)) + ". Pick other dates.";
+    return "";
+  }
+  function pageAds() {
+    const A = state.ads;
+    if (!pageAllowed("ads")) return '<div class="card empty"><strong>Ads are for owners, managers and staff given Offers & ads</strong>Ask the outlet owner about top placement.</div>';
+    if (!WEB_CHECK) return '<div class="card empty"><strong>Ads switch on with the website\'s security check</strong>Booking top placement is charged to your payout, so it runs through Scraveit\'s secure server. Until then, ask Scraveit to book it for you.</div>';
+    if (!A.loaded && !A.loading) setTimeout(loadAds, 0);
+    if (!A.loaded) return '<div class="spinner"></div>';
+    if (!A.data) return '<div class="notice warn">Ads didn\'t load: ' + h(A.error || "try again.") + '</div><button class="btn" data-act="ad-reload">Try again</button>';
+    const d = A.data, o = outlet().doc, now = Date.now(), live = d.bookings.find((b) => b.status === "live");
+    const ahead = d.bookings.filter((b) => b.status === "upcoming").sort((a, b) => a.startAt - b.startAt);
+    const daysAhead = ahead.reduce((n, b) => n + b.days, 0) + (live ? Math.ceil((live.endAt - now) / DAY) : 0);
+    const spent = d.bookings.filter((b) => b.status !== "cancelled" && b.createdAt >= now - 30 * DAY).reduce((n, b) => n + b.totalPaise, 0);
+    const kpis = '<div class="kpis">' +
+      kpiBox("Top placement now", live ? '<span style="color:var(--good)">Live</span>' : "Not running", live ? "Until " + h(fullDay(live.endAt - DAY)) : ahead.length ? "Next from " + h(fullDay(ahead[0].startAt)) : "Book days below") +
+      kpiBox("Days booked ahead", String(daysAhead), daysAhead ? "including today" : "None yet") +
+      kpiBox("Price per day", inr(rs(d.dailyPricePaise)), (d.gstRateBps ? "+ " + pct(d.gstRateBps) + " GST · " : "") + d.slotsPerCity + " top places a day in " + h(d.city || "your city")) +
+      kpiBox("Spent, last 30 days", inr(rs(spent)), "Taken from your payouts") + "</div>";
+
+    const days = adRange(), problem = adProblem(), q = adQuote(d, A.days);
+    const line = (label, v, cls) => "<div" + (cls ? ' class="' + cls + '"' : "") + "><span>" + label + "</span><span>" + v + "</span></div>";
+    // No city, ads paused or no open days: say why instead of a booking form with no days in it.
+    const closed = d.notBookable || (d.availability.length ? "" : "No days are open for booking right now.");
+    const book = closed ? '<div class="card"><h2>Book top placement</h2><div class="notice warn small">' + h(closed) + '</div><p class="small muted" style="margin:8px 0 0">Your bookings and invoices stay below.</p></div>' :
+      '<div class="card"><h2>Book top placement</h2>' +
+      '<div class="ad-form"><div class="field"><label for="ad-start">Start</label><input class="input" id="ad-start" type="date" data-input="ad-start" min="' + h(d.today) + '" max="' + h(d.availability[d.availability.length - 1].day) + '" value="' + h(A.start) + '"></div>' +
+      '<div class="field"><label>Days</label><div class="tabs">' + AD_DAYS.filter((n) => n <= d.maxDays).map((n) => '<button class="tab' + (A.days === n ? " on" : "") + '" data-act="ad-days" data-id="' + n + '">' + n + (n === 1 ? " day" : " days") + "</button>").join("") + "</div></div></div>" +
+      '<div class="ad-days" aria-label="Top places left each day">' + days.map((x) => { const full = x.left <= 0 && !x.mine, k = x.mine ? "mine" : full ? "full" : x.left === 1 ? "few" : "ok";
+        return '<div class="ad-day ' + k + '"><span>' + h(weekday(x.day)) + "</span><strong>" + h(dayLabel(istDay(x.day))) + "</strong><small>" + (x.mine ? "Booked" : full ? "Full" : x.left + " left") + "</small></div>"; }).join("") + "</div>" +
+      (problem ? '<div class="notice warn small">' + h(problem) + "</div>" : "") +
+      '<div class="bill">' + line(inr(rs(d.dailyPricePaise)) + " × " + A.days + (A.days === 1 ? " day" : " days"), inr(rs(q.price))) +
+      (q.gst ? line("GST " + pct(d.gstRateBps) + " (SAC " + h(d.sac) + ")", inr(rs(q.gst))) : "") + line("Total, taken from your payout", inr(rs(q.total)), "tot") + "</div>" +
+      (d.gstRateBps ? "" : '<p class="small muted" style="margin:8px 0 0">No GST is charged yet: Scraveit will add GST and send you a tax invoice once its GST registration is live.</p>') +
+      '<div class="row" style="margin-top:12px"><button class="btn primary" data-act="ad-book"' + (problem || !d.canBook ? " disabled" : "") + ">Book " + A.days + (A.days === 1 ? " day" : " days") + " for " + inr(rs(q.total)) + "</button>" +
+      (d.canBook ? '<span class="small muted">Cancel any time before it starts for a full refund.</span>' : '<span class="small muted">Only the outlet owner can book.</span>') + "</div></div>";
+
+    const cover = (Array.isArray(o.coverPhotos) && o.coverPhotos[0] && (o.coverPhotos[0].url || o.coverPhotos[0])) || o.imageUrl || o.image || "";
+    const how = '<div class="card"><h2>How it works</h2><div class="ad-preview"><div class="ad-preview-img"' + (cover ? ' style="background-image:url(\'' + h(String(cover).replace(/'/g, "%27")) + '\')"' : "") + '><span class="ad-tag">Ad</span></div>' +
+      '<div><strong>' + h(o.name) + '</strong><div class="small muted">First under “All restaurants” in ' + h(d.city || "your city") + "</div></div></div>" +
+      '<ul class="steps"><li>On each day you book (midnight to midnight), customers in ' + h(d.city || "your city") + " see you at the top of the list, marked “Ad”.</li>" +
+      "<li>Only " + d.slotsPerCity + " outlets can be on top in " + h(d.city || "a city") + " on one day, so it stays worth it. First to book gets the place.</li>" +
+      "<li>Customers still see you only while you're open and deliver to their address. If they sort by rating, distance or delivery fee, their choice comes first.</li>" +
+      "<li>The amount comes off your next weekly payout and shows in Finance → Payouts.</li></ul></div>";
+
+    const byBooking = (d.results && d.results.byBooking) || {};
+    const rows = d.bookings.map((b) => { const st = AD_STATUS[b.status] || AD_STATUS.ended, res = byBooking[b.bookingId];
+      const result = res && (b.status === "live" || b.status === "ended") ? '<div class="small muted">' + Math.round(res.impressions).toLocaleString("en-IN") + " seen · " + res.orders + (res.orders === 1 ? " order" : " orders") + " · " + inr(res.earned) + " earned</div>" : "";
+      return "<tr><td class=\"nowrap\">" + h(fullDay(b.startAt)) + (b.days > 1 ? " – " + h(fullDay(b.endAt - DAY)) : "") + '<div class="small muted">Booked ' + h(fullDay(b.createdAt)) + "</div>" + result + '</td><td class="num">' + b.days +
+        '</td><td class="num"><strong>' + inr(rs(b.totalPaise)) + "</strong>" + (b.gstPaise ? '<div class="small muted">incl. GST ' + inr(rs(b.gstPaise)) + "</div>" : "") + "</td><td>" +
+        (b.invoiceNo ? '<button class="btn small" data-act="ad-inv" data-id="' + h(b.bookingId) + '">' + h(b.invoiceNo) + "</button>" : '<span class="muted">—</span>') + (b.creditNoteNo ? '<div class="small muted">Credit note ' + h(b.creditNoteNo) + "</div>" : "") +
+        '</td><td><span class="pill ' + st[0] + '">' + st[1] + "</span>" + (b.status === "cancelled" ? '<div class="small muted">Refunded to payout</div>' : "") + "</td><td>" +
+        (b.status === "upcoming" && d.canBook ? '<button class="btn small danger" data-act="ad-cancel" data-id="' + h(b.bookingId) + '"' + (A.busy ? " disabled" : "") + ">Cancel</button>" : "") + "</td></tr>"; }).join("");
+    const list = '<div class="card" style="padding:0;overflow:auto"><div class="pad"><h2 style="margin:0">Your bookings</h2></div><table class="table"><thead><tr><th>Dates</th><th class="num">Days</th><th class="num">Amount</th><th>Invoice</th><th>Status</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6" class="empty"><strong>No bookings yet</strong>Your top placement bookings show here.</td></tr>') + "</tbody></table></div>";
+    return kpis + adResultsCard(d) + '<div class="split fin">' + book + how + "</div>" + list;
+  }
+  // What the ads did. Counted by the server: a view is a customer seeing the Ad card for at least
+  // a second; an order counts when that customer tapped the Ad card and ordered here within 24
+  // hours; earned is the food value of those orders once delivered. Spent is the price of the
+  // days that have run, before GST.
+  function adResultsCard(d) {
+    const R = d.results, t = R && R.total;
+    if (!t) return "";
+    const ran = d.bookings.some((b) => b.status === "live" || b.status === "ended");
+    if (!ran) return '<div class="card"><h2>What your ads did</h2><p class="muted" style="margin:0">Results show here from the first day your top placement runs: how many customers saw it, tapped it and ordered.</p></div>';
+    const n = (v) => Math.round(Number(v || 0)).toLocaleString("en-IN");
+    const roas = t.spent > 0 ? t.earned / t.spent : 0;
+    const head = '<div class="row between" style="align-items:flex-end;flex-wrap:wrap;gap:12px"><div><h2 style="margin:0 0 6px">What your ads did</h2>' +
+      '<div style="font-family:Manrope,sans-serif;font-size:26px;font-weight:800">Spent ' + inr(t.spent) + ' <span class="muted">→</span> Earned <span style="color:var(--good)">' + inr(t.earned) + "</span></div>" +
+      '<div class="small muted">' + (t.spent > 0 ? (roas >= 1 ? "Every ₹1 on ads brought " + inr(Math.round(roas * 100) / 100) + " in orders." : "So far " + inr(Math.round(roas * 100) / 100) + " in orders for every ₹1 on ads.") : "") +
+      (t.pendingOrders ? " " + t.pendingOrders + (t.pendingOrders === 1 ? " order is" : " orders are") + " still on the way and will add to this." : "") + "</div></div></div>";
+    const kpis = '<div class="kpis" style="margin-top:14px">' +
+      kpiBox("Customers reached", n(t.reach), "different people who saw your Ad") +
+      kpiBox("Times seen", n(t.impressions), t.avgViewSeconds ? "looked at for " + (Math.round(t.avgViewSeconds * 10) / 10) + " s on average" : "at least a second each") +
+      kpiBox("Taps", n(t.clicks), t.impressions ? (Math.round(t.ctr * 1000) / 10) + "% of views opened your menu" : "opened your menu") +
+      kpiBox("Orders from ads", n(t.orders), (t.orders ? "worth " + inr(t.earned) : "delivered") + (t.cancelledOrders ? " · " + t.cancelledOrders + " cancelled" : "")) + "</div>";
+    const days = (R.daily || []).slice(-14), top = Math.max(1, ...days.map((x) => x.impressions || 0));
+    const rows = days.slice().reverse().map((x) => "<tr><td class=\"nowrap\">" + h(dayLabel(istDay(x.day))) + " <span class=\"small muted\">" + h(weekday(x.day)) + "</span></td>" +
+      '<td style="min-width:140px"><div style="display:flex;align-items:center;gap:8px"><div style="height:8px;border-radius:4px;background:var(--brand);width:' + Math.max(2, Math.round((x.impressions || 0) / top * 100)) + 'px"></div><span class="num">' + n(x.impressions) + "</span></div></td>" +
+      '<td class="num">' + n(x.reach) + '</td><td class="num">' + n(x.clicks) + '</td><td class="num">' + n(x.orders) + '</td><td class="num">' + inr(x.earned) + "</td></tr>").join("");
+    const table = days.length ? '<div style="overflow:auto;margin-top:14px"><table class="table"><thead><tr><th>Day</th><th>Seen</th><th class="num">People</th><th class="num">Taps</th><th class="num">Orders</th><th class="num">Earned</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "";
+    return '<div class="card">' + head + kpis + table +
+      '<p class="small muted" style="margin:10px 0 0">An order counts when the customer tapped your Ad and ordered from you within 24 hours. Earned is the food value of those orders once delivered. Spent is the price of the days that have run, before GST.</p></div>';
+  }
+  function adConfirmModal() {
+    const A = state.ads, d = A.data, q = adQuote(d, A.days), days = adRange(); if (adProblem() || !d.canBook) return;
+    A.requestId = "web" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    const line = (label, v, cls) => "<div" + (cls ? ' class="' + cls + '"' : "") + "><span>" + label + "</span><span>" + v + "</span></div>";
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal" role="dialog" aria-modal="true" aria-label="Confirm booking"><header><h2>Confirm top placement</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' +
+      "<p style=\"margin:0\"><strong>" + h(outlet().doc.name) + "</strong> at the top in " + h(d.city) + " from <strong>" + h(fullDay(istDay(days[0].day))) + "</strong> to <strong>" + h(fullDay(istDay(days[days.length - 1].day))) + "</strong>.</p>" +
+      '<div class="bill">' + line("Price", inr(rs(q.price))) + (q.gst ? line("GST " + pct(d.gstRateBps), inr(rs(q.gst))) : "") + line("Total", inr(rs(q.total)), "tot") + "</div>" +
+      '<p class="small muted" style="margin:0">' + inr(rs(q.total)) + " is taken from your next weekly payout. You can cancel for a full refund until " + h(fullDay(istDay(days[0].day))) + " starts.</p>" +
+      '<div class="row"><button class="btn grow" data-act="close-modal">Not now</button><button class="btn primary grow" data-act="ad-confirm"' + (A.busy ? " disabled" : "") + ">Confirm booking</button></div></div></div>";
+  }
+  async function bookAd() {
+    const A = state.ads, d = A.data, q = adQuote(d, A.days); if (A.busy) return;
+    A.busy = true; adConfirmModal();
+    try {
+      const b = await call("bookSponsoredListing", {restaurantId: state.rid, startDay: A.start, days: A.days, expectedTotalPaise: q.total, requestId: A.requestId});
+      closeModal(); toast("Booked. You're on top in " + d.city + " from " + fullDay(b.startAt) + "."); state.fin.loaded = false;
+      A.busy = false; A.start = ""; await loadAds();
+    } catch (e) { A.busy = false; closeModal(); toast(friendly(e), true); loadAds(); }
+  }
+  async function cancelAd(id) {
+    const A = state.ads, b = A.data && A.data.bookings.find((x) => x.bookingId === id); if (!b || A.busy) return;
+    if (!confirm("Cancel top placement from " + fullDay(b.startAt) + "? " + inr(rs(b.totalPaise)) + " goes back to your next payout.")) return;
+    A.busy = true; render();
+    try { await call("cancelSponsoredListing", {restaurantId: state.rid, bookingId: id}); toast("Cancelled. " + inr(rs(b.totalPaise)) + " goes back to your payout."); state.fin.loaded = false; }
+    catch (e) { toast(friendly(e), true); }
+    A.busy = false; loadAds();
+  }
+  // The advertising tax invoice, with the particulars CGST rule 46 asks for.
+  function adInvoiceHtml(b) {
+    const d = state.ads.data, I = d.issuer, P = state.ads.profile || {}, out = outlet().doc, igst = b.igstPaise > 0, half = pct(1800 / 2), missing = [!I.gstin && "GSTIN", !I.address && "registered address"].filter(Boolean);
+    return '<div class="inv">' + (missing.length ? '<div class="notice warn small">Not a complete tax invoice yet: Scraveit still has to add its ' + h(missing.join(", ")) + ". The number and amounts are final.</div>" : "") +
+      '<div class="row between"><div><div class="inv-title">' + (missing.length ? "Invoice details" : "Tax invoice") + '</div><div class="small muted">Original for recipient</div></div><div class="num"><strong class="utr">' + h(b.invoiceNo) + '</strong><div class="small">Date ' + h(fullDay(b.createdAt)) + "</div></div></div>" +
+      '<div class="inv-parties"><div><div class="small muted">Supplier</div><strong>' + h(I.legalName) + "</strong><div>" + h(I.address || "—") + "</div><div>GSTIN " + h(I.gstin || "—") + "</div><div>State " + h(stateName(I.stateCode)) + "</div></div>" +
+      '<div><div class="small muted">Recipient</div><strong>' + h(P.legalBusinessName || out.name) + "</strong>" + (P.legalBusinessName && P.legalBusinessName !== out.name ? "<div>Trading as " + h(out.name) + "</div>" : "") +
+      "<div>" + h([out.address, out.area, out.city].filter(Boolean).join(", ")) + "</div><div>GSTIN " + h(b.recipientGstin || "Unregistered") + "</div><div>Place of supply " + h(stateName(b.recipientStateCode)) + "</div></div></div>" +
+      '<table class="table"><thead><tr><th>Description</th><th>SAC</th><th class="num">Taxable value</th>' + (igst ? '<th class="num">IGST 18%</th>' : '<th class="num">CGST ' + half + '</th><th class="num">SGST ' + half + "</th>") + '<th class="num">Total</th></tr></thead><tbody>' +
+      "<tr><td>Top placement (advertising) in the Scraveit app, " + h(d.city) + ", " + h(fullDay(b.startAt)) + " to " + h(fullDay(b.endAt - DAY)) + " (" + b.days + (b.days === 1 ? " day" : " days") + ")</td><td>" + h(d.sac) + '</td><td class="num">' + inr(rs(b.pricePaise)) + "</td>" +
+      (igst ? '<td class="num">' + inr(rs(b.igstPaise)) + "</td>" : '<td class="num">' + inr(rs(b.cgstPaise)) + '</td><td class="num">' + inr(rs(b.sgstPaise)) + "</td>") + '<td class="num"><strong>' + inr(rs(b.totalPaise)) + "</strong></td></tr></tbody></table>" +
+      '<p class="small">Tax payable on reverse charge: No. Recovered from your weekly payout.' + (b.creditNoteNo ? " Cancelled before it started: credit note " + h(b.creditNoteNo) + " for the full amount." : "") + "</p>" +
+      '<p class="small" style="text-align:right">For ' + h(I.legalName) + "<br>Authorised signatory</p></div>";
+  }
+  function adInvoiceModal(id) {
+    const b = state.ads.data && state.ads.data.bookings.find((x) => x.bookingId === id); if (!b || !b.invoiceNo) return;
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide" role="dialog" aria-modal="true" aria-label="Invoice"><header><h2>Ads invoice</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' + adInvoiceHtml(b) +
+      '<div class="row"><button class="btn primary" data-act="ad-inv-print" data-id="' + h(id) + '">Print or save as PDF</button></div></div></div>';
+  }
+
+  // ---------- insights ----------
+  // Worked out every night by Scraveit from the last 30 days of this outlet's orders, ratings and
+  // menu (restaurantInsights/{rid}): what to fix first, what to keep an eye on, what is going well.
+  const INSIGHT_KIND = {act: ["wait", "Do this"], watch: ["cod", "Keep an eye"], good: ["paid", "Going well"]};
+  async function loadInsights() {
+    const I = state.insights, rid = state.rid; I.loading = true; I.error = ""; I.rid = rid;
+    try { const snap = await db.collection("restaurantInsights").doc(rid).get(); if (state.rid === rid) I.doc = snap.exists ? snap.data() : null; }
+    catch (e) { I.error = friendly(e); I.doc = null; }
+    I.loading = false; if (state.page === "insights") render();
+  }
+  function pageInsights() {
+    const I = state.insights;
+    if (I.rid !== state.rid && !I.loading) { I.doc = null; setTimeout(loadInsights, 0); return '<div class="spinner"></div>'; }
+    if (I.loading) return '<div class="spinner"></div>';
+    if (I.error) return '<div class="notice warn">Insights didn\'t load: ' + h(I.error) + '</div><button class="btn" data-act="insights-reload">Try again</button>';
+    const doc = I.doc;
+    if (!doc) return '<div class="card empty"><strong>Your first insights are on the way</strong>Scraveit looks at your orders, ratings and menu every night and tells you what to fix first. Check back tomorrow.</div>';
+    const st = doc.stats || {}, list = Array.isArray(doc.insights) ? doc.insights : [];
+    const order = {act: 0, watch: 1, good: 2}, sorted = list.slice().sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
+    const pctOf = (v) => v == null ? "—" : Math.round(v * 100) + "%";
+    const kpis = '<div class="kpis">' +
+      kpiBox("Orders, 30 days", String(st.orders || 0), (st.delivered || 0) + " delivered") +
+      kpiBox("Rating", st.ratingAvg ? "★ " + (Math.round(st.ratingAvg * 10) / 10) : "—", st.ratingCount ? st.ratingCount + " ratings" : "No ratings yet") +
+      kpiBox("Real cooking time", st.prepMedian ? Math.round(st.prepMedian) + " min" : "—", st.prepStated ? "you say " + Math.round(st.prepStated) + " min" : "typical order") +
+      kpiBox("Late orders", pctOf(st.lateShare), "arrived after the promised time") +
+      kpiBox("Customers who came back", pctOf(st.repeatShare), "ordered more than once") +
+      kpiBox("Time to accept", st.acceptSecondsMedian ? Math.round(st.acceptSecondsMedian) + " s" : "—", "typical order") + "</div>";
+    const cards = sorted.map((x) => { const k = INSIGHT_KIND[x.severity] || INSIGHT_KIND.watch;
+      return '<div class="card" style="display:grid;gap:6px"><div class="row between" style="gap:10px"><strong style="font-size:15.5px">' + h(x.title) + '</strong><span class="pill ' + k[0] + '">' + k[1] + "</span></div>" +
+        (x.detail ? '<div class="muted">' + h(x.detail) + "</div>" : "") + (x.action ? '<div><strong>What to do:</strong> ' + h(x.action) + "</div>" : "") + "</div>"; }).join("");
+    const act = list.filter((x) => x.severity === "act").length;
+    return '<div class="notice info" style="margin-bottom:14px">' + (act ? act + (act === 1 ? " thing needs" : " things need") + " your attention." : "Nothing urgent. Keep it up.") +
+      " Updated " + h(fullDay(Number(doc.generatedAt) || Date.now())) + " from the last 30 days.</div>" + kpis + '<div style="display:grid;gap:12px;margin-top:16px">' + (cards || '<div class="card empty"><strong>No suggestions right now</strong>Everything looks steady.</div>') + "</div>";
+  }
+
+  // ---------- outlet ----------
+  function pageOutlet() {
+    const o = outlet(); if (!o) return "";
+    const r = o.doc, open = r.open !== false, cuisines = Array.isArray(r.cuisines) ? r.cuisines.join(", ") : (r.cuisine || r.cuisines || "");
+    const cover = (Array.isArray(r.coverPhotos) && r.coverPhotos[0] && (r.coverPhotos[0].url || r.coverPhotos[0])) || r.imageUrl || r.image || "";
+    const rows = [["Address", [r.address, r.area, r.city].filter(Boolean).join(", ")], ["Phone", r.phone || r.contactPhone], ["Cuisines", cuisines], ["FSSAI", r.fssaiNumber], ["Rating", r.rating ? Number(r.rating).toFixed(1) + " ★ (" + Number(r.ratingCount || 0) + " ratings)" : "New"], ["Outlet ID", o.id], ["Your role", ROLE_NAME[o.member.role] || "Staff"],
+      ["You can use", isManager() ? "" : FEATURES.filter((f) => can(f[0])).map((f) => f[1]).join(", ") || "Outlet info only"]];
+    return '<div class="card" style="padding:0;overflow:hidden">' + (cover ? '<img src="' + h(cover) + '" alt="" style="width:100%;height:200px;object-fit:cover;display:block">' : "") +
+      '<div style="padding:16px"><div class="row between"><div><h2 style="font-size:22px;margin:0">' + h(r.name) + '</h2><div class="muted">' + h(cuisines) + "</div></div>" +
+      '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Accepting orders" : "Not accepting orders") + "</button></div>" +
+      '<table class="table" style="margin-top:12px"><tbody>' + rows.filter((x) => x[1]).map((x) => '<tr><td class="muted" style="width:160px">' + h(x[0]) + "</td><td>" + h(x[1]) + "</td></tr>").join("") + "</tbody></table>" +
+      '<p class="small muted">To change your address, timings, photos or bank details, use the Scraveit Restaurant app or write to <a href="mailto:balaji@scraveit.in">balaji@scraveit.in</a>.</p></div></div>';
+  }
+  async function toggleOpen() {
+    const o = outlet(); if (!o || !can("availability")) return;
+    const next = o.doc.open === false;
+    if (!next && !confirm("Stop taking new orders at " + o.doc.name + "? Orders already placed still need to be prepared.")) return;
+    try {
+      await db.collection("restaurants").doc(o.id).update({open: next, offlineUntil: null, offlineReason: next ? "" : "Paused from the partner dashboard", updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid});
+      o.doc.open = next; toast(next ? "You're accepting orders." : "Outlet is offline."); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
+
+  // ---------- staff ----------
+  // The owner adds people here and ticks what each one may use. The server
+  // (restaurantStaff.ts) makes a staff ID and password for them and the
+  // membership that Firestore rules and the order/finance functions read.
+  const STAFF_DOMAIN = "staff.scraveit.in";
+  const FEATURES = [
+    ["orders", "Take orders", "See new orders, accept or reject them, mark them ready"],
+    ["handover", "Hand over to rider", "Confirm the rider picked up the order"],
+    ["availability", "Stock & open/close", "Mark dishes sold out, take the outlet offline"],
+    ["menu", "Edit menu & prices", "Add dishes, change prices and photos"],
+    ["offers", "Offers & ads", "Create offers, see ad results"],
+    ["analytics", "Sales reports", "Order history, reports and insights"],
+    ["finance", "Payouts & invoices", "Payout statements, UTRs and tax invoices. Can't change bank details"],
+    ["profile", "Outlet details", "Change address, timings and photos"],
+  ];
+  const PRESETS = [["Kitchen", ["orders", "availability"]], ["Counter", ["orders", "handover", "availability"]], ["Accountant", ["finance", "analytics"]]];
+  const ROLE_NAME = {restaurant_owner: "Owner", restaurant_manager: "Manager", restaurant_staff: "Staff"};
+  const isOwner = () => { const m = outlet() && outlet().member; return !!(m && m.active === true && m.role === "restaurant_owner"); };
+  const staffIdOf = (email) => { const m = /^([a-z0-9]+)@staff\.scraveit\.in$/i.exec(String(email || "")); return m ? m[1] : ""; };
+  function pageAllowed(p) {
+    if (p === "outlet") return true;
+    if (p === "staff") return isOwner();
+    if (p === "orders") return can("orders") || can("handover");
+    if (p === "history") return can("orders") || can("analytics");
+    if (p === "reports" || p === "insights") return can("analytics");
+    if (p === "finance") return can("finance");
+    if (p === "menu") return can("menu") || can("availability");
+    if (p === "offers") return can("offers");
+    if (p === "ads") return can("offers") || can("finance");
+    return false;
+  }
+  // Easy to read out and type on a billing machine: no 0/o or 1/l.
+  function newPassword() {
+    const A = "abcdefghjkmnpqrstuvwxyz23456789", b = new Uint32Array(8); crypto.getRandomValues(b);
+    const c = Array.from(b, (n) => A[n % A.length]).join(""); return c.slice(0, 4) + "-" + c.slice(4);
+  }
+  const seen = (t) => (new Date(t).toDateString() === new Date().toDateString() ? "Today" : fullDay(t)) + ", " + clock(t);
+  async function loadStaff() {
+    const S = state.staff, rid = state.rid; if (S.loading) return;
+    S.loading = true; S.error = "";
+    try { const d = await call("listRestaurantStaff", {restaurantId: rid}); if (state.rid === rid) { S.data = d; S.rid = rid; } }
+    catch (e) { S.error = friendly(e); S.rid = rid; }
+    S.loading = false; if (state.page === "staff") render();
+  }
+  function pageStaff() {
+    const S = state.staff;
+    if (!WEB_CHECK) return '<div class="card empty"><strong>Adding staff from the website switches on with its security check</strong>Until then, add staff in the Scraveit Restaurant app: More → Staff.</div>';
+    if (S.rid !== state.rid && !S.loading) { S.data = null; setTimeout(loadStaff, 0); }
+    if (S.error && !S.data) return '<div class="notice warn">Staff didn\'t load: ' + h(S.error) + '</div><button class="btn" data-act="staff-reload">Try again</button>';
+    if (!S.data) return '<div class="spinner"></div>';
+    const list = S.data.staff, n = list.length;
+    const rows = list.map((p) => {
+      const fixed = p.role === "restaurant_owner" || p.uid === S.data.you;
+      const what = p.role === "restaurant_owner" ? "Everything" : p.role === "restaurant_manager" ? "Everything except staff and bank details" :
+        FEATURES.filter((f) => p.features.includes(f[0])).map((f) => '<span class="pill state">' + h(f[1]) + "</span>").join(" ");
+      return "<tr><td><strong>" + h(p.name) + "</strong>" + (p.uid === S.data.you ? ' <span class="pill">You</span>' : "") + (p.phone ? '<div class="small muted">' + h(p.phone) + "</div>" : "") + "</td>" +
+        "<td>" + h(ROLE_NAME[p.role]) + '</td><td class="staff-can">' + what + "</td>" +
+        "<td>" + (p.loginId ? '<span class="small muted">Staff ID</span> <strong class="utr">' + h(p.loginId) + "</strong>" : h(p.email || "Own account")) + "</td>" +
+        '<td class="small">' + (p.lastSignInAt ? h(seen(p.lastSignInAt)) : '<span class="muted">Not yet</span>') + "</td>" +
+        '<td class="num nowrap">' + (fixed ? "" : '<button class="btn small" data-act="staff-edit" data-id="' + h(p.uid) + '">Change</button> ' +
+          (p.managed ? '<button class="btn small" data-act="staff-pass" data-id="' + h(p.uid) + '">New password</button> ' : "") +
+          '<button class="btn small danger" data-act="staff-remove" data-id="' + h(p.uid) + '"' + (S.busy ? " disabled" : "") + ">Remove</button>") + "</td></tr>";
+    }).join("");
+    return '<div class="card"><div class="row between"><div><h2 style="margin:0">Your team</h2><p class="small muted" style="margin:4px 0 0">' + n + (n === 1 ? " person signs" : " people sign") + " in to " + h(outlet().doc.name) + ". Each person sees only what you allow.</p></div>" +
+      '<button class="btn primary" data-act="staff-add">Add staff</button></div>' +
+      '<div style="overflow-x:auto"><table class="table" style="margin-top:12px"><thead><tr><th>Name</th><th>Role</th><th>Can use</th><th>Signs in with</th><th>Last used</th><th></th></tr></thead><tbody>' + rows + "</tbody></table></div></div>" +
+      '<div class="card"><h2>How staff sign in</h2><ol class="small" style="margin:0;padding-left:18px;line-height:1.7">' +
+      "<li>On the billing computer or tablet, open <strong>www.scraveit.in/partner</strong> in Chrome. On an Android phone or tablet they can also use the Scraveit Restaurant app.</li>" +
+      "<li>They type the <strong>staff ID</strong> and <strong>password</strong> you gave them.</li>" +
+      "<li>They see only the pages you ticked. A change shows the next time they open or refresh the page; Remove ends their access at once.</li></ol></div>";
+  }
+  const roleOption = (v, title, note, cur) => '<label class="feature"><input type="radio" name="role" value="' + v + '" data-input="staff-role"' + (cur === v ? " checked" : "") + "><span><strong>" + title + "</strong><small>" + note + "</small></span></label>";
+  function staffModal(uid) {
+    const S = state.staff, p = uid ? S.data && S.data.staff.find((x) => x.uid === uid) : null; if (uid && !p) return;
+    const role = p ? p.role : "restaurant_staff", features = p ? p.features : PRESETS[1][1];
+    const req = "web" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="staff-form" data-id="' + h(uid) + '" data-req="' + req + '" role="dialog" aria-modal="true" aria-label="' + (p ? "Change access" : "Add staff") + '">' +
+      "<header><h2>" + (p ? "Change " + h(p.name) + "'s access" : "Add staff") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="ad-form"><div class="field grow"><label for="st-name">Name</label><input class="input" id="st-name" name="name" required minlength="2" maxlength="60" value="' + h(p ? p.name : "") + '"></div>' +
+      '<div class="field"><label for="st-phone">Mobile (optional)</label><input class="input" id="st-phone" name="phone" inputmode="tel" maxlength="13" value="' + h(p ? p.phone : "") + '"></div></div>' +
+      '<div class="field"><label>Role</label><div class="feature-list two">' + roleOption("restaurant_staff", "Staff", "Only what you tick below", role) +
+        roleOption("restaurant_manager", "Manager", "Everything except staff and bank details", role) + "</div></div>" +
+      '<div class="field" id="st-features"' + (role === "restaurant_manager" ? " hidden" : "") + '><label>Can use</label>' +
+        '<div class="row small" style="gap:6px;margin-bottom:8px"><span class="muted">Quick pick:</span>' + PRESETS.map((x, i) => '<button class="btn small" type="button" data-act="staff-preset" data-id="' + i + '">' + x[0] + "</button>").join("") + "</div>" +
+        '<div class="feature-list">' + FEATURES.map((f) => '<label class="feature"><input type="checkbox" name="f" value="' + f[0] + '"' + (features.includes(f[0]) ? " checked" : "") + "><span><strong>" + h(f[1]) + "</strong><small>" + h(f[2]) + "</small></span></label>").join("") + "</div></div>" +
+      (p ? "" : passField("Password", "You'll see it again after saving, to give to them.")) +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">' + (p ? "Save" : "Add staff") + "</button></div></form></div>";
+    const first = document.getElementById("st-name"); if (first && !p) first.focus();
+  }
+  function passField(label, note) {
+    return '<div class="field"><label for="st-pass">' + label + '</label><div class="row"><input class="input grow utr" id="st-pass" name="password" required minlength="8" maxlength="64" autocomplete="off" spellcheck="false" value="' + newPassword() + '">' +
+      '<button class="btn" type="button" data-act="staff-newpass">Make another</button></div><p class="small muted" style="margin:4px 0 0">' + note + "</p></div>";
+  }
+  async function saveStaff(form) {
+    const S = state.staff; if (S.busy) return;
+    const uid = form.dataset.id, fd = new FormData(form), role = String(fd.get("role") || "restaurant_staff");
+    const name = String(fd.get("name") || "").trim(), phone = String(fd.get("phone") || "").replace(/[\s-]/g, ""), features = role === "restaurant_manager" ? [] : fd.getAll("f");
+    if (role !== "restaurant_manager" && !features.length) { toast("Tick at least one thing this person can use.", true); return; }
+    if (phone && !/^(\+91)?[6-9]\d{9}$/.test(phone)) { toast("Enter a 10-digit mobile number, or leave it empty.", true); return; }
+    const btn = form.querySelector('[type="submit"]'); S.busy = true; if (btn) btn.disabled = true;
+    try {
+      if (uid) {
+        await call("updateRestaurantStaff", {restaurantId: state.rid, uid, name, phone, role, features});
+        closeModal(); toast("Saved. " + name + " sees the change next time they open or refresh the page.");
+      } else {
+        const password = String(fd.get("password") || "");
+        const r = await call("createRestaurantStaff", {restaurantId: state.rid, name, phone, role, features, password, requestId: form.dataset.req});
+        loginCard(name, r.loginId, password, false);
+      }
+      S.busy = false; loadStaff();
+    } catch (e) { S.busy = false; if (btn) btn.disabled = false; toast(friendly(e), true); }
+  }
+  function passModal(uid) {
+    const p = state.staff.data && state.staff.data.staff.find((x) => x.uid === uid); if (!p || !p.managed) return;
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="staff-pass-form" data-id="' + h(uid) + '" role="dialog" aria-modal="true" aria-label="New password">' +
+      "<header><h2>New password for " + h(p.name) + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="small muted" style="margin:0">Their old password stops working and they\'re signed out on every device. Staff ID stays <strong class="utr">' + h(p.loginId) + "</strong>.</p>" +
+      passField("New password", "You'll see it again after saving, to give to them.") +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Set password</button></div></form></div>';
+  }
+  async function setStaffPassword(form) {
+    const S = state.staff, uid = form.dataset.id, p = S.data && S.data.staff.find((x) => x.uid === uid); if (!p || S.busy) return;
+    const password = String(new FormData(form).get("password") || ""), btn = form.querySelector('[type="submit"]');
+    S.busy = true; if (btn) btn.disabled = true;
+    try { await call("updateRestaurantStaff", {restaurantId: state.rid, uid, password}); loginCard(p.name, p.loginId, password, true); }
+    catch (e) { if (btn) btn.disabled = false; toast(friendly(e), true); }
+    S.busy = false;
+  }
+  // Shown once: Scraveit never keeps the password, so the owner passes it on now.
+  function loginCard(name, loginId, password, reset) {
+    state.staff.share = "Scraveit partner dashboard\nOpen: www.scraveit.in/partner\nStaff ID: " + loginId + "\nPassword: " + password;
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal" role="dialog" aria-modal="true" aria-label="Sign-in details"><header><h2>' + (reset ? "New password for " + h(name) : h(name) + " can sign in now") + '</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="login-card"><div><span>Open</span><strong>www.scraveit.in/partner</strong></div><div><span>Staff ID</span><strong class="utr">' + h(loginId) + '</strong></div><div><span>Password</span><strong class="utr">' + h(password) + "</strong></div></div>" +
+      '<p class="small muted" style="margin:0">Give these to ' + h(name) + ". This is the only time the password is shown" + (reset ? ". The old one has stopped working." : "; you can set a new one any time from Staff.") + "</p>" +
+      '<div class="row"><button class="btn grow" data-act="staff-copy">Copy</button>' + (navigator.share ? '<button class="btn grow" data-act="staff-share">Share</button>' : "") + '<button class="btn primary grow" data-act="close-modal">Done</button></div></div></div>';
+  }
+  async function removeStaff(uid) {
+    const S = state.staff, p = S.data && S.data.staff.find((x) => x.uid === uid); if (!p || S.busy) return;
+    if (!confirm("Remove " + p.name + "? They can't sign in to " + outlet().doc.name + " any more" + (p.managed ? " and staff ID " + p.loginId + " is switched off." : "."))) return;
+    S.busy = true; render();
+    try { await call("removeRestaurantStaff", {restaurantId: state.rid, uid}); toast(p.name + " was removed."); }
+    catch (e) { toast(friendly(e), true); }
+    S.busy = false; loadStaff();
+  }
+
+  // ---------- shell ----------
+  const PAGES = [["orders", "Live orders", "orders"], ["history", "Order history", "history"], ["reports", "Reports", "reports"], ["insights", "Insights", "insights"], ["finance", "Finance", "payouts"], ["menu", "Menu", "menu"], ["offers", "Offers", "offers"], ["ads", "Ads", "ads"], ["staff", "Staff", "staff"], ["outlet", "Outlet info", "outlet"]];
+  // A page that fails to draw shows what went wrong, not the last spinner forever.
+  function pageOrProblem(body) {
+    try { return body(); } catch (e) {
+      console.error(e);
+      return '<div class="notice warn">This page didn\'t open: ' + h((e && e.message) || "something went wrong.") + '</div><button class="btn" data-act="reload-site">Reload</button>';
+    }
+  }
+  function render() {
+    if (!state.user) return screenSignIn();
+    if (state.loadingOutlets) { app.innerHTML = '<div class="spinner" style="margin-top:20vh"></div>'; return; }
+    if (!state.rid) {
+      app.innerHTML = '<div class="signin"><div class="signin-card"><div class="wordmark">scraveit<span>*</span></div><h1 style="font-size:20px">No outlet on this account</h1><p>' + h(state.user.email || "") + ' isn\'t linked to a Scraveit outlet yet. Sign in with the account you use in the Scraveit Restaurant app, or ask your outlet owner to add you as staff.</p><button class="btn" data-act="signout">Sign out</button></div></div>';
+      return;
+    }
+    const o = outlet(), open = o.doc.open !== false, ids = Object.keys(state.outlets), newCount = liveIn("new").length;
+    // Staff land on the first page the owner gave them.
+    if (!pageAllowed(state.page)) state.page = PAGES.map((p) => p[0]).find(pageAllowed) || "outlet";
+    const body = {orders: pageOrders, history: pageHistory, reports: pageReports, insights: pageInsights, menu: pageMenu, offers: pageOffers, ads: pageAds, finance: pageFinance, staff: pageStaff, outlet: pageOutlet}[state.page] || pageOutlet;
+    const title = (PAGES.find((p) => p[0] === state.page) || PAGES[0])[1];
+    const scroll = window.scrollY;
+    app.innerHTML = '<div class="shell"><aside class="side"><div class="wordmark">scraveit<span>*</span><small>Partner dashboard</small></div>' +
+      PAGES.filter((p) => pageAllowed(p[0])).map((p) => '<button class="nav-item' + (state.page === p[0] ? " on" : "") + '" data-act="page" data-page="' + p[0] + '">' + svg(p[2]) + "<span>" + p[1] + "</span>" + (p[0] === "orders" ? '<span class="count"' + (newCount ? "" : " hidden") + ">" + newCount + "</span>" : "") + "</button>").join("") +
+      '<div class="spacer"></div><div class="who">' + h(staffIdOf(state.user.email) ? (o.member.name || "Staff") + " · " + staffIdOf(state.user.email) : state.user.email || "") + '</div><button class="nav-item" data-act="signout">' + svg("out") + "<span>Sign out</span></button></aside>" +
+      '<div class="main"><header class="topbar"><h1>' + h(title) + "</h1>" +
+      (ids.length > 1 ? '<select class="input outlet-select" data-input="outlet" aria-label="Outlet">' + ids.map((id) => '<option value="' + h(id) + '"' + (id === state.rid ? " selected" : "") + ">" + h(state.outlets[id].doc.name || id) + "</option>").join("") + "</select>" : '<strong>' + h(o.doc.name) + "</strong>") +
+      '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open" title="Accepting orders"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Online" : "Offline") + "</button></header>" +
+      '<main class="content">' + (WEB_CHECK ? "" : '<div class="notice warn">You can see everything here. Accepting and updating orders from the website switches on soon; until then, use the Scraveit Restaurant app for order actions.</div>') + pageOrProblem(body) + "</main></div></div>";
+    window.scrollTo(0, scroll);
+  }
+
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-act]"); if (!el) return;
+    const act = el.dataset.act, id = el.dataset.id;
+    if (act === "google") { auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch((err) => screenSignIn(friendly(err))); return; }
+    if (act === "signout") { if (state.liveUnsub) state.liveUnsub(); auth.signOut(); return; }
+    if (act === "page") { state.page = el.dataset.page; render(); window.scrollTo(0, 0); return; }
+    if (act === "order-tab") { state.orderTab = el.dataset.tab; render(); return; }
+    if (act === "sound") {
+      unlockAudio(); return;
+    }
+    if (act === "status") { setStatus(id, el.dataset.to); return; }
+    if (act === "reject") { rejectModal(id); return; }
+    if (act === "close-alert" || act === "close-modal") { closeModal(); return; }
+    if (act === "hist-range") { state.history.range = el.dataset.range; state.history.list = null; render(); return; }
+    if (act === "hist-sel") { state.history.sel = id; render(); return; }
+    if (act === "hist-csv") {
+      const rows = [["Order ID", "Outlet", "Placed", "Customer", "Status", "Items", "Menu value", "Customer paid", "Payment", "Your earnings"]].concat((state.history.list || []).map((o) => [orderId(o), (state.outlets[o.restaurantId] || {doc: {}}).doc.name || o.restaurantId, new Date(placedAt(o)).toLocaleString("en-IN"), firstName(o), o.status, (o.items || []).map((i) => i.quantity + " x " + i.name).join("; "), itemValue(o), customerPaid(o), o.paymentMethod === "cod" ? "Cash" : "Online", earnings(o) ?? ""]));
+      download("scraveit-orders-" + state.history.range + ".csv", csv(rows)); return;
+    }
+    if (act === "insights-reload") { state.insights.rid = ""; render(); return; }
+    if (act === "rep-range") { state.reports.range = el.dataset.range; state.reports.data = null; render(); return; }
+    if (act === "fin-tab") { state.fin.tab = el.dataset.tab; render(); return; }
+    if (act === "fin-week") { state.fin.week = id; render(); return; }
+    if (act === "fin-annex" || act === "fin-print") {
+      const w = weekRows().find((x) => String(x.start) === state.fin.week); if (!w) return;
+      if (act === "fin-print") printStatement(w); else download("scraveit-payout-" + isoDay(w.start) + ".csv", csv(annexureRows(w)));
+      return;
+    }
+    if (act === "fin-q") { state.fin.q = id; render(); return; }
+    if (act === "fin-month") { state.fin.month = id; state.fin.showAll = false; render(); return; }
+    if (act === "fin-show-all") { state.fin.showAll = !state.fin.showAll; render(); return; }
+    if (act === "fin-xlsx") { const m = monthList().find((x) => x.key === state.fin.month), M = m && state.fin.mon[m.key]; if (M && !M.loading) monthWorkbook(m, M).catch((e) => toast(friendly(e), true)); return; }
+    if (act === "fin-month-print") { printMonth(); return; }
+    if (act === "fin-orders") { const w = weekRows().find((x) => String(x.start) === state.fin.week), L = w && state.fin.wk[String(w.start)]; if (L && L.data) ledgerOrdersModal(w, L.data); return; }
+    if (act === "tds-claim") { claimModal(); return; }
+    if (act === "fin-csv") { taxCsv(id); return; }
+    if (act === "fin-inv") { invoiceModal(id); return; }
+    if (act === "fin-inv-print") { const T = state.fin.tax[state.fin.q], o = T && (T.orders || []).find((x) => orderId(x) === id); if (o) printDoc("Invoice", invoiceHtml(o)); return; }
+    if (act === "copy-utr") { navigator.clipboard.writeText(id).then(() => toast("UTR copied."), () => toast(id)); return; }
+    if (act === "fin-utr-csv") { download("scraveit-payouts-utr.csv", csv([["Date", "Amount", "UTR", "Method", "Status", "Note"]].concat(payouts().map((p) => [isoDay(p.at), p.amount, p.utr, METHODS[p.method] || p.method, p.status === "paid" ? "Sent" : "Held", p.reason])))); return; }
+    if (act === "cat") { state.menu.cat = el.dataset.cat; render(); return; }
+    if (act === "arrange") { startArrange(); return; }
+    if (act === "arrange-cancel") { state.menu.arrange = null; render(); return; }
+    if (act === "arrange-save") { saveArrange(); return; }
+    if (act === "mv") { arrangeMove(el.dataset.kind, Number(el.dataset.i), el.dataset.to); return; }
+    if (act === "gst") { toggleGst(); return; }
+    if (act === "stock") { toggleStock(id); return; }
+    if (act === "edit-item") { editItemModal(id); return; }
+    if (act === "dp-mode") { if (dishPhoto) { dishPhoto.use = el.dataset.mode; showDishPhoto(); } return; }
+    if (act === "ai-desc") { aiDescription(false); return; }
+    if (act === "ai-rewrite") { aiDescription(true); return; }
+    if (act === "ai-undo") { const box = document.getElementById("idesc"); if (box && aiPrevious != null) { box.value = aiPrevious; aiPrevious = null; el.hidden = true; } return; }
+    if (act === "freebie-new" || act === "freebie-edit") { freebieModal(id || ""); return; }
+    if (act === "freebie-pause") { const on = freebies().find((x) => x.id === id); if (on) saveFreebies(freebies().map((x) => x.id === id ? Object.assign({}, x, {active: x.active === false}) : x), on.active === false ? "Offer is live again." : "Offer paused."); return; }
+    if (act === "freebie-delete") { const on = freebies().find((x) => x.id === id); if (on && confirm("Delete “" + on.title + "”? Customers stop seeing it.")) saveFreebies(freebies().filter((x) => x.id !== id), "Offer deleted."); return; }
+    if (act === "pairing-new" || act === "pairing-edit") { pairingModal(id || ""); return; }
+    if (act === "pairing-pause") { const on = pairings().find((x) => x.id === id); if (on) savePairings(pairings().map((x) => x.id === id ? Object.assign({}, x, {active: x.active === false}) : x), on.active === false ? "Pairing is live again." : "Pairing paused."); return; }
+    if (act === "pairing-delete") { const on = pairings().find((x) => x.id === id); if (on && confirm("Delete “" + on.title + "”? Customers stop seeing it. The dish stays on your menu.")) savePairings(pairings().filter((x) => x.id !== id), "Pairing deleted."); return; }
+    if (act === "discount-new") { discountModal(); return; }
+    if (act === "toggle-open") { toggleOpen(); return; }
+    if (act === "ad-days") { state.ads.days = Number(id); render(); return; }
+    if (act === "ad-book") { adConfirmModal(); return; }
+    if (act === "ad-confirm") { bookAd(); return; }
+    if (act === "ad-cancel") { cancelAd(id); return; }
+    if (act === "ad-reload") { state.ads.loaded = false; render(); return; }
+    if (act === "reload-site") { location.reload(); return; }
+    if (act === "ad-inv") { adInvoiceModal(id); return; }
+    if (act === "staff-reload") { state.staff.rid = ""; state.staff.error = ""; render(); return; }
+    if (act === "staff-add") { staffModal(""); return; }
+    if (act === "staff-edit") { staffModal(id); return; }
+    if (act === "staff-pass") { passModal(id); return; }
+    if (act === "staff-remove") { removeStaff(id); return; }
+    if (act === "staff-newpass") { const f = document.getElementById("st-pass"); if (f) f.value = newPassword(); return; }
+    if (act === "staff-preset") {
+      const pick = (PRESETS[Number(id)] || [0, []])[1];
+      document.querySelectorAll('#staff-form input[name="f"]').forEach((x) => { x.checked = pick.includes(x.value); }); return;
+    }
+    if (act === "staff-copy") { const t = state.staff.share; if (t && navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast("Copied. Paste it in a message to them."), () => toast("Couldn't copy. Write it down instead.", true)); return; }
+    if (act === "staff-share") { const t = state.staff.share; if (t && navigator.share) navigator.share({text: t}).catch(() => { /* closed */ }); return; }
+    if (act === "ad-inv-print") { const b = state.ads.data && state.ads.data.bookings.find((x) => x.bookingId === id); if (b) printDoc("Invoice " + b.invoiceNo, adInvoiceHtml(b)); return; }
+  });
+  document.addEventListener("change", (e) => {
+    const k = e.target.dataset && e.target.dataset.input; if (!k) return;
+    if (k === "outlet") selectOutlet(e.target.value);
+    if (k === "hist-status") { state.history.status = e.target.value; render(); }
+    if (k === "hist-all") { state.history.all = e.target.checked; state.history.list = null; render(); }
+    if (k === "rep-all") { state.reports.all = e.target.checked; state.reports.data = null; render(); }
+    if (k === "ad-start" && e.target.value) { state.ads.start = e.target.value; render(); }
+    if (k === "staff-role") { const box = document.getElementById("st-features"); if (box) box.hidden = e.target.value === "restaurant_manager"; }
+    if (k === "fb-trigger" || k === "fb-preview") freebiePreview();
+    if (k === "pr-preview") pairingPreview();
+    if (k === "dish-photo") { pickDishPhoto(e.target.files && e.target.files[0]); e.target.value = ""; }
+    if (k === "dc-kind") { const f = document.getElementById("discount-form"); if (f) f.dataset.kind = e.target.value; }
+  });
+  let typing = null;
+  document.addEventListener("input", (e) => {
+    const f = e.target.dataset && e.target.dataset.input;
+    if (f === "fb-preview") { freebiePreview(); return; }
+    if (f === "pr-preview") { pairingPreview(); return; }
+    if (f === "dish-search") { const q = e.target.value.trim().toLowerCase(), pick = e.target.nextElementSibling; if (!pick) return; pick.querySelectorAll(".dish-opt").forEach((x) => { x.hidden = !!q && !x.dataset.name.includes(q); }); pick.querySelectorAll(".dish-cat").forEach((c) => { c.hidden = !c.querySelector(".dish-opt:not([hidden])"); }); return; }
+    const k = e.target.dataset && e.target.dataset.input; if (k !== "hist-q" && k !== "menu-q" && k !== "utr-q") return;
+    clearTimeout(typing);
+    typing = setTimeout(() => { const v = e.target.value.trim(); if (k === "hist-q") state.history.q = v; else if (k === "utr-q") state.fin.utrQ = v; else state.menu.q = v; render(); const again = document.querySelector('[data-input="' + k + '"]'); if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); } }, 250);
+  });
+  // Elapsed times on live orders tick over once a minute.
+  setInterval(() => { if (state.user && state.page === "orders" && !modalRoot.innerHTML) render(); }, 60000);
+  setInterval(() => { if (state.user) tickKitchen(); }, 1000);
+
+  auth.onAuthStateChanged((user) => {
+    state.user = user; state.outlets = {}; state.rid = "";
+    if (user) loadOutlets(); else render();
+  });
+})();

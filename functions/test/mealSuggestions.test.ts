@@ -28,6 +28,9 @@ describe("what a meal-time suggestion says", () => {
     expect(mealSuggestionFor("lunch", home, [{...waffle, city: "nellore"}], 0)).toBeNull();
     expect(mealSuggestionFor("lunch", home, [dairy], 0)).toBeNull();
     expect(mealSuggestionFor("breakfast", home, [dairy], 0)?.title).toBe("🥛 Fresh milk for the morning?");
+    // A pharmacy is never a meal idea, even a favourite one.
+    const pharmacy = {id: "sai", name: "Sai Medicals", city: "naidupeta", kind: "pharmacy" as const};
+    expect(mealSuggestionFor("lunch", {...home, favourites: ["sai"]}, [pharmacy], 0)).toBeNull();
   });
 });
 

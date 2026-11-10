@@ -17,6 +17,8 @@ import {
   deriveLifecycle,
   deriveLifecycleFromCanonicalState,
 } from "./lifecycle";
+import {beforeFoodGstPaise, markedUpPrice, type MarkupCart} from "./markupPricing";
+import {freebieLines} from "./freebies";
 
 export const TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   "Order placed": ["Accepted", "Cancelled"],
@@ -39,9 +41,11 @@ const ROLE_TARGETS: Readonly<Record<ActorRole, readonly OrderStatus[]>> = {
   ops_admin: ["Accepted", "Preparing", "Ready for pickup", "Handed to rider", "Cancelled"],
   // Proximity states are backend-geofence only. A rider may confirm pickup and
   // complete delivery, but cannot self-report Near/Arrived through the public
-  // status callable.
-  rider: ["Assigned", "Out for delivery", "Delivered"],
-  system: ["Assigned", "Near you", "Arrived", "Cancelled"],
+  // status callable. "Handed to rider" only with the parcel photo (services/orders.ts).
+  rider: ["Assigned", "Handed to rider", "Out for delivery", "Delivered"],
+  // "Ready for pickup" only when the rider photographs the parcel before the
+  // kitchen tapped Order ready (services/orders.ts).
+  system: ["Assigned", "Ready for pickup", "Near you", "Arrived", "Cancelled"],
 };
 
 export function canTransition(from: OrderStatus, to: OrderStatus, role: ActorRole): boolean {
@@ -104,7 +108,21 @@ export function buildOrderTransitionCandidate(
   return {...candidate, ...lifecycle.patch};
 }
 
-export function deterministicOrderId(customerId: string, idempotencyKey: string): string {
+/**
+ * A 15-digit order number that never starts with 0 (Swiggy's format): staff
+ * and riders read it out and match its last 4 digits at pickup. 15 digits
+ * still fit exactly in a JavaScript number and in an Excel cell. The same
+ * customer and checkout key always give the same number, so a retried
+ * checkout finds its order; `attempt` picks the next number if another
+ * order already holds this one.
+ */
+export function deterministicOrderId(customerId: string, idempotencyKey: string, attempt = 0): string {
+  const hex = createHash("sha256").update(`${customerId}:${idempotencyKey}${attempt ? `:${attempt}` : ""}`).digest("hex");
+  return String(BigInt(`0x${hex.slice(0, 16)}`) % 900_000_000_000_000n + 100_000_000_000_000n);
+}
+
+/** The id orders had before 15-digit numbers ("SV-" and 18 hex characters). */
+export function legacyOrderId(customerId: string, idempotencyKey: string): string {
   return `SV-${createHash("sha256").update(`${customerId}:${idempotencyKey}`).digest("hex").slice(0, 18).toUpperCase()}`;
 }
 
@@ -149,10 +167,26 @@ function findChoice(all: CatalogChoice[], id: string | undefined, required: bool
   return found;
 }
 
+/**
+ * Prices a cart from the menu. With `markupBps` (a markup restaurant) or
+ * `gstInclusive` (see domain/markupPricing.ts) menu prices are the restaurant's
+ * GST-inclusive prices: under markup each part is raised to the customer's
+ * price, and the item is priced at that price's value before the 5% food GST,
+ * so the order's books stay GST-exclusive. `markup` then carries the totals the
+ * customer and the restaurant saw.
+ */
 export function priceCart(
   selections: CartSelection[],
   menuById: Record<string, CatalogItem>,
-): {items: PricedOrderItem[]; subtotal: number} {
+  options: {markupBps?: number | null; gstInclusive?: boolean; freebies?: unknown} = {},
+): {items: PricedOrderItem[]; subtotal: number; markup?: MarkupCart} {
+  const markupBps = options.markupBps ?? null;
+  const inclusive = markupBps === null && options.gstInclusive === true;
+  const bps = inclusive ? 0 : markupBps;
+  // A restaurant price -> the customer's price, GST included -> its value before GST.
+  const list = (price: number) => bps === null || inclusive ? price : markedUpPrice(price, bps);
+  const book = (price: number) => bps === null ? price : beforeFoodGstPaise(Math.round(list(price) * 100)) / 100;
+  let listSubtotal = 0, restaurantSubtotal = 0;
   const items = selections.map((selection) => {
     const item = menuById[selection.itemId];
     if (!item || item.archived === true || item.available === false) throw new Error("ITEM_UNAVAILABLE");
@@ -164,36 +198,50 @@ export function priceCart(
     if (new Set(selection.addOnIds ?? []).size !== (selection.addOnIds ?? []).length) {
       throw new Error("DUPLICATE_ADD_ON");
     }
-    const addOns = selectedAddOns.filter((value): value is CatalogChoice => value !== undefined)
-      .map((entry) => ({name: entry.name, price: choicePrice(entry)}));
-    const variantPrice = variant ? choicePrice(variant) : 0;
+    const chosenAddOns = selectedAddOns.filter((value): value is CatalogChoice => value !== undefined);
+    const addOns = chosenAddOns.map((entry) => ({name: entry.name, price: roundMoney(book(choicePrice(entry)))}));
+    const ownVariantPrice = variant ? choicePrice(variant) : 0;
+    const variantPrice = roundMoney(book(ownVariantPrice));
     // A pre-packed product is never sold above the MRP printed on it (Legal
     // Metrology (Packaged Commodities) Rules, 2011, rule 18). Delivery,
     // platform and maintenance fees are Scraveit's own charges, billed apart.
     const mrp = Number(item.compliance?.mrp);
-    if (Number.isFinite(mrp) && mrp > 0 && roundMoney(item.price + variantPrice) > roundMoney(mrp)) {
+    if (Number.isFinite(mrp) && mrp > 0 && roundMoney(list(item.price) + list(ownVariantPrice)) > roundMoney(mrp)) {
       throw new Error("PRICE_ABOVE_MRP");
     }
     const addOnTotal = roundMoney(addOns.reduce((sum, entry) => sum + entry.price, 0));
+    const markup = bps === null ? {} : (() => {
+      const own = [item.price, ownVariantPrice, ...chosenAddOns.map(choicePrice)];
+      const listPrice = own.reduce((sum, price) => sum + list(price), 0);
+      const restaurantPrice = roundMoney(own.reduce((sum, price) => sum + price, 0));
+      listSubtotal += listPrice * selection.quantity;
+      restaurantSubtotal += restaurantPrice * selection.quantity;
+      return {listPrice, restaurantPrice};
+    })();
 
     return {
       itemId: item.id,
       name: item.name,
       quantity: selection.quantity,
-      price: roundMoney(item.price),
+      price: roundMoney(book(item.price)),
       variant: variant?.name ?? "",
       variantPrice,
       addOns,
       addOnTotal,
       note: selection.note?.slice(0, 200) ?? "",
       diet: item.diet?.slice(0, 30) ?? "",
+      ...markup,
     };
   });
 
   const subtotal = roundMoney(items.reduce((sum, item) =>
     sum + (item.price + item.variantPrice + item.addOnTotal) * item.quantity, 0));
   if (subtotal <= 0) throw new Error("EMPTY_OR_FREE_ORDER");
-  return {items, subtotal};
+  // The restaurant's free items ride along at ₹0; the item total the customer saw decides "above ₹X".
+  items.push(...freebieLines(options.freebies, items, bps === null ? subtotal : roundMoney(listSubtotal)));
+  if (bps === null) return {items, subtotal};
+  return {items, subtotal, markup: {...(inclusive ? {model: "inclusive" as const} : {}), bps,
+    listSubtotal: roundMoney(listSubtotal), restaurantSubtotal: roundMoney(restaurantSubtotal)}};
 }
 
 export interface FeeInput {

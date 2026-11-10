@@ -9,6 +9,7 @@ import {
   buildRemoveRiderOfferMessage,
   buildRestaurantNewOrderMessage,
   buildRiderOfferMessage,
+  buildRiderWakeMessage,
   buildStopRestaurantAlarmMessage,
   type CustomerBroadcastPayload,
 } from "../domain/notificationMessages";
@@ -20,6 +21,8 @@ import type {
 import {deterministicOutboxEventId} from "../domain/outbox";
 import {isStaleDeviceToken} from "../domain/deviceTokens";
 import {deviceTokenOwnerRef} from "./deviceTokens";
+import {restaurantRef} from "../firestorePaths";
+import {storeTypeOf} from "../domain/restaurantOnboarding";
 import type {OrderStatus, SavrivoOrder} from "../types";
 import {
   enqueueNotification,
@@ -421,13 +424,19 @@ function statusCopy(order: SavrivoOrder): {title: string; body: string} {
 }
 
 export async function notifyRestaurantNewOrder(order: SavrivoOrder): Promise<void> {
+  // The Restaurant, Grocery, Dairy and Health care apps all register as "restaurant";
+  // the store type tells each app to ring only for its own kind of store.
+  const restaurant = await restaurantRef(firestoreDb, order.restaurantId).get().catch(() => null);
+  const storeType = storeTypeOf((restaurant?.exists ? restaurant.data() as {storeType?: unknown} | undefined : undefined)?.storeType);
+  const message = buildRestaurantNewOrderMessage(order);
+  message.data = {...message.data, storeType};
   const result = await enqueueAndAttempt({
     eventType: "RESTAURANT_NEW_ORDER",
     aggregateType: "order",
     aggregateId: order.id,
     deduplicationKey: `restaurant-new-order:${order.id}`,
     recipient: {kind: "restaurant", id: order.restaurantId, app: "restaurant"},
-    message: storedMessage(buildRestaurantNewOrderMessage(order)),
+    message: storedMessage(message),
   });
   logger.info("NEW_ORDER_PUSH_RESULT", {
     orderId: order.id,
@@ -502,6 +511,19 @@ export async function notifyRiderOffer(riderId: string, order: SavrivoOrder, exp
   logger.info("RIDER_OFFER_PUSH_RESULT", {orderId: order.id, riderId, outboxEventId: result.eventId, outcome: result.outcome});
 }
 
+export async function notifyRiderWake(riderId: string, now = Date.now()): Promise<void> {
+  const result = await enqueueAndAttempt({
+    eventType: "RIDER_WAKE_TRACKING",
+    aggregateType: "rider",
+    aggregateId: riderId,
+    // At most one wake per rider every 5 minutes, however many orders come in.
+    deduplicationKey: `rider-wake:${riderId}:${Math.floor(now / 300_000)}`,
+    recipient: {kind: "rider", id: riderId, app: "rider"},
+    message: storedMessage(buildRiderWakeMessage()),
+  });
+  logger.info("RIDER_WAKE_PUSH_RESULT", {riderId, outboxEventId: result.eventId, outcome: result.outcome});
+}
+
 export async function stopRiderOffers(riderIds: string[], orderId: string, assignedRiderId: string): Promise<void> {
   const unique = [...new Set(riderIds.filter(Boolean))];
   const results = await Promise.all(unique.map((riderId) => enqueueAndAttempt({
@@ -551,7 +573,10 @@ export async function notifyRiderRewardUpdate(input: {
         periodKey: input.periodKey ?? "",
         ...(input.data ?? {}),
       },
-      android: {priority: "high", notification: {channelId: "rider_rewards", sound: "default"}},
+      // The Rider app has no "rider_rewards" channel, so Android played these on its default
+      // channel, the delivery-offer alarm. "Order status" exists in every Rider build and uses
+      // the normal notification sound.
+      android: {priority: "high", notification: {channelId: "savrivo_order_status", sound: "default"}},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
     }),
   });

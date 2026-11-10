@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds drop resources they think are unused. SavrivoNotifications loads this by name. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/savrivo_notification" />

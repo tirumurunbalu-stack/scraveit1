@@ -140,18 +140,23 @@ describe("checkout economics plan", () => {
     expect(snapshot.restaurant.commissionPaise).toBe(2_800);
   });
 
-  it("never pays a rider less than the minimum trip pay, even on free delivery", () => {
-    const free = {...fees, deliveryFee: 0};
-    const checkout = plan({fees: free});
-    // Base ₹20 + 0.5 km expected pickup beyond the free km (₹2) = ₹22, lifted to the ₹25 minimum.
+  it("pays the rider exactly the delivery fee on the customer's bill (founder's rule, 10 Nov 2026)", () => {
+    const checkout = plan();
     expect(checkout.riderTripPayPaise).toBe(2_500);
-    expect(checkout.tripPay).toMatchObject({minimumTopUpPaise: 300, totalPaise: 2_500});
-    const {pricing, total} = buildPricing({subtotal: 350, discount: 0, deliveryFee: 0, platformFee: 7, taxRate: 0, tip: 0});
+    expect(checkout.tripPay).toBeNull();
+    expect(checkout.tripPayPolicy).toBeNull();
+    const {pricing, total} = priceWith(checkout);
     const snapshot = finalizeOrderEconomics(checkout, pricing, total, "r1", "cod", []);
-    expect(snapshot.platform.deliveryMarginPaise).toBe(-2_500);
+    expect(snapshot.rider.deliveryPayPaise).toBe(2_500);
+    expect(snapshot.rider.tripPay).toBeUndefined();
+    expect(snapshot.platform.deliveryMarginPaise).toBe(0);
     const amounts = orderDeliveryAmounts({total, pricing, economics: settlementTerms(snapshot)}, 1_500);
     expect(amounts.riderDeliveryEarningPaise).toBe(2_500);
-    expect(amounts.riderTripSubsidyPaise).toBe(2_500);
+    expect(amounts.riderTripSubsidyPaise ?? 0).toBe(0);
+    // The live fee (₹16) is the rider's pay, not the old ₹25 minimum.
+    expect(plan({fees: {...fees, deliveryFee: 16}}).riderTripPayPaise).toBe(1_600);
+    // Free delivery on the bill means no trip pay (freeDeliveryAbove is off today).
+    expect(plan({fees: {...fees, deliveryFee: 0}}).riderTripPayPaise).toBe(0);
   });
 });
 

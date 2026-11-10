@@ -31,9 +31,7 @@ const KITCHEN_FREE_CONCURRENCY = 3;
 const MINUTES_PER_BACKED_UP_ORDER = 1.5;
 const MAX_KITCHEN_LOAD_MINUTES = 20;
 
-/** When nobody is free to collect, the food waits on the counter. */
-const NO_RIDER_WAIT_MINUTES = 8;
-const SCARCE_RIDER_WAIT_MINUTES = 3;
+/** One or two free riders is "scarce": it lowers confidence but adds no minutes (see estimateDelivery). */
 const SCARCE_RIDER_THRESHOLD = 2;
 
 const PEAK_MINUTES = 4;
@@ -49,9 +47,9 @@ const PEAK_WINDOWS: ReadonlyArray<readonly [number, number]> = [
 const MIN_ETA_MINUTES = 10;
 const MAX_ETA_MINUTES = 120;
 
-/** The quoted window never collapses to a point and never becomes useless. */
+/** The quoted window never collapses to a point and stays as tight as Swiggy's "25-30 min". */
 const MIN_SPREAD_MINUTES = 5;
-const MAX_SPREAD_MINUTES = 20;
+const MAX_SPREAD_MINUTES = 10;
 
 export type EstimateConfidence = "high" | "medium" | "low";
 
@@ -66,6 +64,11 @@ export interface DeliveryEstimateInput {
    *  determined" - which must not be punished as if it were zero. */
   readonly availableRiders: number | null;
   readonly occurredAt: number;
+  /**
+   * Learned from this restaurant's and this city's real orders (services/learning), when those
+   * models beat these rules: a 20th-80th percentile prep window and the ride time. Null keeps the rules.
+   */
+  readonly learned?: {readonly prepLow: number; readonly prepHigh: number; readonly travelMinutes: number | null} | null;
 }
 
 export interface DeliveryEstimateBasis {
@@ -78,6 +81,12 @@ export interface DeliveryEstimateBasis {
   readonly distanceKm: number;
   readonly activeOrders: number;
   readonly availableRiders: number | null;
+  /** The restaurant's own prep window, kept even when a learned one is used (training compares against it). */
+  readonly statedPrepMinMinutes?: number;
+  readonly statedPrepMaxMinutes?: number;
+  /** Which numbers made this promise. */
+  readonly prepSource?: "learned" | "stated";
+  readonly travelSource?: "learned" | "rule";
 }
 
 export interface DeliveryEstimate {
@@ -119,13 +128,6 @@ function kitchenLoadMinutes(activeOrders: number): number {
   return Math.min(MAX_KITCHEN_LOAD_MINUTES, backedUp * MINUTES_PER_BACKED_UP_ORDER);
 }
 
-function riderWaitMinutes(availableRiders: number | null): number {
-  if (availableRiders === null) return 0;
-  if (availableRiders <= 0) return NO_RIDER_WAIT_MINUTES;
-  if (availableRiders <= SCARCE_RIDER_THRESHOLD) return SCARCE_RIDER_WAIT_MINUTES;
-  return 0;
-}
-
 /** Local wall-clock hour in IST. India has no DST, so a fixed offset is exact. */
 export function localHourOfDay(occurredAt: number): number {
   const shifted = new Date(occurredAt + IST_OFFSET_MINUTES * 60_000);
@@ -153,28 +155,35 @@ function roundUpToFive(value: number): number {
   return Math.ceil(value / 5) * 5;
 }
 
+/** Collecting the bag at the counter: part of the rule's handover overhead, not of a learned ride time. */
+const COUNTER_MINUTES = 2;
+
 export function estimateDelivery(input: DeliveryEstimateInput): DeliveryEstimate {
-  const prep = prepWindow(input.kitchenEtaMinMinutes, input.kitchenEtaMaxMinutes);
+  const stated = prepWindow(input.kitchenEtaMinMinutes, input.kitchenEtaMaxMinutes);
+  const learned = input.learned ?? null;
+  const learnedPrep = learned && Number.isFinite(learned.prepLow) && Number.isFinite(learned.prepHigh) && learned.prepHigh > 0;
+  const prep = learnedPrep ? prepWindow(learned.prepLow, learned.prepHigh) : stated;
+  const learnedTravel = learned && typeof learned.travelMinutes === "number" && Number.isFinite(learned.travelMinutes) && learned.travelMinutes > 0;
   const distanceKm = Math.max(0, finiteNumber(input.distanceKm, 0));
   const activeOrders = Math.max(0, Math.round(finiteNumber(input.activeOrders, 0)));
   const availableRiders = input.availableRiders === null
     ? null
     : Math.max(0, Math.round(finiteNumber(input.availableRiders, 0)));
 
-  const travel = travelMinutes(distanceKm);
+  const travel = learnedTravel ? (learned.travelMinutes as number) + COUNTER_MINUTES : travelMinutes(distanceKm);
   const load = kitchenLoadMinutes(activeOrders);
-  const wait = riderWaitMinutes(availableRiders);
+  // Free riders this second don't add minutes: the kitchen cooks meanwhile and
+  // riders keep coming online. Adding 8 minutes plus a 6-minute margin for
+  // "nobody free" quoted 50-70 min for a 3.5 km order (2026-11-05). The count
+  // still sets the confidence that is stored with the order.
+  const wait = 0;
   const peak = isPeakHour(input.occurredAt) ? PEAK_MINUTES : 0;
   const overheads = travel + load + wait + peak;
 
   const confidence = confidenceFor(availableRiders, activeOrders);
-  // A less certain quote earns a wider window rather than a falsely precise
-  // one: the honest answer to "we do not know if a rider is free" is a range,
-  // not a sharp number that will be wrong.
-  const uncertaintyPadding = confidence === "low" ? 6 : confidence === "medium" ? 3 : 0;
 
   let minMinutes = roundDownToFive(prep.min + overheads);
-  let maxMinutes = roundUpToFive(prep.max + overheads + uncertaintyPadding);
+  let maxMinutes = roundUpToFive(prep.max + overheads);
 
   minMinutes = bounded(minMinutes, MIN_ETA_MINUTES, MAX_ETA_MINUTES);
   maxMinutes = bounded(maxMinutes, MIN_ETA_MINUTES, MAX_ETA_MINUTES);
@@ -205,6 +214,10 @@ export function estimateDelivery(input: DeliveryEstimateInput): DeliveryEstimate
       distanceKm: Math.round(distanceKm * 100) / 100,
       activeOrders,
       availableRiders,
+      statedPrepMinMinutes: stated.min,
+      statedPrepMaxMinutes: stated.max,
+      prepSource: learnedPrep ? "learned" : "stated",
+      travelSource: learnedTravel ? "learned" : "rule",
     },
   };
 }

@@ -24,8 +24,8 @@ android {
         applicationId "com.feastly.app"
         minSdk 24
         targetSdk 36
-        versionCode 186
-        versionName "3.30.0"
+        versionCode 200
+        versionName "3.32.3"
         manifestPlaceholders = [SAVRIVO_MAPS_API_KEY: savrivoMapsApiKey]
         buildConfigField "boolean", "MAPS_CONFIGURED", savrivoMapsApiKey.isEmpty() ? "false" : "true"
     }
@@ -83,4 +83,8 @@ dependencies {
 
     // Cashfree Payments: UPI apps open directly and cards/netbanking stay inside the app.
     implementation "com.cashfree.pg:api:2.6.0"
+    // Shrinks a reel picked from the phone (720p H.264, first 60 seconds) before upload.
+    implementation "androidx.media3:media3-transformer:1.10.1"
+    implementation "androidx.media3:media3-effect:1.10.1"
+    implementation "androidx.media3:media3-common:1.10.1"
 }

@@ -21,8 +21,6 @@ export interface PrecipitationReading {
 
 export type RainTier = "none" | "light" | "moderate" | "heavy" | "severe";
 
-const TIER_RANK: Record<RainTier, number> = {none: 0, light: 1, moderate: 2, heavy: 3, severe: 4};
-
 /**
  * Google's currentConditions weatherCondition.type is a direct real-time
  * observation - the same signal the consumer Weather app's icon is built
@@ -109,14 +107,13 @@ export function normalizeCityKey(value: unknown): string {
 }
 
 /**
- * Combines two independent signals and charges for whichever is worse:
- *  - weatherCondition.type: what is observably happening right now.
- *  - precipitation.qpf.quantity: how much has fallen in the last hour,
- *    gated by the admin's minimum-probability threshold so a stray light
- *    forecast doesn't trigger a fee on its own.
- * Taking the max means a live thunderstorm charges immediately, even in its
- * first minute before an hour of accumulation exists, and heavy rain that
- * just stopped still charges while roads are wet and delivery is slower.
+ * The fee follows the weather Google reports right now:
+ *  - weatherCondition.type: light rain charges the light fee, moderate rain
+ *    the moderate fee, heavy rain the heavy fee, a thunderstorm the severe fee.
+ *    Clear, cloudy, windy or snow charges nothing.
+ *  - precipitation.qpf.quantity (rain over the last hour) is used only when
+ *    Google gives no condition we know, gated by the admin's minimum
+ *    probability. Last night's rain never raises today's fee.
  */
 export function resolveRainFee(
   reading: PrecipitationReading,
@@ -124,10 +121,11 @@ export function resolveRainFee(
   thresholds: RainTierThresholdsMm,
   fees: RainFeeSchedule,
 ): number {
-  const byCondition = conditionTier(reading.conditionType);
+  if (reading.conditionType !== undefined && reading.conditionType in CONDITION_TIER) {
+    return feeForTier(conditionTier(reading.conditionType), fees);
+  }
   const byAccumulation = reading.probabilityPercent >= minProbabilityPercent
     ? accumulationTier(reading.quantityMm, thresholds)
     : "none";
-  const tier = TIER_RANK[byCondition] >= TIER_RANK[byAccumulation] ? byCondition : byAccumulation;
-  return feeForTier(tier, fees);
+  return feeForTier(byAccumulation, fees);
 }

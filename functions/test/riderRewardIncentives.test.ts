@@ -1004,6 +1004,48 @@ describe("rider reward incentives engine", () => {
     expect(db.read(sessionDayPath("rider_1", "2026-08-26"))).toBeNull();
   });
 
+  it("stores a heartbeat once a minute and recomputes progress once every 5 minutes", async () => {
+    const db = new MemoryDatabase();
+    const offer = campaign({
+      campaignId: "daily-sessions",
+      window: "daily",
+      startAt: at("2026-08-26T00:00:00"),
+      endAt: at("2026-08-28T00:00:00"),
+      requireDailyLoginSession: true,
+      conditionGroups: [group("g1", "Login Group 1", 1, [slot("morning", "Morning", "08:00", "11:00")])],
+      milestones: [{target: 1, rewardAmountPaise: 5_000, label: "1 trip"}],
+    });
+    db.seed(campaignPath(offer.campaignId), offer);
+    db.seed(riderPath("rider_1"), riderProfile());
+    const storedEvents = () => db.paths().filter((path) => path.startsWith(activityEventPath("rider_1", ""))).length;
+    const heartbeat = (beforeAt: string, afterAt: string) => recordRiderRewardPresenceUpdate(
+      "rider_1",
+      {online: true, updatedAt: at(beforeAt)},
+      {online: true, updatedAt: at(afterAt), city: "Naidupeta"},
+      at(afterAt),
+      db,
+    );
+
+    await heartbeat("2026-08-26T08:00:10", "2026-08-26T08:00:25");
+    expect(storedEvents()).toBe(0);
+    expect(progressCampaignIdsForRider(db, "rider_1")).toEqual([]);
+
+    await heartbeat("2026-08-26T08:00:55", "2026-08-26T08:01:10");
+    expect(storedEvents()).toBe(1);
+    expect(progressCampaignIdsForRider(db, "rider_1")).toEqual([]);
+
+    await heartbeat("2026-08-26T08:04:55", "2026-08-26T08:05:10");
+    expect(storedEvents()).toBe(2);
+    expect(progressCampaignIdsForRider(db, "rider_1")).toEqual(["daily-sessions"]);
+  });
+
+  it("still records going online and offline at once, whatever the heartbeat timing", async () => {
+    const db = new MemoryDatabase();
+    await recordRiderRewardPresenceUpdate("rider_1", {online: true, updatedAt: at("2026-08-26T08:00:10")},
+      {online: false, updatedAt: at("2026-08-26T08:00:20")}, at("2026-08-26T08:00:20"), db);
+    expect(db.read(activityEventPath("rider_1", `presence:${at("2026-08-26T08:00:20")}:offline`))).not.toBeNull();
+  });
+
   it("stores a completed session day only after a slot is truly completed", async () => {
     const db = new MemoryDatabase();
     const offer = campaign({

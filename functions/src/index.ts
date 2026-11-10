@@ -11,6 +11,9 @@ import * as accountAge from "./services/accountAge";
 import * as parentPay from "./services/parentPay";
 import * as chatFun from "./services/chatFun";
 import * as posts from "./services/posts";
+import * as reels from "./services/reels";
+import * as clusterOrders from "./services/clusterOrders";
+import * as learning from "./services/learning";
 import {alarmAdmins, alertAdmins, applicationAlert, privacyRequestAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
 import * as accountDeletion from "./services/accountDeletion";
 import * as cartReminderService from "./services/cartReminders";
@@ -20,7 +23,7 @@ import {logger} from "firebase-functions";
 import {setGlobalOptions} from "firebase-functions/v2";
 import * as databaseTriggers from "firebase-functions/v2/database";
 import * as firestoreTriggers from "firebase-functions/v2/firestore";
-import {onCall, onRequest} from "firebase-functions/v2/https";
+import * as httpsTriggers from "firebase-functions/v2/https";
 import * as scheduler from "firebase-functions/v2/scheduler";
 import * as tasks from "firebase-functions/v2/tasks";
 import {z} from "zod";
@@ -41,6 +44,7 @@ import {buildRiderJobProjection} from "./domain/riderJob";
 import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
 import {buildPricing, priceCart} from "./domain/order";
 import {GOOGLE_WEATHER_API_KEY, refreshRainPricingSignals} from "./services/weather";
+import {savePriceQuote} from "./services/priceQuotes";
 import {deliveryRouteForOrder, fetchMapTile, parsePoint} from "./services/googleMaps";
 import {takeRouteAllowance, watchMapsUsage} from "./services/mapsGuard";
 import {AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY} from "./services/faceVerification";
@@ -61,9 +65,13 @@ import {
   financeStatementQuerySchema,
   adminRiderRewardsDashboardQuerySchema,
   checkoutPricingPreviewSchema,
+  deliveryPartnerCheckSchema,
   cityEconomicsQuerySchema,
   restaurantOfferSchema,
   restaurantOffersQuerySchema,
+  restaurantFreebiesSchema,
+  restaurantPairingsSchema,
+  dishDescriptionSchema,
   reviewRestaurantOfferSchema,
   simulateGuaranteeSchema,
   simulateOfferSchema,
@@ -74,6 +82,7 @@ import {
   upsertGrowthBudgetSchema,
   upsertPromotionSchema,
   createOrderSchema,
+  createClusterOrderSchema,
   createCodOrderSchema,
   declineOrderSchema,
   exportPlatformDataWorkbookSchema,
@@ -119,6 +128,9 @@ import {
   chatParentRespondSchema,
   chatChildSchema,
   chatReportSchema,
+  createReelSchema,
+  reportReelSchema,
+  reviewReelSchema,
   chatUnsendSchema,
   resolveChatReportSchema,
   restaurantMealPlansSchema,
@@ -128,6 +140,8 @@ import {
   signRestaurantAgreementSchema,
   liveRestaurantAgreementSchema,
   signLiveRestaurantAgreementSchema,
+  cancelUnpaidOrderSchema,
+  checkOrderPaymentSchema,
 } from "./schemas";
 import {
   exportPlatformDataWorkbook as buildPlatformDataExport,
@@ -143,14 +157,17 @@ import {
   recoverExpiredDispatchClaims,
   recoverExhaustedDispatchesForRider,
   recoverExhaustedDispatchesForFinishingRider,
+  releaseTripFollowers,
   scheduleDispatchClaimRecovery,
   type Presence,
+  deliveryPartnerStatusForRestaurant,
   updateRiderAvailabilityIndex,
 } from "./services/dispatch";
 import {registerDeviceToken, unregisterDeviceToken} from "./services/deviceTokens";
 import {
   checkoutTax,
   loadEconomicsControl,
+  markupCheckoutBill,
   planCheckoutEconomics,
   readEconomicsControlForAdmin,
   recordOrderEconomicsOutcome,
@@ -173,8 +190,12 @@ import {
   upsertGrowthBudgetForAdmin,
   upsertPromotionForAdmin,
   upsertRestaurantOffer,
+  saveRestaurantFreebies as saveFreebiesForRestaurant,
+  saveRestaurantPairings as savePairingsForRestaurant,
 } from "./services/economicsAdmin";
+import {DISH_DESCRIPTION_SECRETS, suggestDishDescription as writeDishDescription} from "./services/dishDescription";
 import {economicsScopeKey, rupeesToPaise} from "./domain/economics";
+import {isMarkupCart, markupCutPaise, markupFees, menuPricingOf, withoutCustomerTax} from "./domain/markupPricing";
 import {orderAttribution} from "./services/deliverySettlement";
 import {
   earnCashbackForDeliveredOrder,
@@ -210,11 +231,15 @@ import {
 } from "./services/notifications";
 import {listDueNotifications, processNotification} from "./services/outbox";
 import {
+  assignStoreAsRider,
+  cancelUnpaidOnlineOrder,
+  completeStoreDeliveryFromChat,
   createAuthoritativeCodOrder,
   createAuthoritativeOrder,
   recoverCustomerDeliveryOtp,
   recordCodLedger,
   recordOnlinePaymentLedger,
+  requiresVerifiedOnlinePaymentBeforeProgress,
   scrubLegacyPublicOtp,
   transitionOrder,
 } from "./services/orders";
@@ -239,6 +264,18 @@ import {
 import {readRiderFinancialSummary} from "./services/riderFinance";
 import {setRiderTaxClassification as recordRiderTaxClassification, sweepRiderContractorTds} from "./services/riderTds";
 import {getRestaurantSettlementSummary as readRestaurantSettlementSummary} from "./services/restaurantSettlements";
+import {getRestaurantTaxStatement as readRestaurantTaxStatement, restaurantTaxStatementSchema} from "./services/restaurantTaxStatement";
+import {
+  bookSponsoredListing as bookSponsoredListingFor,
+  bookSponsoredListingSchema,
+  cancelSponsoredListing as cancelSponsoredListingFor,
+  cancelSponsoredListingSchema,
+  getSponsoredListings as readSponsoredListings,
+  sponsoredListingsSchema,
+} from "./services/sponsoredListings";
+import {getRestaurantPayoutReport as readRestaurantPayoutReport, restaurantPayoutReportSchema} from "./services/restaurantPayoutReport";
+import * as outletStaff from "./services/restaurantStaff";
+import * as tdsClaims from "./services/tdsCommissionClaims";
 import {
   evaluateRiderRewardsForDeliveredOrder,
   expireRiderReferrals,
@@ -266,21 +303,35 @@ import {
   UnconfiguredPhonePeGateway,
   applyVerifiedPayment,
   callbackHash,
+  checkOrderPaymentStatus,
+  closeUnpaidPaymentAttempts,
+  refundCancelledOrderPayment,
   initiatePayment,
 } from "./services/payments";
-import type {SavrivoOrder} from "./types";
+import type {CatalogRestaurant, SavrivoOrder} from "./types";
 
 // Each instance serves up to 80 requests at once, so 100 instances is room
 // for roughly 8,000 simultaneous requests per function. Instances only exist
 // (and cost) while traffic needs them; idle functions scale to zero.
 setGlobalOptions({maxInstances: 100});
 
-// Timers and triggers run on a small CPU share ("gcf_gen1": a sixth of a CPU at 256MiB). With a full CPU each,
-// idle background instances used up the region's Cloud Run CPU quota and app requests failed with 500/503.
+// Every function runs on a small CPU share ("gcf_gen1": a sixth of a CPU at 256MiB) unless it is on the
+// order/checkout/rider hot path (cpu: 0.5) or needs many requests per instance (maps, tracking: cpu: 1). With a full CPU each, idle instances of ~160 functions used up
+// the region's Cloud Run CPU quota (20 vCPU) and app requests failed with 503 "server busy".
+// Cloud Run also refuses a function whose max instances x CPU is above the region's quota, so the
+// instance cap shrinks with the CPU share (a sixth of a CPU: 100 instances; half a CPU: 40).
+const REGION_VCPU_QUOTA = 20;
+const GEN1_CPU: Record<string, number> = {"128MiB": 0.083, "256MiB": 0.1666, "512MiB": 0.3333, "1GiB": 0.5833, "2GiB": 1};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function lightCpu<F extends (...args: any[]) => any>(trigger: F): F {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return ((options: any, handler: any) => trigger(typeof options === "object" && options ? {cpu: "gcf_gen1", ...options} : options, handler)) as F;
+  return ((options: any, handler: any) => {
+    if (typeof options !== "object" || !options) return trigger(options, handler);
+    const withCpu = {cpu: "gcf_gen1", ...options};
+    const cpu = withCpu.cpu === "gcf_gen1" ? GEN1_CPU[String(withCpu.memory ?? "256MiB")] ?? 1 : Number(withCpu.cpu);
+    const asked = typeof withCpu.maxInstances === "number" ? withCpu.maxInstances : 100;
+    return trigger({...withCpu, maxInstances: Math.min(asked, Math.floor(REGION_VCPU_QUOTA / cpu))}, handler);
+  }) as F;
 }
 const onValueWritten = lightCpu(databaseTriggers.onValueWritten);
 const onDocumentCreated = lightCpu(firestoreTriggers.onDocumentCreated);
@@ -289,6 +340,36 @@ const onDocumentUpdated = lightCpu(firestoreTriggers.onDocumentUpdated);
 const onDocumentWritten = lightCpu(firestoreTriggers.onDocumentWritten);
 const onSchedule = lightCpu(scheduler.onSchedule);
 const onTaskDispatched = lightCpu(tasks.onTaskDispatched);
+const onCall = lightCpu(httpsTriggers.onCall);
+const onRequest = lightCpu(httpsTriggers.onRequest);
+
+// The customer app pings the checkout functions with {warmup: true} while the cart fills, so each one
+// is already running when "Place order" is tapped: no 4-5 s cold start, and no always-on instance to pay for.
+function isWarmup(data: unknown): boolean {
+  return typeof data === "object" && data !== null && (data as {warmup?: unknown}).warmup === true;
+}
+
+// Starting the copy is only half the warm-up: the first real order on a fresh copy still had to
+// open the Firestore connection and load the pricing settings (1.9 s instead of 0.65 s on
+// 2026-11-04). Doing those reads here leaves "Place order" only the order's own work.
+async function warmUp(): Promise<{warm: true}> {
+  const now = Date.now();
+  await Promise.all([
+    loadEconomicsControl(now),
+    loadFinancePolicy(now),
+    firestoreDb.collection("settings").doc("customer").get(),
+    firestoreDb.collection("settings").limit(1).get(),
+  ]).catch((error) => logger.warn("WARMUP_READ_FAILED", {error: String(error)}));
+  return {warm: true};
+}
+
+// The rider app's native client only sends {orderId}, so it wakes accept/decline with this id
+// the moment an offer arrives: the tap on Accept then skips the 5-6 s cold start.
+const RIDER_WARMUP_ORDER_ID = "__warmup__";
+function isRiderWarmup(data: unknown): boolean {
+  return isWarmup(data) || (typeof data === "object" && data !== null
+    && (data as {orderId?: unknown}).orderId === RIDER_WARMUP_ORDER_ID);
+}
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.infer<S> {
   const result = schema.safeParse(value);
@@ -323,12 +404,14 @@ async function sideEffectLease(key: string, work: () => Promise<void>): Promise<
 }
 
 export const createCodOrder = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
+  if (isWarmup(request.data)) return await warmUp();
   try {
     const input = parse(createCodOrderSchema, request.data);
     const result = await createAuthoritativeCodOrder(request.auth.uid, input);
@@ -348,14 +431,62 @@ export const createCodOrder = onCall({
   }
 });
 
+/** One cart with food from two or three restaurants: an order per restaurant, released together. */
+export const createClusterOrder = onCall({
+  cpu: 0.5,
+  region: REGION,
+  enforceAppCheck: true,
+  timeoutSeconds: 60,
+  memory: "256MiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
+  if (isWarmup(request.data)) return await warmUp();
+  const auth = request.auth;
+  try {
+    const input = parse(createClusterOrderSchema, request.data);
+    const result = await clusterOrders.createClusterOrder(auth.uid, input, (orderId) =>
+      transitionOrder(auth.uid, auth.token, {orderId, customerId: auth.uid, toStatus: "Cancelled", reason: "Another restaurant in this cart could not take the order."} as never));
+    // Announce every part to its restaurant only now that all of them exist.
+    for (const order of result.released ?? []) {
+      await reconcileRestaurantOrderProjection(order);
+      await reconcileRestaurantWorkload(order);
+      await reconcileOperationalOrderProjection(order);
+      if (awaitingOnlinePayment(order)) continue;
+      await sideEffectLease(`restaurant-new-order:${order.id}`, async () => {
+        await notifyRestaurantNewOrder(order);
+      });
+    }
+    return {
+      clusterId: result.clusterId,
+      orderIds: (result.released ?? []).map((order) => order.id),
+      bill: result.bill,
+      plan: result.plan,
+      deliveryOtps: result.deliveryOtps ?? [],
+    };
+  } catch (error) {
+    logger.warn("createClusterOrder rejected", {uid: auth.uid, error});
+    throw asHttpsError(error);
+  }
+});
+
 export const createOrder = onCall({
+  // A full CPU so one copy can serve many calls at once (Cloud Run allows that only from 1 CPU up).
+  // At half a CPU each call needed its own copy, so the cart's warm-up and a real order woke two
+  // sleeping copies (4–6 s each) instead of sharing one. 512MiB: one call alone used up to 0.8 of 256MiB.
+  cpu: 1,
+  concurrency: 20,
+  // One copy always awake (founder 2026-11-10): the first order after a quiet spell no
+  // longer waits 4–6 s for a copy to start. Costs about ₹800 a month per function.
+  minInstances: 1,
+  maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
   secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 30,
-  memory: "256MiB",
+  memory: "512MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
+  if (isWarmup(request.data)) return await warmUp();
   try {
     const input = parse(createOrderSchema, request.data);
     if (input.paymentMethod !== "cod" && !paymentGateway.configured) {
@@ -396,6 +527,7 @@ export const recoverDeliveryOtp = onCall({
 });
 
 export const updateOrderStatus = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   enforceAppCheck: true,
   timeoutSeconds: 30,
@@ -413,7 +545,8 @@ export const updateOrderStatus = onCall({
     // status or for the asynchronous database trigger to catch up. The
     // onOrderUpdated trigger remains an idempotent recovery path.
     if (result.order.status === "Accepted" && !result.order.riderId) {
-      await beginSequentialDispatch(result.order);
+      if (result.order.selfDelivery === true) await assignStoreAsRider(result.order);
+      else await beginSequentialDispatch(result.order);
     }
     if (result.idempotent) {
       logger.info("DUPLICATE_ORDER_ACTION_IGNORED", {
@@ -434,12 +567,14 @@ export const updateOrderStatus = onCall({
 });
 
 export const claimRiderOrder = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to accept a delivery."));
+  if (isRiderWarmup(request.data)) return {warm: true};
   try {
     const input = parse(claimOrderSchema, request.data);
     const order = await claimDispatchOffer(request.auth.uid, input.orderId);
@@ -457,6 +592,7 @@ export const declineRiderOrder = onCall({
   memory: "256MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to decline a delivery."));
+  if (isRiderWarmup(request.data)) return {warm: true};
   try {
     const input = parse(declineOrderSchema, request.data);
     await declineDispatchOffer(request.auth.uid, input.orderId);
@@ -577,6 +713,7 @@ export const unregisterPushToken = onCall({
 /** Server-authoritative operations control plane. These callables deliberately
 * require owner/ops-admin custom claims and do not rely on fixed account lists. */
 export const getPlatformConfiguration = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   enforceAppCheck: true,
   timeoutSeconds: 15,
@@ -608,16 +745,31 @@ const TAX_BREAKDOWN_LABELS: Record<string, string> = {
 };
 
 export const getCheckoutConfiguration = onCall({
+  // A full CPU and many calls per copy, like createOrder: the warm-up, the cart price and the
+  // delivery-partner check arrive together and now share one copy instead of waking one each.
+  cpu: 1,
+  concurrency: 20,
+  // One copy always awake (founder 2026-11-10): the first order after a quiet spell no
+  // longer waits 4–6 s for a copy to start. Costs about ₹800 a month per function.
+  minInstances: 1,
+  maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
   secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
   timeoutSeconds: 15,
-  memory: "256MiB",
+  memory: "512MiB",
 }, async (request) => {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to view checkout configuration."));
+  if (isWarmup(request.data)) return await warmUp();
   try {
-    const config = await loadCheckoutConfiguration(paymentGateway.configured);
     const data = request.data as Record<string, unknown> | null | undefined;
+    // Restaurant page: is a delivery partner free near this store? Same check as Place order.
+    if (data && data.deliveryPartnerCheck === true) {
+      const check = parse(deliveryPartnerCheckSchema, data);
+      return {deliveryPartners: await deliveryPartnerStatusForRestaurant(check.restaurantId)};
+    }
+    // priceLock tells the app this server takes quotedTotal on an order.
+    const config = {...await loadCheckoutConfiguration(paymentGateway.configured), priceLock: true};
     if (!data || !data.restaurantId) return config;
     try {
       const input = parse(checkoutPricingPreviewSchema, data);
@@ -625,10 +777,10 @@ export const getCheckoutConfiguration = onCall({
         loadRestaurantAndMenu(input.restaurantId),
         loadCustomerAddress(request.auth.uid, input.addressId),
       ]);
-      const {items: pricedItems, subtotal} = priceCart(input.items, menuById);
+      const {items: pricedItems, subtotal, markup} = priceCart(input.items, menuById, menuPricingOf(restaurant));
       const now = Date.now();
       const [fees, control, financePolicy] = await Promise.all([
-        loadServerFees(restaurant, address, subtotal),
+        loadServerFees(restaurant, address, markup?.listSubtotal ?? subtotal).then((value) => markupFees(value, markup)),
         loadEconomicsControl(now),
         loadFinancePolicy(now),
       ]);
@@ -662,6 +814,7 @@ export const getCheckoutConfiguration = onCall({
         promotion,
         defaultCommissionBps: financePolicy.restaurantCommissionBps,
         now,
+        ...(isMarkupCart(markup) ? {markupCutPaise: markupCutPaise(rupeesToPaise(subtotal), markup)} : {}),
       });
       if (plan.offer) {
         offerPreview = {
@@ -675,6 +828,10 @@ export const getCheckoutConfiguration = onCall({
       let tax = checkoutTax(control, plan, fees, subtotal, now);
       const lawTax = await lawBasedCheckoutTax({restaurant, items: pricedItems, menuById, plan, fees, subtotal, at: now});
       if (lawTax) tax = lawTax.tax;
+      // Markup restaurants: food GST is inside the item prices, so the bill adds GST on fees only.
+      const markupPricing = markup ? markupCheckoutBill(markup, {subtotal, plan, tax, orderTax: lawTax ? lawTax.orderTax : null}) : null;
+      // The app takes the offer's discount from here: GST-inclusive, like the item total it comes off.
+      if (markupPricing && offerPreview?.valid === true) offerPreview.discount = markupPricing.discount;
       // What the customer's GST is made of, for the "GST & charges" line in the bill.
       const taxParts = !tax ? [] : lawTax ?
         lawTax.orderTax.services.filter((line) => line.chargedTo === "customer").map((line) => ({component: line.component, paise: line.gstPaise})) :
@@ -682,6 +839,7 @@ export const getCheckoutConfiguration = onCall({
       const taxBreakdown: {label: string; amount: number}[] = [];
       for (const part of taxParts) {
         if (part.paise <= 0) continue;
+        if (markupPricing && (part.component === "restaurant_service" || part.component === "food")) continue;
         const label = TAX_BREAKDOWN_LABELS[part.component] ?? `GST on ${part.component.replace(/_/g, " ")}`;
         const row = taxBreakdown.find((entry) => entry.label === label);
         if (row) row.amount = Math.round((row.amount + part.paise / 100) * 100) / 100;
@@ -696,7 +854,8 @@ export const getCheckoutConfiguration = onCall({
         riderIncentiveFee: fees.riderIncentiveFee,
         // Same inputs as order creation, so the preview total is the real total.
         riderSurgeFee: fees.riderSurgeFee,
-        ...(tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
+        ...(markupPricing ? {taxOverride: markupPricing.customerTaxPaise / 100} :
+          tax ? {taxOverride: tax.customerTaxPaise / 100} : {}),
       };
       const beforeWallet = buildPricing(feeInput);
       const wallet = plan.engineEnabled ? await planWalletRedemption({
@@ -710,6 +869,7 @@ export const getCheckoutConfiguration = onCall({
       const priced = buildPricing({...feeInput, ...(wallet?.amountPaise ? {walletRedeem: wallet.amountPaise / 100} : {})});
       const cashback = plan.engineEnabled ? await estimateCashback(request.auth.uid, restaurant.id, plan, priced, now)
         .catch(() => null) : null;
+      await savePriceQuote(request.auth.uid, {...input, lat: address.lat, lng: address.lng}, fees, priced.total, now);
       const checkoutPreview = {
         serverAuthoritative: true,
         ...priced.pricing,
@@ -721,6 +881,14 @@ export const getCheckoutConfiguration = onCall({
         cashbackEstimate: cashback,
         taxVersionId: tax?.versionId ?? "",
         taxBreakdown,
+        // Markup restaurants: shown GST-inclusive, so item total + fees + tax still add up to total.
+        ...(markupPricing ? {
+          subtotal: markupPricing.listSubtotal,
+          discount: markupPricing.discount,
+          tax: markupPricing.tax,
+          foodGstIncluded: markupPricing.foodGst,
+          markup: withoutCustomerTax(markupPricing),
+        } : {}),
       };
       return {
         ...config,
@@ -1108,6 +1276,114 @@ export const getRestaurantSettlementSummary = onCall({
   }
 });
 
+/**
+ * A restaurant's own invoices, GST TCS, income-tax TDS and weekly payout runs
+ * for up to three months, for the partner dashboard's Finance pages. Same
+ * owner/manager/admin bar as getRestaurantSettlementSummary.
+ */
+export const getRestaurantTaxStatement = onCall({
+  region: REGION,
+  invoker: "public",
+  enforceAppCheck: true,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+}, async (request) => {
+  if (!request.auth) {
+    throw asHttpsError(new DomainError("unauthenticated", "Sign in to view restaurant finances."));
+  }
+  try {
+    const input = parse(restaurantTaxStatementSchema, request.data ?? {});
+    return await readRestaurantTaxStatement(request.auth.uid, request.auth.token, input);
+  } catch (error) {
+    logger.warn("getRestaurantTaxStatement rejected", {
+      uid: request.auth.uid,
+      error: error instanceof Error ? error.message.slice(0, 160) : "unknown",
+    });
+    throw asHttpsError(error);
+  }
+});
+
+// Partner-dashboard money calls (ads, payout report, TDS claims): signed in, App Check, logged refusals.
+function financeCallable<T>(name: string, signedOut: string,
+  schema: Parameters<typeof parse>[0], run: (uid: string, token: import("firebase-admin/auth").DecodedIdToken, input: T) => Promise<unknown>) {
+  return onCall({region: REGION, invoker: "public", enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"}, async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", signedOut));
+    try {
+      return await run(request.auth.uid, request.auth.token, parse(schema, request.data ?? {}) as T);
+    } catch (error) {
+      logger.warn(`${name} rejected`, {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+      throw asHttpsError(error);
+    }
+  });
+}
+export const getSponsoredListings = financeCallable("getSponsoredListings", "Sign in to see ads.",
+  sponsoredListingsSchema, async (uid, token, input: {restaurantId: string}) => {
+    const listing = await readSponsoredListings(uid, token, input);
+    // What the ads did: people reached, taps, orders and money earned, per booking and in total.
+    const results = await learning.adResultsForRestaurant(input.restaurantId, listing.bookings).catch((error) => {
+      logger.warn("AD_RESULTS_FAILED", {restaurantId: input.restaurantId, error: String(error)});
+      return null;
+    });
+    return {...listing, results};
+  });
+export const bookSponsoredListing = financeCallable("bookSponsoredListing", "Sign in to book ads.",
+  bookSponsoredListingSchema, (uid, token, input: Parameters<typeof bookSponsoredListingFor>[2]) => bookSponsoredListingFor(uid, token, input));
+export const cancelSponsoredListing = financeCallable("cancelSponsoredListing", "Sign in to cancel ads.",
+  cancelSponsoredListingSchema, (uid, token, input: Parameters<typeof cancelSponsoredListingFor>[2]) => cancelSponsoredListingFor(uid, token, input));
+
+// ---- Learning: customer signals, ad results, nightly models, the supervisor's report (services/learning) ----
+/** What the customer app saw and did (looks, opens, adds, ad views and taps), sent in batches. */
+export const recordAppEvents = onCall({region: REGION, invoker: "public", enforceAppCheck: true, timeoutSeconds: 20, memory: "256MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+  try {
+    return await learning.recordAppEvents(request.auth.uid, parse(learning.recordAppEventsSchema, request.data ?? {}));
+  } catch (error) {
+    logger.warn("recordAppEvents rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+/** Every store's and brand's ad results, with a CSV for advertisers. Staff only. */
+export const getAdsReport = economicsCallable("getAdsReport", learning.adsReportSchema,
+  (_uid, token, input) => learning.getAdsReport(token as import("firebase-admin/auth").DecodedIdToken, input as {days: number}));
+/** Staff: train the models and write the supervisor's report now instead of waiting for the night. */
+export const runLearningNow = onCall({region: REGION, invoker: "public", enforceAppCheck: true, timeoutSeconds: 540, memory: "1GiB", maxInstances: 1}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+  try {
+    return await learning.runLearningNow(request.auth.token);
+  } catch (error) {
+    logger.warn("runLearningNow rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 160) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+/** 3:20 am India time: train prep and travel models, forecast demand, refresh insights, write the report. */
+export const trainScraveitModels = onSchedule({schedule: "20 3 * * *", timeZone: "Asia/Kolkata", region: REGION,
+  timeoutSeconds: 540, memory: "1GiB", maxInstances: 1}, async () => {
+  const summary = await learning.trainAll();
+  logger.info("NIGHTLY_LEARNING_DONE", summary);
+});
+
+// Payout report straight from the ledger: carried balance, every deduction, and the UTR that paid each order.
+export const getRestaurantPayoutReport = financeCallable("getRestaurantPayoutReport", "Sign in to view payouts.",
+  restaurantPayoutReportSchema, (uid, token, input: Parameters<typeof readRestaurantPayoutReport>[2]) => readRestaurantPayoutReport(uid, token, input));
+// TDS a restaurant deducted on Scraveit's commission: restaurants send it, Scraveit finance checks and refunds it.
+export const submitTdsCommissionClaim = financeCallable("submitTdsCommissionClaim", "Sign in to send a TDS claim.",
+  tdsClaims.submitTdsCommissionClaimSchema, (uid, token, input: tdsClaims.SubmitTdsCommissionClaimInput) => tdsClaims.submitTdsCommissionClaim(uid, token, input));
+export const getTdsCommissionClaims = financeCallable("getTdsCommissionClaims", "Sign in to see TDS claims.",
+  tdsClaims.tdsCommissionClaimsSchema, (uid, token, input: {restaurantId: string}) => tdsClaims.getTdsCommissionClaims(uid, token, input));
+export const listTdsCommissionClaimsForReview = financeCallable("listTdsCommissionClaimsForReview", "Sign in to review TDS claims.",
+  tdsClaims.tdsCommissionClaimsForReviewSchema, (uid, token, input: {status: string}) => tdsClaims.listTdsCommissionClaimsForReview(uid, token, input));
+export const reviewTdsCommissionClaim = financeCallable("reviewTdsCommissionClaim", "Sign in to review TDS claims.",
+  tdsClaims.reviewTdsCommissionClaimSchema, (uid, token, input: tdsClaims.ReviewTdsCommissionClaimInput) => tdsClaims.reviewTdsCommissionClaim(uid, token, input));
+// Staff accounts the outlet owner makes: staff ID and password, and the features each person may use.
+export const listRestaurantStaff = financeCallable("listRestaurantStaff", "Sign in to see your staff.",
+  outletStaff.listRestaurantStaffSchema, (uid, token, input: {restaurantId: string}) => outletStaff.listRestaurantStaff(uid, token, input, firestoreDb, auth));
+export const createRestaurantStaff = financeCallable("createRestaurantStaff", "Sign in to add staff.",
+  outletStaff.createRestaurantStaffSchema, (uid, token, input: outletStaff.CreateRestaurantStaffInput) => outletStaff.createRestaurantStaff(uid, token, input, auth));
+export const updateRestaurantStaff = financeCallable("updateRestaurantStaff", "Sign in to change staff access.",
+  outletStaff.updateRestaurantStaffSchema, (uid, token, input: outletStaff.UpdateRestaurantStaffInput) => outletStaff.updateRestaurantStaff(uid, token, input, auth));
+export const removeRestaurantStaff = financeCallable("removeRestaurantStaff", "Sign in to remove staff.",
+  outletStaff.removeRestaurantStaffSchema, (uid, token, input: {restaurantId: string; uid: string}) => outletStaff.removeRestaurantStaff(uid, token, input, auth));
+
 // Cashfree is the live gateway. Without its keys `configured` is false and checkout offers COD only.
 const paymentGateway = new CashfreeGateway(liveCashfreeConfig);
 /** PhonePe was never switched on; its webhook stays deployed but rejects everything. */
@@ -1118,11 +1394,13 @@ async function handleCreatePaymentIntent(request: {
   data: unknown;
 }): Promise<unknown> {
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to start payment."));
+  if (isWarmup(request.data)) return await warmUp();
   const input = parse(initiatePaymentSchema, request.data);
   return await initiatePayment(request.auth.uid, input, paymentGateway);
 }
 
 export const createPaymentIntent = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   secrets: CASHFREE_SECRETS,
   enforceAppCheck: true,
@@ -1132,6 +1410,49 @@ export const createPaymentIntent = onCall({
   try {
     return await handleCreatePaymentIntent(request);
   } catch (error) {
+    throw asHttpsError(error);
+  }
+});
+
+// The app's "Confirming your payment" screen asks this every few seconds.
+export const checkOrderPayment = onCall({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
+  region: REGION,
+  secrets: CASHFREE_SECRETS,
+  enforceAppCheck: true,
+  timeoutSeconds: 15,
+  memory: "256MiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to check this payment."));
+  if (isWarmup(request.data)) return await warmUp();
+  try {
+    const input = parse(checkOrderPaymentSchema, request.data);
+    return {orderId: input.orderId, status: await checkOrderPaymentStatus(request.auth.uid, input.orderId, paymentGateway)};
+  } catch (error) {
+    throw asHttpsError(error);
+  }
+});
+
+// The customer's online payment didn't go through: cancel the unpaid order (the app then places it as cash on delivery).
+export const cancelUnpaidOrder = onCall({
+  region: REGION,
+  secrets: CASHFREE_SECRETS,
+  enforceAppCheck: true,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to change this order."));
+  const uid = request.auth.uid;
+  try {
+    const input = parse(cancelUnpaidOrderSchema, request.data);
+    const reason = input.reason === "cod" ? "Customer switched to cash on delivery after online payment did not go through" :
+      "Customer cancelled after online payment did not go through";
+    const order = await cancelUnpaidOnlineOrder(uid, input.orderId, reason,
+      (orderId) => closeUnpaidPaymentAttempts(orderId, paymentGateway));
+    logger.info("UNPAID_ORDER_CANCELLED", {orderId: order.id, reason: input.reason});
+    return {orderId: order.id, status: order.status};
+  } catch (error) {
+    logger.warn("cancelUnpaidOrder rejected", {uid, error});
     throw asHttpsError(error);
   }
 });
@@ -1191,6 +1512,7 @@ export const phonePeWebhook = onRequest({
  * against Cashfree's order record before the order is marked paid or failed.
  */
 export const cashfreeWebhook = onRequest({
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -1225,6 +1547,52 @@ export const cashfreeWebhook = onRequest({
   }
 });
 
+/**
+ * A cancelled order that was paid online gets its money back by itself: the
+ * moment it is both cancelled and paid (cancelled after paying, or a payment
+ * that landed after the customer gave up on it). Safe to repeat.
+ */
+export const refundCancelledPaidOrder = onDocumentUpdated({
+  cpu: 0.5,
+  document: "orders/{orderId}",
+  region: REGION,
+  retry: true,
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  secrets: CASHFREE_SECRETS,
+}, async (event) => {
+  const before = event.data?.before.data() as SavrivoOrder | undefined;
+  const after = event.data?.after.data() as SavrivoOrder | undefined;
+  if (!before || !after || after.status !== "Cancelled" || after.paymentState !== "paid") return;
+  if (before.status === "Cancelled" && before.paymentState === "paid") return;
+  const result = await refundCancelledOrderPayment(after.id, paymentGateway);
+  logger[result === "rejected" ? "error" : "info"]("CANCELLED_ORDER_REFUND", {orderId: after.id, result});
+});
+
+/** Catches any refund the trigger above couldn't finish (Cashfree down, a crash between steps). */
+export const sweepCancelledOrderRefunds = onSchedule({
+  schedule: "every 30 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  secrets: CASHFREE_SECRETS,
+}, async () => {
+  const snapshot = await firestoreDb.collection("orders")
+    .where("status", "==", "Cancelled").where("paymentState", "==", "paid").limit(50).get();
+  const counts: Record<string, number> = {};
+  for (const doc of snapshot.docs) {
+    try {
+      const result = await refundCancelledOrderPayment(doc.id, paymentGateway);
+      counts[result] = (counts[result] ?? 0) + 1;
+      if (result === "rejected" || result === "refund_started") logger[result === "rejected" ? "error" : "info"]("CANCELLED_ORDER_REFUND", {orderId: doc.id, result, via: "sweep"});
+    } catch (error) {
+      counts.error = (counts.error ?? 0) + 1;
+      logger.warn("CANCELLED_ORDER_REFUND_RETRY_LATER", {orderId: doc.id, error});
+    }
+  }
+  if (snapshot.size) logger.info("CANCELLED_ORDER_REFUND_SWEEP", {checked: snapshot.size, ...counts});
+});
+
 /** Our checkout page (opens Cashfree's hosted checkout) and the page customers return to. */
 export const cashfreeCheckout = onRequest({
   region: REGION,
@@ -1243,7 +1611,7 @@ export const cashfreeCheckout = onRequest({
 });
 
 export const dispatchOfferTimeout = onTaskDispatched({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
   retryConfig: {maxAttempts: 5, minBackoffSeconds: 5, maxBackoffSeconds: 60, maxDoublings: 3},
   rateLimits: {maxConcurrentDispatches: 50, maxDispatchesPerSecond: 20},
@@ -1463,7 +1831,7 @@ export const settleWeeklyFinancePayouts = onSchedule({
 /** Every persisted claim lease gets its own recovery task. Trigger retry
  * guarantees scheduling even if the rider callable exits after reservation. */
 export const onDispatchClaimWritten = onDocumentWritten({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   document: "dispatchQueue/{orderId}",
   region: REGION,
   retry: true,
@@ -1497,7 +1865,7 @@ export const onDispatchClaimWritten = onDocumentWritten({
 });
 
 export const onOrderCreated = onDocumentCreated({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   document: "orders/{orderId}",
   region: REGION,
   retry: true,
@@ -1511,6 +1879,17 @@ export const onOrderCreated = onDocumentCreated({
   const latestSnapshot = await orderRef(firestoreDb, rawOrder.id).get();
   const latest = latestSnapshot.exists ? latestSnapshot.data() as SavrivoOrder : null;
   const order = await scrubLegacyPublicOtp(latest ?? rawOrder);
+  // Taste signal for the customer and an "order" for the city's ranking (once per order).
+  await sideEffectLease(`learning-order-placed:${order.id}`, async () => {
+    const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
+    if (restaurantSnapshot.exists) await learning.noteOrderPlaced(order, restaurantSnapshot.data() as CatalogRestaurant);
+  }).catch((error) => logger.warn("ORDER_PLACED_SIGNAL_FAILED", {orderId: order.id, error: String(error)}));
+  // A multi-restaurant part on hold is released (projected and announced) by
+  // createClusterOrder once every restaurant's part exists.
+  if (order.clusterHold === true) {
+    logger.info("CLUSTER_PART_HELD", {orderId: order.id, clusterId: order.clusterId});
+    return;
+  }
   await reconcileRestaurantOrderProjection(order);
   await reconcileRestaurantWorkload(order);
   await reconcileOperationalOrderProjection(order);
@@ -1519,11 +1898,20 @@ export const onOrderCreated = onDocumentCreated({
     logger.info("STALE_NEW_ORDER_EVENT_IGNORED", {orderId: order.id, status: order.status});
     return;
   }
+  // An unpaid online order can't be accepted, so it rings only once its payment is verified (onOrderUpdated).
+  if (awaitingOnlinePayment(order)) {
+    logger.info("NEW_ORDER_PUSH_WAITING_FOR_PAYMENT", {orderId: order.id, paymentState: order.paymentState});
+    return;
+  }
   await sideEffectLease(`restaurant-new-order:${order.id}`, async () => {
     logger.info("NEW_ORDER_PUSH_REQUESTED", {orderId: order.id, restaurantId: order.restaurantId});
     await notifyRestaurantNewOrder(order);
   });
 });
+
+function awaitingOnlinePayment(order: SavrivoOrder): boolean {
+  return requiresVerifiedOnlinePaymentBeforeProgress(order, "Accepted");
+}
 
 /** Relay (TURN) credentials for one voice/video call between friends. */
 export const callIceServers = onCall({
@@ -1544,7 +1932,7 @@ export const callIceServers = onCall({
 
 /** A call started or stopped: ring the friend's phone, stop the ringing, log the call in the chat. */
 export const onCallWritten = onDocumentWritten({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   document: "calls/{callId}",
   region: REGION,
   retry: false,
@@ -1621,7 +2009,7 @@ export const voiceAgent = onRequest({
 });
 
 export const onOrderUpdated = onDocumentUpdated({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   document: "orders/{orderId}",
   region: REGION,
   retry: true,
@@ -1650,6 +2038,23 @@ export const onOrderUpdated = onDocumentUpdated({
   await reconcileRestaurantOrderProjection(order);
   await reconcileRestaurantWorkload(order);
   await reconcileOperationalOrderProjection(order);
+  // Online payment just verified: now ring the restaurant (the same lease as onOrderCreated, so it rings once).
+  if (before.paymentState !== "paid" && order.paymentState === "paid" && order.status === "Order placed" && order.clusterHold !== true) {
+    await sideEffectLease(`restaurant-new-order:${order.id}`, async () => {
+      logger.info("NEW_ORDER_PUSH_REQUESTED", {orderId: order.id, restaurantId: order.restaurantId, after: "payment"});
+      await notifyRestaurantNewOrder(order);
+    });
+  }
+  // Delivered or cancelled: a training row for the learned models, the Ad's credit, the group-order outcome.
+  if ((before.status !== "Delivered" && order.status === "Delivered") || (before.status !== "Cancelled" && order.status === "Cancelled")) {
+    await sideEffectLease(`learning-outcome:${order.id}:${order.status}`, () => learning.recordOrderOutcome(before, order))
+      .catch((error) => logger.warn("LEARNING_OUTCOME_FAILED", {orderId: order.id, error: String(error)}));
+  }
+  // The first pickup of a shared trip was cancelled: its other pickups go to any rider.
+  if (before.status !== "Cancelled" && order.status === "Cancelled" && order.clusterTrip?.leadOrderId === order.id) {
+    await releaseTripFollowers(order)
+      .catch((error) => logger.warn("BUNDLE_FOLLOWER_RELEASE_FAILED", {orderId: order.id, error: String(error)}));
+  }
   // Delivered: friends see an "eating now" ring on the customer's photo for 30 minutes.
   if (before.status !== "Delivered" && order.status === "Delivered") {
     await chatFun.markEatingNow(order)
@@ -1660,7 +2065,9 @@ export const onOrderUpdated = onDocumentUpdated({
     await parentPay.mirrorOrderToParent(order, before)
       .catch((error) => logger.warn("PARENT_PAY_MIRROR_FAILED", {orderId: order.id, error: String(error)}));
   }
-  if (["Accepted", "Preparing", "Ready for pickup"].includes(order.status) && !order.riderId) {
+  if (["Accepted", "Preparing", "Ready for pickup"].includes(order.status) && !order.riderId && order.selfDelivery === true) {
+    await assignStoreAsRider(order);
+  } else if (["Accepted", "Preparing", "Ready for pickup"].includes(order.status) && !order.riderId) {
     const queueSnapshot = await dispatchQueueRef(firestoreDb, order.id).get();
     const queue = queueSnapshot.exists ? queueSnapshot.data() as {status?: string} : null;
     if (!queue || queue.status === "exhausted") await beginSequentialDispatch(order);
@@ -1721,7 +2128,8 @@ export const onOrderUpdated = onDocumentUpdated({
       );
     }
   }
-  if (order.riderId) {
+  // A self-delivering store has no rider app, presence or rewards: skip the rider-side projections.
+  if (order.riderId && order.selfDelivery !== true) {
     const jobRef = riderJobRef(firestoreDb, order.riderId, order.id);
     const existingJobSnapshot = await jobRef.get();
     const existingJob = existingJobSnapshot.exists ? existingJobSnapshot.data() as Record<string, unknown> : null;
@@ -1774,12 +2182,14 @@ export const onOrderUpdated = onDocumentUpdated({
         await qualifyCustomerReferralOnDelivery(order, attribution);
       });
     }
-    await sideEffectLease(`rider-rewards:${order.id}`, async () => {
-      await evaluateRiderRewardsForDeliveredOrder(order);
-    });
-    await sideEffectLease(`rider-delivered-count:${order.id}`, async () => {
-      await recordRiderDeliveredOrder(order);
-    });
+    if (order.selfDelivery !== true) {
+      await sideEffectLease(`rider-rewards:${order.id}`, async () => {
+        await evaluateRiderRewardsForDeliveredOrder(order);
+      });
+      await sideEffectLease(`rider-delivered-count:${order.id}`, async () => {
+        await recordRiderDeliveredOrder(order);
+      });
+    }
     // GST TCS and income-tax TDS withheld from the seller, and the order's
     // invoice numbers (no-op for orders priced before the tax engine was on).
     await sideEffectLease(`tax-withholding:${order.id}`, async () => {
@@ -2006,6 +2416,23 @@ export const onRiderJobEligibilitySourceWritten = onDocumentWritten({
   );
 });
 
+// A self-delivering store finishes an order by typing the customer's delivery
+// code into its order chat (the released Restaurant app has no delivered button).
+export const onStoreDeliveryChatMessage = onDocumentCreated({
+  document: "orderChats/{messageId}",
+  region: REGION,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+}, async (event) => {
+  const message = event.data?.data() as {orderId?: unknown; senderRole?: unknown; body?: unknown} | undefined;
+  if (!message || message.senderRole !== "restaurant") return;
+  try {
+    await completeStoreDeliveryFromChat(message);
+  } catch (error) {
+    logger.warn("STORE_DELIVERY_CHAT_FAILED", {orderId: String(message.orderId ?? ""), error: String(error)});
+  }
+});
+
 export const onReviewCreated = onDocumentCreated({
   // reviews/{customerId}_{orderId} - a client-written composite id (see
   // reviews.ts). Prefer the review's own `orderId` field as a known-length
@@ -2147,6 +2574,16 @@ export const getCityEconomics = economicsCallable("getCityEconomics", cityEconom
 export const saveRestaurantOffer = economicsCallable("saveRestaurantOffer", restaurantOfferSchema,
   (uid, token, input) => upsertRestaurantOffer(uid, token, input));
 
+export const saveRestaurantFreebies = economicsCallable("saveRestaurantFreebies", restaurantFreebiesSchema,
+  (uid, token, input) => saveFreebiesForRestaurant(uid, token, input));
+
+export const saveRestaurantPairings = economicsCallable("saveRestaurantPairings", restaurantPairingsSchema,
+  (uid, token, input) => savePairingsForRestaurant(uid, token, input));
+
+// Partner dashboard: an AI-written draft of a dish's menu description.
+export const suggestDishDescription = economicsCallable("suggestDishDescription", dishDescriptionSchema,
+  (uid, token, input) => writeDishDescription(uid, token as import("firebase-admin/auth").DecodedIdToken, input), {secrets: DISH_DESCRIPTION_SECRETS});
+
 export const getRestaurantOffers = economicsCallable("getRestaurantOffers", restaurantOffersQuerySchema,
   (uid, token, input) => listRestaurantOffers(uid, token, input.restaurantId));
 
@@ -2241,11 +2678,14 @@ export const getRestaurantOfferPerformance = economicsCallable("getRestaurantOff
 // stays here; it is the same key the weather check uses.
 // ---------------------------------------------------------------------------
 export const mapTile = onRequest({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   region: REGION,
   secrets: [GOOGLE_WEATHER_API_KEY],
   memory: "256MiB",
   timeoutSeconds: 20,
-  maxInstances: 20,
+  // Kept at 2: a burst of ~50 tiles once started 7 full-CPU copies and used up the
+  // region's 20 vCPU quota, so riders couldn't accept offers. 80 per copy is plenty.
+  maxInstances: 2,
   concurrency: 80,
 }, async (request, response) => {
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -2264,11 +2704,12 @@ export const mapTile = onRequest({
 });
 
 export const deliveryRoute = onRequest({
+  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
   region: REGION,
   secrets: [GOOGLE_WEATHER_API_KEY],
   memory: "256MiB",
   timeoutSeconds: 20,
-  maxInstances: 20,
+  maxInstances: 2, // same reason as mapTile
   concurrency: 80,
 }, async (request, response) => {
   response.set("Access-Control-Allow-Origin", "*")
@@ -2510,7 +2951,7 @@ export const resolveChatReport = economicsCallable("resolveChatReport", resolveC
 
 /** A new chat message: hide phone numbers, update the chat list, push to the friend. */
 export const onChatMessageCreated = onDocumentCreated({
-  cpu: 1, // time-critical: keeps a full CPU (see lightCpu)
+  cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   document: "chats/{pairId}/messages/{messageId}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB",
 }, async (event) => {
   const data = event.data?.data() as Record<string, unknown> | undefined;
@@ -2536,6 +2977,16 @@ export const onPostCreated = onDocumentCreated({
   const data = event.data?.data() as Record<string, unknown> | undefined;
   if (data) await posts.onPostCreated(event.params.postId, data);
 });
+// ---- Public reels: reviewed before they go public, reportable, city-level location only ----
+export const createReel = economicsCallable("createReel", createReelSchema, (uid, _t, input) => reels.createReel(uid, input as Parameters<typeof reels.createReel>[1]));
+export const reportReel = economicsCallable("reportReel", reportReelSchema, (uid, _t, input) => reels.reportReel(uid, input));
+export const reviewReel = economicsCallable("reviewReel", reviewReelSchema,
+  (uid, token, input) => reels.reviewReel(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
+/** A poster deleted their reel: its video and picture go too. */
+export const onReelDeleted = onDocumentDeleted({
+  document: "reels/{reelId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
+}, async (event) => { const data = event.data?.data() as Record<string, unknown> | undefined; if (data) await reels.onReelDeleted(event.params.reelId, data); });
+
 /** A post deleted (by its poster, or its story ended): its cards, photo and video go too. */
 export const onPostDeleted = onDocumentDeleted({
   document: "posts/{postId}", region: REGION, retry: false, timeoutSeconds: 60, memory: "256MiB",
@@ -2614,7 +3065,7 @@ export const getAdminAnalytics = onCall({region: REGION, enforceAppCheck: true, 
     try {
       const input = parse(z.object({
         days: z.number().int().min(1).max(90).default(30),
-        kind: z.enum(["all", "restaurant", "grocery", "dairy"]).default("all"),
+        kind: z.enum(["all", "restaurant", "grocery", "dairy", "pharmacy"]).default("all"),
         fresh: z.boolean().default(false),
       }).strict(), request.data ?? {});
       return await readAdminAnalytics(request.auth.token, input);

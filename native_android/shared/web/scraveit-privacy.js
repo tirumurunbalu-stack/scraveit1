@@ -6,7 +6,8 @@
  * (an itemised notice before consent is asked for, with how to withdraw it,
  * exercise rights and complain to the Board), s.5(3) (English or a Schedule
  * VIII language: Telugu here), s.6(1) (consent by a clear affirmative act:
- * an unticked box). Bump VERSION whenever the notice changes so every
+ * tapping a sign-in or sign-up button under "By continuing, you agree to…",
+ * or the unticked box on the full-screen notice). Bump VERSION whenever the notice changes so every
  * signed-in account is asked again.
  */
 (function () {
@@ -135,6 +136,14 @@
       agree: "I have read this Privacy Notice and I agree to SCRAVEIT using my personal data for the purposes it lists. I also agree to the ",
       agreeEnd: ".",
       readNotice: "Read the Privacy Notice",
+      tapStart: "By continuing, you agree to the ",
+      tapAnd: " and ",
+      tapNotice: "Privacy Notice",
+      tapEnd: ".",
+      tapStart: "By continuing, you agree to the ",
+      tapAnd: " and ",
+      tapNotice: "Privacy Notice",
+      tapEnd: ".",
       gateTitle: "Before you continue",
       gateCopy: "Please read how SCRAVEIT uses your data and give your consent.",
       gateAgree: "Agree and continue",
@@ -173,6 +182,14 @@
       agree: "ఈ గోప్యతా నోటీసు చదివాను. ఇందులో చెప్పిన ప్రయోజనాల కోసం SCRAVEIT నా వ్యక్తిగత డేటా వాడటానికి అంగీకరిస్తున్నాను. ",
       agreeEnd: "కు కూడా అంగీకరిస్తున్నాను.",
       readNotice: "గోప్యతా నోటీసు చదవండి",
+      tapStart: "కొనసాగడం ద్వారా మీరు ",
+      tapAnd: ", ",
+      tapNotice: "గోప్యతా నోటీసు",
+      tapEnd: "కు అంగీకరిస్తున్నారు.",
+      tapStart: "కొనసాగడం ద్వారా మీరు ",
+      tapAnd: ", ",
+      tapNotice: "గోప్యతా నోటీసు",
+      tapEnd: "కు అంగీకరిస్తున్నారు.",
       gateTitle: "కొనసాగే ముందు",
       gateCopy: "SCRAVEIT మీ డేటాను ఎలా వాడుతుందో చదివి మీ సమ్మతి ఇవ్వండి.",
       gateAgree: "అంగీకరించి కొనసాగండి",
@@ -210,6 +227,7 @@
       ".sp-consent input{width:20px;height:20px;flex:0 0 auto;margin-top:1px;accent-color:var(--brand,var(--accent,#e4572e))}",
       ".sp-consent a{color:var(--brand,var(--accent,#e4572e));font-weight:700}",
       ".sp-read{background:none;border:0;padding:0;color:var(--brand,var(--accent,#e4572e));font:inherit;font-weight:800;text-decoration:underline;cursor:pointer}",
+      ".privacy-tap{margin:14px 6px 0;text-align:center;font-size:13px;line-height:1.5;color:var(--muted,#6b7280)}.sp-tap a,.sp-tap .sp-read{color:inherit;font-weight:700;text-decoration:underline}",
       ".sp-modal{position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center}",
       ".sp-modal-card{background:var(--surface,var(--card,var(--paper,#fff)));width:100%;max-width:640px;max-height:88vh;overflow:auto;border-radius:20px 20px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom))}",
       "@media(min-width:700px){.sp-modal{align-items:center}.sp-modal-card{border-radius:20px}}",
@@ -258,6 +276,22 @@
       + '<button type="button" class="sp-read" data-sp-action="open" data-sp-audience="' + aud(audience) + '">' + t.readNotice + "</button>"
       + '<label class="sp-consent"><input type="checkbox" id="' + (id || "sp-consent") + '" name="privacyConsent">'
       + "<span>" + t.agree + link(LINKS.terms, t.terms) + t.agreeEnd + " " + link(LINKS.policy, t.full) + "</span></label></div>";
+  }
+
+  /** One line under sign-in and sign-up buttons: the Terms link and the itemised notice. */
+  function tapLine(audience, lang) {
+    var l = pick(lang), t = T[l];
+    ensureStyle();
+    return '<span class="sp-tap" translate="no">' + t.tapStart + link(LINKS.terms, t.terms) + t.tapAnd
+      + '<button type="button" class="sp-read" data-sp-action="open" data-sp-audience="' + aud(audience) + '">' + t.tapNotice + "</button>" + t.tapEnd + "</span>";
+  }
+
+  /** One line under sign-in and sign-up buttons: the Terms link and the itemised notice. */
+  function tapLine(audience, lang) {
+    var l = pick(lang), t = T[l];
+    ensureStyle();
+    return '<span class="sp-tap" translate="no">' + t.tapStart + link(LINKS.terms, t.terms) + t.tapAnd
+      + '<button type="button" class="sp-read" data-sp-action="open" data-sp-audience="' + aud(audience) + '">' + t.tapNotice + "</button>" + t.tapEnd + "</span>";
   }
 
   /** A full-screen screen shown to a signed-in account that has not agreed to this version. */
@@ -360,6 +394,8 @@
     LINKS: LINKS,
     noticeHtml: noticeHtml,
     consentLabel: consentLabel,
+    tapLine: tapLine,
+    tapLine: tapLine,
     gateHtml: gateHtml,
     openNotice: openNotice,
     closeNotice: closeNotice,

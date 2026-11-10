@@ -82,6 +82,7 @@ export function normalizeDispatchPolicy(value: unknown): DispatchPolicy {
     claimLeaseSeconds: boundedInteger(
       input.claimLeaseSeconds, DEFAULT_DISPATCH_POLICY.claimLeaseSeconds, 15, 300,
     ),
+    ...(input.batchingEnabled === false ? {batchingEnabled: false} : {}),
   };
 }
 
@@ -102,6 +103,32 @@ export function radiusForWave(policy: DispatchPolicy, wave: number): number {
  * policy snapshot so retries are deterministic even if operations later edits
  * the global policy.
  */
+/** An Online rider stays a backup this long after their phone stopped reporting. */
+export const STALE_SIGNAL_MAX_AGE_MS = 24 * 60 * 60_000;
+/** Riders with an old signal may not have the phone at hand, so the customer waits less on each. */
+export const STALE_SIGNAL_OFFER_SECONDS = 45;
+
+export function isUsableBackupSignal(signalAgeMs: number): boolean {
+  return Number.isFinite(signalAgeMs) && signalAgeMs <= STALE_SIGNAL_MAX_AGE_MS;
+}
+
+/** The shorter wait applies only when nobody in the wave has a live signal. */
+export function waveTimeoutSeconds(
+  offered: readonly Pick<RiderCandidate, "staleSignal">[],
+  policyTimeoutSeconds: number,
+): number {
+  return offered.length > 0 && offered.every((candidate) => candidate.staleSignal === true) ?
+    Math.min(policyTimeoutSeconds, STALE_SIGNAL_OFFER_SECONDS) : policyTimeoutSeconds;
+}
+
+/** Every rider with a live signal is tried before any rider with an old one. */
+export function compareSignalFreshness(
+  a: Pick<RiderCandidate, "staleSignal">,
+  b: Pick<RiderCandidate, "staleSignal">,
+): number {
+  return Number(a.staleSignal === true) - Number(b.staleSignal === true);
+}
+
 export function findNextDispatchWave(
   candidates: readonly RiderCandidate[],
   attemptedRiders: Readonly<Record<string, number>>,

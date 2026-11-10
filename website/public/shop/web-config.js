@@ -3,10 +3,11 @@
  * identifiers, which are public by design; access is enforced by Firestore
  * rules, Firebase Auth and App Check on the server, not by hiding them.
  *
- * recaptchaEnterpriseSiteKey: App Check key for this site. Until it is set
- * (Firebase console -> App Check -> Apps -> "Savrivo Core" web app ->
- * reCAPTCHA Enterprise), browsing works but the server refuses orders from
- * the website, and the checkout says so.
+ * recaptchaEnterpriseSiteKey: App Check key for this site (reCAPTCHA
+ * Enterprise key "Scraveit website (App Check)", score-based, allowed on
+ * scraveit.in, www.scraveit.in and the scraveit-in Firebase domains;
+ * registered on the "Savrivo Core" web app in Firebase App Check on
+ * 2026-11-01). It is public, like the identifiers above.
  */
 window.SCRAVEIT_WEB = {
   firebase: {
@@ -33,7 +34,7 @@ window.SCRAVEIT_WEB = {
     "scraveit-review-restaurant-EV4JHY", "scraveit-review-grocery-myd9gx", "scraveit-review-dairy-6M5O8g",
     "test-dairy-RiRE8m", "tirumuru-balaji-restaurant-r36PY4", "tirumuru-balaji-store-r36PY4", "shaik-sabdhar-restaurant-EOsmg8",
   ],
-  recaptchaEnterpriseSiteKey: "",
+  recaptchaEnterpriseSiteKey: "6Lf4eAouAAAAACJ_fj6kndRKtK3m24OQ0h0Bs1z5",
   company: {
     legalName: "SCRAVEIT PRIVATE LIMITED",
     cin: "U62099AP2026PTC128252",

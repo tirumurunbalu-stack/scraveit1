@@ -1,6 +1,7 @@
 import {randomBytes} from "node:crypto";
 import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
+import {menuPricingOf} from "../domain/markupPricing";
 import {priceCart, roundMoney} from "../domain/order";
 import {DomainError} from "../errors";
 import type {SavrivoOrder} from "../types";
@@ -75,7 +76,7 @@ export async function parentPayRequest(uid: string, input: ParentPayRequestInput
   ]);
   let priced: ReturnType<typeof priceCart>;
   try {
-    priced = priceCart(input.items, menuById);
+    priced = priceCart(input.items, menuById, menuPricingOf(restaurant));
   } catch {
     throw new DomainError("failed-precondition", "Something in your cart changed. Check your cart and try again.");
   }
@@ -94,10 +95,11 @@ export async function parentPayRequest(uid: string, input: ParentPayRequestInput
     cart: input.items,
     lines: priced.items.map((item) => ({
       name: item.name, quantity: item.quantity, variant: item.variant,
-      amount: roundMoney((item.price + item.variantPrice + item.addOnTotal) * item.quantity),
+      // Markup restaurants: the GST-inclusive price the child saw.
+      amount: roundMoney((item.listPrice ?? (item.price + item.variantPrice + item.addOnTotal)) * item.quantity),
     })),
-    subtotal: priced.subtotal,
-    estimate: shownEstimate(priced.subtotal, input.shownTotal),
+    subtotal: priced.markup?.listSubtotal ?? priced.subtotal,
+    estimate: shownEstimate(priced.markup?.listSubtotal ?? priced.subtotal, input.shownTotal),
     instructions: input.instructions, contactless: input.contactless, tip: input.tip,
     status: "pending", createdAt: now, expiresAt: now + PARENT_PAY_TTL_MS,
   };

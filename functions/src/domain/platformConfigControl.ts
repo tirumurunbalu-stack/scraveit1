@@ -23,6 +23,7 @@ const dispatchPatchSchema = z.object({
   reofferCooldownMs: z.number().int().min(30_000).max(24 * 60 * 60_000).optional(),
   fairnessLoadPenaltyKm: z.number().finite().min(0).max(100).optional(),
   claimLeaseSeconds: z.number().int().min(15).max(300).optional(),
+  batchingEnabled: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "Dispatch patch cannot be empty.");
 
 const financePaymentsPatchSchema = z.object({

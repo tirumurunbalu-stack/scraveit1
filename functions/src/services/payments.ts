@@ -61,6 +61,19 @@ export interface PaymentGateway {
   readonly configured: boolean;
   createIntent(order: SavrivoOrder, request: PaymentIntentRequest): Promise<PaymentIntent>;
   verifyWebhook(headers: Record<string, string | undefined>, rawBody: Buffer): Promise<VerificationResult>;
+  /**
+   * Stops a provider order from taking money. "closed": no payment can land
+   * any more; "paid": money was taken; "busy": a payment may still be in flight.
+   */
+  closeOrder?(merchantOrderId: string): Promise<"closed" | "paid" | "busy">;
+  /** "received": money taken (our webhook may not have landed yet); "pending": still in flight; "not_paid": nothing will land. */
+  paymentStatus?(merchantOrderId: string): Promise<"received" | "pending" | "not_paid">;
+  /**
+   * Sends the full amount back. Safe to repeat: the provider keys it on refundId.
+   * "accepted": the provider took it (its webhook confirms the money left);
+   * "rejected": the provider refused, so a person must look at it.
+   */
+  refund?(merchantOrderId: string, refundId: string, amountPaise: number, note: string): Promise<"accepted" | "rejected">;
 }
 
 export type PaymentDatabase = FirestoreLike;
@@ -288,6 +301,52 @@ function currentAttempt(record: CanonicalPaymentRecord): CanonicalPaymentAttempt
 async function readCanonicalPayment(orderId: string, database: PaymentDatabase): Promise<CanonicalPaymentRecord | null> {
   const snapshot = await canonicalPaymentRef(database, orderId).get();
   return paymentRecord(snapshot.exists ? snapshot.data() : null, orderId);
+}
+
+/**
+ * Closes every provider order started for this Scraveit order, so an order
+ * given up on can't be paid later. Throws when money was taken or a payment
+ * is still in flight; the caller then must not cancel the order.
+ */
+export async function closeUnpaidPaymentAttempts(
+  orderId: string,
+  gateway: PaymentGateway,
+  database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
+): Promise<void> {
+  const record = await readCanonicalPayment(orderId, database);
+  if (!record) return;
+  if (["authorized", "paid", "refund_requested", "refund_processing", "refund_failed", "refunded"].includes(record.aggregate.state)) {
+    throw new DomainError("already-exists", "Your payment was received. Your order will confirm in a moment.");
+  }
+  const attempts = Object.values(record.attempts ?? {});
+  if (attempts.length && !gateway.closeOrder) throw new DomainError("unavailable", "Payment status can't be checked right now. Try again in a minute.");
+  for (const attempt of attempts) {
+    const result = await gateway.closeOrder!(attempt.attemptId);
+    if (result === "paid") throw new DomainError("already-exists", "Your payment was received. Your order will confirm in a moment.");
+    if (result === "busy") throw new DomainError("unavailable", "A payment is still being processed. Wait a minute and try again.");
+  }
+}
+
+/**
+ * What the app shows while the customer waits after paying: "paid" once our
+ * verified webhook marked the order paid; otherwise what the gateway reports
+ * for the current attempt. Never changes the order.
+ */
+export async function checkOrderPaymentStatus(
+  uid: string,
+  orderId: string,
+  gateway: PaymentGateway,
+  database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
+): Promise<"paid" | "received" | "pending" | "not_paid"> {
+  const snapshot = await orderRef(database, orderId).get();
+  const order = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+  if (!order || (order.customerId !== uid && order.payerUid !== uid)) throw new DomainError("not-found", "Order not found.");
+  if (order.paymentState === "paid" || order.paymentState === "refunded") return "paid";
+  if (order.status === "Cancelled") return "not_paid";
+  const record = await readCanonicalPayment(order.id, database);
+  const attempt = record ? currentAttempt(record) : undefined;
+  if (!attempt || !gateway.paymentStatus) return "not_paid";
+  return gateway.paymentStatus(attempt.attemptId);
 }
 
 async function persistLegacyAttemptProjection(
@@ -713,6 +772,118 @@ export async function applyVerifiedPayment(
   // transition or duplicate ledger entry.
   await persistCallbackLedger(order, committed, event, receivedAt, database);
   await persistLegacyCallbackProjection(order, committed, event, receivedAt, database);
+}
+
+/** Cashfree's refund_id for a payment: fixed, so asking twice can never refund twice. */
+export function providerRefundId(refundRequestId: string): string {
+  return `SVREF_${hash(refundRequestId).slice(0, 32).toUpperCase()}`;
+}
+
+async function persistPaymentProjection(order: SavrivoOrder, record: CanonicalPaymentRecord, database: PaymentDatabase): Promise<void> {
+  const projection = paymentCompatibilityProjection(record.aggregate);
+  if (!projection.paymentState) return;
+  await orderRef(database, order.id).set({
+    paymentState: projection.paymentState,
+    paymentPhase: projection.paymentPhase,
+    paymentStateVersion: projection.paymentStateVersion,
+    paymentRevision: projection.paymentRevision,
+    paymentUpdatedAt: projection.paymentUpdatedAt,
+    updatedAt: projection.paymentUpdatedAt,
+  }, {merge: true});
+}
+
+export type CancelledOrderRefundResult = "refund_started" | "already_refunding" | "nothing_to_refund" | "rejected";
+
+/**
+ * Money on a cancelled order goes back by itself: a paid order that the
+ * restaurant, the customer or an admin cancelled, or a payment that landed after
+ * the customer gave up on it. Always the full amount, at most once. Cashfree's
+ * refund webhook then marks it refunded and posts the ledger entry.
+ */
+export async function refundCancelledOrderPayment(
+  orderId: string,
+  gateway: PaymentGateway,
+  database: PaymentDatabase = firestoreDb as unknown as PaymentDatabase,
+  now: () => number = Date.now,
+): Promise<CancelledOrderRefundResult> {
+  const orderSnapshot = await orderRef(database, orderId).get();
+  const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
+  if (!order || order.status !== "Cancelled" || !eligibleOnlinePaymentMethod(order.paymentMethod)) return "nothing_to_refund";
+  if (orderPaymentProvider(order) !== gateway.provider) return "nothing_to_refund";
+  const observed = await readCanonicalPayment(order.id, database);
+  if (!observed) return "nothing_to_refund";
+  if (["refund_processing", "refunded"].includes(observed.aggregate.state)) return "already_refunding";
+  if (observed.aggregate.state === "refund_failed") return "rejected";
+  if (!["paid", "refund_requested"].includes(observed.aggregate.state)) return "nothing_to_refund";
+  if (!gateway.refund) throw new DomainError("unavailable", "Refunds can't be sent right now.");
+
+  const paymentRef = canonicalPaymentRef(database, order.id);
+  const refundRequestId = observed.aggregate.refundRequestId ?? `refund:${observed.aggregate.paymentId}`;
+  const actor = {role: "system" as const, id: `system:${gateway.provider}-refund`};
+  // 1. Record that we're refunding, before the money moves.
+  const requested = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(paymentRef);
+    let record = paymentRecord(snapshot.exists ? snapshot.data() : null, order.id);
+    if (!record) throw new DomainError("data-loss", "Payment record disappeared.");
+    if (record.aggregate.state === "paid") {
+      const operationId = `system:refund-request:${refundRequestId}`;
+      record = appendMutation(record, applyPaymentCommand(record.aggregate, {
+        operationId,
+        toState: "refund_requested",
+        actor,
+        occurredAt: now(),
+        refundRequestId,
+        refundAmountPaise: record.aggregate.amountPaise,
+        reasonCode: "ORDER_CANCELLED",
+      }, priorOperation(record, operationId)));
+      const next = serializable(record);
+      transaction.set(paymentRef, next);
+      return next;
+    }
+    return record;
+  });
+  if (requested.aggregate.state !== "refund_requested") {
+    return ["refund_processing", "refunded"].includes(requested.aggregate.state) ? "already_refunding" : "nothing_to_refund";
+  }
+  await persistPaymentProjection(order, requested, database);
+
+  // 2. Ask Cashfree. A crash or error here leaves "refund_requested", and the next try asks again with the same refund_id.
+  const attemptId = requested.aggregate.currentAttemptId;
+  if (!attemptId) throw new DomainError("data-loss", "Paid payment has no provider order to refund.");
+  const answer = await gateway.refund(attemptId, providerRefundId(refundRequestId), requested.aggregate.amountPaise,
+    `Order ${order.id} was cancelled`);
+
+  // 3. Record Cashfree's answer.
+  const settled = await database.runTransaction(async (transaction: TransactionLike) => {
+    const snapshot = await transaction.get(paymentRef);
+    let record = paymentRecord(snapshot.exists ? snapshot.data() : null, order.id);
+    if (!record) throw new DomainError("data-loss", "Payment record disappeared.");
+    if (record.aggregate.state !== "refund_requested") return record;
+    const processingId = `system:refund-processing:${refundRequestId}:requested`;
+    record = appendMutation(record, applyPaymentCommand(record.aggregate, {
+      operationId: processingId,
+      toState: "refund_processing",
+      actor,
+      occurredAt: now(),
+      refundRequestId,
+    }, priorOperation(record, processingId)));
+    if (answer === "rejected") {
+      const failedId = `system:refund-failed:${refundRequestId}:rejected`;
+      record = appendMutation(record, applyPaymentCommand(record.aggregate, {
+        operationId: failedId,
+        toState: "refund_failed",
+        actor,
+        occurredAt: now(),
+        refundRequestId,
+        reasonCode: "PROVIDER_REFUSED_REFUND",
+      }, priorOperation(record, failedId)));
+    }
+    const next = serializable(record);
+    transaction.set(paymentRef, next);
+    return next;
+  });
+  await persistPaymentProjection(order, settled, database);
+  return settled.aggregate.state === "refund_failed" ? "rejected" : "refund_started";
 }
 
 export function callbackHash(rawBody: Buffer): string {

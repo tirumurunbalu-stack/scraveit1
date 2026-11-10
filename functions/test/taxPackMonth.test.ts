@@ -143,8 +143,8 @@ describe("a test month through the tax pack (no real bank)", () => {
 
     // Invoice numbers per series, no gaps.
     const invoices = sheets.find((sheet) => sheet.name === "Invoices")!.rows.map((row) => String(row.invoiceNo));
-    expect(invoices.filter((no) => no.startsWith("SCR/RS/26-27/")).sort()).toEqual(
-      ["000001", "000002", "000003", "000004", "000005"].map((n) => `SCR/RS/26-27/${n}`));
+    expect(invoices.filter((no) => no.startsWith("RS2627/")).sort()).toEqual(
+      ["000001", "000002", "000003", "000004", "000005"].map((n) => `RS2627/${n}`));
   });
 
   it("flags a missing payout, a wrong amount and an unknown bank entry", async () => {

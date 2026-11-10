@@ -37,6 +37,7 @@ function makeContext() {
   const elements = new Map();
   const document = {
     documentElement: makeElement(),
+    body: Object.assign(makeElement(), { appendChild() {} }),
     visibilityState: "visible",
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, makeElement());

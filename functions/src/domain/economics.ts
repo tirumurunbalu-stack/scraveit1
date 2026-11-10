@@ -449,6 +449,8 @@ export interface OrderEconomicsInput {
   walletRedeemPaise?: number;
   /** Tax charged to the restaurant on Scraveit's commission (CA-defined rules only). */
   commissionTaxPaise?: number;
+  /** Markup restaurants: the commission in paise instead of commissionBps (see domain/markupPricing.ts). */
+  commissionPaiseOverride?: number;
   taxVersionId?: string;
   ruleIds?: string[];
 }
@@ -614,8 +616,10 @@ export function computeOrderEconomics(
   const payablePaise = customerPayable(input);
   if (payablePaise < 0) throw new Error("ECONOMICS_WALLET_EXCEEDS_BILL");
   const commissionBasePaise = input.itemSubtotalPaise - input.restaurantDiscountPaise;
-  const commissionPaise = bpsOf(commissionBasePaise, input.commissionBps);
   const commissionTaxPaise = input.commissionTaxPaise ?? 0;
+  const commissionPaise = input.commissionPaiseOverride === undefined ?
+    bpsOf(commissionBasePaise, input.commissionBps) :
+    Math.max(0, Math.min(nonNegative(input.commissionPaiseOverride), commissionBasePaise - commissionTaxPaise));
   // Busy-kitchen fee: the restaurant's share is paid out with its food money.
   const rushFeeSharePaise = bpsOf(input.surgeFeePaise, policy.restaurantRushShareBps);
   const receivablePaise = commissionBasePaise - commissionPaise - commissionTaxPaise + rushFeeSharePaise;

@@ -18,6 +18,8 @@ import {
   istDate,
   normalizePersonName,
   renderAgreement,
+  storeTypeOf,
+  validDrugLicence,
   validIfsc,
   validPan,
   validGstEnrolment,
@@ -81,9 +83,10 @@ function agreementSections(app: Rec, party: AgreementParty): {sections: Agreemen
     ownerName: str(app.ownerName, 120),
     address: [str(location.address, 300) || str(app.address, 300), str(location.city ?? app.city, 80)].filter(Boolean).join(", "),
     fssaiNumber: str(rec(app.fssai).number, 14),
+    drugLicenceNumber: str(rec(app.drugLicence).number, 60).toUpperCase(),
     pan: str(rec(app.pan).number, 10).toUpperCase(),
     gstin: str(app.gstin, 15).toUpperCase(),
-    storeType: str(app.storeType) || "restaurant",
+    storeType: storeTypeOf(app.storeType),
     gstMode: goodsGstMode(app),
     gstEnrolment: str(app.gstEnrolment, 20).toUpperCase(),
     commissionBps: Number(terms.commissionBps ?? STANDARD_COMMISSION_BPS),
@@ -94,7 +97,7 @@ function agreementSections(app: Rec, party: AgreementParty): {sections: Agreemen
 }
 
 function sellsGoods(app: Rec): boolean {
-  return ["grocery", "dairy"].includes(str(app.storeType));
+  return storeTypeOf(app.storeType) !== "restaurant";
 }
 
 export function goodsGstMode(app: Rec): GoodsGstMode | undefined {
@@ -112,9 +115,19 @@ export function applicationIssues(app: Rec): string[] {
   const location = rec(app.location);
   if (!Number.isFinite(Number(location.lat)) || !Number.isFinite(Number(location.lng)) || !str(location.address ?? app.address)) issues.push("Location pin and address");
   const fssai = rec(app.fssai);
-  if (!assessFssai(fssai.number).ok) issues.push("FSSAI number");
-  if (!str(fssai.photoPath)) issues.push("FSSAI certificate photo");
-  if (fssai.expiresOn && String(fssai.expiresOn) < istDate(Date.now())) issues.push("FSSAI licence has expired");
+  if (storeTypeOf(app.storeType) === "pharmacy") {
+    // A pharmacy is licensed under the Drugs and Cosmetics Act; FSSAI is
+    // needed only if it also sells food such as baby food, so it's optional.
+    const licence = rec(app.drugLicence);
+    if (!validDrugLicence(licence.number)) issues.push("Drug licence number");
+    if (!str(licence.photoPath)) issues.push("Drug licence photo");
+    if (licence.expiresOn && String(licence.expiresOn) < istDate(Date.now())) issues.push("Drug licence has expired");
+    if (str(fssai.number) && !assessFssai(fssai.number).ok) issues.push("FSSAI number");
+  } else {
+    if (!assessFssai(fssai.number).ok) issues.push("FSSAI number");
+    if (!str(fssai.photoPath)) issues.push("FSSAI certificate photo");
+    if (fssai.expiresOn && String(fssai.expiresOn) < istDate(Date.now())) issues.push("FSSAI licence has expired");
+  }
   const pan = rec(app.pan);
   if (!validPan(pan.number)) issues.push("PAN");
   if (app.gstin && !assessGstin(app.gstin, str(pan.number)).ok) issues.push("GSTIN");
@@ -369,8 +382,9 @@ export async function getRestaurantApplicationReview(
   requirePlatformConfigAdminClaim(token);
   const app = await loadApplication(database, appId);
   const paths: Record<string, string> = {};
-  const fssai = rec(app.fssai), pan = rec(app.pan), bank = rec(app.bank), menu = rec(app.menu);
+  const fssai = rec(app.fssai), pan = rec(app.pan), bank = rec(app.bank), menu = rec(app.menu), licence = rec(app.drugLicence);
   if (str(fssai.photoPath)) paths.fssai = str(fssai.photoPath);
+  if (str(licence.photoPath)) paths.drugLicence = str(licence.photoPath);
   if (str(pan.photoPath)) paths.pan = str(pan.photoPath);
   if (str(bank.proofPath)) paths.bank = str(bank.proofPath);
   (Array.isArray(menu.cardPhotoPaths) ? menu.cardPhotoPaths : []).slice(0, 6).forEach((p, i) => { paths[`menu${i + 1}`] = str(p); });
@@ -397,6 +411,7 @@ export async function getRestaurantApplicationReview(
     issues: applicationIssues(app),
     checks: {
       fssai: assessFssai(fssai.number),
+      drugLicence: storeTypeOf(app.storeType) === "pharmacy" ? {ok: validDrugLicence(licence.number), number: str(licence.number, 60)} : null,
       pan: validPan(pan.number),
       panNameMatches: normalizePersonName(pan.name) ? normalizePersonName(pan.name) === normalizePersonName(app.ownerName) ||
         normalizePersonName(pan.name) === normalizePersonName(app.legalName) : null,
@@ -437,7 +452,7 @@ export async function approveRestaurantApplication(
   const now = Date.now();
   const restaurantId = `${slug(str(app.restaurantName))}-${ownerUid.slice(0, 6).toLowerCase()}`;
   const location = rec(app.location), fssai = rec(app.fssai), pan = rec(app.pan), bank = rec(app.bank), hours = rec(app.hours);
-  const storeType = ["grocery", "dairy"].includes(str(app.storeType)) ? str(app.storeType) : "restaurant";
+  const storeType = storeTypeOf(app.storeType), licence = rec(app.drugLicence);
   const listing: Rec = {
     id: restaurantId, name: str(app.restaurantName, 120), phone: str(app.phone, 20), storeType,
     outletType: str(app.outletType, 40), address: str(location.address ?? app.address, 300), area: str(location.area, 80),
@@ -446,6 +461,7 @@ export async function approveRestaurantApplication(
     cuisines: (Array.isArray(app.cuisines) ? app.cuisines : [str(app.cuisines)]).map((c) => str(c, 40)).filter(Boolean).slice(0, 8),
     opensAt: str(hours.open, 5), opensUntil: str(hours.close, 5), openDays: Array.isArray(hours.days) ? hours.days.slice(0, 7) : [],
     fssaiNumber: str(fssai.number, 14), fssaiKind: assessFssai(fssai.number).kind, fssaiExpiresOn: str(fssai.expiresOn, 10),
+    ...(storeType === "pharmacy" ? {drugLicenceNumber: str(licence.number, 60).toUpperCase(), drugLicenceExpiresOn: str(licence.expiresOn, 10)} : {}),
     commissionBps: Number(agreement.commissionBps), commissionTermMonths: Number(agreement.termMonths ?? 12),
     agreementVersion: str(agreement.version), agreementSignedAt: Number(agreement.signedAt),
     open: false, archived: false, rating: 0, ratingCount: 0, etaMin: 25, etaMax: 35, deliveryFee: 0, platformFee: 12,
@@ -503,6 +519,7 @@ export interface LiveAgreementDetails {
   ownerName?: string;
   pan?: string;
   fssaiNumber?: string;
+  drugLicenceNumber?: string;
   gstin?: string;
   gstMode?: "enrolment" | "exempt_only";
   gstEnrolment?: string;
@@ -513,7 +530,7 @@ export interface LiveAgreementView extends AgreementView {
   storeType: string;
   issues: string[];
   /** Which details Scraveit already holds, so the app only asks for the rest. */
-  known: {ownerName: boolean; pan: boolean; fssaiNumber: boolean; gstin: boolean};
+  known: {ownerName: boolean; pan: boolean; fssaiNumber: boolean; drugLicenceNumber: boolean; gstin: boolean};
   rateSource: "plan" | "restaurant" | "default";
 }
 
@@ -535,7 +552,7 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
   if (!restaurantSnap.exists) throw new DomainError("not-found", "Store not found.");
   const restaurant = rec(restaurantSnap.data());
   const payout = rec(payoutSnap.exists ? payoutSnap.data() : null);
-  const storeType = ["grocery", "dairy"].includes(str(restaurant.storeType)) ? str(restaurant.storeType) : "restaurant";
+  const storeType = storeTypeOf(restaurant.storeType), pharmacy = storeType === "pharmacy";
   // What Scraveit holds always wins; details fill only the gaps.
   // Admin creates the owner as "<store name> Owner": a placeholder, not a person, so ask for the real name.
   const memberName = str(member.name, 120);
@@ -545,11 +562,13 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
     ownerName: placeholderName ? "" : memberName,
     pan: str(payout.panNumber, 10).toUpperCase(),
     fssaiNumber: str(restaurant.fssaiNumber, 14),
+    drugLicenceNumber: str(restaurant.drugLicenceNumber, 60),
     gstin: str(payout.gstin, 15).toUpperCase(),
   };
   const ownerName = held.ownerName || str(details.ownerName, 120);
   const pan = held.pan || str(details.pan, 10).toUpperCase();
   const fssaiNumber = held.fssaiNumber || str(details.fssaiNumber, 14).replace(/\s+/g, "");
+  const drugLicenceNumber = held.drugLicenceNumber || str(details.drugLicenceNumber, 60).toUpperCase();
   const gstin = held.gstin || str(details.gstin, 15).toUpperCase();
   const app: Rec = {
     restaurantName: str(restaurant.name, 120),
@@ -557,6 +576,7 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
     ownerName,
     location: {address: str(restaurant.address, 300), city: str(restaurant.city, 80)},
     fssai: {number: fssaiNumber},
+    drugLicence: {number: drugLicenceNumber},
     pan: {number: pan},
     gstin,
     storeType,
@@ -569,7 +589,10 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
   if (!str(rec(app.location).address)) issues.push("Store address");
   if (normalizePersonName(ownerName).length < 3) issues.push("Owner's full name");
   if (!validPan(pan)) issues.push("PAN");
-  if (!assessFssai(fssaiNumber).ok) issues.push("FSSAI number");
+  if (pharmacy) {
+    if (!validDrugLicence(drugLicenceNumber)) issues.push("Drug licence number");
+    if (fssaiNumber && !assessFssai(fssaiNumber).ok) issues.push("FSSAI number");
+  } else if (!assessFssai(fssaiNumber).ok) issues.push("FSSAI number");
   if (gstin && !assessGstin(gstin, pan).ok) issues.push("GSTIN");
   if (sellsGoods(app) && !gstin && goodsGstMode(app) === "enrolment" && !validGstEnrolment(app.gstEnrolment)) {
     issues.push("GST enrolment number (or a GSTIN)");
@@ -613,7 +636,8 @@ export async function getLiveRestaurantAgreement(
     restaurantId: input.restaurantId,
     storeType: built.storeType,
     issues: isSigned ? [] : built.issues,
-    known: {ownerName: Boolean(built.held.ownerName), pan: Boolean(built.held.pan), fssaiNumber: Boolean(built.held.fssaiNumber), gstin: Boolean(built.held.gstin)},
+    known: {ownerName: Boolean(built.held.ownerName), pan: Boolean(built.held.pan), fssaiNumber: Boolean(built.held.fssaiNumber),
+      drugLicenceNumber: Boolean(built.held.drugLicenceNumber), gstin: Boolean(built.held.gstin)},
     rateSource: built.commission.source,
   };
 }
@@ -669,10 +693,11 @@ export async function signLiveRestaurantAgreement(
   // The signed rate is what the store is charged for the term: pin it unless a dated plan sets it.
   const listing: Rec = {agreementVersion: AGREEMENT_VERSION, agreementSignedAt: now, agreementHash: hash, commissionTermMonths: termMonths, updatedAt: now};
   if (built.commission.source === "default") listing.commissionBps = commissionBps;
-  if (!built.held.fssaiNumber) {
+  if (!built.held.fssaiNumber && str(rec(built.app.fssai).number)) {
     listing.fssaiNumber = str(rec(built.app.fssai).number);
     listing.fssaiKind = assessFssai(listing.fssaiNumber).kind;
   }
+  if (built.storeType === "pharmacy" && !built.held.drugLicenceNumber) listing.drugLicenceNumber = str(rec(built.app.drugLicence).number);
   if (sellsGoods(built.app) && !built.held.gstin) {
     listing.gstMode = goodsGstMode(built.app);
     if (listing.gstMode === "enrolment") listing.gstEnrolment = str(built.app.gstEnrolment);

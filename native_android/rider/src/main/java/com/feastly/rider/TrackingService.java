@@ -58,6 +58,7 @@ import javax.crypto.spec.GCMParameterSpec;
 public class TrackingService extends Service implements LocationListener {
     public static final String ACTION_STOP = "com.feastly.rider.action.STOP_TRACKING";
     public static final String ACTION_UPDATE_AUTH = "com.feastly.rider.action.UPDATE_TRACKING_AUTH";
+    public static final String ACTION_RESTORE = "com.feastly.rider.action.RESTORE_TRACKING";
     public static final String ACTION_STATE = "com.feastly.rider.action.TRACKING_STATE";
     public static final String EXTRA_STATE = "state";
     public static final String EXTRA_MESSAGE = "message";
@@ -97,6 +98,7 @@ public class TrackingService extends Service implements LocationListener {
     // genuinely still online, just stationary.
     private static final float STATIONARY_DISTANCE_METERS = 15f;
     private static final long STATIONARY_UPLOAD_CEILING_MS = 20_000L;
+    private static final float CLOSE_TO_DOOR_METERS = 150f;
 
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -140,6 +142,11 @@ public class TrackingService extends Service implements LocationListener {
     private int lastWriteResponseCode = -1;
     private volatile String firebaseDatabaseRoot = "";
     private volatile boolean stopping;
+    private static volatile boolean running;
+    private boolean foregroundStarted;
+    private boolean locationRegistered;
+    private boolean locationServicesOff;
+    private volatile boolean lastRefreshRefused;
     private boolean syncFailureReported;
     private String lastReportedState = "";
     private String lastReportedMessage = "";
@@ -148,6 +155,7 @@ public class TrackingService extends Service implements LocationListener {
         @Override public void run() {
             if (stopping) return;
             long now = System.currentTimeMillis();
+            watchLocationServices();
             network.execute(() -> heartbeatAndVerify(now));
             mainHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS);
         }
@@ -164,7 +172,7 @@ public class TrackingService extends Service implements LocationListener {
             return START_REDELIVER_INTENT;
         }
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            requestStop(safe(intent.getStringExtra("reason")));
+            handleStopRequest(safe(intent.getStringExtra("reason")));
             return START_NOT_STICKY;
         }
         String previousCustomerId = customerId;
@@ -174,10 +182,15 @@ public class TrackingService extends Service implements LocationListener {
         String previousPhase = phase;
         boolean previousAvailabilityOnly = availabilityOnly;
         String previousProximityStatus = lastProximityStatus;
-        boolean restored = intent == null ? restoreSession() : readSessionIntent(intent);
+        // Android hands back every old start after it kills the process, so the saved session,
+        // always the newest one, wins over those intents and their old tokens.
+        boolean restoring = intent == null || ACTION_RESTORE.equals(intent.getAction())
+                || (flags & START_FLAG_REDELIVERY) != 0;
+        boolean restored = restoring ? restoreSession() : readSessionIntent(intent);
         if (!restored) {
             clearPersistedSession();
             publishState("stopped", "Active delivery could not be restored safely.");
+            keepForegroundPromise();
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -200,6 +213,7 @@ public class TrackingService extends Service implements LocationListener {
                 || (firebaseApiKey.length() > 0 && !safeFirebaseApiKey(firebaseApiKey))) {
             clearPersistedSession();
             publishState("stopped", "Active delivery credentials were invalid.");
+            keepForegroundPromise();
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -213,6 +227,7 @@ public class TrackingService extends Service implements LocationListener {
         authFailureAt = 0;
         if (!persistSession()) {
             clearPersistedSession();
+            keepForegroundPromise();
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -223,17 +238,24 @@ public class TrackingService extends Service implements LocationListener {
             }
             return START_REDELIVER_INTENT;
         }
-        try {
+        // Already foreground: Android doesn't need telling again, and from the background it
+        // could refuse a location service. The notification text is all that changes.
+        if (foregroundStarted) refreshNotification();
+        else try {
             startForeground(NOTIFICATION_ID, buildNotification());
+            foregroundStarted = true;
+            running = true;
         } catch (RuntimeException error) {
             Log.e(TAG, "TRACKING_FOREGROUND_START_BLOCKED", error);
-            clearPersistedSession();
+            // The session stays saved: the next open, phone restart or wake push can still use it.
             publishState("sync_error", availabilityOnly
                     ? "Online availability will resume when Scraveit is back on screen."
                     : "Live tracking will resume when Scraveit is back on screen.");
             stopSelf();
             return START_NOT_STICKY;
         }
+        lastPresenceAt = 0;
+        lastHeartbeatAt = 0;
         beginLocationUpdates();
         mainHandler.removeCallbacks(heartbeatTask);
         mainHandler.post(heartbeatTask);
@@ -243,6 +265,111 @@ public class TrackingService extends Service implements LocationListener {
         // Ask Android to redeliver the last validated delivery intent if the process is reclaimed.
         // The service still stops itself for an invalid, expired, or explicitly stopped session.
         return START_REDELIVER_INTENT;
+    }
+
+    /** Rider online rule: only going offline ends this service. A finished job just switches mode. */
+    private void handleStopRequest(String reason) {
+        if ("offline".equals(reason) || "auth_expired".equals(reason)) {
+            requestStop(reason);
+            return;
+        }
+        if (foregroundStarted) {
+            switchToAvailability("");
+            return;
+        }
+        // Not running: this start only carried the message, and the saved session stays for later.
+        keepForegroundPromise();
+        stopSelf();
+    }
+
+    /**
+     * Android won't let a closed app start a location service again, so a delivery that ends must
+     * never stop this one. It stays running and goes on telling dispatch the rider is available.
+     * A stop intent switches at once, so a new job's start right behind it can't be overwritten.
+     * Network-thread verdicts are posted, and expectedOrderId skips a late verdict about an old
+     * job once a new one has started; empty means any job.
+     */
+    private void switchToAvailability(String expectedOrderId) {
+        Runnable switchMode = () -> {
+            if (stopping || availabilityOnly) return;
+            if (expectedOrderId.length() > 0 && !expectedOrderId.equals(orderId)) return;
+            availabilityOnly = true;
+            customerId = "";
+            orderId = "";
+            restaurantId = "";
+            phase = "availability";
+            customerLat = Double.NaN;
+            customerLng = Double.NaN;
+            lastProximityStatus = "";
+            proximityCandidate = "";
+            proximityFixCount = 0;
+            missingJobChecks = 0;
+            deniedTrackingWrites = 0;
+            lastJobCheckAt = 0;
+            lastPresenceAt = 0;
+            lastHeartbeatAt = 0;
+            persistSession();
+            applyLocationUpdateRate();
+            refreshNotification();
+            publishState("active", "Online availability is active in the background.");
+            long now = System.currentTimeMillis();
+            network.execute(() -> heartbeatAndVerify(now));
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) switchMode.run();
+        else mainHandler.post(switchMode);
+    }
+
+    private void refreshNotification() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) manager.notify(NOTIFICATION_ID, buildNotification());
+    }
+
+    /** A startForegroundService call must reach startForeground even when the service then ends. */
+    private void keepForegroundPromise() {
+        if (foregroundStarted) return;
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification());
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
+            else stopForeground(true);
+        } catch (RuntimeException ignored) { }
+    }
+
+    /** Whether a rider session is saved for TrackingRestartReceiver to bring back. */
+    public static boolean hasStoredSession(Context context) {
+        return context.getSharedPreferences(SESSION_PREFS, MODE_PRIVATE).getBoolean("active", false);
+    }
+
+    public static boolean isRunning() {
+        return running;
+    }
+
+    /** Location switched off keeps the rider online and waiting; it carries on when it's back. */
+    private void watchLocationServices() {
+        boolean off = !locationServicesOn();
+        if (off != locationServicesOff) {
+            locationServicesOff = off;
+            refreshNotification();
+            if (off) publishState("location_off", "Phone Location is off. Turn it on to get delivery offers.");
+            else {
+                publishState("active", availabilityOnly
+                        ? "Online availability is active in the background."
+                        : "Live delivery tracking is active.");
+                beginLocationUpdates();
+                return;
+            }
+        }
+        if (!off && !locationRegistered) beginLocationUpdates();
+    }
+
+    private boolean locationServicesOn() {
+        LocationManager manager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        if (manager == null) return false;
+        try {
+            return manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void updateCredentials(Intent intent) {
@@ -364,10 +491,14 @@ public class TrackingService extends Service implements LocationListener {
                 ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
         builder.setSmallIcon(com.feastly.rider.R.drawable.savrivo_partner_notification)
                 .setColor(0xFF155EEF)
-                .setContentTitle(availabilityOnly
+                .setContentTitle(locationServicesOff
+                        ? "Scraveit Partner · Location is off"
+                        : availabilityOnly
                         ? "Scraveit Partner · Online for offers"
                         : "Scraveit Partner · Location active")
-                .setContentText(availabilityOnly
+                .setContentText(locationServicesOff
+                        ? "Turn on Location to get delivery offers."
+                        : availabilityOnly
                         ? "Location stays active so nearby delivery offers can reach you."
                         : "delivery".equals(phase)
                         ? "Live location is on while you navigate to the customer."
@@ -390,7 +521,7 @@ public class TrackingService extends Service implements LocationListener {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "Scraveit active delivery", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Visible while Scraveit Partner shares location for an assigned delivery.");
+        channel.setDescription("Visible while Scraveit Partner shares your location, when you are online or on a delivery.");
         channel.enableVibration(false);
         channel.setSound(null, null);
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -416,11 +547,13 @@ public class TrackingService extends Service implements LocationListener {
         activeLocationIntervalMs = isNearDestination() ? NEAR_LOCATION_INTERVAL_MS : NORMAL_LOCATION_INTERVAL_MS;
         try {
             requestUpdatesAtActiveInterval();
+            locationRegistered = true;
             Location last = newestLastKnown();
             if (last != null) handleLocation(last, true);
         } catch (Exception error) {
+            // watchLocationServices tries again on the next heartbeat.
+            locationRegistered = false;
             publishState("sync_error", "Location updates could not start. Check Location settings.");
-            stopTracking();
         }
     }
 
@@ -458,6 +591,15 @@ public class TrackingService extends Service implements LocationListener {
 
     private boolean isNearDestination() {
         return "Near you".equals(lastProximityStatus) || "Arrived".equals(lastProximityStatus);
+    }
+
+    // lastProximityStatus only changes after two fixes reach the door check, so it can't be what
+    // lets those first two fixes through when the rider is already standing at the door.
+    private boolean closeToDoor(Location location) {
+        if (!"delivery".equals(phase) || Double.isNaN(customerLat) || Double.isNaN(customerLng)) return false;
+        float[] toDoor = new float[1];
+        Location.distanceBetween(location.getLatitude(), location.getLongitude(), customerLat, customerLng, toDoor);
+        return toDoor[0] <= CLOSE_TO_DOOR_METERS;
     }
 
     // Called whenever lastProximityStatus might have changed (local GPS
@@ -514,7 +656,7 @@ public class TrackingService extends Service implements LocationListener {
         // Near the door the backend needs two fresh fixes to confirm arrival,
         // and the rider is standing still - skipping "unmoved" fixes there
         // made them wait up to 20 s per fix.
-        if (!isNearDestination() && lastLocation != null && !fromLastKnown
+        if (!isNearDestination() && !closeToDoor(location) && lastLocation != null && !fromLastKnown
                 && now - lastUploadAt < STATIONARY_UPLOAD_CEILING_MS) {
             float[] moved = new float[1];
             Location.distanceBetween(lastLocation.getLatitude(), lastLocation.getLongitude(),
@@ -559,22 +701,25 @@ public class TrackingService extends Service implements LocationListener {
 
     private void uploadLocation(double latitude, double longitude, float accuracy, float bearing, long timestamp) {
         if (stopping) return;
-        if (!availabilityOnly) {
+        // The job can end on the main thread at any moment, so this upload keeps one job's ids.
+        final String jobOrderId = orderId;
+        final String jobCustomerId = customerId;
+        if (!availabilityOnly && jobOrderId.length() > 0) {
             String payload = String.format(Locale.US,
                     "{\"customerId\":\"%s\",\"orderId\":\"%s\",\"riderId\":\"%s\",\"riderName\":\"%s\",\"lat\":%.7f,\"lng\":%.7f,\"accuracy\":%.1f,\"bearing\":%.1f,\"updatedAt\":%d,\"status\":\"live\",\"phase\":\"%s\"}",
-                    json(customerId), json(orderId), json(riderId), json(riderName),
+                    json(jobCustomerId), json(jobOrderId), json(riderId), json(riderName),
                     latitude, longitude, accuracy, bearing, timestamp, json(phase));
-            boolean trackingWritten = writePatch("/feastly/tracking/" + orderId, payload);
+            boolean trackingWritten = writePatch("/feastly/tracking/" + jobOrderId, payload);
             int trackingResponse = lastWriteResponseCode;
             if (trackingWritten && "delivery".equals(phase) && !Double.isNaN(customerLat) && !Double.isNaN(customerLng)) {
                 float[] toDoor = new float[1];
                 Location.distanceBetween(latitude, longitude, customerLat, customerLng, toDoor);
-                if (toDoor[0] <= PROXIMITY_SEND_METERS) writePatch("/feastly/trackingProximity/" + orderId, payload);
+                if (toDoor[0] <= PROXIMITY_SEND_METERS) writePatch("/feastly/trackingProximity/" + jobOrderId, payload);
             }
             if (trackingWritten) deniedTrackingWrites = 0;
             else if (trackingResponse == HttpURLConnection.HTTP_FORBIDDEN) {
                 deniedTrackingWrites++;
-                if (deniedTrackingWrites >= 2) requestStop("assignment_terminal");
+                if (deniedTrackingWrites >= 2) switchToAvailability(jobOrderId);
             }
         }
         if (!stopping && timestamp - lastPresenceAt >= PRESENCE_INTERVAL_MS) {
@@ -585,7 +730,8 @@ public class TrackingService extends Service implements LocationListener {
 
     private void heartbeatAndVerify(long timestamp) {
         if (stopping || riderId.length() == 0) return;
-        if (timestamp - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS - 1_000L
+        // With Location off the signal goes old on purpose: an old position must not win offers.
+        if (!locationServicesOff && timestamp - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS - 1_000L
                 && timestamp - lastPresenceAt >= PRESENCE_INTERVAL_MS - 1_000L) {
             double latitude = lastLocation == null ? Double.NaN : lastLocation.getLatitude();
             double longitude = lastLocation == null ? Double.NaN : lastLocation.getLongitude();
@@ -619,10 +765,11 @@ public class TrackingService extends Service implements LocationListener {
     }
 
     private void verifyActiveJob() {
+        final String checkedOrderId = orderId;
         ReadResult result = readJobDocument();
         if (result.code == HttpURLConnection.HTTP_NOT_FOUND) {
             missingJobChecks++;
-            if (missingJobChecks >= 2) requestStop("assignment_removed");
+            if (missingJobChecks >= 2) switchToAvailability(checkedOrderId);
             return;
         }
         if (result.code < 200 || result.code >= 300) return;
@@ -634,7 +781,7 @@ public class TrackingService extends Service implements LocationListener {
             String customer = firestoreString(fields, "customerId");
             if (!customerId.equals(customer) || "completed".equals(status) || "cancelled".equals(status)
                     || "Delivered".equals(orderStatus) || "Cancelled".equals(orderStatus)) {
-                requestStop("assignment_terminal");
+                switchToAvailability(checkedOrderId);
                 return;
             }
             missingJobChecks = 0;
@@ -718,7 +865,8 @@ public class TrackingService extends Service implements LocationListener {
             }
             if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
                 if (refreshIdToken()) continue;
-                handleAuthenticationFailure();
+                // No internet isn't a lost login: the next heartbeat just tries again.
+                if (lastRefreshRefused) handleAuthenticationFailure();
                 return false;
             }
             if (!transientResponse(responseCode) || attempt == 2) break;
@@ -777,7 +925,8 @@ public class TrackingService extends Service implements LocationListener {
             if ((result.code >= 200 && result.code < 300) || result.code == HttpURLConnection.HTTP_NOT_FOUND) return result;
             if (result.code == HttpURLConnection.HTTP_UNAUTHORIZED) {
                 if (refreshIdToken()) continue;
-                handleAuthenticationFailure();
+                // No internet isn't a lost login: the next heartbeat just tries again.
+                if (lastRefreshRefused) handleAuthenticationFailure();
                 return result;
             }
             if (!transientResponse(result.code) || attempt == 2) break;
@@ -845,7 +994,11 @@ public class TrackingService extends Service implements LocationListener {
     }
 
     private boolean refreshIdToken() {
-        if (!safeRefreshToken(refreshToken) || !safeFirebaseApiKey(firebaseApiKey)) return false;
+        lastRefreshRefused = false;
+        if (!safeRefreshToken(refreshToken) || !safeFirebaseApiKey(firebaseApiKey)) {
+            lastRefreshRefused = true;
+            return false;
+        }
         HttpURLConnection connection = null;
         try {
             String endpoint = "https://securetoken.googleapis.com/v1/token?key="
@@ -861,7 +1014,11 @@ public class TrackingService extends Service implements LocationListener {
             byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) { output.write(bytes); }
-            if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) return false;
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) {
+                lastRefreshRefused = code >= 400 && code < 500 && code != 408 && code != 429;
+                return false;
+            }
             JSONObject response = new JSONObject(readResponse(connection));
             String updatedToken = response.optString("id_token", "");
             String updatedRefresh = response.optString("refresh_token", refreshToken);
@@ -1021,6 +1178,10 @@ public class TrackingService extends Service implements LocationListener {
     }
 
     private void finishStop(String reason) {
+        // Going online again while this stop was on its way cancels it.
+        if (!stopping) return;
+        foregroundStarted = false;
+        running = false;
         clearPersistedSession();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
         else stopForeground(true);
@@ -1061,6 +1222,8 @@ public class TrackingService extends Service implements LocationListener {
 
     private void stopTracking() {
         stopping = true;
+        foregroundStarted = false;
+        running = false;
         mainHandler.removeCallbacks(heartbeatTask);
         if (locationManager != null) {
             try { stopLocationUpdates(); } catch (Exception ignored) { }
@@ -1073,6 +1236,7 @@ public class TrackingService extends Service implements LocationListener {
     }
 
     @Override public void onDestroy() {
+        running = false;
         mainHandler.removeCallbacks(heartbeatTask);
         if (locationManager != null) {
             try { stopLocationUpdates(); } catch (Exception ignored) { }
@@ -1088,7 +1252,7 @@ public class TrackingService extends Service implements LocationListener {
         try { enabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
                 || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER); }
         catch (Exception ignored) { }
-        if (!enabled) requestStop("location_off");
+        if (!enabled) watchLocationServices();
     }
     @Override public void onProviderEnabled(String provider) {
         if (!stopping) beginLocationUpdates();

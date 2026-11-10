@@ -17,6 +17,7 @@ describe("cart follow-up words", () => {
     expect(cartReminderCopy({...cart, storeType: "dairy", itemCount: 1, firstItem: "Toned milk"}))
       .toEqual({title: "🥛 Still need your dairy?", body: "Toned milk from Waffle Spot is saved in your cart. Fresh delivery is a tap away 🐄"});
     expect(cartReminderCopy({...cart, storeType: "grocery"}).title).toBe("🧺 Your basket is still here");
+    expect(cartReminderCopy({...cart, storeType: "pharmacy"}).title).toBe("🩹 Your health care items are waiting");
   });
 });
 

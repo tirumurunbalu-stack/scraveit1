@@ -91,16 +91,23 @@ function membershipAllowsFinance(
   member: RestaurantMembership | null,
   restaurantId: string,
   source: "path-scoped" | "legacy-global",
+  permissions: readonly string[],
 ): boolean {
   return isActiveMembershipForRestaurant(member, restaurantId, source) &&
-    ["restaurant_owner", "restaurant_manager"].includes(member?.role ?? "");
+    (["restaurant_owner", "restaurant_manager"].includes(member?.role ?? "") ||
+      permissions.some((permission) => member?.permissions?.[permission] === true));
 }
 
-async function authorizeRestaurantFinanceRead(
+/**
+ * Owners and managers, or staff the owner gave one of `permissions`
+ * ("finance" by default: payouts, invoices and tax statements).
+ */
+export async function authorizeRestaurantFinanceRead(
   uid: string,
   token: DecodedIdToken,
   restaurantId: string,
   database: RestaurantSettlementDatabase,
+  permissions: readonly string[] = ["finance"],
 ): Promise<void> {
   if (privileged(token)) return;
   const [normalized, legacy] = await Promise.all([
@@ -109,8 +116,8 @@ async function authorizeRestaurantFinanceRead(
   ]);
   const normalizedMember = (normalized.exists ? normalized.data() : null) as RestaurantMembership | null;
   const legacyMember = (legacy.exists ? legacy.data() : null) as RestaurantMembership | null;
-  if (membershipAllowsFinance(normalizedMember, restaurantId, "path-scoped") ||
-      membershipAllowsFinance(legacyMember, restaurantId, "legacy-global")) return;
+  if (membershipAllowsFinance(normalizedMember, restaurantId, "path-scoped", permissions) ||
+      membershipAllowsFinance(legacyMember, restaurantId, "legacy-global", permissions)) return;
   throw new DomainError("permission-denied", "Restaurant financial access is not permitted.");
 }
 

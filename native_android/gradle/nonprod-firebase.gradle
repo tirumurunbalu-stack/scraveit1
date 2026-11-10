@@ -38,7 +38,7 @@ dependencies.add("isolatedImplementation", "com.google.firebase:firebase-appchec
 // external file wins over the committed production default. (configureEach alone runs inside the
 // plugin's task-registration action and its value is subsequently replaced.)
 afterEvaluate {
-    // Store flavors (restaurant/grocery/dairy) name it process<Flavor>IsolatedGoogleServices.
+    // Store flavors (restaurant/grocery/dairy/healthcare) name it process<Flavor>IsolatedGoogleServices.
     tasks.matching { it.name ==~ /process\w*IsolatedGoogleServices/ }.configureEach { task ->
         task.dependsOn(rootProject.tasks.named("prepareNonProdFirebase"))
         task.googleServicesJsonFiles.set(externalConfig.map { file -> [file] })

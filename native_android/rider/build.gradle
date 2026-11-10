@@ -13,8 +13,8 @@ android {
         applicationId "com.feastly.rider"
         minSdk 24
         targetSdk 36
-        versionCode 100
-        versionName "3.15.0"
+        versionCode 108
+        versionName "3.16.7"
     }
 
     buildTypes {

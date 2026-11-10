@@ -8,11 +8,13 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -108,6 +110,8 @@ public final class FaceCaptureActivity extends ComponentActivity {
         startCamera();
     }
 
+    private View reviewActions;
+
     private View buildLayout() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -144,6 +148,32 @@ public final class FaceCaptureActivity extends ComponentActivity {
 
         root.addView(buildReviewOverlay(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // The app draws edge to edge, so keep Cancel and the prompt below the status bar
+        // (Cancel on its own row) and the review buttons above the navigation bar.
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int top;
+            int bottom;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                top = bars.top;
+                bottom = bars.bottom;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            closeParams.topMargin = top;
+            closeButton.setLayoutParams(closeParams);
+            promptParams.topMargin = top + dp(40);
+            promptLabel.setLayoutParams(promptParams);
+            if (reviewActions != null) {
+                FrameLayout.LayoutParams actionParams = (FrameLayout.LayoutParams) reviewActions.getLayoutParams();
+                actionParams.bottomMargin = bottom;
+                reviewActions.setLayoutParams(actionParams);
+            }
+            return insets;
+        });
         return root;
     }
 
@@ -220,6 +250,7 @@ public final class FaceCaptureActivity extends ComponentActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         actionParams.gravity = Gravity.BOTTOM;
         reviewOverlay.addView(actions, actionParams);
+        reviewActions = actions;
         return reviewOverlay;
     }
 

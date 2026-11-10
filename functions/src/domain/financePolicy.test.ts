@@ -7,18 +7,30 @@ import {
 } from "./financePolicy";
 
 describe("finance payment policy", () => {
-  it("falls back to COD when every persisted payment method is disabled", () => {
+  it("keeps COD off even when every payment method is disabled", () => {
     const policy = normalizeFinancePolicy({
       payments: {
         codEnabled: false,
         upiEnabled: false,
         cardEnabled: false,
-        defaultMethod: "upi",
+        defaultMethod: "cod",
       },
     });
 
-    expect(policy.payments.codEnabled).toBe(true);
-    expect(policy.payments.defaultMethod).toBe("cod");
+    expect(policy.payments.codEnabled).toBe(false);
+    expect(() => resolveFinancePaymentSelection(policy, {paymentMethod: "cod"}))
+      .toThrowError("PAYMENT_METHOD_DISABLED:cod");
+    expect(checkoutConfiguration(policy, true).methods.cod).toEqual({enabled: false, available: false});
+  });
+
+  it("refuses COD while it is off and UPI is on", () => {
+    const policy = normalizeFinancePolicy({
+      payments: {codEnabled: false, upiEnabled: true, cardEnabled: false, defaultMethod: "cod"},
+    });
+
+    expect(policy.payments.defaultMethod).toBe("upi");
+    expect(() => resolveFinancePaymentSelection(policy, {paymentMethod: "cod"}))
+      .toThrowError("PAYMENT_METHOD_DISABLED:cod");
   });
 
   it("resolves an enabled online method with its configured provider", () => {

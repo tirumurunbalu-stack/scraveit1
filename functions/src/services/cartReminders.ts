@@ -48,6 +48,7 @@ export function cartReminderCopy(cart: CartSnapshot): {title: string; body: stri
   const more = cart.itemCount > 1 ? ` and ${cart.itemCount - 1} more` : "";
   const what = `${item}${more}`;
   if (cart.storeType === "dairy") return {title: "🥛 Still need your dairy?", body: `${what} from ${store} is saved in your cart. Fresh delivery is a tap away 🐄`};
+  if (cart.storeType === "pharmacy") return {title: "🩹 Your health care items are waiting", body: `${what} from ${store} is saved in your cart. Order in a tap 💙`};
   if (cart.storeType === "grocery") return {title: "🧺 Your basket is still here", body: `${what} from ${store} is waiting. Finish your order in a tap 🛒`};
   return {title: `👀 Still thinking about ${item}?`, body: `Your cart at ${store} is saved. Order it before you get hangry 😋`};
 }

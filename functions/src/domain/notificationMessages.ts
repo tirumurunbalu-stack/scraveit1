@@ -154,6 +154,14 @@ export function buildRiderOfferMessage(
   };
 }
 
+/** No alert: this only restarts an Online rider's tracking service on phones that allow it. */
+export function buildRiderWakeMessage(): TokenlessMulticastMessage {
+  return {
+    data: {type: "RIDER_WAKE_TRACKING"},
+    android: {priority: "high", ttl: 60_000},
+  };
+}
+
 export function buildRemoveRiderOfferMessage(
   orderId: string,
   assignedRiderId: string,

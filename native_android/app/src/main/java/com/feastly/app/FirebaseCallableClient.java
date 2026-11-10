@@ -142,12 +142,15 @@ final class FirebaseCallableClient {
 
   private boolean allowedFunction(String name) {
     return "createCodOrder".equals(name)
+        || "createClusterOrder".equals(name)
         || "createOrder".equals(name)
         || "getCheckoutConfiguration".equals(name)
         || "getCustomerWallet".equals(name)
         || "applyCustomerReferral".equals(name)
         || "createPaymentIntent".equals(name)
         || "createPhonePeIntent".equals(name)
+        || "cancelUnpaidOrder".equals(name)
+        || "checkOrderPayment".equals(name)
         || "recoverDeliveryOtp".equals(name)
         || "registerPushToken".equals(name)
         || "unregisterPushToken".equals(name)

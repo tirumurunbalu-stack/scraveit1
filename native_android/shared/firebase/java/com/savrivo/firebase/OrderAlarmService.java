@@ -332,6 +332,14 @@ public final class OrderAlarmService extends Service {
                 open.put("route", route == null ? "" : route);
             } catch (Exception ignored) { }
             launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
+        } else if (isRider() && route != null && !route.isEmpty()) {
+            // Tapping a delivery offer opens its accept/decline sheet.
+            JSONObject open = new JSONObject();
+            try {
+                open.put("type", "RIDER_OFFER_OPEN");
+                open.put("orderId", route);
+            } catch (Exception ignored) { }
+            launch.putExtra(SavrivoPushStore.EXTRA_EVENT, open.toString());
         } else if (!isRider() && !isAdmin() && route != null && !route.isEmpty()) {
             // Tapping a store order alarm opens that order's accept/decline screen.
             JSONObject open = new JSONObject();
@@ -345,7 +353,7 @@ public final class OrderAlarmService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pending = PendingIntent.getActivity(
                 this, SavrivoNotifications.stableId(notificationNamespace(this) + "-open", alarmId), launch, flags);
-        String channel = isRider() ? SavrivoNotifications.RIDER_OFFERS
+        String channel = isRider() ? SavrivoNotifications.RIDER_OFFER_ALARMS
                 : isAdmin() ? SavrivoNotifications.ADMIN_SUPPORT
                 : SavrivoNotifications.RESTAURANT_ORDERS;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
@@ -361,6 +369,10 @@ public final class OrderAlarmService extends Service {
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(false)
                 .setContentIntent(pending);
+        // Android holds a foreground service's notification back for 10 seconds unless told not to.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
         return builder.build();
     }
 
@@ -629,6 +641,19 @@ public final class OrderAlarmService extends Service {
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
+
+    // The Rider app runs this as a shortService (no Play declaration needed). Android calls
+    // this at its ~3 minute limit and stops the app if the service is still running, so the
+    // ring ends here; an offer has expired by then. Never called for mediaPlayback (Restaurant).
+    @Override public void onTimeout(int startId) {
+        Log.i(TAG, "SHORT_SERVICE_TIMEOUT");
+        stopAll();
+    }
+
+    @Override public void onTimeout(int startId, int fgsType) {
+        Log.i(TAG, "SERVICE_TIMEOUT type=" + fgsType);
+        stopAll();
+    }
 
     @Override public void onDestroy() {
         stopAll();

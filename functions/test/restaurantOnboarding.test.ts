@@ -9,6 +9,8 @@ import {
   assessFssai,
   assessGstin,
   renderAgreement,
+  storeTypeOf,
+  validDrugLicence,
   validIfsc,
   validPan,
 } from "../src/domain/restaurantOnboarding";
@@ -159,5 +161,50 @@ describe("grocery and dairy", () => {
     expect(dairy).toContain("only goods that are exempt from GST");
     const restaurant = renderAgreement(base).map((x) => x.body).join(" ");
     expect(restaurant).toContain("section 9(5)");
+  });
+});
+
+describe("pharmacy (Health care)", () => {
+  const licence = {number: "AP/NLR/2021/20B-1234", photoPath: "private/restaurant-onboarding/owner1/drug-1.jpg", expiresOn: "2030-01-01"};
+  const pharmacy = (extra: Record<string, unknown> = {}) => ({...application(), storeType: "pharmacy", restaurantName: "Sai Medicals",
+    fssai: {}, drugLicence: licence, gstin: "", gstEnrolment: "EID12345678AP", ...extra});
+
+  it("knows the store type and checks the drug licence shape", () => {
+    expect(storeTypeOf("pharmacy")).toBe("pharmacy");
+    expect(storeTypeOf("medicines")).toBe("restaurant");
+    expect(validDrugLicence("AP/NLR/2021/20B-1234")).toBe(true);
+    expect(validDrugLicence("20B-21B/NLR/0412")).toBe(true);
+    expect(validDrugLicence("none")).toBe(false);
+    expect(validDrugLicence("")).toBe(false);
+  });
+
+  it("needs a drug licence and its photo instead of FSSAI, which stays optional", () => {
+    expect(onboarding.applicationIssues(pharmacy())).toEqual([]);
+    expect(onboarding.applicationIssues(pharmacy({drugLicence: {}}))).toEqual(["Drug licence number", "Drug licence photo"]);
+    expect(onboarding.applicationIssues(pharmacy({drugLicence: {...licence, expiresOn: "2020-01-01"}}))).toEqual(["Drug licence has expired"]);
+    expect(onboarding.applicationIssues(pharmacy({fssai: {number: "123"}}))).toEqual(["FSSAI number"]);
+    expect(onboarding.applicationIssues(pharmacy({gstEnrolment: ""}))).toEqual(["GST enrolment number (or a GSTIN)"]);
+  });
+
+  it("promises no-prescription items only in the agreement", () => {
+    const sections = renderAgreement({platform: {name: "Scraveit", address: "Naidupeta", email: "a@b.c", phone: "1"},
+      restaurantName: "Sai Medicals", legalName: "", ownerName: "Ravi Kumar", address: "Nellore", fssaiNumber: "",
+      drugLicenceNumber: "AP/NLR/2021/20B-1234", pan: "ABCPK1234D", gstin: "", storeType: "pharmacy", gstMode: "enrolment",
+      gstEnrolment: "EID12345678AP", commissionBps: 1_000, termMonths: 12, date: "2026-10-31"});
+    const text = sections.map((x) => x.body).join(" ");
+    expect(text).toContain('(the "Pharmacy")');
+    expect(text).toContain("AP/NLR/2021/20B-1234");
+    expect(text).toContain("Schedule H, H1 or X");
+    expect(text).toContain("drug licence lapses");
+    expect(text).not.toContain("FSSAI");
+    expect(sections.map((x) => x.heading)).toContain("6. Drug licence and product safety");
+  });
+
+  it("approves into a Health care listing that carries the drug licence", async () => {
+    const db = await seeded(pharmacy({terms: {commissionBps: 1_000, termMonths: 12, setAt: 1},
+      agreement: {status: "signed", commissionBps: 1_000, termMonths: 12, version: "v", signedAt: 5}}));
+    const {restaurantId} = await onboarding.approveRestaurantApplication("admin1", admin, "owner1", db);
+    const listing = (await db.collection("restaurants").doc(restaurantId).get()).data() as Record<string, any>;
+    expect(listing).toMatchObject({storeType: "pharmacy", drugLicenceNumber: "AP/NLR/2021/20B-1234", drugLicenceExpiresOn: "2030-01-01", fssaiNumber: ""});
   });
 });

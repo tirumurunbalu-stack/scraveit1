@@ -57,15 +57,30 @@ describe("resolveRainFee", () => {
     )).toBe(0);
   });
 
+  it("charges nothing once the rain has stopped, even after a wet hour", () => {
+    // Production reading at Highway cross, 2 Nov 6:31 am: heavy rain all night,
+    // 5.05 mm in the past hour, but the sky was only cloudy at checkout time.
+    expect(resolveRainFee(
+      {probabilityPercent: 36, quantityMm: 5.05, conditionType: "CLOUDY"},
+      35, thresholds, fees,
+    )).toBe(0);
+  });
+
   it("still charges based on accumulation alone when conditionType is unavailable", () => {
     expect(resolveRainFee({probabilityPercent: 90, quantityMm: 12}, 35, thresholds, fees)).toBe(39);
   });
 
-  it("takes the worse of the two signals when accumulation implies a higher tier", () => {
+  it("charges the light fee for light rain now, even after a heavy hour", () => {
+    // Highway cross, 2 Nov 6:49 am: light rain now, 5.05 mm over the past hour.
     expect(resolveRainFee(
-      {probabilityPercent: 90, quantityMm: 12, conditionType: "LIGHT_RAIN"},
+      {probabilityPercent: 36, quantityMm: 5.05, conditionType: "LIGHT_RAIN"},
       35, thresholds, fees,
-    )).toBe(39);
+    )).toBe(9);
+  });
+
+  it("charges moderate and heavy fees for moderate and heavy rain now", () => {
+    expect(resolveRainFee({probabilityPercent: 60, quantityMm: 0.2, conditionType: "LIGHT_TO_MODERATE_RAIN"}, 35, thresholds, fees)).toBe(19);
+    expect(resolveRainFee({probabilityPercent: 90, quantityMm: 1, conditionType: "MODERATE_TO_HEAVY_RAIN"}, 35, thresholds, fees)).toBe(29);
   });
 });
 

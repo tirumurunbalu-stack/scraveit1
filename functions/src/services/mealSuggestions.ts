@@ -17,7 +17,7 @@ type Rec = Record<string, unknown>;
 export type MealSlot = "breakfast" | "lunch" | "dinner";
 const HOUR = 60 * 60 * 1000, QUIET_AFTER_ORDER = 3 * HOUR;
 
-interface Store {id: string; name: string; city: string; kind: "restaurant" | "grocery" | "dairy"}
+interface Store {id: string; name: string; city: string; kind: "restaurant" | "grocery" | "dairy" | "pharmacy"}
 
 const COPY: Record<MealSlot, Array<{title: string; body: string}>> = {
   breakfast: [
@@ -49,7 +49,7 @@ function key(value: unknown): string {
 
 function storeKind(data: Rec): Store["kind"] {
   const type = key(data.storeType), category = key(data.category);
-  if (type === "grocery" || type === "dairy") return type;
+  if (type === "grocery" || type === "dairy" || type === "pharmacy") return type;
   if (!type && category === "dairy") return "dairy";
   if (!type && (category === "grocery" || category === "groceries")) return "grocery";
   return "restaurant";

@@ -220,6 +220,66 @@
     },
     {
       "client_info": {
+        "mobilesdk_app_id": "1:458592242638:android:bb243665566fb0e644b99f",
+        "android_client_info": {
+          "package_name": "com.feastly.healthcare"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "458592242638-6j7phpkut6in311mritblp5co5e3morh.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.healthcare",
+            "certificate_hash": "b7dacbb0313db1979dc208d034b1e512448aff06"
+          }
+        },
+        {
+          "client_id": "458592242638-a4e0bjdsrfmonb1gh4ql7jc1pv2japa2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.healthcare",
+            "certificate_hash": "51c59df8783f6a91b79d8c8ce5d89fed32295f67"
+          }
+        },
+        {
+          "client_id": "458592242638-jp55fvm5jf57o2vi06cb71au2ju5lvrq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.feastly.healthcare",
+            "certificate_hash": "732d6377bd9d6f3b8d04f2491c351a4fb9598795"
+          }
+        },
+        {
+          "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-XNIho8eUbkDQdsjzE8SF3ThZdBxvPy4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "458592242638-vpkvkjoqn2fefeurqkecor9d90rom5gf.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "458592242638-q14ngva3fsh3tmhbm62inc32ig0oa3qo.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "in.scraveit.customer"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:458592242638:android:d69ea767761f871044b99f",
         "android_client_info": {
           "package_name": "com.feastly.restaurant"

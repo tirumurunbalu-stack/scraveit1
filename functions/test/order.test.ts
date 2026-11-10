@@ -5,6 +5,7 @@ import {
   canTransition,
   deterministicOrderId,
   haversineKm,
+  legacyOrderId,
   priceCart,
   rankRiders,
 } from "../src/domain/order";
@@ -28,7 +29,14 @@ describe("order lifecycle", () => {
     const one = deterministicOrderId("customer-a", "0123456789abcdef");
     expect(one).toBe(deterministicOrderId("customer-a", "0123456789abcdef"));
     expect(one).not.toBe(deterministicOrderId("customer-b", "0123456789abcdef"));
-    expect(one).toMatch(/^SV-[A-F0-9]{18}$/);
+    expect(one).toMatch(/^[1-9][0-9]{14}$/);
+    expect(Number(one).toString()).toBe(one);
+    expect(deterministicOrderId("customer-a", "0123456789abcdef", 1)).not.toBe(one);
+    expect(legacyOrderId("customer-a", "0123456789abcdef")).toMatch(/^SV-[A-F0-9]{18}$/);
+  });
+
+  it("always gives 15 digits with no leading zero", () => {
+    for (let n = 0; n < 2000; n++) expect(deterministicOrderId(`customer-${n}`, `key-${n}`)).toMatch(/^[1-9][0-9]{14}$/);
   });
 
   it("does not abort when RTDB first supplies a provisional null snapshot", () => {

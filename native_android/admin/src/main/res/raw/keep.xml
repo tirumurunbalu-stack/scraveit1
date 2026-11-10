@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds drop resources they think are unused. The alarms load these by name
+     (OrderAlarmService, SavrivoNotifications, MainActivity), so keep them. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/savrivo_action_alert,@drawable/savrivo_notification" />

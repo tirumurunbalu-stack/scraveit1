@@ -88,8 +88,24 @@ export async function loadCustomerAddress(uid: string, addressId: string): Promi
     lng: Number(raw.lng),
     ...(raw.details ? {details: String(raw.details).slice(0, 600)} : {}),
     ...(raw.city ? {city: String(raw.city).slice(0, 120)} : {}),
+    ...(raw.house ? {house: String(raw.house).trim().slice(0, 160)} : {}),
+    ...(raw.landmark ? {landmark: String(raw.landmark).trim().slice(0, 160)} : {}),
+    ...(raw.street ? {street: String(raw.street).trim().slice(0, 300)} : {}),
+    ...(addressPhotoUrl(uid, raw.photoUrl) ? {photoUrl: addressPhotoUrl(uid, raw.photoUrl)} : {}),
   };
   return {address, profile};
+}
+
+/**
+ * The customer's photo of their place goes on the order only when it is one of
+ * their own uploads (addressPhotos/{uid}/...) in this project's Storage, so a
+ * profile edit can't put some other link in front of the rider.
+ */
+export function addressPhotoUrl(uid: string, value: unknown): string {
+  const url = String(value ?? "").trim();
+  if (!url || url.length > 600) return "";
+  const prefix = /^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/(savrivo-app-mumbai|savrivo-app\.firebasestorage\.app)\/o\/addressPhotos%2F([A-Za-z0-9_-]+)%2F[A-Za-z0-9_.-]+\?alt=media&token=[A-Za-z0-9-]+$/.exec(url);
+  return prefix && prefix[2] === uid ? url : "";
 }
 
 /** Rider surge for the restaurant's city; a failed read never blocks checkout (no fee). */
@@ -166,7 +182,10 @@ export async function loadServerFees(
     .map((doc) => normalizeCheckoutCampaign(doc.id, doc.data()))
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   const distanceKm = haversineKm(restaurant, address);
-  const maxDeliveryKm = finite(settings.maxDeliveryKm, 7);
+  // A store may deliver less far than the area allows (e.g. a store delivering its own orders).
+  const areaMaxKm = finite(settings.maxDeliveryKm, 7);
+  const storeMaxKm = finite((restaurant as {deliveryRadiusKm?: unknown}).deliveryRadiusKm, 0);
+  const maxDeliveryKm = storeMaxKm > 0 && (areaMaxKm <= 0 || storeMaxKm < areaMaxKm) ? storeMaxKm : areaMaxKm;
   if (maxDeliveryKm > 0 && distanceKm > maxDeliveryKm) {
     throw new DomainError("out-of-range", "Delivery address is outside the service radius.");
   }

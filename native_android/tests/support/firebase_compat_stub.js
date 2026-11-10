@@ -131,7 +131,9 @@ function createFirestore(seed) {
         applyWrite(path, data, true);
       },
       async delete() { db.writes.push({ type: "delete", path }); docs.delete(path); },
-      onSnapshot(next, error) {
+      onSnapshot(first, second, third) {
+        // Firestore also takes an options object before the callbacks.
+        const [next, error] = typeof first === "function" ? [first, second] : [second, third];
         Promise.resolve().then(() => {
           try { read({ type: "doc", path }); } catch (failure) { if (error) error(failure); return; }
           next(documentSnapshot(path));

@@ -40,7 +40,11 @@ export function buildRestaurantOrderProjection(
       ...(address.city ? {city: address.city} : {}),
     },
   };
-  if (existing && existing.riderId && order.riderId && existing.riderId === order.riderId &&
+  // A self-delivering store is its own rider and is always "at the restaurant":
+  // this unlocks the app's handover button, which for it means "I'm leaving".
+  if (order.selfDelivery === true && order.riderId) {
+    projection.riderArrivalVerified = true;
+  } else if (existing && existing.riderId && order.riderId && existing.riderId === order.riderId &&
       existing.riderArrivalVerified === true) {
     projection.riderArrivalVerified = true;
     if (existing.riderArrivedRestaurantAt !== undefined) {

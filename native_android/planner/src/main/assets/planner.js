@@ -2,14 +2,16 @@
  * Scraveit Price Planner. Two questions, answered big:
  *   "I want to get Rs X per dish"  -> the menu price to set
  *   "My menu price is Rs X"         -> what I get
- * plus "what if I run this offer?". Everything stays on the phone.
+ * plus "what if I run this offer?", for menu prices with GST extra or GST
+ * included. Everything stays on the phone.
  */
 (function () {
   "use strict";
   var M = window.ScraveitOfferMath;
   var STORE = "scraveit.planner.v1";
+  var FOOD_GST_BPS = 500;
   var app = document.getElementById("app");
-  var defaults = {mode: "find", want: "100", price: "150", commission: "30", offerType: "none",
+  var defaults = {mode: "find", want: "100", price: "150", commission: "30", gst: "extra", offerType: "none",
     percent: "20", cap: "50", flat: "40", aboveOff: "75", aboveMin: "399", dishes: [], working: false};
   var state = load();
 
@@ -39,6 +41,29 @@
   var rs = M.rupees;
 
   function commissionBps() { return Math.max(0, Math.min(5000, Math.round(num(state.commission) * 100))); }
+  // GST-included prices: same rounding as the server (functions/src/domain/markupPricing.ts).
+  function beforeGst(inclusivePaise) { return Math.round(inclusivePaise * 10000 / (10000 + FOOD_GST_BPS)); }
+  function withGst(basePaise) { return basePaise + Math.round(basePaise * FOOD_GST_BPS / 10000); }
+  /** Smallest whole-rupee price with GST inside that still gets the restaurant the target. */
+  function inclusivePriceFor(targetPaise, bps) {
+    var base = M.priceForReceive(targetPaise, bps);
+    if (!base) return 0;
+    var price = Math.max(100, Math.floor(withGst(base) / 100) * 100 - 200);
+    while (M.payout(beforeGst(price), 0, bps).receive < targetPaise) price += 100;
+    return price;
+  }
+  /** A menu price under either GST setting: what commission works on, and what the customer pays. */
+  function priced(price, inc) {
+    var base = inc ? beforeGst(price) : price, pays = inc ? price : withGst(price);
+    return {price: price, inc: inc, base: base, pays: pays, gst: pays - base};
+  }
+  function dishPrice(d, bps) {
+    var inc = d.gst === "included";
+    var price = d.mode === "find" ? (inc ? inclusivePriceFor(d.want, bps) : M.priceForReceive(d.want, bps)) : d.price;
+    var p = priced(price, inc);
+    p.receive = M.payout(p.base, 0, bps).receive;
+    return p;
+  }
   function offer() {
     if (state.offerType === "percent") return {kind: "percent", percent: Math.min(100, Math.round(num(state.percent))), maxDiscountPaise: paise(state.cap)};
     if (state.offerType === "flat") return {kind: "flat", flatAmountPaise: paise(state.flat)};
@@ -46,15 +71,19 @@
     return null;
   }
   function figures() {
-    var bps = commissionBps(), price, plain;
+    var bps = commissionBps(), inc = state.gst === "included", price;
     if (state.mode === "find") {
-      price = M.priceForReceive(paise(state.want), bps);
+      price = inc ? inclusivePriceFor(paise(state.want), bps) : M.priceForReceive(paise(state.want), bps);
     } else {
       price = paise(state.price);
     }
-    plain = M.payout(price, 0, bps);
-    var o = offer(), withOffer = o ? M.dishPayout(price, o, bps) : null;
-    return {bps: bps, price: price, plain: plain, offer: o, withOffer: withOffer};
+    // Commission and offers work on the food value before GST, as on the server.
+    var f = priced(price, inc), o = offer();
+    f.bps = bps;
+    f.plain = M.payout(f.base, 0, bps);
+    f.offer = o;
+    f.withOffer = o ? M.dishPayout(f.base, o, bps) : null;
+    return f;
   }
 
   function field(id, label, value, prefix, suffix, hint) {
@@ -83,7 +112,11 @@
       '<p class="lede">Know your money before you set a price or run an offer.</p></header>' +
       segmented("mode", [["find", "Find my price"], ["check", "Check my price"]], state.mode) +
       '<section class="card inputs">' +
-        (state.mode === "find" ? field("want", "I want to get, per dish", state.want, "₹") : field("price", "My menu price", state.price, "₹")) +
+        (state.mode === "find" ? field("want", "I want to get, per dish", state.want, "₹") :
+          field("price", state.gst === "included" ? "My menu price, GST included" : "My menu price, before GST", state.price, "₹")) +
+        '<div class="field"><span class="field-label">My menu prices are</span>' +
+          segmented("gst", [["extra", "+ 5% GST extra"], ["included", "GST included"]], state.gst) +
+          '<span class="field-hint">Pick the same as the “My prices include GST” switch on the Menu screen of the Scraveit restaurant app.</span></div>' +
         field("commission", "Scraveit commission", state.commission, "", "%", "Your rate is in the Scraveit restaurant app, under More › Your agreement.") +
       '</section>' +
       '<section class="answer" id="answer"></section>' +
@@ -112,11 +145,17 @@
     if (!f.price) {
       answer.innerHTML = '<p class="answer-label">' + (state.mode === "find" ? "Set your menu price" : "You get, per dish") + '</p><p class="answer-big">—</p><p class="answer-sub">Type an amount above.</p>';
     } else if (state.mode === "find") {
-      answer.innerHTML = '<p class="answer-label">Set your menu price</p><p class="answer-big">' + rs(f.price) + '</p>' +
-        '<p class="answer-sub">You get <b>' + rs(f.plain.receive) + '</b> per dish. Customers pay food GST on top at checkout, so it never comes out of your money.</p>';
+      answer.innerHTML = '<p class="answer-label">' + (f.inc ? "Set your menu price, GST included" : "Set your menu price") + '</p><p class="answer-big">' + rs(f.price) + '</p>' +
+        gstSplit(f) +
+        '<p class="answer-sub">You get <b>' + rs(f.plain.receive) + '</b> per dish. ' + (f.inc ?
+          'Customers pay exactly this, and Scraveit pays the GST inside it to the government.' :
+          'Customers pay the 5% GST on top at checkout, so it never comes out of your money.') + '</p>';
     } else {
       answer.innerHTML = '<p class="answer-label">You get, per dish</p><p class="answer-big">' + rs(f.plain.receive) + '</p>' +
-        '<p class="answer-sub">For a menu price of <b>' + rs(f.price) + '</b>. Food GST is added for the customer at checkout.</p>';
+        gstSplit(f) +
+        '<p class="answer-sub">For a menu price of <b>' + rs(f.price) + '</b> ' + (f.inc ?
+          'with GST included. Scraveit pays the GST inside it to the government.' :
+          'before GST. Customers pay the 5% GST on top at checkout.') + '</p>';
     }
     var result = document.getElementById("offer-result");
     if (result) {
@@ -135,12 +174,25 @@
     if (dishes) dishes.innerHTML = dishesMarkup();
   }
 
+  /** Before GST, the GST, and what the customer pays: the same three numbers under either setting. */
+  function gstSplit(f) {
+    return '<div class="gst-split">' +
+      '<div><span>Before GST</span><b>' + rs(f.base) + '</b></div>' +
+      '<div><span>GST 5%</span><b>' + rs(f.gst) + '</b></div>' +
+      '<div class="pays"><span>Customer pays</span><b>' + rs(f.pays) + '</b></div></div>';
+  }
+
   function workingMarkup(f) {
     if (!f.price) return '<p class="muted small">Type an amount first.</p>';
     var p = f.withOffer || f.plain, discount = f.withOffer ? f.withOffer.discount : 0, pct = (f.bps / 100).toString();
     var row = function (l, v, cls) { return '<div class="kv' + (cls ? ' ' + cls : '') + '"><span>' + l + '</span><strong>' + v + '</strong></div>'; };
-    return '<h2>For one dish at ' + rs(f.price) + (discount ? ', with the offer' : '') + '</h2>' +
-      row("Your menu price", rs(f.price)) +
+    return '<h2>For one dish at ' + rs(f.price) + (f.inc ? ' (GST included)' : '') + (discount ? ', with the offer' : '') + '</h2>' +
+      (f.inc ?
+        row("Your menu price, GST included", rs(f.price)) +
+        row("Food GST inside it (5%)", "− " + rs(f.gst, true), "sub") +
+        row("Food value before GST", rs(f.base, true)) :
+        row("Your menu price", rs(f.price)) +
+        row("Customer pays with 5% GST", rs(f.pays, true), "sub")) +
       (discount ? row("Offer you give", "− " + rs(discount, true)) : '') +
       row("Commission is charged on", rs(p.base, true), "sub") +
       row("Scraveit commission (" + h(pct) + "%)", "− " + rs(p.commission, true)) +
@@ -148,7 +200,9 @@
       row("You get", rs(p.receive, true), "total") +
       '<ul class="notes">' +
         '<li>An offer only reduces the item total. Commission is charged on the price after your offer, so you never pay commission on money you gave away.</li>' +
-        '<li>Food GST (5% for restaurants) is added on top of the reduced item total and paid by the customer. Scraveit pays it to the government as the e-commerce operator (CGST Act, s.9(5)).</li>' +
+        (f.inc ?
+          '<li>With GST-included prices, customers pay your menu price as it is. The 5% food GST inside it is paid to the government by Scraveit as the e-commerce operator (CGST Act, s.9(5)). Commission and offers work on the value before GST.</li>' :
+          '<li>Food GST (5% for restaurants) is added on top of the reduced item total and paid by the customer. Scraveit pays it to the government as the e-commerce operator (CGST Act, s.9(5)).</li>') +
         '<li>GST on commission (18%) is shown on Scraveit’s monthly tax invoice to you.</li>' +
         '<li>When TDS starts, 0.1% of your sales is deducted for income tax and shows in your tax credit statement, so you can claim it back.</li>' +
       '</ul>';
@@ -158,8 +212,9 @@
     if (!state.dishes.length) return '<p class="muted small">Save dishes here to build your price list.</p>';
     var bps = commissionBps();
     return '<ul class="dish-list">' + state.dishes.map(function (d, i) {
-      var price = d.mode === "find" ? M.priceForReceive(d.want, bps) : d.price, got = M.payout(price, 0, bps).receive;
-      return '<li><div><strong>' + h(d.name) + '</strong><span class="muted small">You get ' + rs(got) + '</span></div><span class="dish-price">' + rs(price) + '</span>' +
+      var p = dishPrice(d, bps);
+      return '<li><div><strong>' + h(d.name) + '</strong><span class="muted small">You get ' + rs(p.receive) + ' · ' +
+        (p.inc ? 'GST included' : 'customer pays ' + rs(p.pays)) + '</span></div><span class="dish-price">' + rs(p.price) + '</span>' +
         '<button type="button" class="x" data-action="remove-dish" data-index="' + i + '" aria-label="Remove ' + h(d.name) + '">×</button></li>';
     }).join("") + '</ul><p class="muted small">Prices follow the commission above.</p>';
   }
@@ -167,8 +222,8 @@
   function shareList() {
     var bps = commissionBps();
     var text = "My Scraveit prices (" + (bps / 100) + "% commission)\n" + state.dishes.map(function (d) {
-      var price = d.mode === "find" ? M.priceForReceive(d.want, bps) : d.price;
-      return "• " + d.name + ": " + rs(price) + " (I get " + rs(M.payout(price, 0, bps).receive) + ")";
+      var p = dishPrice(d, bps);
+      return "• " + d.name + ": " + rs(p.price) + (p.inc ? " incl. GST" : " + 5% GST") + " (I get " + rs(p.receive) + ")";
     }).join("\n");
     if (window.PlannerNative && PlannerNative.shareText) PlannerNative.shareText(text);
     else if (navigator.share) navigator.share({text: text}).catch(function () {});
@@ -195,7 +250,8 @@
       var f = figures();
       if (!f.price) return;
       if (!name) { input.focus(); input.classList.add("need"); return; }
-      state.dishes.unshift(state.mode === "find" ? {name: name, mode: "find", want: paise(state.want)} : {name: name, mode: "check", price: f.price});
+      state.dishes.unshift(state.mode === "find" ? {name: name, mode: "find", want: paise(state.want), gst: state.gst} :
+        {name: name, mode: "check", price: f.price, gst: state.gst});
       state.dishes = state.dishes.slice(0, 60);
       input.value = "";
       input.classList.remove("need");

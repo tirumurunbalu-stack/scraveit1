@@ -31,6 +31,17 @@
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   const rs = (value) => "₹" + Number(value || 0).toLocaleString("en-IN", {maximumFractionDigits: 2, minimumFractionDigits: Number(value) % 1 ? 2 : 0});
   const num = (value, fallback = 0) => { const n = Number(value); return Number.isFinite(n) ? n : fallback; };
+  // The restaurant's own menu order: categoryRank, then itemRank; anything not arranged yet follows, A to Z.
+  // Same order as the customer app (native_android/app premium.js menuInOrder).
+  const menuInOrder = (items) => {
+    const rank = (v) => v === null || v === "" || v === undefined || !Number.isFinite(Number(v)) ? Infinity : Number(v), cat = (i) => (i && i.category) || "Menu", catRank = {};
+    items.forEach((i) => { const c = cat(i), r = rank(i.categoryRank); if (!(c in catRank) || r < catRank[c]) catRank[c] = r; });
+    return items.map((item, i) => ({item, i})).sort((a, b) => {
+      const ca = cat(a.item), cb = cat(b.item);
+      if (ca !== cb) return (catRank[ca] - catRank[cb]) || ca.localeCompare(cb);
+      return (rank(a.item.itemRank) - rank(b.item.itemRank)) || String(a.item.name || "").localeCompare(String(b.item.name || "")) || (a.i - b.i);
+    }).map((x) => x.item);
+  };
   const load = (key, fallback) => { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch (_) { return fallback; } };
   const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ } };
   let toastTimer = 0;
@@ -90,6 +101,10 @@
       pureVeg: r.pureVeg === true, sellerFssai: r.fssaiNumber || r.fssaiLicence || r.fssaiLicenseNumber || "", sample: !ORDERS_OPEN,
       deliveryFee: num(r.deliveryFee, 29), platformFee: num(r.platformFee, 15),
       embeddedMenu: Array.isArray(r.menu) ? r.menu : [],
+      // Markup restaurants: menu prices include GST; customers pay them plus the markup (functions/src/domain/markupPricing.ts).
+      // GST-inclusive menu prices: the restaurant's own switch, or always under markup.
+      gstIncluded: r.pricingModel === "markup" || r.pricesIncludeGst === true,
+      markupBps: r.pricingModel !== "markup" ? null : (Number.isInteger(Number(r.markupBps)) && r.markupBps !== "" && r.markupBps != null && Number(r.markupBps) >= 0 && Number(r.markupBps) <= 5000 ? Number(r.markupBps) : 1000),
     };
   }
   // Internal test stores (app review accounts, the founder's own test sign-ups) stay off the public website.
@@ -129,7 +144,9 @@
       if (!items.length) items = store.embeddedMenu.map((item, i) => Object.assign({id: String(item.id || i)}, item));
       if (!items.length && SAMPLE_MENUS[store.id]) items = SAMPLE_MENUS[store.id].map((i) => Object.assign({}, i));
       items = items.filter((i) => i.archived !== true && String(i.name || "").trim().length >= 3)
-        .map((i) => Object.assign({}, i, {price: num(i.price), sample: i.sample === true || store.sample === true}));
+        .map((i) => Object.assign({}, i, {price: store.markupBps == null || !(num(i.price) > 0) ? num(i.price) : Math.round(num(i.price) * (10000 + store.markupBps) / 10000),
+          sample: i.sample === true || store.sample === true}));
+      items = menuInOrder(items);
     } else {
       items = (store.items || []).map((i) => Object.assign({}, i));
     }
@@ -938,8 +955,9 @@
     const platformFee = food ? num(store.platformFee, 15) : num(goodsFees.platformFee, 14.99);
     // Grocery and dairy: items at or below MRP; Scraveit's service is billed as separate, disclosed fees.
     const maintenanceFee = food ? 0 : num(goodsFees.maintenanceFee, 0);
-    const tax = food ? Math.round(subtotal * 0.05 * 100) / 100 : 0;
-    return {subtotal, deliveryFee, platformFee, maintenanceFee, tax, taxLabel: food ? "GST on food (5%)" : "Taxes (included in MRP)",
+    // GST-inclusive restaurants: the menu prices already include GST.
+    const tax = food && !store.gstIncluded ? Math.round(subtotal * 0.05 * 100) / 100 : 0;
+    return {subtotal, deliveryFee, platformFee, maintenanceFee, tax, taxLabel: !food ? "Taxes (included in MRP)" : !store.gstIncluded ? "GST on food (5%)" : "GST (included in prices)",
       total: Math.round((subtotal + deliveryFee + platformFee + maintenanceFee + tax) * 100) / 100};
   }
   function demoBanner() {
@@ -1053,8 +1071,9 @@
         (otp && !["Delivered", "Cancelled"].includes(o.status) ? '<div class="notice info"><div><strong>Delivery code</strong>Share only at your door after you receive the full order.<div class="otp">' + h(otp) + "</div></div></div>" : "") +
         (o.riderName ? "<p style=\"margin:0\">Delivery partner: <b>" + h(o.riderName) + "</b></p>" : "") +
         '<p style="margin:0;font-size:13px;color:var(--muted)">For live map tracking, open this order in the SCRAVEIT app.</p></section>' +
-        '<aside class="panel"><h2>' + h(o.restaurant || "") + "</h2>" + items.map((i) => '<div class="bill-row"><span>' + h(i.quantity) + " × " + h(i.name) + "</span><span>" + rs(num(i.price) * num(i.quantity)) + "</span></div>").join("") +
-        [["Delivery fee", p.deliveryFee], ["Platform fee", p.platformFee], ["Taxes", p.tax], ["Discount", p.discount ? -p.discount : 0]].filter(([, v]) => num(v) !== 0)
+        '<aside class="panel"><h2>' + h(o.restaurant || "") + "</h2>" + items.map((i) => '<div class="bill-row"><span>' + h(i.quantity) + " × " + h(i.name) + "</span><span>" + rs(num(i.listPrice != null ? i.listPrice : i.price) * num(i.quantity)) + "</span></div>").join("") +
+        // Markup restaurants: food shown GST-inclusive, taxes are GST on fees only.
+        [["Delivery fee", p.deliveryFee], ["Platform fee", p.platformFee], ["Taxes", p.markup ? p.markup.tax : p.tax], ["Discount", (p.markup ? p.markup.discount : p.discount) ? -(p.markup ? p.markup.discount : p.discount) : 0]].filter(([, v]) => num(v) !== 0)
           .map(([l, v]) => '<div class="bill-row"><span>' + h(l) + "</span><span>" + rs(v) + "</span></div>").join("") +
         '<div class="bill-row total"><span>Total</span><span>' + rs(o.total) + '</span></div><p style="margin:0;font-size:13px;color:var(--muted)">' + h(o.paymentMethod === "cod" ? "Cash on delivery" : "Paid online") + "</p>" +
         '<a class="btn ghost small" href="/grievance">Need help with this order?</a></aside></div>';

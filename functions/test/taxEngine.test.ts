@@ -72,8 +72,11 @@ describe("tax on delivery", () => {
     expect(again).toEqual(first);
     expect(tax.gstTcs).toMatchObject({cgstPaise: 50, sgstPaise: 50});
     const numbers = (entry: typeof first) => entry!.invoices.map((invoice) => invoice.invoiceNo);
-    expect(numbers(first)).toEqual(["MILKY/26-27/000001", "SCR/SV/26-27/000001", "SCR/CM/26-27/000001"]);
-    expect(numbers(second)).toEqual(["MILKY/26-27/000002", "SCR/SV/26-27/000002", "SCR/CM/26-27/000002"]);
+    expect(numbers(first)).toEqual(["MILKY2627/000001", "SV2627/000001", "CM2627/000001"]);
+    expect(numbers(second)).toEqual(["MILKY2627/000002", "SV2627/000002", "CM2627/000002"]);
+    // CGST rule 46(b): at most 16 characters.
+    expect([...numbers(first), ...numbers(second)].every((no) => no.length <= 16)).toBe(true);
+    expect(db.read("invoices/seller_dairy-1_26-27_2")).toMatchObject({invoiceNo: "MILKY2627/000002", orderId: "o2"});
     expect(db.read("taxPartnerYears/dairy-1_26-27")).toMatchObject({grossPaise: 40_000});
 
     const journal = withholdingJournal(first!)!;

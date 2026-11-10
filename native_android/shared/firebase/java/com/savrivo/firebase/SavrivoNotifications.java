@@ -17,6 +17,8 @@ public final class SavrivoNotifications {
     // v5: the marimba alert. The sound is referred to by name, so later builds keep finding it.
     public static final String RIDER_OFFERS = "rider_offers_v5";
     private static final String[] RETIRED_RIDER_OFFERS = {"rider_offers_v4", "rider_offers_v3", "rider_offers_v2", "rider_offers"};
+    // Silent: OrderAlarmService plays the alert itself. A sounding channel played a second copy on top.
+    public static final String RIDER_OFFER_ALARMS = "rider_offer_alarm_v1";
     public static final String ADMIN_SUPPORT = "savrivo_admin_support_v1";
     public static final String ORDER_STATUS = "savrivo_order_status";
 
@@ -51,6 +53,12 @@ public final class SavrivoNotifications {
             rider.setSound(sound, attributes);
         }
         manager.createNotificationChannel(rider);
+        NotificationChannel riderAlarm = new NotificationChannel(
+                RIDER_OFFER_ALARMS, "Ringing delivery offers", NotificationManager.IMPORTANCE_HIGH);
+        riderAlarm.setDescription("Delivery offers that ring until you accept or decline");
+        riderAlarm.enableVibration(true);
+        riderAlarm.setSound(null, null);
+        manager.createNotificationChannel(riderAlarm);
         // The old offer channels kept the old sound; remove them so only the new one shows in Settings.
         for (String retired : RETIRED_RIDER_OFFERS) {
             try { manager.deleteNotificationChannel(retired); } catch (Exception ignored) { }

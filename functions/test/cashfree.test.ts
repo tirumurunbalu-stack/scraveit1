@@ -7,7 +7,7 @@ vi.mock("../src/admin", () => ({
 
 import {orderRef} from "../src/firestorePaths";
 import {CashfreeGateway, cashfreeCheckoutPage, type CashfreeConfig} from "../src/services/cashfree";
-import {applyVerifiedPayment, initiatePayment, type PaymentDatabase} from "../src/services/payments";
+import {applyVerifiedPayment, checkOrderPaymentStatus, closeUnpaidPaymentAttempts, initiatePayment, refundCancelledOrderPayment, type PaymentDatabase} from "../src/services/payments";
 import type {SavrivoOrder} from "../src/types";
 import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
@@ -42,6 +42,8 @@ function order(overrides: Partial<SavrivoOrder> = {}): SavrivoOrder {
 function fakeCashfree() {
   const orders = new Map<string, {order_id: string; order_amount: number; order_status: string; payment_session_id: string; order_expiry_time: string}>();
   const payments = new Map<string, Array<{cf_payment_id: number; payment_status: string; payment_amount: number}>>();
+  const refunds = new Map<string, {cf_refund_id: number; refund_id: string; refund_status: string; refund_amount: number; order_id: string}>();
+  const outage = {refunds: false};
   const calls: Array<{method: string; url: string; headers: Record<string, string>; body?: Record<string, unknown>}> = [];
   const http = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input), method = init?.method ?? "GET";
@@ -55,15 +57,38 @@ function fakeCashfree() {
       orders.set(id, o);
       return new Response(JSON.stringify(o), {status: 200});
     }
+    const r = path.match(/^\/orders\/([A-Z0-9_]+)\/refunds(?:\/([A-Z0-9_]+))?$/);
+    if (r) {
+      if (outage.refunds) return new Response("{}", {status: 503});
+      if (method === "GET") {
+        const found = refunds.get(r[2] ?? "");
+        return found ? new Response(JSON.stringify(found), {status: 200}) : new Response("{}", {status: 404});
+      }
+      const o = orders.get(r[1]!);
+      if (!o || o.order_status !== "PAID") return new Response(JSON.stringify({code: "refund_invalid", message: "order is not paid"}), {status: 400});
+      const id = String(body?.refund_id);
+      if (refunds.has(id)) return new Response(JSON.stringify({code: "refund_already_exists"}), {status: 409});
+      const made = {cf_refund_id: 7000 + refunds.size, refund_id: id, refund_status: "PENDING", refund_amount: Number(body?.refund_amount), order_id: r[1]!};
+      refunds.set(id, made);
+      return new Response(JSON.stringify(made), {status: 200});
+    }
     const m = path.match(/^\/orders\/([A-Z0-9_]+)(\/payments)?$/);
     if (method === "GET" && m) {
       if (m[2]) return new Response(JSON.stringify(payments.get(m[1]!) ?? []), {status: 200});
       const o = orders.get(m[1]!);
       return o ? new Response(JSON.stringify(o), {status: 200}) : new Response("{}", {status: 404});
     }
+    if (method === "PATCH" && m && !m[2]) {
+      const o = orders.get(m[1]!);
+      if (!o) return new Response("{}", {status: 404});
+      // Any UPI try left open on the order (even one the customer backed out of, NOT_ATTEMPTED):
+      // Cashfree only accepts the request, as it did in production on 2 Nov.
+      o.order_status = payments.get(m[1]!)?.some((p) => ["PENDING", "NOT_ATTEMPTED"].includes(p.payment_status)) ? "TERMINATION_REQUESTED" : "TERMINATED";
+      return new Response(JSON.stringify(o), {status: 200});
+    }
     return new Response("{}", {status: 404});
   }) as typeof fetch;
-  return {orders, payments, calls, http};
+  return {orders, payments, refunds, outage, calls, http};
 }
 
 function signed(body: unknown, at = Date.now()): {headers: Record<string, string>; raw: Buffer} {
@@ -125,6 +150,50 @@ describe("Cashfree payments", () => {
     expect((db.read(orderRef(db, source.id).path) as SavrivoOrder).paymentState).toBe("paid");
   });
 
+  it("closing an unpaid order terminates it at Cashfree so no payment can land later", async () => {
+    const {db, cf, gateway, source, intent} = await started();
+    await closeUnpaidPaymentAttempts(source.id, gateway, db);
+    expect(cf.orders.get(intent.merchantOrderId)!.order_status).toBe("TERMINATED");
+    expect(cf.calls.some((c) => c.method === "PATCH" && c.body?.order_status === "TERMINATED")).toBe(true);
+    await closeUnpaidPaymentAttempts(source.id, gateway, db);
+  });
+
+  it("won't close an order Cashfree says is paid, or one with a payment in flight", async () => {
+    const paid = await started();
+    paid.cf.orders.get(paid.intent.merchantOrderId)!.order_status = "PAID";
+    await expect(closeUnpaidPaymentAttempts(paid.source.id, paid.gateway, paid.db)).rejects.toMatchObject({code: "already-exists"});
+    const busy = await started();
+    busy.cf.payments.set(busy.intent.merchantOrderId, [{cf_payment_id: 9, payment_status: "PENDING", payment_amount: 119.99}]);
+    await expect(closeUnpaidPaymentAttempts(busy.source.id, busy.gateway, busy.db)).rejects.toMatchObject({code: "unavailable"});
+  });
+
+  it("closes an order whose UPI tries were all abandoned, though Cashfree only accepts the request", async () => {
+    // Production, 2 Nov 7:39 and 7:48: PhonePe opened and backed out of, then "Cancel this order" or COD.
+    const left = await started();
+    left.cf.payments.set(left.intent.merchantOrderId, [
+      {cf_payment_id: 1, payment_status: "NOT_ATTEMPTED", payment_amount: 119.99},
+      {cf_payment_id: 2, payment_status: "USER_DROPPED", payment_amount: 119.99},
+    ]);
+    await closeUnpaidPaymentAttempts(left.source.id, left.gateway, left.db);
+    expect(left.cf.orders.get(left.intent.merchantOrderId)!.order_status).toBe("TERMINATION_REQUESTED");
+    // Asked again while Cashfree is still finishing: still closed, without a second terminate.
+    await closeUnpaidPaymentAttempts(left.source.id, left.gateway, left.db);
+    expect(left.cf.calls.filter((c) => c.method === "PATCH").length).toBe(1);
+    // Money that landed meanwhile is never cancelled.
+    left.cf.payments.get(left.intent.merchantOrderId)!.push({cf_payment_id: 3, payment_status: "SUCCESS", payment_amount: 119.99});
+    await expect(closeUnpaidPaymentAttempts(left.source.id, left.gateway, left.db)).rejects.toMatchObject({code: "already-exists"});
+  });
+
+  it("tells the waiting app whether the money came in", async () => {
+    const {db, cf, gateway, source, intent} = await started();
+    expect(await checkOrderPaymentStatus(source.customerId, source.id, gateway, db)).toBe("not_paid");
+    cf.payments.set(intent.merchantOrderId, [{cf_payment_id: 1, payment_status: "PENDING", payment_amount: 119.99}]);
+    expect(await checkOrderPaymentStatus(source.customerId, source.id, gateway, db)).toBe("pending");
+    cf.payments.set(intent.merchantOrderId, [{cf_payment_id: 1, payment_status: "SUCCESS", payment_amount: 119.99}]);
+    expect(await checkOrderPaymentStatus(source.customerId, source.id, gateway, db)).toBe("received");
+    await expect(checkOrderPaymentStatus("someone-else", source.id, gateway, db)).rejects.toMatchObject({code: "not-found"});
+  });
+
   it("refuses forged, replayed or contradicted webhooks", async () => {
     const {cf, gateway, intent} = await started();
     const body = paymentWebhook("PAYMENT_SUCCESS_WEBHOOK", intent.merchantOrderId, 555, "SUCCESS");
@@ -146,6 +215,87 @@ describe("Cashfree payments", () => {
     expect(await gateway.verifyWebhook(failed.headers, failed.raw)).toMatchObject({verified: true, state: "failed"});
     cf.orders.get(intent.merchantOrderId)!.order_status = "PAID";
     expect(await gateway.verifyWebhook(failed.headers, failed.raw)).toMatchObject({verified: false, reason: "IGNORED_ORDER_ALREADY_PAID"});
+  });
+
+  async function paidOrder() {
+    const s = await started();
+    s.cf.orders.get(s.intent.merchantOrderId)!.order_status = "PAID";
+    s.cf.payments.set(s.intent.merchantOrderId, [{cf_payment_id: 555, payment_status: "SUCCESS", payment_amount: 119.99}]);
+    const {headers, raw} = signed(paymentWebhook("PAYMENT_SUCCESS_WEBHOOK", s.intent.merchantOrderId, 555, "SUCCESS"));
+    const result = await s.gateway.verifyWebhook(headers, raw);
+    if (!result.verified) throw new Error("not verified");
+    await applyVerifiedPayment(result, s.db);
+    return s;
+  }
+  function cancel(db: Db, id: string) {
+    const current = db.read(orderRef(db, id).path) as SavrivoOrder;
+    db.seed(orderRef(db, id).path, {...current, status: "Cancelled"});
+  }
+  const readOrder = (db: Db, id: string) => db.read(orderRef(db, id).path) as SavrivoOrder;
+
+  it("refunds a paid order in full, once, when it is cancelled", async () => {
+    const {db, cf, gateway, source, intent} = await paidOrder();
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("nothing_to_refund");
+    expect(cf.refunds.size).toBe(0);
+    cancel(db, source.id);
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("refund_started");
+    expect([...cf.refunds.values()]).toEqual([expect.objectContaining({order_id: intent.merchantOrderId, refund_amount: 119.99})]);
+    expect(readOrder(db, source.id).paymentPhase).toBe("refund_pending");
+    // Asked again (trigger retry, sweep): no second refund.
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("already_refunding");
+    expect(cf.calls.filter((c) => c.method === "POST" && c.url.endsWith("/refunds")).length).toBe(1);
+    // Cashfree's refund webhook finishes it.
+    const made = [...cf.refunds.values()][0]!;
+    made.refund_status = "SUCCESS";
+    const hook = signed({type: "REFUND_STATUS_WEBHOOK", data: {refund: {order_id: intent.merchantOrderId, refund_id: made.refund_id}}});
+    const verified = await gateway.verifyWebhook(hook.headers, hook.raw);
+    if (!verified.verified) throw new Error("refund webhook not verified");
+    await applyVerifiedPayment(verified, db);
+    expect(readOrder(db, source.id).paymentState).toBe("refunded");
+  });
+
+  it("refunds a payment that lands after the customer gave up on the order", async () => {
+    const {db, cf, gateway, source, intent} = await started();
+    cancel(db, source.id);
+    cf.orders.get(intent.merchantOrderId)!.order_status = "PAID";
+    cf.payments.set(intent.merchantOrderId, [{cf_payment_id: 556, payment_status: "SUCCESS", payment_amount: 119.99}]);
+    const late = signed(paymentWebhook("PAYMENT_SUCCESS_WEBHOOK", intent.merchantOrderId, 556, "SUCCESS"));
+    const result = await gateway.verifyWebhook(late.headers, late.raw);
+    if (!result.verified) throw new Error("not verified");
+    await applyVerifiedPayment(result, db);
+    expect(readOrder(db, source.id)).toMatchObject({status: "Cancelled", paymentState: "paid"});
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("refund_started");
+    expect(cf.refunds.size).toBe(1);
+  });
+
+  it("keeps trying while Cashfree is down, without ever refunding twice", async () => {
+    const {db, cf, gateway, source} = await paidOrder();
+    cancel(db, source.id);
+    cf.outage.refunds = true;
+    await expect(refundCancelledOrderPayment(source.id, gateway, db)).rejects.toMatchObject({code: "unavailable"});
+    expect(readOrder(db, source.id).paymentPhase).toBe("refund_pending");
+    cf.outage.refunds = false;
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("refund_started");
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("already_refunding");
+    expect(cf.refunds.size).toBe(1);
+  });
+
+  it("a refund Cashfree refuses is marked failed for a person to check", async () => {
+    const {db, cf, gateway, source, intent} = await paidOrder();
+    cancel(db, source.id);
+    cf.orders.get(intent.merchantOrderId)!.order_status = "ACTIVE"; // Cashfree answers 400: nothing paid to refund
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("rejected");
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("rejected");
+    expect(cf.refunds.size).toBe(0);
+  });
+
+  it("never refunds cash orders or unpaid ones", async () => {
+    const {db, gateway, source} = await started();
+    cancel(db, source.id);
+    expect(await refundCancelledOrderPayment(source.id, gateway, db)).toBe("nothing_to_refund");
+    const cod = new Db();
+    cod.seed(orderRef(cod, "SV-COD-1").path, order({id: "SV-COD-1", paymentMethod: "cod", paymentState: "cash_due", status: "Cancelled"}));
+    expect(await refundCancelledOrderPayment("SV-COD-1", gateway, cod)).toBe("nothing_to_refund");
   });
 
   it("acknowledges event types it doesn't act on", async () => {

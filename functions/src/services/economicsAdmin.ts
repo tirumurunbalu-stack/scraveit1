@@ -23,7 +23,9 @@ import {validateLedgerJournal, type LedgerJournal} from "../domain/ledger";
 import {isActiveMembershipForRestaurant, type RestaurantMembership} from "../domain/restaurantAccess";
 import {DomainError} from "../errors";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
-import {legacyStaffRef, restaurantMemberRef, restaurantRef} from "../firestorePaths";
+import {legacyStaffRef, menuItemsCollectionRef, restaurantMemberRef, restaurantRef} from "../firestorePaths";
+import {normalizeFreebies, type Freebie} from "../domain/freebies";
+import {normalizePairings, type Pairing} from "../domain/pairings";
 import {requireOwnerClaim, requirePlatformConfigAdminClaim} from "./authz";
 import {
   GROWTH_BUDGETS_COLLECTION,
@@ -420,6 +422,80 @@ export async function upsertRestaurantOffer(
     approvalStatus: String(promotion.approvalStatus),
     youFundPaiseOnSample: splitDiscountByFunding(sample, promotionDiscountPaise(sample, Math.max(sample.minimumOrderPaise, 30_000))).restaurantPaise,
   };
+}
+
+/**
+ * Saves a restaurant's free-item offers (domain/freebies.ts) on its listing, where the
+ * customer app shows them and checkout adds the free item at ₹0.
+ */
+export async function saveRestaurantFreebies(
+  uid: string,
+  token: DecodedIdToken,
+  input: {restaurantId: string; freebies: unknown[]},
+  database: FirestoreLike = firestoreDb,
+): Promise<{freebies: Freebie[]}> {
+  await requireRestaurantManager(uid, token, input.restaurantId, database);
+  const control = await loadEconomicsControl(Date.now(), database);
+  if (!control.flags.restaurantOffers) throw new DomainError("failed-precondition", "Restaurant offers are paused right now.");
+  const freebies = normalizeFreebies(input.freebies);
+  if (freebies.length !== input.freebies.length) {
+    throw new DomainError("invalid-argument", "Each free-item offer needs a free item, and its dishes or a minimum order.");
+  }
+  const [restaurant, menu] = await Promise.all([
+    restaurantRef(database, input.restaurantId).get(),
+    menuItemsCollectionRef(database, input.restaurantId).get(),
+  ]);
+  if (!restaurant.exists) throw new DomainError("not-found", "Restaurant not found.");
+  const onMenu = new Set(menu.docs.map((doc) => doc.id));
+  if (freebies.some((f) => f.itemIds.some((id) => !onMenu.has(id)))) {
+    throw new DomainError("invalid-argument", "Some chosen dishes are no longer on your menu. Pick them again.");
+  }
+  const now = Date.now();
+  const batch = database.batch();
+  batch.set(restaurantRef(database, input.restaurantId), {freebies, updatedAt: now}, {merge: true});
+  batch.set(database.collection("audit").doc(`freebies_${input.restaurantId}_${now}`), {
+    action: "restaurant_freebies.save", target: input.restaurantId, restaurantId: input.restaurantId, actorId: uid,
+    detail: freebies.map((f) => `${f.active ? "" : "(paused) "}${f.freeItem}`).join(", ").slice(0, 300), at: now,
+  });
+  await batch.commit();
+  return {freebies};
+}
+
+/**
+ * Saves a restaurant's paid pairings (domain/pairings.ts) on its listing, where the customer
+ * app suggests the paired dishes under the chosen dishes. Both sides must be on the menu.
+ */
+export async function saveRestaurantPairings(
+  uid: string,
+  token: DecodedIdToken,
+  input: {restaurantId: string; pairings: unknown[]},
+  database: FirestoreLike = firestoreDb,
+): Promise<{pairings: Pairing[]}> {
+  await requireRestaurantManager(uid, token, input.restaurantId, database);
+  const control = await loadEconomicsControl(Date.now(), database);
+  if (!control.flags.restaurantOffers) throw new DomainError("failed-precondition", "Restaurant offers are paused right now.");
+  const pairings = normalizePairings(input.pairings);
+  if (pairings.length !== input.pairings.length) {
+    throw new DomainError("invalid-argument", "Each pairing needs dishes to suggest and the dishes it goes with.");
+  }
+  const [restaurant, menu] = await Promise.all([
+    restaurantRef(database, input.restaurantId).get(),
+    menuItemsCollectionRef(database, input.restaurantId).get(),
+  ]);
+  if (!restaurant.exists) throw new DomainError("not-found", "Restaurant not found.");
+  const onMenu = new Map(menu.docs.map((doc) => [doc.id, doc.data() as {name?: unknown; archived?: unknown}]));
+  if (pairings.some((p) => [...p.suggestIds, ...p.itemIds].some((id) => !onMenu.has(id) || onMenu.get(id)?.archived === true))) {
+    throw new DomainError("invalid-argument", "Some chosen dishes are no longer on your menu. Pick them again.");
+  }
+  const now = Date.now();
+  const batch = database.batch();
+  batch.set(restaurantRef(database, input.restaurantId), {pairings, updatedAt: now}, {merge: true});
+  batch.set(database.collection("audit").doc(`pairings_${input.restaurantId}_${now}`), {
+    action: "restaurant_pairings.save", target: input.restaurantId, restaurantId: input.restaurantId, actorId: uid,
+    detail: pairings.map((p) => `${p.active ? "" : "(paused) "}${p.title}: ${p.suggestIds.map((id) => String(onMenu.get(id)?.name || id)).join(" / ")}`).join(", ").slice(0, 300), at: now,
+  });
+  await batch.commit();
+  return {pairings};
 }
 
 /**

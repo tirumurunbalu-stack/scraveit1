@@ -19,6 +19,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
@@ -63,11 +64,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 public class MainActivity extends ComponentActivity {
+    private boolean backgroundAfterForeground;
+    private long backgroundRequestedAt;
     private static final int LOCATION_PERMISSION_REQUEST = 6201;
     private static final int FILE_CHOOSER_REQUEST = 6202;
     private static final int FACE_CAPTURE_REQUEST = 6203;
     private static final int CAMERA_PERMISSION_REQUEST = 6204;
     private static final int CHOOSER_CAMERA_PERMISSION_REQUEST = 6206;
+    private static final int BACKGROUND_LOCATION_REQUEST = 6207;
     private static final String TRUSTED_ORIGIN = "https://appassets.androidplatform.net/assets/";
     private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
     private static final int CANVAS = Color.rgb(7, 20, 38);
@@ -79,6 +83,8 @@ public class MainActivity extends ComponentActivity {
     private ValueCallback<Uri[]> fileChooserCallback;
     /** Where the camera writes a photo taken from the "take or choose" picker. */
     private java.io.File chooserCameraFile;
+    /** The page asked for a new photo (capture), like the parcel photo at pickup: camera only, no gallery. */
+    private boolean chooserCameraOnly;
     private SavrivoWebPushBinder pushBinder;
     private final java.util.concurrent.ExecutorService faceExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
     private long openedAt;
@@ -156,6 +162,7 @@ public class MainActivity extends ComponentActivity {
                 if (!isTrustedPageLoaded()) return false;
                 if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
                 fileChooserCallback = callback;
+                chooserCameraOnly = params != null && params.isCaptureEnabled();
                 // Take a photo or choose one. The camera needs its permission first
                 // (usually already given for the face scan).
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
@@ -163,7 +170,7 @@ public class MainActivity extends ComponentActivity {
                     requestPermissions(new String[]{Manifest.permission.CAMERA}, CHOOSER_CAMERA_PERMISSION_REQUEST);
                     return true;
                 }
-                return showPhotoChooser(true);
+                return chooserCameraOnly ? openCameraOnly() : showPhotoChooser(true);
             }
         });
 
@@ -308,7 +315,7 @@ public class MainActivity extends ComponentActivity {
         if (raw.startsWith(TRUSTED_ORIGIN)) return false;
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.US);
         if ("https".equals(scheme) || "mailto".equals(scheme) || "tel".equals(scheme)
-                || "geo".equals(scheme)) {
+                || "geo".equals(scheme) || "sms".equals(scheme)) {
             try { startActivity(new Intent(Intent.ACTION_VIEW, uri)); }
             catch (Exception ignored) { }
         }
@@ -457,6 +464,20 @@ public class MainActivity extends ComponentActivity {
             });
         }
 
+        /** What the "Stay online when the app is closed" screen needs to show. */
+        @JavascriptInterface public String backgroundAccessState() {
+            return "{\"location\":\"" + backgroundLocationState() + "\",\"battery\":" + batteryUnrestricted()
+                    + ",\"declared\":" + backgroundLocationDeclared() + "}";
+        }
+
+        @JavascriptInterface public void requestBackgroundLocation() {
+            runOnUiThread(() -> { if (isTrustedPageLoaded()) requestBackgroundLocationInternal(); });
+        }
+
+        @JavascriptInterface public void requestBatteryExemption() {
+            runOnUiThread(() -> { if (isTrustedPageLoaded()) requestBatteryExemptionInternal(); });
+        }
+
         @JavascriptInterface public void openLocationSettings() {
             runOnUiThread(() -> {
                 if (!isTrustedPageLoaded()) return;
@@ -547,7 +568,17 @@ public class MainActivity extends ComponentActivity {
                     safeReason = "stopped";
                 }
                 service.putExtra("reason", safeReason);
-                startService(service);
+                if ("offline".equals(safeReason)) {
+                    pendingTrackingServiceIntent = null;
+                    pendingTrackingDeferMessage = "";
+                }
+                try {
+                    startService(service);
+                } catch (RuntimeException error) {
+                    // Android refuses this from the background when the service isn't running,
+                    // and then there is nothing to stop.
+                    Log.w(TAG, "TRACKING_STOP_NOT_DELIVERED", error);
+                }
             });
         }
     }
@@ -731,6 +762,17 @@ public class MainActivity extends ComponentActivity {
     private void startTrackingServiceSafely(Intent service, String deferredMessage) {
         if (service == null) return;
         if (!activityResumed) {
+            // Already running: this only hands it a new session, which Android allows off screen.
+            if (TrackingService.isRunning()) {
+                try {
+                    startService(service);
+                    pendingTrackingServiceIntent = null;
+                    pendingTrackingDeferMessage = "";
+                    return;
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "TRACKING_SESSION_SWITCH_DEFERRED", error);
+                }
+            }
             queuePendingTrackingStart(service, deferredMessage);
             return;
         }
@@ -739,13 +781,21 @@ public class MainActivity extends ComponentActivity {
             else startService(service);
             pendingTrackingServiceIntent = null;
             pendingTrackingDeferMessage = "";
+            // A start that waited for the screen has now gone through: clear the page's warning.
+            if (trackingStartWasDeferred) {
+                trackingStartWasDeferred = false;
+                publishTrackingStateToWeb("active", "");
+            }
         } catch (RuntimeException error) {
             Log.w(TAG, "TRACKING_SERVICE_START_DEFERRED", error);
             queuePendingTrackingStart(service, deferredMessage);
         }
     }
 
+    private boolean trackingStartWasDeferred;
+
     private void queuePendingTrackingStart(Intent service, String deferredMessage) {
+        trackingStartWasDeferred = true;
         pendingTrackingServiceIntent = service;
         pendingTrackingDeferMessage = deferredMessage == null ? "" : deferredMessage;
         publishTrackingStateToWeb("sync_error", pendingTrackingDeferMessage);
@@ -803,6 +853,71 @@ public class MainActivity extends ComponentActivity {
         } else publishLocationResult(true, locationServicesEnabled());
     }
 
+    private String backgroundLocationState() {
+        if (!hasLocationPermission()) return "none";
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "all";
+        return checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                == PackageManager.PERMISSION_GRANTED ? "all" : "foreground";
+    }
+
+    private boolean batteryUnrestricted() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        return power != null && power.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    /** False in a build without the permission: the screen then stays hidden. */
+    private boolean backgroundLocationDeclared() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
+        try {
+            String[] requested = getPackageManager()
+                    .getPackageInfo(getPackageName(), PackageManager.GET_PERMISSIONS).requestedPermissions;
+            if (requested == null) return false;
+            for (String permission : requested) {
+                if (Manifest.permission.ACCESS_BACKGROUND_LOCATION.equals(permission)) return true;
+            }
+        } catch (PackageManager.NameNotFoundException ignored) { }
+        return false;
+    }
+
+    /** Android asks in two steps: "while using" first, then "all the time" on a separate screen. */
+    private void requestBackgroundLocationInternal() {
+        if (!hasLocationPermission()) {
+            backgroundAfterForeground = true;
+            requestLocationAccessInternal();
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            publishBackgroundAccessChanged();
+            return;
+        }
+        backgroundRequestedAt = System.currentTimeMillis();
+        requestPermissions(new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, BACKGROUND_LOCATION_REQUEST);
+    }
+
+    private void requestBatteryExemptionInternal() {
+        if (batteryUnrestricted()) {
+            publishBackgroundAccessChanged();
+            return;
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception unavailable) {
+            try { startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); }
+            catch (Exception ignored) { }
+        }
+    }
+
+    private void publishBackgroundAccessChanged() {
+        if (webView == null || !isTrustedPageLoaded()) return;
+        webView.post(() -> {
+            if (webView != null && isTrustedPageLoaded()) {
+                webView.evaluateJavascript("window.riderBackgroundAccessChanged && window.riderBackgroundAccessChanged()", null);
+            }
+        });
+    }
+
     private boolean hasLocationPermission() {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                 || checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -825,7 +940,7 @@ public class MainActivity extends ComponentActivity {
     private void promptEnableLocation() {
         new AlertDialog.Builder(this)
                 .setTitle("Turn on Location")
-                .setMessage("Scraveit Partner shares location only during an active assigned delivery so the customer and operations team can follow progress.")
+                .setMessage("Scraveit Partner shares your location while you are online to send nearby delivery offers, and during a delivery so the customer and operations team can follow progress.")
                 .setNegativeButton("Not now", null)
                 .setPositiveButton("Open settings", (dialog, which) -> {
                     try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
@@ -956,6 +1071,22 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
+    /** Just the camera, for a photo that must be taken now (an old gallery photo proves nothing). */
+    private boolean openCameraOnly() {
+        if (fileChooserCallback == null) return false;
+        Intent camera = chooserCameraIntent();
+        try {
+            if (camera == null) throw new IllegalStateException("No camera");
+            startActivityForResult(camera, FILE_CHOOSER_REQUEST);
+            return true;
+        } catch (Exception error) {
+            fileChooserCallback.onReceiveValue(null);
+            fileChooserCallback = null;
+            chooserCameraFile = null;
+            return false;
+        }
+    }
+
     /** One picker: the camera, plus the gallery and files. Without camera permission, only the gallery. */
     private boolean showPhotoChooser(boolean withCamera) {
         if (fileChooserCallback == null) return false;
@@ -1001,7 +1132,13 @@ public class MainActivity extends ComponentActivity {
         if (requestCode == CHOOSER_CAMERA_PERMISSION_REQUEST) {
             boolean cameraGranted = false;
             for (int result : grantResults) if (result == PackageManager.PERMISSION_GRANTED) cameraGranted = true;
-            showPhotoChooser(cameraGranted);
+            if (!chooserCameraOnly) showPhotoChooser(cameraGranted);
+            else if (cameraGranted) openCameraOnly();
+            else if (fileChooserCallback != null) {
+                fileChooserCallback.onReceiveValue(null);
+                fileChooserCallback = null;
+                Toast.makeText(this, "Allow the camera to photograph the parcel.", Toast.LENGTH_LONG).show();
+            }
             return;
         }
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
@@ -1011,6 +1148,20 @@ public class MainActivity extends ComponentActivity {
             else publishFaceCaptureFailure("Camera permission is required to verify your identity.");
             return;
         }
+        if (requestCode == BACKGROUND_LOCATION_REQUEST) {
+            boolean allowed = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            // After two refusals Android answers at once without showing anything, so the only
+            // way left is the app's own settings page.
+            if (!allowed && System.currentTimeMillis() - backgroundRequestedAt < 600L) {
+                Toast.makeText(this, "Open Permissions, then Location, then choose Allow all the time.", Toast.LENGTH_LONG).show();
+                try {
+                    startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:" + getPackageName())));
+                } catch (Exception ignored) { }
+            }
+            publishBackgroundAccessChanged();
+            return;
+        }
         if (requestCode != LOCATION_PERMISSION_REQUEST) return;
         boolean granted = false;
         for (int result : grantResults) {
@@ -1018,6 +1169,10 @@ public class MainActivity extends ComponentActivity {
         }
         if (granted && !locationServicesEnabled()) promptEnableLocation();
         publishLocationResult(granted, locationServicesEnabled());
+        boolean askAllTheTime = backgroundAfterForeground && granted;
+        backgroundAfterForeground = false;
+        if (askAllTheTime) requestBackgroundLocationInternal();
+        else publishBackgroundAccessChanged();
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -1052,6 +1207,7 @@ public class MainActivity extends ComponentActivity {
             publishLocationResult(true, locationServicesEnabled());
         }
         handler.post(this::resumePendingTrackingStart);
+        publishBackgroundAccessChanged();
     }
 
     @Override protected void onPause() {

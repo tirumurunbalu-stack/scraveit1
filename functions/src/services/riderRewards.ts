@@ -71,6 +71,12 @@ import {
 const IST_OFFSET_MS = 330 * 60 * 1_000;
 const DEFAULT_REWARD_TIMEZONE = "Asia/Kolkata";
 const PRESENCE_HEARTBEAT_TIMEOUT_MS = 90_000;
+// Rider presence arrives every 15 s (every 2 s from older rider apps). Online time only needs one
+// heartbeat inside the 90 s timeout, and reward progress can trail by a few minutes, so a heartbeat
+// is stored once a minute and progress is recomputed once every 5 minutes. Recomputing on every
+// heartbeat re-read the rider's whole day of events each time: 93 million reads on 21 Sep 2026.
+const HEARTBEAT_STORE_EVERY_MS = 60_000;
+const HEARTBEAT_REFRESH_EVERY_MS = 5 * 60_000;
 
 export type RiderRewardsDatabase = FirestoreLike;
 
@@ -4042,11 +4048,20 @@ async function recordAndRefreshRewardActivity(
     metadata?: Record<string, string | number | boolean | null>;
   },
   database: RiderRewardsDatabase,
+  refresh = true,
 ): Promise<void> {
   const riderId = identifier(riderIdInput);
   if (!riderId) return;
   await recordRiderRewardActivityEvent(riderId, event, database);
-  await refreshRiderRewardProgress(riderId, event.occurredAt, database);
+  if (refresh) await refreshRiderRewardProgress(riderId, event.occurredAt, database);
+}
+
+/** True when two client presence times fall in different `everyMs` buckets (or either is unknown). */
+function crossedPresenceBucket(beforeAt: unknown, afterAt: unknown, everyMs: number): boolean {
+  const previous = Number(beforeAt);
+  const current = Number(afterAt);
+  if (!Number.isFinite(previous) || !Number.isFinite(current) || previous <= 0 || current <= 0) return true;
+  return Math.floor(previous / everyMs) !== Math.floor(current / everyMs);
 }
 
 export async function recordRiderRewardPresenceUpdate(
@@ -4065,6 +4080,9 @@ export async function recordRiderRewardPresenceUpdate(
   const type: RiderRewardActivityEventType = afterOnline
     ? (beforeOnline ? "HEARTBEAT" : "ONLINE")
     : (after ? "OFFLINE" : "APP_DISCONNECTED");
+  if (type === "HEARTBEAT" && !crossedPresenceBucket(before?.updatedAt, after?.updatedAt, HEARTBEAT_STORE_EVERY_MS)) return;
+  const refresh = type !== "HEARTBEAT" ||
+    crossedPresenceBucket(before?.updatedAt, after?.updatedAt, HEARTBEAT_REFRESH_EVERY_MS);
   await recordAndRefreshRewardActivity(riderId, {
     eventId: `presence:${recordedAt}:${type.toLowerCase()}`,
     type,
@@ -4074,7 +4092,7 @@ export async function recordRiderRewardPresenceUpdate(
       city: text(after?.city ?? before?.city, 120),
       clientUpdatedAt: integer(after?.updatedAt ?? before?.updatedAt, 0, 0),
     },
-  }, database);
+  }, database, refresh);
 }
 
 export async function recordRiderRewardOrderAccepted(

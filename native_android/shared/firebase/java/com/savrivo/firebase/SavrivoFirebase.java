@@ -136,7 +136,7 @@ public final class SavrivoFirebase {
     }
 
     private static boolean installDebugVariantProvider(Context context, FirebaseApp firebaseApp) {
-        // The grocery and dairy builds keep the restaurant app's code namespace under their own
+        // The grocery, dairy and health care builds keep the restaurant app's code namespace under their own
         // package name, so look there too.
         String[] owners = {context.getPackageName(), "com.feastly.restaurant"};
         for (String owner : owners) {

@@ -72,6 +72,7 @@ import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 import com.cashfree.pg.core.api.CFCorePaymentGatewayService;
 import com.cashfree.pg.core.api.CFSession;
+import android.util.Log;
 import com.cashfree.pg.core.api.base.CFPayment;
 import com.cashfree.pg.core.api.callback.CFCheckoutResponseCallback;
 import com.cashfree.pg.core.api.upi.CFUPI;
@@ -88,6 +89,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -100,6 +103,7 @@ public class MainActivity extends ComponentActivity {
   private static final int LOCATION_REQUEST = 4401;
   private static final int NOTIFICATION_REQUEST = 4403;
   private static final int MEDIA_REQUEST = 4405;
+  private static final int PLACE_CAMERA_PERMISSION = 4407;
   /** The JS request waiting for the microphone/camera permission answer. */
   private String pendingMediaRequestId;
   // Calls: whether the app is on screen (a ringing call shows in-app, not as a notification), the
@@ -117,10 +121,19 @@ public class MainActivity extends ComponentActivity {
   private static final String TRUSTED_PAGE = TRUSTED_ORIGIN + "premium.html";
   private final Handler handler = new Handler(Looper.getMainLooper());
   private long openedAt;
+  // The splash stays over the page until the page draws its first real screen (appReady), then fades into it.
+  private FrameLayout splash;
+  private ImageView splashLogo;
+  private boolean pageShown, appReady, splashLeaving;
   private long lastBackPressed;
   private WebView webView;
   private LocationManager activeLocationManager;
   private LocationListener activeLocationListener;
+  /** While waiting for a sharp fix: the best one heard so far, and an older last-known one to fall back on. */
+  private Location bestLocationFix;
+  private Location staleLocationFix;
+  /** A fix this close (metres) is good enough to put the pin on the customer's building. */
+  private static final float SHARP_FIX_METRES = 50f;
   private boolean retryLocationOnResume;
   private CredentialManager credentialManager;
   private final ExecutorService credentialExecutor = Executors.newSingleThreadExecutor();
@@ -141,8 +154,9 @@ public class MainActivity extends ComponentActivity {
   };
   private final Runnable locationTimeout = new Runnable() {
     @Override public void run() {
+      Location fallback = bestLocationFix != null ? bestLocationFix : staleLocationFix;
       stopLocationUpdates();
-      publishLocationUnavailable();
+      if (fallback != null) resolveLocationName(fallback); else publishLocationUnavailable();
     }
   };
 
@@ -218,6 +232,11 @@ public class MainActivity extends ComponentActivity {
     view.removeJavascriptInterface("accessibility");
     view.removeJavascriptInterface("accessibilityTraversal");
     view.setWebChromeClient(new WebChromeClient() {
+      // Android's stand-in for a video that hasn't loaded is a big grey play button; show nothing instead,
+      // so the page's own dark background (or the video's poster) shows while it loads.
+      @Override public android.graphics.Bitmap getDefaultVideoPoster() {
+        return android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888);
+      }
       // Microphone/camera for voice messages and calls: only our own page, and only what Android already allowed.
       @Override public void onPermissionRequest(PermissionRequest request) {
         runOnUiThread(() -> {
@@ -236,7 +255,8 @@ public class MainActivity extends ComponentActivity {
     });
     view.addJavascriptInterface(new NativeBridge(), "FeastlyNative");
     createOrderNotificationChannel();
-    final FrameLayout splash = new FrameLayout(this);
+    splash = new FrameLayout(this);
+    splash.setBackgroundColor(Color.WHITE);
     view.setWebViewClient(new WebViewClient() {
       @Override public boolean shouldOverrideUrlLoading(WebView webView, String url) {
         return handleNavigation(url);
@@ -258,8 +278,10 @@ public class MainActivity extends ComponentActivity {
             if (!isTrustedPageLoaded()) return;
             publishSafeArea();
             view.setVisibility(View.VISIBLE);
-            splash.setVisibility(View.GONE);
+            pageShown = true;
             deliverPendingPushEvent();
+            // Normally the page says it's ready first; never hold the splash more than a few seconds.
+            if (appReady) hideSplash(); else handler.postDelayed(MainActivity.this::hideSplash, 3500);
           }
         }, remaining);
       }
@@ -270,6 +292,7 @@ public class MainActivity extends ComponentActivity {
 
     splash.setClickable(false);
     ImageView logo = new ImageView(this);
+    splashLogo = logo;
     logo.setImageResource(com.feastly.app.R.drawable.scraveit_icon);
     logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
     logo.setAlpha(0f);
@@ -323,6 +346,16 @@ public class MainActivity extends ComponentActivity {
     opening.start();
   }
 
+  /** Fades the splash into the page, which then plays its own entrance. */
+  private void hideSplash() {
+    if (splash == null || splashLeaving || !pageShown) return;
+    splashLeaving = true;
+    if (webView != null) webView.evaluateJavascript("window.scraveitShown&&window.scraveitShown()", null);
+    splashLogo.animate().scaleX(1.1f).scaleY(1.1f).setDuration(320).setInterpolator(new DecelerateInterpolator()).start();
+    splash.animate().alpha(0f).setDuration(320).setInterpolator(new DecelerateInterpolator())
+        .withEndAction(() -> splash.setVisibility(View.GONE)).start();
+  }
+
   private int dp(int value) {
     return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
   }
@@ -370,6 +403,7 @@ public class MainActivity extends ComponentActivity {
     if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())
         || !TRUSTED_HOST.equalsIgnoreCase(uri.getHost()) || uri.getPort() != -1) return null;
     String path = uri.getPath();
+    if (path != null && path.startsWith(REEL_CACHE_PATH)) return serveReelCache(path);
     if (path == null || !path.startsWith("/assets/")) return blockedAssetResponse();
     String assetPath = path.substring("/assets/".length());
     if (assetPath.length() == 0 || assetPath.contains("..") || assetPath.contains("\\")) {
@@ -378,6 +412,109 @@ public class MainActivity extends ComponentActivity {
     try {
       InputStream stream = getAssets().open(assetPath);
       return new WebResourceResponse(assetMimeType(assetPath), "UTF-8", stream);
+    } catch (IOException ignored) {
+      return blockedAssetResponse();
+    }
+  }
+
+  private static final String REEL_CACHE_PATH = "/reel-cache/";
+  private static final long REEL_MAX_MS = 60_000L;
+
+  private File reelCacheDir() {
+    File dir = new File(getCacheDir(), "reels");
+    if (!dir.isDirectory()) dir.mkdirs();
+    return dir;
+  }
+
+  private void onReelVideoPicked(int resultCode, Intent data) {
+    final String requestId = pendingReelRequestId;
+    pendingReelRequestId = null;
+    if (requestId == null) return;
+    final Uri uri = resultCode == RESULT_OK && data != null ? data.getData() : null;
+    if (uri == null) { publishNativeFailure(requestId, "pickReelVideo", "CANCELLED", "No video chosen."); return; }
+    int width = 0, height = 0, rotation = 0;
+    long durationMs = 0;
+    android.media.MediaMetadataRetriever meta = new android.media.MediaMetadataRetriever();
+    try {
+      meta.setDataSource(this, uri);
+      width = parseIntOr(meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+      height = parseIntOr(meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+      rotation = parseIntOr(meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION));
+      durationMs = parseIntOr(meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION));
+    } catch (Exception error) {
+      publishNativeFailure(requestId, "pickReelVideo", "UNREADABLE", "That video couldn’t be opened. Try another.");
+      return;
+    } finally {
+      try { meta.release(); } catch (Exception ignored) { }
+    }
+    if (width <= 0 || height <= 0 || durationMs < 1000) {
+      publishNativeFailure(requestId, "pickReelVideo", "UNREADABLE", "That video is too short or couldn’t be read.");
+      return;
+    }
+    if (rotation == 90 || rotation == 270) { int t = width; width = height; height = t; }
+    // Shorter side at most 720 px, longer side at most 1280 px; encoders want even sizes.
+    float scale = Math.min(1f, Math.min(720f / Math.min(width, height), 1280f / Math.max(width, height)));
+    final int outW = Math.max(2, Math.round(width * scale) / 2 * 2);
+    final int outH = Math.max(2, Math.round(height * scale) / 2 * 2);
+    final long clipMs = Math.min(durationMs, REEL_MAX_MS);
+    File[] old = reelCacheDir().listFiles();
+    if (old != null) for (File f : old) f.delete();
+    final String name = "reel_" + java.util.UUID.randomUUID().toString().replace("-", "") + ".mp4";
+    final File out = new File(reelCacheDir(), name);
+    try {
+      androidx.media3.common.MediaItem item = new androidx.media3.common.MediaItem.Builder()
+          .setUri(uri)
+          .setClippingConfiguration(new androidx.media3.common.MediaItem.ClippingConfiguration.Builder().setEndPositionMs(clipMs).build())
+          .build();
+      androidx.media3.effect.Presentation size = androidx.media3.effect.Presentation.createForWidthAndHeight(
+          outW, outH, androidx.media3.effect.Presentation.LAYOUT_SCALE_TO_FIT);
+      androidx.media3.transformer.EditedMediaItem edited = new androidx.media3.transformer.EditedMediaItem.Builder(item)
+          .setEffects(new androidx.media3.transformer.Effects(java.util.Collections.emptyList(), java.util.Collections.singletonList(size)))
+          .build();
+      androidx.media3.transformer.Transformer transformer = new androidx.media3.transformer.Transformer.Builder(this)
+          .setVideoMimeType(androidx.media3.common.MimeTypes.VIDEO_H264)
+          .setAudioMimeType(androidx.media3.common.MimeTypes.AUDIO_AAC)
+          .setEncoderFactory(new androidx.media3.transformer.DefaultEncoderFactory.Builder(this)
+              .setRequestedVideoEncoderSettings(new androidx.media3.transformer.VideoEncoderSettings.Builder().setBitrate(3_000_000).build())
+              .build())
+          .addListener(new androidx.media3.transformer.Transformer.Listener() {
+            @Override public void onCompleted(androidx.media3.transformer.Composition composition, androidx.media3.transformer.ExportResult result) {
+              JSONObject done = new JSONObject();
+              try {
+                done.put("url", "https://" + TRUSTED_HOST + REEL_CACHE_PATH + name);
+                done.put("w", outW);
+                done.put("h", outH);
+                done.put("ms", result.durationMs > 0 ? result.durationMs : clipMs);
+                done.put("bytes", out.length());
+              } catch (Exception ignored) { }
+              publishNativeSuccess(requestId, "pickReelVideo", done);
+            }
+            @Override public void onError(androidx.media3.transformer.Composition composition, androidx.media3.transformer.ExportResult result,
+                                          androidx.media3.transformer.ExportException error) {
+              out.delete();
+              FirebaseCrashlytics.getInstance().recordException(error);
+              publishNativeFailure(requestId, "pickReelVideo", "CONVERT_FAILED", "That video couldn’t be prepared. Try another.");
+            }
+          })
+          .build();
+      transformer.start(edited, out.getAbsolutePath());
+    } catch (Exception error) {
+      FirebaseCrashlytics.getInstance().recordException(error);
+      publishNativeFailure(requestId, "pickReelVideo", "CONVERT_FAILED", "That video couldn’t be prepared. Try another.");
+    }
+  }
+
+  private static int parseIntOr(String value) {
+    try { return value == null ? 0 : (int) Long.parseLong(value.trim()); } catch (Exception ignored) { return 0; }
+  }
+
+  /** The shrunk reel video, served to the page only, by its random file name. */
+  private WebResourceResponse serveReelCache(String path) {
+    String name = path.substring(REEL_CACHE_PATH.length());
+    if (!name.matches("reel_[a-f0-9]{32}\\.mp4")) return blockedAssetResponse();
+    File file = new File(reelCacheDir(), name);
+    try {
+      return new WebResourceResponse("video/mp4", null, new FileInputStream(file));
     } catch (IOException ignored) {
       return blockedAssetResponse();
     }
@@ -458,10 +595,18 @@ public class MainActivity extends ComponentActivity {
   private String pendingTableLink = "";
   private static final int PROFILE_PHOTO_REQUEST = 7411;
   private static final int CHAT_PHOTO_REQUEST = 7412;
+  private static final int REEL_VIDEO_REQUEST = 7416;
+  private static final int PLACE_PHOTO_REQUEST = 7417;
+  private static final int PLACE_CAMERA_REQUEST = 7418;
+  /** Where the camera writes a place photo (app cache, shared only with the camera app). */
+  private Uri placeCameraUri;
+  private String pendingReelRequestId;
   private String pendingPhotoRequestId;
 
   @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode == REEL_VIDEO_REQUEST) { onReelVideoPicked(resultCode, data); return; }
+    if (requestCode == PLACE_PHOTO_REQUEST || requestCode == PLACE_CAMERA_REQUEST) { onPlacePhoto(requestCode, resultCode, data); return; }
     if (requestCode != PROFILE_PHOTO_REQUEST && requestCode != CHAT_PHOTO_REQUEST) return;
     final boolean chat = requestCode == CHAT_PHOTO_REQUEST;
     final String operation = chat ? "pickChatPhoto" : "pickProfilePhoto";
@@ -480,17 +625,79 @@ public class MainActivity extends ComponentActivity {
     }, chat ? "chat-photo" : "profile-photo").start();
   }
 
+  /**
+   * A photo of the customer's gate or building for the rider, from the camera or the phone's
+   * photos. Same size and shape rules as a chat photo, so it comes back as {image, w, h}.
+   */
+  private void onPlacePhoto(int requestCode, int resultCode, Intent data) {
+    String id = pendingPhotoRequestId;
+    pendingPhotoRequestId = null;
+    Uri uri = requestCode == PLACE_CAMERA_REQUEST ? placeCameraUri : (data != null ? data.getData() : null);
+    placeCameraUri = null;
+    if (id == null) return;
+    if (resultCode != RESULT_OK || uri == null) { publishNativeFailure(id, "pickPlacePhoto", "CANCELLED", "No photo chosen."); return; }
+    new Thread(() -> {
+      try {
+        JSONObject out = chatJpeg(uri);
+        runOnUiThread(() -> publishNativeSuccess(id, "pickPlacePhoto", out));
+      } catch (Throwable error) {
+        runOnUiThread(() -> publishNativeFailure(id, "pickPlacePhoto", "INVALID", "That photo couldn’t be used. Try another."));
+      }
+    }, "place-photo").start();
+  }
+
+  /** Opens the camera for a place photo. Only the camera app gets to write the file. */
+  private void launchPlaceCamera() {
+    String id = pendingPhotoRequestId;
+    try {
+      java.io.File dir = new java.io.File(getCacheDir(), "share");
+      if (!dir.exists() && !dir.mkdirs()) throw new java.io.IOException("No cache folder.");
+      java.io.File file = new java.io.File(dir, "place-photo.jpg");
+      placeCameraUri = androidx.core.content.FileProvider.getUriForFile(this, getPackageName() + ".share", file);
+      Intent intent = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+      intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, placeCameraUri);
+      intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      startActivityForResult(intent, PLACE_CAMERA_REQUEST);
+    } catch (Exception error) {
+      pendingPhotoRequestId = null;
+      placeCameraUri = null;
+      if (id != null) publishNativeFailure(id, "pickPlacePhoto", "UNAVAILABLE", "Couldn’t open the camera. Choose from your photos instead.");
+    }
+  }
+
+  /**
+   * One geocoder result as the address screen uses it. Always in English, so the rider can read
+   * it whatever language the customer's phone is set to.
+   */
+  private JSONObject placeJson(Address a) throws org.json.JSONException {
+    String line = a.getMaxAddressLineIndex() >= 0 && notEmpty(a.getAddressLine(0)) ? a.getAddressLine(0) : "";
+    String street = notEmpty(a.getThoroughfare()) ? a.getThoroughfare() : "";
+    String area = notEmpty(a.getSubLocality()) ? a.getSubLocality() : notEmpty(a.getLocality()) ? a.getLocality() : "";
+    String city = notEmpty(a.getLocality()) ? a.getLocality() : notEmpty(a.getSubAdminArea()) ? a.getSubAdminArea() : "";
+    String feature = a.getFeatureName();
+    // The feature name is often just a door number or a plus code ("7R3V+QG"); only a real name is worth showing.
+    boolean namedPlace = notEmpty(feature) && feature.matches(".*\\p{L}{3,}.*") && !feature.contains("+");
+    String title = namedPlace ? feature : notEmpty(street) ? street : notEmpty(area) ? area : city;
+    JSONObject out = new JSONObject()
+        .put("title", title).put("line", line).put("street", street).put("area", area).put("city", city)
+        .put("pincode", notEmpty(a.getPostalCode()) ? a.getPostalCode() : "");
+    if (a.hasLatitude() && a.hasLongitude()) out.put("lat", a.getLatitude()).put("lng", a.getLongitude());
+    return out;
+  }
+
+  private static final Locale PLACE_LOCALE = new Locale("en", "IN");
+
   /** Largest a chat photo may be as a data URL, so it fits one Firestore document with room to spare. */
   private static final int CHAT_PHOTO_MAX_CHARS = 700_000;
 
   /**
-   * A photo for a chat: keeps its shape, longest side at most 1280 px (smaller and
+   * A photo for a chat, post or story: keeps its shape, longest side at most 1600 px (smaller and
    * lower quality until it fits CHAT_PHOTO_MAX_CHARS). Returns {image, w, h}.
    * Re-encoding also drops the original's EXIF data, location included.
    */
   private JSONObject chatJpeg(android.net.Uri uri) throws Exception {
-    android.graphics.Bitmap source = decodeWithin(uri, 1280);
-    int[][] steps = {{1280, 78}, {1280, 66}, {1024, 66}, {880, 60}, {720, 58}};
+    android.graphics.Bitmap source = decodeWithin(uri, 1600);
+    int[][] steps = {{1600, 82}, {1440, 76}, {1280, 72}, {1280, 64}, {1024, 64}, {880, 60}, {720, 58}};
     for (int[] step : steps) {
       float scale = Math.min(1f, (float) step[0] / Math.max(source.getWidth(), source.getHeight()));
       int w = Math.max(1, Math.round(source.getWidth() * scale)), h = Math.max(1, Math.round(source.getHeight() * scale));
@@ -563,9 +770,13 @@ public class MainActivity extends ComponentActivity {
       "callIceServers", "chatSetup", "chatNewCode", "chatSetPrivacy", "chatAddFriend", "chatSetUsername", "chatRespond", "chatMarkRead",
       "chatParentRequest", "chatParentRespond", "chatParentRevoke", "chatReport",
       "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
-      "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou", "chatUnsend"));
+      "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou", "chatUnsend",
+      "createReel", "reportReel", "recordAppEvents"));
 
   private class NativeBridge {
+    /** The page has drawn its first real screen: the splash can fade into it. */
+    @JavascriptInterface public void appReady() { runOnUiThread(() -> { appReady = true; hideSplash(); }); }
+
     /** The table link the app was opened with (once), as "restaurantId/tableId". */
     @JavascriptInterface public String takeTableLink() {
       String link = pendingTableLink == null ? "" : pendingTableLink;
@@ -588,6 +799,89 @@ public class MainActivity extends ComponentActivity {
     /** A photo to send in a chat: pick from the phone's photos; returned as {image, w, h}. */
     @JavascriptInterface public void pickChatPhoto(String requestId) { pickPhoto(requestId, CHAT_PHOTO_REQUEST, "pickChatPhoto"); }
 
+    /** A photo of the customer's gate or building: "camera" takes one now, anything else picks from the phone's photos. */
+    @JavascriptInterface public void pickPlacePhoto(String requestId, String source) {
+      if (!"camera".equals(source)) { pickPhoto(requestId, PLACE_PHOTO_REQUEST, "pickPlacePhoto"); return; }
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        pendingPhotoRequestId = requestId;
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+          requestPermissions(new String[]{Manifest.permission.CAMERA}, PLACE_CAMERA_PERMISSION);
+          return;
+        }
+        launchPlaceCamera();
+      });
+    }
+
+    /** Street, area and city under a map pin, from the phone's geocoder: {title, line, street, area, city, pincode}. */
+    @JavascriptInterface public void reverseGeocode(String requestId, String payloadJson) {
+      if (!validRequestId(requestId)) return;
+      final double lat, lng;
+      try {
+        JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+        lat = payload.getDouble("lat");
+        lng = payload.getDouble("lng");
+      } catch (Exception error) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "reverseGeocode", "INVALID_ARGUMENT", "No map pin."));
+        return;
+      }
+      new Thread(() -> {
+        try {
+          List<Address> found = Geocoder.isPresent() ? new Geocoder(MainActivity.this, PLACE_LOCALE).getFromLocation(lat, lng, 1) : null;
+          JSONObject out = found == null || found.isEmpty() ? new JSONObject() : placeJson(found.get(0));
+          runOnUiThread(() -> publishNativeSuccess(requestId, "reverseGeocode", out));
+        } catch (Exception error) {
+          runOnUiThread(() -> publishNativeFailure(requestId, "reverseGeocode", "UNAVAILABLE", "Couldn’t read the street name."));
+        }
+      }, "reverse-geocode").start();
+    }
+
+    /**
+     * Places matching what the customer typed, looked for around the map first (about 50 km),
+     * then anywhere, nearest first: {results: [{title, line, area, city, lat, lng}]}.
+     */
+    @JavascriptInterface public void searchPlaces(String requestId, String payloadJson) {
+      if (!validRequestId(requestId)) return;
+      final String query;
+      final double lat, lng;
+      try {
+        JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+        String typed = payload.optString("query", "").trim();
+        query = typed.length() > 120 ? typed.substring(0, 120) : typed;
+        lat = payload.optDouble("lat", Double.NaN);
+        lng = payload.optDouble("lng", Double.NaN);
+      } catch (Exception error) {
+        runOnUiThread(() -> publishNativeFailure(requestId, "searchPlaces", "INVALID_ARGUMENT", "Type a place to search."));
+        return;
+      }
+      if (query.length() < 2) { runOnUiThread(() -> publishNativeFailure(requestId, "searchPlaces", "INVALID_ARGUMENT", "Type a place to search.")); return; }
+      new Thread(() -> {
+        try {
+          if (!Geocoder.isPresent()) throw new IOException("No geocoder.");
+          Geocoder geocoder = new Geocoder(MainActivity.this, PLACE_LOCALE);
+          boolean centred = !Double.isNaN(lat) && !Double.isNaN(lng);
+          List<Address> found = centred ? geocoder.getFromLocationName(query, 8, lat - 0.45, lng - 0.45, lat + 0.45, lng + 0.45) : null;
+          if (found == null || found.isEmpty()) found = geocoder.getFromLocationName(query, 8);
+          List<Address> located = new java.util.ArrayList<>();
+          if (found != null) for (Address a : found) if (a.hasLatitude() && a.hasLongitude()) located.add(a);
+          if (centred) {
+            float[] da = new float[1], db = new float[1];
+            located.sort((a, b) -> {
+              Location.distanceBetween(lat, lng, a.getLatitude(), a.getLongitude(), da);
+              Location.distanceBetween(lat, lng, b.getLatitude(), b.getLongitude(), db);
+              return Float.compare(da[0], db[0]);
+            });
+          }
+          JSONArray results = new JSONArray();
+          for (Address a : located) results.put(placeJson(a));
+          JSONObject out = new JSONObject().put("results", results);
+          runOnUiThread(() -> publishNativeSuccess(requestId, "searchPlaces", out));
+        } catch (Exception error) {
+          runOnUiThread(() -> publishNativeFailure(requestId, "searchPlaces", "UNAVAILABLE", "Search isn’t working right now. Move the map to your place instead."));
+        }
+      }, "place-search").start();
+    }
+
     private void pickPhoto(String requestId, int requestCode, String operation) {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
@@ -604,6 +898,32 @@ public class MainActivity extends ComponentActivity {
         catch (Exception error) {
           pendingPhotoRequestId = null;
           publishNativeFailure(requestId, operation, "UNAVAILABLE", "Couldn’t open your photos.");
+        }
+      });
+    }
+
+    /**
+     * A video for a public reel: pick one from the phone, then shrink it here (720p H.264, at most the
+     * first 60 seconds) so uploads stay small. The page reads the result from reelCacheUrl().
+     */
+    @JavascriptInterface public void pickReelVideo(String requestId) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        if (pendingReelRequestId != null) publishNativeFailure(pendingReelRequestId, "pickReelVideo", "REPLACED", "A newer video was picked.");
+        pendingReelRequestId = requestId;
+        Intent intent;
+        if (Build.VERSION.SDK_INT >= 33) {
+          intent = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
+          intent.setType("video/*");
+        } else {
+          intent = new Intent(Intent.ACTION_GET_CONTENT);
+          intent.setType("video/*");
+          intent.addCategory(Intent.CATEGORY_OPENABLE);
+        }
+        try { startActivityForResult(intent, REEL_VIDEO_REQUEST); }
+        catch (Exception error) {
+          pendingReelRequestId = null;
+          publishNativeFailure(requestId, "pickReelVideo", "UNAVAILABLE", "Couldn’t open your videos.");
         }
       });
     }
@@ -832,6 +1152,21 @@ public class MainActivity extends ComponentActivity {
       });
     }
 
+    /** One cart from two or three restaurants (cash on delivery); stores each part's delivery code. */
+    @JavascriptInterface public void createClusterOrder(String requestId, String firebaseIdToken,
+                                                         String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          invokeCallable(requestId, "createClusterOrder", firebaseIdToken, payload, null);
+        } catch (Exception error) {
+          publishNativeFailure(requestId, "createClusterOrder", "INVALID_ARGUMENT",
+              "The order request is invalid. Refresh the cart and try again.");
+        }
+      });
+    }
+
     @JavascriptInterface public void createOrder(String requestId, String firebaseIdToken,
                                                  String payloadJson) {
       runOnUiThread(() -> {
@@ -895,6 +1230,36 @@ public class MainActivity extends ComponentActivity {
         } catch (Exception error) {
           publishNativeFailure(requestId, "createPaymentIntent", "INVALID_ARGUMENT",
               "The payment request is invalid. Refresh and try again.");
+        }
+      });
+    }
+
+    /** Whether the money for this order came in, for the "Confirming your payment" screen. payload: {orderId}. */
+    @JavascriptInterface public void checkOrderPayment(String requestId, String firebaseIdToken,
+                                                       String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          invokeCallable(requestId, "checkOrderPayment", firebaseIdToken, payload, null);
+        } catch (Exception error) {
+          publishNativeFailure(requestId, "checkOrderPayment", "INVALID_ARGUMENT",
+              "The request is invalid. Refresh and try again.");
+        }
+      });
+    }
+
+    /** Cancels the customer's unpaid online order once its payment didn't go through. payload: {orderId, reason: "cod"|"cancel"}. */
+    @JavascriptInterface public void cancelUnpaidOrder(String requestId, String firebaseIdToken,
+                                                       String payloadJson) {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded() || !validRequestId(requestId)) return;
+        try {
+          JSONObject payload = new JSONObject(payloadJson == null ? "{}" : payloadJson);
+          invokeCallable(requestId, "cancelUnpaidOrder", firebaseIdToken, payload, null);
+        } catch (Exception error) {
+          publishNativeFailure(requestId, "cancelUnpaidOrder", "INVALID_ARGUMENT",
+              "The request is invalid. Refresh and try again.");
         }
       });
     }
@@ -1009,6 +1374,8 @@ public class MainActivity extends ComponentActivity {
             JSONArray list = new JSONArray();
             try {
               if (apps != null) for (CFUPIApp app : apps) {
+                // Installed but UPI not set up here (e.g. its SIM isn't in this phone): it can't take a payment.
+                if (!upiAppCanPay(app.getAppId())) continue;
                 JSONObject item = new JSONObject();
                 item.put("appId", app.getAppId());
                 item.put("name", app.getDisplayName());
@@ -1052,6 +1419,20 @@ public class MainActivity extends ComponentActivity {
             publishNativeFailure(requestId, "startCashfreePayment", "INVALID_ARGUMENT", "The payment link is invalid.");
             return;
           }
+          // Live Cashfree refuses apps not installed from the Play Store (installer_package_not_approved)
+          // and never calls back, so a USB/sideloaded build pays on the web checkout instead.
+          if ("production".equals(env) && !installedFromPlayStore()) {
+            publishNativeFailure(requestId, "startCashfreePayment", "UNTRUSTED_INSTALLER",
+                "This copy of the app was not installed from the Play Store.");
+            return;
+          }
+          // Cashfree never calls back when the UPI app can't open, so the payment would just hang.
+          if (!upiAppId.isEmpty() && !upiAppCanPay(upiAppId)) {
+            Log.w("ScraveitPay", "UPI app can't take payments here: " + upiAppId);
+            publishNativeFailure(requestId, "startCashfreePayment", "UPI_APP_NOT_READY",
+                "That UPI app isn't set up for payments on this phone. Open it and finish UPI setup (the SIM with your bank's mobile number must be in this phone), or pay another way.");
+            return;
+          }
           if (pendingCashfreeRequestId != null) {
             publishNativeFailure(pendingCashfreeRequestId, "startCashfreePayment", "PAYMENT_REPLACED", "A newer payment was started.");
           }
@@ -1072,9 +1453,11 @@ public class MainActivity extends ComponentActivity {
             payment = new CFWebCheckoutPayment.CFWebCheckoutPaymentBuilder().setSession(session).setCFWebCheckoutUITheme(theme).build();
           }
           pendingCashfreeRequestId = requestId;
+          Log.i("ScraveitPay", "Cashfree doPayment env=" + env + " upiApp=" + upiAppId);
           CFCorePaymentGatewayService.getInstance().doPayment(MainActivity.this, payment);
         } catch (Exception error) {
           pendingCashfreeRequestId = null;
+          Log.w("ScraveitPay", "Cashfree payment could not start", error);
           FirebaseCrashlytics.getInstance().recordException(error);
           publishNativeFailure(requestId, "startCashfreePayment", "PAYMENT_NOT_STARTED",
               "Payment could not start on this phone. Try another payment method.");
@@ -1150,6 +1533,20 @@ public class MainActivity extends ComponentActivity {
             return;
           }
         }
+        if ("createClusterOrder".equals(operation)) {
+          org.json.JSONArray ids = result.optJSONArray("orderIds");
+          org.json.JSONArray otps = result.optJSONArray("deliveryOtps");
+          try {
+            for (int i = 0; ids != null && otps != null && i < ids.length() && i < otps.length(); i++) {
+              if (!otps.optString(i, "").isEmpty()) secureOrderStore.putDeliveryOtp(ids.optString(i, ""), otps.optString(i, ""));
+            }
+          } catch (Exception error) {
+            FirebaseCrashlytics.getInstance().recordException(error);
+            publishNativeFailure(requestId, operation, "SECURE_STORAGE_UNAVAILABLE",
+                "The order was reserved, but its delivery code could not be protected. Retry safely to recover it.");
+            return;
+          }
+        }
         if (afterSuccess != null) afterSuccess.run();
         publishNativeSuccess(requestId, operation, result);
       }
@@ -1158,6 +1555,31 @@ public class MainActivity extends ComponentActivity {
         publishNativeFailure(requestId, operation, code, message);
       }
     });
+  }
+
+  /**
+   * Whether this UPI app would open a UPI payment link. PhonePe, GPay and Paytm
+   * switch off their upi:// screen until UPI is set up on this phone.
+   */
+  private boolean upiAppCanPay(String packageName) {
+    try {
+      Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("upi://pay?pa=test@upi&pn=Scraveit&am=1&cu=INR"));
+      intent.setPackage(packageName);
+      return !getPackageManager().queryIntentActivities(intent, 0).isEmpty();
+    } catch (Exception error) {
+      return false;
+    }
+  }
+
+  private boolean installedFromPlayStore() {
+    try {
+      String installer = Build.VERSION.SDK_INT >= 30
+          ? getPackageManager().getInstallSourceInfo(getPackageName()).getInstallingPackageName()
+          : getPackageManager().getInstallerPackageName(getPackageName());
+      return "com.android.vending".equals(installer);
+    } catch (Exception error) {
+      return false;
+    }
   }
 
   private void launchExternalPayment(String requestId, String paymentUrl) {
@@ -1219,6 +1641,7 @@ public class MainActivity extends ComponentActivity {
   private void finishCashfreePayment(String orderId, CFErrorResponse error) {
     String requestId = pendingCashfreeRequestId;
     pendingCashfreeRequestId = null;
+    Log.i("ScraveitPay", "Cashfree callback " + (error == null ? "finished" : "failed"));
     JSONObject result = new JSONObject();
     try {
       result.put("paymentOrderId", orderId == null ? "" : orderId);
@@ -1237,6 +1660,7 @@ public class MainActivity extends ComponentActivity {
     String code = error.getCode() == null ? "PAYMENT_FAILED" : error.getCode();
     String message = error.getMessage() == null || error.getMessage().trim().isEmpty()
         ? "Payment was not completed." : error.getMessage();
+    Log.w("ScraveitPay", "Cashfree failed: " + code + " - " + message);
     publishNativeFailure(requestId, "startCashfreePayment", code.toUpperCase(Locale.US), message);
   }
 
@@ -1463,6 +1887,10 @@ public class MainActivity extends ComponentActivity {
     super.onResume();
     visible = true;
     openedOwnScreen = false;
+    // Back from the UPI app: if Cashfree doesn't report, the page checks the payment itself.
+    if (pendingCashfreeRequestId != null && isTrustedPageLoaded()) {
+      webView.evaluateJavascript("window.scraveitBackFromPayment&&window.scraveitBackFromPayment()", null);
+    }
     CartNudge.cancel(this);
     deliverPendingPushEvent();
     if (retryLocationOnResume) {
@@ -1582,13 +2010,21 @@ public class MainActivity extends ComponentActivity {
         if (candidate != null && (best == null || candidate.getTime() > best.getTime())) best = candidate;
       }
     } catch (SecurityException ignored) { }
-    if (best != null) {
+    // A last-known fix can be hours old or from across town; it is used straight away only when
+    // it is recent and sharp. Otherwise ask for a fresh one and keep the old one as a fallback.
+    if (best != null && System.currentTimeMillis() - best.getTime() < 2 * 60 * 1000
+        && best.hasAccuracy() && best.getAccuracy() <= SHARP_FIX_METRES) {
       resolveLocationName(best);
       return;
     }
+    staleLocationFix = best;
+    bestLocationFix = null;
     boolean requested = false;
     activeLocationListener = new LocationListener() {
         @Override public void onLocationChanged(Location location) {
+          if (bestLocationFix == null || (location.hasAccuracy() && (!bestLocationFix.hasAccuracy()
+              || location.getAccuracy() < bestLocationFix.getAccuracy()))) bestLocationFix = location;
+          if (!location.hasAccuracy() || location.getAccuracy() > SHARP_FIX_METRES) return;
           stopLocationUpdates();
           resolveLocationName(location);
         }
@@ -1610,7 +2046,9 @@ public class MainActivity extends ComponentActivity {
     } catch (SecurityException ignored) {
       requested = false;
     }
-    if (requested) handler.postDelayed(locationTimeout, 10000); else publishLocationUnavailable();
+    if (requested) handler.postDelayed(locationTimeout, 8000);
+    else if (best != null) { staleLocationFix = null; resolveLocationName(best); }
+    else publishLocationUnavailable();
   }
 
   private void stopLocationUpdates() {
@@ -1619,6 +2057,8 @@ public class MainActivity extends ComponentActivity {
       try { activeLocationManager.removeUpdates(activeLocationListener); } catch (SecurityException ignored) { }
     }
     activeLocationListener = null;
+    bestLocationFix = null;
+    staleLocationFix = null;
   }
 
   private void resolveLocationName(final Location location) {
@@ -1630,7 +2070,7 @@ public class MainActivity extends ComponentActivity {
         String details = String.format(Locale.US, "%.5f, %.5f", location.getLatitude(), location.getLongitude());
         if (Geocoder.isPresent()) {
           try {
-            List<Address> matches = new Geocoder(MainActivity.this, Locale.getDefault())
+            List<Address> matches = new Geocoder(MainActivity.this, PLACE_LOCALE)
                 .getFromLocation(location.getLatitude(), location.getLongitude(), 1);
             if (matches != null && !matches.isEmpty()) {
               Address address = matches.get(0);
@@ -1821,6 +2261,14 @@ public class MainActivity extends ComponentActivity {
       String requestId = pendingMediaRequestId;
       pendingMediaRequestId = null;
       if (requestId != null) publishMediaPermission(requestId);
+      return;
+    }
+    if (requestCode == PLACE_CAMERA_PERMISSION) {
+      boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+      if (granted) { launchPlaceCamera(); return; }
+      String id = pendingPhotoRequestId;
+      pendingPhotoRequestId = null;
+      if (id != null) publishNativeFailure(id, "pickPlacePhoto", "DENIED", "Camera is off for Scraveit. Choose from your photos instead.");
       return;
     }
     if (requestCode == LOCATION_REQUEST) {

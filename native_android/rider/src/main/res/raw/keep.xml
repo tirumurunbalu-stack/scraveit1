@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds drop resources they think are unused. The offer alarm loads these by name
+     (OrderAlarmService, SavrivoNotifications), so without this the Play build only vibrates. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/savrivo_action_alert,@drawable/savrivo_partner_notification" />
