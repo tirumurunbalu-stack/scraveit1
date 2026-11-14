@@ -71,6 +71,9 @@ export function buildRiderJobProjection(
   const status = order.status === "Delivered" ? "completed" : order.status === "Cancelled" ? "cancelled" : "active";
   const riderFacingStatus = order.riderId && ["Accepted", "Preparing", "Ready for pickup"].includes(order.status)
     ? "Assigned" : order.status;
+  // Waiting pay settled at delivery (Scraveit-paid) stays on the job through later rebuilds.
+  const waitingPaise = existingBelongsToAssignment(order, existing) ?
+    Math.max(0, Math.round(Number(existing?.waitingPayPaise) || 0)) : 0;
   const projection: Record<string, unknown> = {
     orderId: order.id,
     ...(order.riderId ? {riderId: order.riderId} : {}),
@@ -82,8 +85,8 @@ export function buildRiderJobProjection(
     restaurantLng: order.restaurantLocation.lng,
     approximateDropZone: order.address.area || order.address.city || "Service area",
     itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    payout: riderOfferPayout(order),
-    payoutBreakdown: riderPayoutBreakdown(order),
+    payout: riderOfferPayout(order, waitingPaise),
+    payoutBreakdown: riderPayoutBreakdown(order, waitingPaise),
     estimatedMinutes: order.etaMax,
     assignedAt: assignedAt(order),
     createdAt: assignedAt(order),
@@ -110,6 +113,10 @@ export function buildRiderJobProjection(
     projection.arrivedRestaurantAt = Number(existing?.arrivedRestaurantAt);
   }
   if (order.status === "Delivered") projection.completedAt = order.deliveredAt ?? order.updatedAt;
+  if (waitingPaise > 0) {
+    projection.waitingPayPaise = waitingPaise;
+    projection.waitMinutes = Math.max(0, Math.round(Number(existing?.waitMinutes) || 0));
+  }
   if (riderMaySeeDropDetails(order)) {
     projection.customerName = order.customerName;
     projection.address = {
@@ -145,8 +152,10 @@ export function buildRiderJobProjection(
  * which is always 100% the rider's. Orders priced before the economics engine
  * keep the delivery fee as their trip pay, exactly as before.
  */
-export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "economics">): {
+export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "economics">, waitingPaise = 0): {
   tripPay: number;
+  /** Waiting at the restaurant, paid by Scraveit, settled at delivery. */
+  waitPay?: number;
   incentives: number;
   tip: number;
   total: number;
@@ -159,8 +168,10 @@ export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "econ
   const incentives = rider ? rider.incentivePayPaise / 100 : 0;
   const tip = rider ? rider.tipPaise / 100 : Number(order.pricing.tip) || 0;
   const trip = rider?.tripPay;
+  const waitPay = Math.max(0, Math.round(waitingPaise)) / 100;
   return {
-    tripPay, incentives, tip, total: Math.round((tripPay + incentives + tip) * 100) / 100,
+    tripPay, ...(waitPay > 0 ? {waitPay} : {}), incentives, tip,
+    total: Math.round((tripPay + waitPay + incentives + tip) * 100) / 100,
     ...(trip ? {components: {
       basePay: trip.basePickupPaise / 100,
       distancePay: (trip.pickupDistancePaise + trip.dropDistancePaise + trip.longDistancePaise + trip.vehicleAdjustmentPaise) / 100,
@@ -175,7 +186,7 @@ export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "econ
 }
 
 /** Headline figure on the rider's offer card: trip pay plus bonuses, before tip. */
-export function riderOfferPayout(order: Pick<SavrivoOrder, "pricing" | "economics">): number {
-  const breakdown = riderPayoutBreakdown(order);
-  return Math.round((breakdown.tripPay + breakdown.incentives) * 100) / 100;
+export function riderOfferPayout(order: Pick<SavrivoOrder, "pricing" | "economics">, waitingPaise = 0): number {
+  const breakdown = riderPayoutBreakdown(order, waitingPaise);
+  return Math.round((breakdown.tripPay + (breakdown.waitPay ?? 0) + breakdown.incentives) * 100) / 100;
 }

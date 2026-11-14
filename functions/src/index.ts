@@ -3,6 +3,8 @@ import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound,
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
 import {readAdminAnalytics} from "./services/adminAnalytics";
+import {readServerWarmth, setServerWarmth} from "./services/serverWarmth";
+import {requireOwnerClaim} from "./services/authz";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
 import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPhoto";
 import * as mealPlans from "./services/mealPlans";
@@ -39,7 +41,10 @@ import {
   restaurantRef,
   riderJobRef,
   trackingEvidenceRef,
+  deliveryCampusRef,
+  ordersCollectionRef,
 } from "./firestorePaths";
+import {lateReminderDue} from "./domain/kitchenLate";
 import {buildRiderJobProjection} from "./domain/riderJob";
 import {computeNextBroadcastOccurrence, type CustomerBroadcastRepeat} from "./domain/broadcastSchedule";
 import {buildPricing, priceCart} from "./domain/order";
@@ -225,6 +230,7 @@ import {
   notifyCustomerRiderAssigned,
   notifyCustomerStatus,
   notifyRestaurantNewOrder,
+  notifyRestaurantOrderLate,
   notifyStoreApplicant,
   stopRiderOffers,
   stopRestaurantAlarm,
@@ -244,6 +250,8 @@ import {
   transitionOrder,
 } from "./services/orders";
 import {processTrackingUpdate} from "./services/tracking";
+import {recordCampusHandover, recordDeliveryCampus} from "./services/campus";
+import {applyStoreHours} from "./services/storeHours";
 import {reconcileRestaurantWorkload} from "./services/workload";
 import {reconcileRestaurantOrderProjection} from "./services/orderProjection";
 import {reconcileOperationalOrderProjection} from "./services/operationalOrders";
@@ -475,9 +483,8 @@ export const createOrder = onCall({
   // sleeping copies (4–6 s each) instead of sharing one. 512MiB: one call alone used up to 0.8 of 256MiB.
   cpu: 1,
   concurrency: 20,
-  // One copy always awake (founder 2026-11-10): the first order after a quiet spell no
-  // longer waits 4–6 s for a copy to start. Costs about ₹800 a month per function.
-  minInstances: 1,
+  // One copy awake 7 AM–midnight IST only (founder 2026-11-13): Cloud Scheduler jobs
+  // warm-<name> / cold-<name> set the Cloud Run service's minimum, so no minInstances here.
   maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
   secrets: CASHFREE_SECRETS,
@@ -749,9 +756,8 @@ export const getCheckoutConfiguration = onCall({
   // delivery-partner check arrive together and now share one copy instead of waking one each.
   cpu: 1,
   concurrency: 20,
-  // One copy always awake (founder 2026-11-10): the first order after a quiet spell no
-  // longer waits 4–6 s for a copy to start. Costs about ₹800 a month per function.
-  minInstances: 1,
+  // One copy awake 7 AM–midnight IST only (founder 2026-11-13): Cloud Scheduler jobs
+  // warm-<name> / cold-<name> set the Cloud Run service's minimum, so no minInstances here.
   maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
   secrets: CASHFREE_SECRETS,
@@ -1663,6 +1669,41 @@ export const processNotificationOutbox = onSchedule({
   logger.info("NOTIFICATION_OUTBOX_RUN_COMPLETED", {dueCount: due.length, outcomes});
 });
 
+/** Store hours: every store opens and closes itself at its saved times; a manual switch holds until the next one. */
+export const storeHoursWatch = onSchedule({
+  schedule: "every 1 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+}, async () => {
+  const result = await applyStoreHours();
+  if (result.opened || result.closed) logger.info("STORE_HOURS_WATCH", result);
+});
+
+/** Late kitchen orders: the store app says "Your order is getting late" even when it is closed. */
+export const restaurantLateOrderWatch = onSchedule({
+  schedule: "every 1 minutes",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+}, async () => {
+  const now = Date.now();
+  const snapshot = await ordersCollectionRef(firestoreDb).where("status", "in", ["Accepted", "Preparing"]).get();
+  let sent = 0;
+  for (const doc of snapshot.docs) {
+    const order = doc.data() as SavrivoOrder;
+    const reminder = lateReminderDue(order, now);
+    if (reminder === null) continue;
+    try {
+      await notifyRestaurantOrderLate(order, reminder);
+      sent++;
+    } catch (error) {
+      logger.warn("ORDER_LATE_PUSH_FAILED", {orderId: order.id, error: String(error)});
+    }
+  }
+  logger.info("RESTAURANT_LATE_WATCH", {active: snapshot.size, sent});
+});
+
 /**
  * Finds customerBroadcasts whose scheduled time has arrived and enqueues a
  * real FCM push for each. Enqueueing is idempotent (deduplicationKey is the
@@ -2010,6 +2051,7 @@ export const voiceAgent = onRequest({
 
 export const onOrderUpdated = onDocumentUpdated({
   cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
+  secrets: [GOOGLE_WEATHER_API_KEY], // Google campus check at pickup (services/campus.ts)
   document: "orders/{orderId}",
   region: REGION,
   retry: true,
@@ -2100,6 +2142,7 @@ export const onOrderUpdated = onDocumentUpdated({
     const batch: WriteBatchLike = firestoreDb.batch();
     batch.set(dispatchQueueRef(firestoreDb, order.id), {active: false, status: "cancelled"}, {merge: true});
     batch.delete(trackingEvidenceRef(firestoreDb, order.id));
+    batch.delete(deliveryCampusRef(firestoreDb, order.id));
     batch.delete(deliveryOtpRef(firestoreDb, order.id));
     if (order.riderId) {
       batch.set(riderJobRef(firestoreDb, order.riderId, order.id), {status: "cancelled"}, {merge: true});
@@ -2167,6 +2210,12 @@ export const onOrderUpdated = onDocumentUpdated({
         order.id,
         Number.isFinite(Number(order.updatedAt)) ? Number(order.updatedAt) : Date.now(),
       );
+      // Is the customer's pin inside a college, school or hospital? Asked once per order
+      // (cached per pin); any failure leaves the order on the normal arrival rules.
+      await sideEffectLease(`delivery-campus:${order.id}`, async () => {
+        await recordDeliveryCampus(order, GOOGLE_WEATHER_API_KEY.value()).catch((error) =>
+          logger.warn("DELIVERY_CAMPUS_FAILED", {orderId: order.id, error: String(error)}));
+      });
     }
   }
   if (order.status === "Delivered") {
@@ -2195,8 +2244,12 @@ export const onOrderUpdated = onDocumentUpdated({
     await sideEffectLease(`tax-withholding:${order.id}`, async () => {
       await recordDeliveredOrderTax(order);
     });
+    // Before the tracking data goes: learn this campus's real gate if it was handed over outside the box.
+    await recordCampusHandover(order).catch((error) =>
+      logger.warn("CAMPUS_GATE_LEARN_FAILED", {orderId: order.id, error: String(error)}));
     const batch: WriteBatchLike = firestoreDb.batch();
     batch.delete(trackingEvidenceRef(firestoreDb, order.id));
+    batch.delete(deliveryCampusRef(firestoreDb, order.id));
     batch.delete(deliveryOtpRef(firestoreDb, order.id));
     await Promise.all([
       batch.commit(),
@@ -3071,6 +3124,26 @@ export const getAdminAnalytics = onCall({region: REGION, enforceAppCheck: true, 
       return await readAdminAnalytics(request.auth.token, input);
     } catch (error) {
       logger.warn("getAdminAnalytics rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+      throw asHttpsError(error);
+    }
+  });
+
+/**
+ * Owner's switch for the 7 warm servers: "always" = warm 24/7; "cold" = all cold now and the 7 AM warm-up paused;
+ * "schedule" = back to warm 7 AM–midnight. No mode = just read the state.
+ */
+export const serverWarmth = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 300, memory: "256MiB"},
+  async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+    try {
+      requireOwnerClaim(request.auth.token);
+      const input = parse(z.object({mode: z.enum(["always", "schedule", "cold"]).optional()}).strict(), request.data ?? {});
+      if (!input.mode) return await readServerWarmth();
+      const result = await setServerWarmth(input.mode);
+      logger.info("SERVER_WARMTH_SET", {uid: request.auth.uid, mode: input.mode, result: result.mode});
+      return result;
+    } catch (error) {
+      logger.warn("serverWarmth rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
       throw asHttpsError(error);
     }
   });

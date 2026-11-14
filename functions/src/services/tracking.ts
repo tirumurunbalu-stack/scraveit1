@@ -1,3 +1,4 @@
+import {logger} from "firebase-functions";
 import {firestoreDb} from "../admin";
 import {
   advanceTrackingEvidence,
@@ -12,6 +13,8 @@ import {DomainError} from "../errors";
 import type {TransactionLike} from "../firestoreTypes";
 import {orderRef, riderRef, trackingEvidenceRef} from "../firestorePaths";
 import type {SavrivoOrder} from "../types";
+import {deliveryCampusFor} from "./campus";
+import {notifyCustomerAtCampus} from "./notifications";
 import {transitionOrderFromTracking} from "./orders";
 
 export interface TrackingUpdateContext {
@@ -65,9 +68,10 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
     return {outcome: "ignored", reason: "stale_or_replayed_fix"};
   }
 
-  const [orderSnapshot, riderSnapshot] = await Promise.all([
+  const [orderSnapshot, riderSnapshot, campus] = await Promise.all([
     orderRef(firestoreDb, fix.orderId).get(),
     riderRef(firestoreDb, fix.riderId).get(),
+    deliveryCampusFor(fix.orderId).catch(() => null),
   ]);
   const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   const riderStatus = riderSnapshot.exists ? (riderSnapshot.data() as Record<string, unknown>).status : undefined;
@@ -90,11 +94,17 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
       distanceMeters,
       requirement,
       serverNow: now,
+      campus,
     });
     if (!next || next === current) return current;
     transaction.set(evidenceRef, next);
     return next;
   });
+  // Campus orders: tell the customer once, on the reading that first saw the partner at the campus.
+  if (campus && evidence?.campusReachedEventId === context.eventId && !evidence.pendingTransition) {
+    await notifyCustomerAtCampus(order, campus.name).catch((error) =>
+      logger.warn("CAMPUS_NOTICE_FAILED", {orderId: order.id, error: String(error)}));
+  }
   const pending = evidence?.pendingTransition;
   if (!pending) return {outcome: "evidence_recorded"};
 
@@ -106,6 +116,7 @@ export async function processTrackingUpdate(context: TrackingUpdateContext): Pro
       pending.status,
       pending.evidenceEventId,
       pending.distanceMeters,
+      pending.campus === true,
     );
     await clearPendingTransition(fix.orderId, pending.evidenceEventId, pending.status);
     return {outcome: "transitioned", status: pending.status};

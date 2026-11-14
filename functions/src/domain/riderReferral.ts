@@ -94,7 +94,8 @@ export interface RiderReferralProgress {
 
 export function riderReferralProgress(deliveredCount: number, target: number): RiderReferralProgress {
   const safeTarget = Math.max(1, Math.floor(target));
-  const delivered = Math.max(0, Math.floor(deliveredCount));
+  // The inviter sees their friend's count only up to the target, never beyond it.
+  const delivered = Math.min(safeTarget, Math.max(0, Math.floor(deliveredCount)));
   return {
     delivered,
     target: safeTarget,

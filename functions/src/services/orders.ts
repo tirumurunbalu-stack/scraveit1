@@ -1,8 +1,8 @@
 import {randomBytes, randomInt, timingSafeEqual} from "node:crypto";
 import type {DecodedIdToken} from "firebase-admin/auth";
 import {logger} from "firebase-functions";
-import {firestoreDb} from "../admin";
-import {SCHEMA_VERSION} from "../config";
+import {db, firestoreDb} from "../admin";
+import {ROOT, SCHEMA_VERSION} from "../config";
 import {
   buildOrderTransitionCandidate,
   buildPricing,
@@ -24,7 +24,8 @@ import {
   resolveFinancePaymentSelection,
   type FinancePolicy,
 } from "../domain/financePolicy";
-import type {ProximityStatus} from "../domain/tracking";
+import {partnerAtCampusNow} from "../domain/campus";
+import {normalizeTrackingFix, trackingDistanceMeters, type ProximityStatus} from "../domain/tracking";
 import {DomainError} from "../errors";
 import type {TransactionLike} from "../firestoreTypes";
 import {FieldValue} from "../firestoreTypes";
@@ -32,6 +33,7 @@ import {deliveryOtpRef, orderRef, restaurantRef, riderAvailabilityCollectionRef,
 import type {CreateCodOrderInput, CreateOrderInput, TransitionOrderInput} from "./serviceTypes";
 import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent} from "../types";
 import {authorizeTransition, requireApprovedRider} from "./authz";
+import {deliveryCampusFor} from "./campus";
 import {assertMayOrder} from "./accountAge";
 import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
 import {loadPriceQuote} from "./priceQuotes";
@@ -62,6 +64,7 @@ import {lawBasedCheckoutTax} from "./taxEngine";
 import {requireVerifiedRiderRestaurantArrival} from "./riderRestaurantArrival";
 import {mediaFile} from "./mediaBucket";
 import {adClickBefore, learnedEtaFor, writeAdConversion} from "./learning";
+import {kitchenPrepMinutes} from "../domain/kitchenLate";
 
 function eventKey(now: number, actorId: string): string {
   return `e_${now}_${actorId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30)}`;
@@ -674,6 +677,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     availableRiders,
     occurredAt: now,
     learned: learnedEta,
+    kitchenTimerMinutes: kitchenPrepMinutes({items} as Parameters<typeof kitchenPrepMinutes>[0]),
   });
   // Reserve the OTP before committing the canonical order. A process failure
   // can leave a harmless private reservation, but can never leave a live order
@@ -857,6 +861,11 @@ export async function transitionOrder(
       "Verified online payment is required before this order can progress.",
     );
   }
+  // Campus orders: the partner's own "I'm at the delivery location" swipe.
+  if (input.toStatus === "Arrived" && before.riderId === uid) {
+    if (before.status === "Arrived") return {order: stripPrivateOrderFields(before), actorRole: "rider", idempotent: true};
+    return {order: await arriveAtCampusOnSwipe(before, uid), actorRole: "rider", idempotent: false};
+  }
   // The rider picks up with a photo of the parcel showing the order ID, so the
   // restaurant has nothing to tap. Without a photo the old staff handover runs.
   const riderPickup = input.toStatus === "Handed to rider" && input.pickupPhotoPath !== undefined;
@@ -987,6 +996,39 @@ export async function cancelUnpaidOnlineOrder(
   });
 }
 
+/**
+ * A campus stops delivery partners at the gate, and the customer is often
+ * already standing there. Waiting 3 minutes (domain/campus.ts) would hold up
+ * a handover that is ready now. So for a campus order the partner's swipe
+ * opens the delivery code box at once, when our own GPS record puts them at
+ * that campus. Everywhere else, and for every other order, the swipe changes
+ * nothing: only the 100 m check at the pin can mark arrival. The customer's
+ * code is still what completes the delivery.
+ */
+async function arriveAtCampusOnSwipe(before: SavrivoOrder, riderId: string): Promise<SavrivoOrder> {
+  const notThere = new DomainError("failed-precondition", "Go to the customer's location pin and swipe again.");
+  if (before.status !== "Out for delivery" && before.status !== "Near you") throw notThere;
+  await requireApprovedRider(riderId);
+  const [campus, snapshot] = await Promise.all([
+    deliveryCampusFor(before.id),
+    db.ref(`${ROOT}/tracking/${before.id}`).get(),
+  ]);
+  const fix = campus ? normalizeTrackingFix(snapshot.val(), before.id) : null;
+  if (!campus || !fix || fix.riderId !== riderId || fix.customerId !== before.customerId ||
+    !partnerAtCampusNow(fix, campus, Date.now())) throw notThere;
+  const distance = trackingDistanceMeters(fix, {lat: Number(before.address?.lat), lng: Number(before.address?.lng)});
+  return commitAuthoritativeTransition({
+    before,
+    toStatus: "Arrived",
+    actorId: riderId,
+    actorRole: "system",
+    // "campus:" also words the customer's message as "at the gate" (services/notifications.ts).
+    proof: `campus:swipe:${fix.updatedAt}`.slice(0, 180),
+    detail: `partner swiped at campus ${Math.round(distance)}m from pin`,
+    expectedRiderId: riderId,
+  });
+}
+
 export async function transitionOrderFromTracking(
   customerId: string,
   orderId: string,
@@ -994,6 +1036,7 @@ export async function transitionOrderFromTracking(
   target: ProximityStatus,
   evidenceEventId: string,
   distanceMeters: number,
+  campusWait = false,
 ): Promise<SavrivoOrder> {
   const snapshot = await orderRef(firestoreDb, orderId).get();
   const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
@@ -1008,8 +1051,9 @@ export async function transitionOrderFromTracking(
     toStatus: target,
     actorId: riderId,
     actorRole: "system",
-    proof: `tracking:${evidenceEventId}`.slice(0, 180),
-    detail: `server geofence ${Math.round(distanceMeters)}m`,
+    // "campus:" = the partner waited 3 minutes at the customer's campus (gate) instead of reaching the pin.
+    proof: `${campusWait ? "campus" : "tracking"}:${evidenceEventId}`.slice(0, 180),
+    detail: campusWait ? `waited at campus ${Math.round(distanceMeters)}m from pin` : `server geofence ${Math.round(distanceMeters)}m`,
     expectedRiderId: riderId,
   });
 }

@@ -1882,10 +1882,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // Door-to-door time, worked out like the server's quote (functions/src/domain/deliveryEstimate.ts):
   // the kitchen's own time + riding at 22 km/h + 5 min at both ends + 4 min in the lunch/dinner rush.
   // Showing only the kitchen time made the time jump after ordering (25–35 here, 50–70 on the order).
-  function storeEtaText(r) {
+  // Prep never goes past the kitchen timer the store is held to: 15 min, or 20 when the cart has more
+  // than 3 dishes or more than 2 kinds (free items not counted) - same as server domain/kitchenLate.
+  function storeEtaText(r,cart) {
     const prep=v=>{v=Number(v);return Number.isFinite(v)&&v>0?Math.min(90,Math.max(3,v)):0};
     let lo=prep(r&&r.etaMin)||15,hi=prep(r&&r.etaMax)||Math.max(lo+10,25);
     if(hi<lo)[lo,hi]=[hi,lo];
+    const paid=(cart||[]).filter(i=>!i.free),units=paid.reduce((n,i)=>n+(Number(i.quantity)||1),0);
+    const timer=units>3||paid.length>2?20:15;
+    hi=Math.min(hi,timer);lo=Math.min(lo,hi);if(hi-lo<5)lo=Math.max(3,hi-5);
     const km=r?restaurantDistanceKm(r):null,ride=Number.isFinite(km)&&km>0?km/22*60+5:5;
     const ist=new Date(Date.now()+330*60000),hour=ist.getUTCHours()+ist.getUTCMinutes()/60;
     const extra=ride+((hour>=12&&hour<14.5)||(hour>=19&&hour<21.5)?4:0);
@@ -2954,6 +2959,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if (liveOrderRoute()) {
       if (state.trackingMap) state.trackingMap.tileKey = "";
       refreshTrackingTiles();
+      kickTrackingMotion();
       if (window.Rider3D && document.getElementById("tracking-map-card")) Rider3D.attach(trackingRider3DState);
       refreshTrackingCarousel();
     }
@@ -7473,14 +7479,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     reconcileCheckoutPaymentSelection();
     const paymentAvailable=paymentMethodEnabled(state.checkout.payment),paymentWarning=!enabledCheckoutMethods().length?'<div class="notice warning">'+icon("warning","small")+'<span>No checkout payment method is available right now. Please try again in a moment.</span></div>':"";
     const canPlace=!(!address||!state.online||state.loading||held||!state.cart.length||!paymentAvailable||payOpen(myPayAsk()));
-    return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r.name,storeEtaText(r)+' min to '+(address?(address.label||address.area||"you"):"you"))+networkBanner()+partnerBusyBanner(r)
+    return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r.name,storeEtaText(r,state.cart)+' min to '+(address?(address.label||address.area||"you"):"you"))+networkBanner()+partnerBusyBanner(r)
       +(discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')
       +'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+cartFreebiesMarkup()+cartPairingsMarkup()+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section>'
       +togetherCard()
       +adRailMarkup("checkout-ad-track")
       +'<section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section>'
       +'<section class="card checkout-card">'
-        +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(storeEtaText(r))+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
+        +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(storeEtaText(r,state.cart))+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
         +'<div class="checkout-divider"></div>'
         +'<button type="button" class="checkout-line" data-action="'+(address&&(addressNeedsDoor(address)||!coordinatePoint(address))?'address-complete':'open-address-picker')+'">'+addressSummary(address)+icon("chevron","small")+'</button>'
         +'<div class="checkout-divider"></div>'
@@ -7558,9 +7564,14 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function batchHeadline(order){const b=order&&order.batch;if(!b||Number(b.size)<2||order.status!=="Handed to rider")return"";
     if((b.dropOrder||[]).indexOf(order.id)>0)return"Your partner has your meal and is dropping one order nearby first, then coming to you.";
     if((b.pickupOrder||[]).indexOf(order.id)===0)return"Your partner has your meal and is collecting one more order nearby, then coming straight to you.";return""}
+  // The server marks "Arrived" with a "campus:" proof when the partner has waited 3 minutes at the
+  // customer's college or hospital gate (they could not come in), not at the door.
+  function campusGateWait(order){if(!order||order.status!=="Arrived"||!order.statusHistory)return false;
+    const arrived=Object.values(order.statusHistory).filter(e=>e&&e.status==="Arrived").sort((a,b)=>Number(b.at)-Number(a.at))[0];
+    return String(arrived&&arrived.proof||"").indexOf("campus:")===0}
   function orderLiveModule(order,live,canTrack){
     const collapsed=!!state.trackingMapCollapsed;
-    const headline=batchHeadline(order)||({
+    const headline=batchHeadline(order)||(campusGateWait(order)?"Your partner is waiting near the gate. Call them to meet.":null)||({
       "Order placed":"Order received. Sending it to the kitchen.",
       "Accepted":"The kitchen has your order.",
       "Preparing":"Your meal is being freshly prepared.",
@@ -7632,8 +7643,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
       +orderLiveModule(order,live,canTrack)+squadNote
       +(!guest&&orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
-      +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">Share only at your doorstep.</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
-      +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and rider events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
+      +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">'+(campusGateWait(order)?'Share only when you get your order.':'Share only at your doorstep.')+'</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
+      +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and delivery partner events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
       +packedPhotoCard(order)
       +onlinePaymentNotice(order)
       +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
@@ -7732,6 +7743,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!focus)return;
     const local=trackingLocalPoint(ms,focus);
     ms.panX=-local.x;ms.panY=-local.y;ms.userPanned=false;ms.userZoomed=false;ms.tileKey="";
+    ms.camGoal=null;ms.camVX=ms.camVY=0;
   }
   // ---- camera style, night and rain ----------------------------------------
   // "follow": the map tilts like a 3D view and stays centred on the rider, with
@@ -7902,13 +7914,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function trackingTileMarkup(ms){
     return "";
   }
-  function trackingPinMarkup(ms,variant,point,label,iconName,isLive){
+  function trackingPinMarkup(ms,variant,point,label,iconName,isLive,at){
     // The rider marker is a full illustration (its own colors/shadow), not a
     // small glyph on a solid badge like the restaurant/home pins - it gets an
     // <img> instead of the shared icon-in-circle treatment.
     const content=variant==="rider"?'<img src="rider-marker.png" alt="" draggable="false" style="transform:'+trackingRiderTransform(ms)+'">':icon(iconName);
     if(!point)return '<span class="map-pin '+variant+'" style="display:none" aria-label="'+h(label)+'">'+content+'</span>';
-    const local=trackingLocalPoint(ms,point);
+    const local=at||trackingLocalPoint(ms,point);
     return '<span class="map-pin '+variant+(isLive?' live':'')+'" style="transform:translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)" aria-label="'+h(label)+'">'+content+'</span>';
   }
   // The delivery route (restaurant -> door) is a fixed path for an order, so it
@@ -8048,7 +8060,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(!road)throw new Error("route had no usable geometry");
       state.trackingRoutes[key]=Object.assign(trackingRouteMetrics(road.decoded),{durationS:road.durationS,source:road.source,askedAt:Date.now()});
       if(fits)writeTrackingRouteCache(key,{polyline:road.polyline,durationS:road.durationS,source:road.source,at:Date.now()});
-      if(liveOrderRoute())render({preserveScroll:true});
+      if(liveOrderRoute()&&!redrawTrackingMap(null))render({preserveScroll:true});
     }catch(_){
       state.trackingRoutes[key]={failedAt:Date.now()};
     }
@@ -8072,7 +8084,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // Closest point on the route, as a distance along it plus how far off it the
   // fix landed - the offset is what tells us the partner is actually on this road.
-  function trackingProjectOnRoute(route,point,near){
+  function trackingProjectOnRoute(route,point,near,travel){
     const cosLat=Math.cos(point.lat*Math.PI/180);
     const toX=lng=>lng*111320*cosLat,toY=lat=>lat*110540;
     const px=toX(point.lng),py=toY(point.lat);
@@ -8090,11 +8102,26 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         bestOffset=offset;
         bestProgress=progress;
       }
-      hits.push({progress,offset});
+      // Does this stretch of road run the way the partner is riding?
+      const length=Math.sqrt(lengthSquared);
+      hits.push({progress,offset,along:travel&&length>0?(dx*travel.x+dy*travel.y)/length:1});
     }
     // A road that passes the door and U-turns back has two strands side by side,
     // and GPS wobble can't tell them apart. If the closest point is suddenly far
     // along the route, stay on the strand the partner is already riding.
+    // Riding on, the strand ahead wins over the one already ridden, so the
+    // scooter never jumps back to the outgoing side of a U-turn.
+    // Of two strands side by side, the one running the partner's way wins.
+    if(Number.isFinite(near)){
+      let ahead=null,agree=null;
+      hits.forEach(hit=>{
+        if(!(hit.offset<=bestOffset+TRACKING_SAME_ROAD_M&&hit.progress>=near-TRACKING_MAX_REWIND_M&&hit.progress<=near+400))return;
+        if(!ahead||hit.offset<ahead.offset)ahead=hit;
+        if(hit.along>=-0.2&&(!agree||hit.offset<agree.offset))agree=hit;
+      });
+      if(agree)return agree;
+      if(ahead)return ahead;
+    }
     if(Number.isFinite(near)&&Math.abs(bestProgress-near)>TRACKING_STRAND_GAP_M){
       let kept=null;
       hits.forEach(hit=>{if(hit.offset<=bestOffset+TRACKING_SAME_ROAD_M&&(!kept||Math.abs(hit.progress-near)<Math.abs(kept.progress-near)))kept=hit;});
@@ -8125,6 +8152,85 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(phase==="pickup")return false;
     return ["Out for delivery","Near you","Arrived"].indexOf(String(order&&order.status||""))!==-1;
   }
+  // Which way the partner is riding, worked out from fix to fix. Null while
+  // they stand still or when it is not yet known.
+  function trackingTravel(ms,rider,fixAt,accuracy){
+    const t=ms.travel||(ms.travel={});
+    if(fixAt&&fixAt===t.seen)return t.dir||null;
+    t.seen=fixAt;
+    if(!t.from||fixAt<t.fromAt||fixAt-t.fromAt>20000){t.from=rider;t.fromAt=fixAt;t.dir=null;return null;}
+    const cosLat=Math.cos(rider.lat*Math.PI/180);
+    const dx=(rider.lng-t.from.lng)*111320*cosLat,dy=(rider.lat-t.from.lat)*110540,d=Math.hypot(dx,dy);
+    // GPS wobble must not pass for riding.
+    if(d>=Math.max(15,Math.min(60,(Number(accuracy)||0)*1.5))){t.dir={x:dx/d,y:dy/d};t.dirAt=fixAt;t.from=rider;t.fromAt=fixAt;}
+    else if(t.dir&&fixAt-t.dirAt>12000)t.dir=null;
+    return t.dir||null;
+  }
+  // ---- a road that rides past the door and U-turns back ----------------------
+  // Google's road sometimes passes the house, goes on to a gap in the divider
+  // and comes back. The line shows that U-turn as the road has it, and the
+  // scooter rides it when the partner does. If the partner instead crosses
+  // over and stops at the house, the rest of the line goes away and the
+  // scooter lands at the door. If they then ride off after all, the line and
+  // the scooter come back to where they really are.
+  const TRACKING_DOOR_PASS_M=35,TRACKING_LOOP_EXTRA_M=120;
+  const TRACKING_DOOR_LAND_M=40,TRACKING_DOOR_LEAVE_M=70,TRACKING_STILL_MS=4000,TRACKING_STILL_M=12,TRACKING_DOOR_WAIT_MS=15000;
+  // Where the road first passes the door with a long way still to ride, if it does.
+  function trackingDoorLoop(route){
+    if(route.doorLoop!==undefined)return route.doorLoop;
+    route.doorLoop=null;
+    const pts=route.points,end=pts[pts.length-1];
+    const cosLat=Math.cos(end.lat*Math.PI/180),toX=lng=>(lng-end.lng)*111320*cosLat,toY=lat=>(lat-end.lat)*110540;
+    let best=null;
+    for(let i=1;i<pts.length;i++){
+      const ax=toX(pts[i-1].lng),ay=toY(pts[i-1].lat),dx=toX(pts[i].lng)-ax,dy=toY(pts[i].lat)-ay,lengthSquared=dx*dx+dy*dy;
+      const t=lengthSquared>0?Math.max(0,Math.min(1,(-ax*dx-ay*dy)/lengthSquared)):0;
+      const offset=Math.hypot(ax+dx*t,ay+dy*t);
+      const progress=route.cumulative[i-1]+(route.cumulative[i]-route.cumulative[i-1])*t;
+      const passes=offset<=TRACKING_DOOR_PASS_M&&route.total-progress>offset+TRACKING_LOOP_EXTRA_M;
+      if(passes){if(!best||offset<best.offset)best={at:progress,offset:offset};}
+      else if(best)break;
+    }
+    route.doorLoop=best;
+    return best;
+  }
+  // Moves the scooter's place on the road at once (a short straight slide on
+  // screen) instead of gliding it along the road in between.
+  function trackingJumpTo(ms,progress){
+    stopTrackingRouteGlide();
+    ms.routeProgress=ms.routeTarget=ms.routeFrom=ms.fixTarget=ms.coastCap=progress;
+    ms.riderSpeed=0;ms.coastSpeed=0;ms.riderJump=true;ms.slipFar=true;
+  }
+  function trackingDoorLanding(ms,route,rider,fixAt,projected,travel){
+    if(!trackingDoorLoop(route)||!fixAt)return null;
+    let mode=ms.doorMode&&ms.doorMode.route===route?ms.doorMode:null;
+    if(!mode)mode=ms.doorMode={route:route,landed:false,since:0,seen:-1,fixes:[]};
+    const toDoor=trackingMetres(rider,route.points[route.points.length-1]);
+    if(mode.landed){
+      if(toDoor<=TRACKING_DOOR_LEAVE_M)return {route:route,progress:route.total,snapped:true};
+      // Rode off after all: back onto the road where they left it.
+      mode.landed=false;mode.since=0;mode.fixes=[];
+      const back=trackingProjectOnRoute(route,rider,mode.from,travel);
+      trackingJumpTo(ms,back.progress);
+      return back.offset<=TRACKING_ON_ROUTE_TOLERANCE_M?{route:route,progress:back.progress,snapped:true}:null;
+    }
+    const at=ms.routeRef===route&&Number.isFinite(ms.routeTarget)?Math.max(ms.routeTarget,projected.progress):projected.progress;
+    // Only beside the house, with the loop still ahead.
+    if(toDoor>TRACKING_DOOR_LAND_M||route.total-at<=toDoor+TRACKING_LOOP_EXTRA_M){mode.since=0;mode.fixes=[];return null;}
+    if(fixAt!==mode.seen){
+      mode.seen=fixAt;
+      if(!mode.since)mode.since=fixAt;
+      mode.fixes.push({at:fixAt,lat:rider.lat,lng:rider.lng});
+      mode.fixes=mode.fixes.filter(f=>fixAt-f.at<=TRACKING_DOOR_WAIT_MS);
+    }
+    // Standing at the house, not riding past it.
+    const old=mode.fixes.filter(f=>fixAt-f.at>=TRACKING_STILL_MS);
+    const still=old.length>0&&mode.fixes.filter(f=>f.at>=old[old.length-1].at).every(f=>trackingMetres(f,rider)<=TRACKING_STILL_M);
+    if(!still&&fixAt-mode.since<TRACKING_DOOR_WAIT_MS)return null;
+    mode.landed=true;mode.from=at;
+    trackingJumpTo(ms,route.total);
+    return {route:route,progress:route.total,snapped:true};
+  }
   function trackingRouteView(order,live){
     const route=trackingRoutePoints(order,live);
     if(!route||route.straight||route.points.length<2)return null;
@@ -8132,16 +8238,22 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const ms=state.trackingMap;
     if(!ms)return null;
     const riderLat=Number(live.lat),riderLng=Number(live.lng);
+    const rider=Number.isFinite(riderLat)&&Number.isFinite(riderLng)?{lat:riderLat,lng:riderLng}:null;
+    const fixAt=Number(live.updatedAt)||0;
+    const travel=rider?trackingTravel(ms,rider,fixAt,live.accuracy):null;
     const near=ms.routeRef===route?(Number.isFinite(ms.routeTarget)?ms.routeTarget:ms.routeProgress):undefined;
-    const projected=Number.isFinite(riderLat)&&Number.isFinite(riderLng)?trackingProjectOnRoute(route,{lat:riderLat,lng:riderLng},near):null;
+    const projected=rider?trackingProjectOnRoute(route,rider,near,travel):null;
     const snapped=!!projected&&projected.offset<=TRACKING_ON_ROUTE_TOLERANCE_M;
     // Metres ridden on the old road mean nothing on a new one.
     if(ms.routeRef!==route){
       ms.routeRef=route;
       stopTrackingRouteGlide();
+      ms.riderJump=true;
       ms.routeProgress=snapped?projected.progress:0;
       ms.routeFrom=ms.routeTarget=ms.routeProgress;
     }
+    const landing=snapped?trackingDoorLanding(ms,route,rider,fixAt,projected,travel):null;
+    if(landing)return landing;
     return snapped?{route:route,progress:projected.progress,snapped:true}:{route:route,progress:ms.routeProgress||0,snapped:false,lost:!!projected&&projected.offset>TRACKING_LINE_LOST_M};
   }
   // The svg keeps a frame sized to the whole route so that trimming the line
@@ -8194,100 +8306,393 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const view=trackingRouteView(order,live);
     if(!view)return "";
     if(!Number.isFinite(ms.routeProgress))ms.routeProgress=view.snapped?view.progress:0;
-    const route=view.route,frame=trackingRouteFrame(ms,route);
-    const coords=trackingRouteCoords(ms,route,frame,ms.routeProgress);
-    return '<svg class="map-route" aria-hidden="true" width="'+frame.width.toFixed(0)+'" height="'+frame.height.toFixed(0)+'"'
+    const route=view.route,lane=trackingLane(ms,route),frame=lane.frame;
+    const coords=trackingLaneCoords(lane,trackingLaneHead(lane,route,ms.routeProgress));
+    return '<svg class="map-route'+(ms.lineEnter?' enter':'')+'" aria-hidden="true" width="'+frame.width.toFixed(0)+'" height="'+frame.height.toFixed(0)+'"'
       +' viewBox="0 0 '+frame.width.toFixed(0)+' '+frame.height.toFixed(0)+'"'
       +' style="left:'+frame.minX.toFixed(1)+'px;top:'+frame.minY.toFixed(1)+'px'+(view.lost?';display:none':'')+'">'
       +'<polyline class="map-route-casing" points="'+coords+'"/>'
       +'<polyline class="map-route-line" points="'+coords+'"/>'
       +'</svg>';
   }
-  // One animation frame of the retracting line: redraw the remaining road and
-  // put the scooter exactly on it, so marker and line can never disagree.
-  function paintTrackingRoute(){
-    const ms=state.trackingMap,card=document.getElementById("tracking-map-card");
+  // ---- live motion: one clock for scooter, line, camera and zoom -------------
+  // Every GPS fix only sets where things are heading (aim*). One animation loop
+  // then moves the scooter, the line's head and the camera toward those aims at
+  // a steady speed, so nothing stops and starts on each fix. The speed is chosen
+  // to arrive a little after the next fix is due, so a late fix never leaves the
+  // scooter standing still; when the partner really stops it rolls to a halt.
+  let trackingMotionGen=0;
+  // The road's lane line for the whole route at this zoom, worked out once. The
+  // line's head is placed between two of its corners, so the line never flicks
+  // backwards at a bend and the scooter sits exactly on the line's head.
+  function trackingLane(ms,route){
+    const c=ms.laneCache;
+    if(c&&c.route===route&&c.zoom===ms.zoom&&c.lat===ms.anchorLat&&c.lng===ms.anchorLng)return c;
+    const pts=trackingLaneShift(route.points.map(p=>trackingLocalPoint(ms,p)),trackingLanePx(ms.zoom));
+    ms.laneCache={route:route,zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng,pts:pts,frame:trackingRouteFrame(ms,route),tailFrom:-1,tail:""};
+    return ms.laneCache;
+  }
+  function trackingLaneIndex(route,progress){
+    const c=route.cumulative,n=c.length;
+    if(!(progress>0))return 1;
+    if(progress>=c[n-1])return n-1;
+    let lo=1,hi=n-1;
+    while(lo<hi){const mid=(lo+hi)>>1;if(c[mid]>progress)hi=mid;else lo=mid+1;}
+    return lo;
+  }
+  function trackingLaneHead(lane,route,progress){
+    const i=trackingLaneIndex(route,Number(progress)||0),c=route.cumulative,a=lane.pts[i-1],b=lane.pts[i];
+    const span=c[i]-c[i-1],t=span>0?Math.max(0,Math.min(1,((Number(progress)||0)-c[i-1])/span)):1;
+    return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,next:i};
+  }
+  function trackingLaneCoords(lane,head){
+    const f=lane.frame;
+    if(lane.tailFrom!==head.next){
+      let s="";
+      for(let i=head.next;i<lane.pts.length;i++)s+=" "+(lane.pts[i].x-f.minX).toFixed(1)+","+(lane.pts[i].y-f.minY).toFixed(1);
+      lane.tailFrom=head.next;lane.tail=s;
+    }
+    return (head.x-f.minX).toFixed(2)+","+(head.y-f.minY).toFixed(2)+lane.tail;
+  }
+  // Where the scooter should go after this fix. No DOM work here.
+  function aimTrackingRider(ms,live,points,routeView){
+    if(!ms)return;
+    const now=Date.now(),fixAt=Number(live&&live.updatedAt)||0,newFix=fixAt!==ms.aimFixAt;
+    let gap=3000,sinceFix=3000,cut=false;
+    if(newFix){
+      const prev=Number(ms.aimFixAt)||0;
+      sinceFix=prev&&fixAt>prev?fixAt-prev:3000;
+      gap=prev&&fixAt>prev?Math.max(450,Math.min(6000,fixAt-prev)):3000;
+      const travel=Math.max(450,Math.min(4200,gap*1.3));
+      ms.aimFixAt=fixAt;ms.glideEnd=now+travel;
+      // If the next fix is late, the scooter rolls on a little and slows to a
+      // stop instead of halting the moment it reaches the last known spot.
+      ms.coastFrom=ms.glideEnd;ms.coastUntil=ms.glideEnd+1400;ms.glideDeadline=ms.coastUntil+200;
+      ms.camEnd=ms.glideEnd;ms.camDeadline=now+travel+1500;
+    }
+    ms.lineHidden=!!(routeView&&routeView.lost);
+    if(routeView&&routeView.snapped){
+      let target=routeView.progress;
+      const cur=ms.routeProgress;
+      const entering=ms.riderMode!=="route"||ms.routeLeft||!Number.isFinite(cur);
+      if(!entering){
+        // GPS noise must not make the line grow back; only real backtracking does.
+        // (Two fixes going back is not enough: it happens at every U-turn tip.)
+        const ref=Math.max(cur,Number.isFinite(ms.routeTarget)?ms.routeTarget:cur);
+        if(target<ref&&target>=ref-TRACKING_MAX_REWIND_M)target=ref;
+        // No one rides this fast: the partner cut across to a later part of the
+        // road (crossed the divider early). Slide there instead of racing round.
+        else if(newFix&&target-ref>Math.max(90,sinceFix/1000*30)){
+          cut=true;ms.routeProgress=target;ms.riderSpeed=0;ms.riderJump=true;ms.slipFar=true;
+        }
+      }else{
+        if(ms.riderMode==="free"||ms.riderMode==="route")ms.riderJump=true;
+        ms.routeProgress=target;ms.riderSpeed=0;ms.routeLeft=false;
+      }
+      if(newFix){
+        const real=routeView.progress;
+        ms.coastSpeed=!entering&&!cut&&Number.isFinite(ms.fixTarget)?Math.max(0,Math.min(25,(real-ms.fixTarget)/(gap/1000))):0;
+        ms.fixTarget=real;
+        ms.coastCap=Math.min(routeView.route.total,Math.max(target,real+Math.min(25,ms.coastSpeed*2.5)));
+      }
+      ms.routeTarget=target;ms.riderMode="route";
+      ms.headingFrom=points&&points.riderPoint||ms.headingFrom;
+    }else if(points&&points.riderPoint){
+      if(ms.riderMode==="route"&&ms.routeRef&&ms.routeRef.points&&Number.isFinite(ms.routeProgress)){
+        ms.freePoint=trackingPointAtProgress(ms.routeRef,ms.routeProgress);ms.freeSpeed=0;ms.riderJump=true;
+      }else if(ms.riderMode!=="free"||!ms.freePoint){ms.freePoint=points.riderPoint;ms.freeSpeed=0;}
+      ms.freeTarget=points.riderPoint;ms.riderMode="free";
+      if(routeView)ms.routeLeft=true;
+    }else ms.riderMode="none";
+  }
+  // Where the camera should go after this fix. No DOM work here.
+  function aimTrackingCamera(ms,points,live){
+    if(!ms)return;
+    if(ms.userPanned){ms.camGoal=null;return;}
+    const focus=trackingCameraFocus(points,live);
+    if(!focus){ms.camGoal=null;return;}
+    const local=trackingLocalPoint(ms,focus);
+    ms.camGoal={x:-local.x,y:-local.y};
+  }
+  function scheduleTrackingMotion(ms){
+    const gen=++trackingMotionGen;
+    ms.routeAnimAt=Date.now();
+    ms.routeAnim=requestAnimationFrame(function(){if(gen===trackingMotionGen)trackingMotionFrame(false);});
+  }
+  function kickTrackingMotion(){
+    const ms=state.trackingMap;
+    if(!ms)return;
+    if(typeof requestAnimationFrame!=="function"){trackingMotionFrame(true);return;}
+    if(ms.routeAnim&&Date.now()-(ms.routeAnimAt||0)<1000)return;
+    ms.stepAt=Date.now();
+    scheduleTrackingMotion(ms);
+  }
+  function trackingMotionFrame(finish){
+    const ms=state.trackingMap;
+    if(!ms)return;
+    ms.routeAnim=null;
+    const card=document.getElementById("tracking-map-card");
+    if(!card||card.dataset.orderId!==ms.orderId||!liveOrderRoute())return;
+    const now=Date.now(),dt=Math.max(0,Math.min(0.1,(now-(ms.stepAt||now))/1000));
+    ms.stepAt=now;
+    let busy=stepTrackingRider(ms,now,dt,finish);
+    if(stepTrackingZoom(ms,card,now,finish))busy=true;
+    paintTrackingRoute(card,finish);
+    if(stepTrackingCamera(ms,now,dt,finish))busy=true;
+    if(ms.slip)busy=true;
+    if(busy&&!finish&&typeof requestAnimationFrame==="function")scheduleTrackingMotion(ms);
+  }
+  // Speed that arrives at the aim by `end`, smoothed so it never jerks.
+  function trackingChaseSpeed(speed,rem,end,now,dt){
+    const want=rem/Math.max(0.35,(end-now)/1000);
+    const s=Number.isFinite(speed)?speed:0;
+    return s+(want-s)*(1-Math.exp(-dt/0.3));
+  }
+  function trackingChaseStep(speed,dt,rem){
+    const step=speed*dt;
+    return rem>0?Math.max(0,Math.min(rem,step)):Math.min(0,Math.max(rem,step));
+  }
+  function stepTrackingRider(ms,now,dt,finish){
+    if(ms.riderMode==="route"){
+      const target=ms.routeTarget;
+      if(!Number.isFinite(target))return false;
+      if(!Number.isFinite(ms.routeProgress)){ms.routeProgress=target;return false;}
+      if(!finish&&ms.coastSpeed>0.8&&now>ms.coastFrom&&now<ms.coastUntil&&target<ms.coastCap){
+        ms.routeTarget=Math.min(ms.coastCap,target+ms.coastSpeed*Math.exp(-(now-ms.coastFrom)/700)*dt);
+        const rem=ms.routeTarget-ms.routeProgress;
+        ms.riderSpeed=trackingChaseSpeed(ms.riderSpeed,rem,now,now,dt);
+        ms.routeProgress+=trackingChaseStep(ms.riderSpeed,dt,rem);
+        return true;
+      }
+      const rem=target-ms.routeProgress;
+      if(finish||now>=ms.glideDeadline||Math.abs(rem)<0.05||Math.abs(rem)>800){
+        ms.routeProgress=target;
+        // Arrived early: stay awake to roll on if the next fix is late.
+        if(!finish&&Math.abs(rem)<0.05&&ms.coastSpeed>0.8&&now<ms.coastUntil&&target<ms.coastCap)return true;
+        ms.riderSpeed=0;return false;
+      }
+      ms.riderSpeed=trackingChaseSpeed(ms.riderSpeed,rem,ms.glideEnd,now,dt);
+      ms.routeProgress+=trackingChaseStep(ms.riderSpeed,dt,rem);
+      return true;
+    }
+    if(ms.riderMode==="free"&&ms.freeTarget){
+      if(!ms.freePoint){ms.freePoint=ms.freeTarget;return false;}
+      const rem=trackingMetres(ms.freePoint,ms.freeTarget);
+      if(finish||now>=ms.glideDeadline||rem<0.05||rem>800){ms.freePoint=ms.freeTarget;ms.freeSpeed=0;return false;}
+      ms.freeSpeed=trackingChaseSpeed(ms.freeSpeed,rem,ms.glideEnd,now,dt);
+      const t=trackingChaseStep(ms.freeSpeed,dt,rem)/rem,a=ms.freePoint,b=ms.freeTarget;
+      ms.freePoint={lat:a.lat+(b.lat-a.lat)*t,lng:a.lng+(b.lng-a.lng)*t};
+      return true;
+    }
+    return false;
+  }
+  function stepTrackingCamera(ms,now,dt,finish){
+    const g=ms.camGoal;
+    if(!g||ms.userPanned||trackingDrag||trackingPinch||ms.zoomAnim)return false;
+    const rx=g.x-ms.panX,ry=g.y-ms.panY;
+    if(Math.abs(rx)<0.05&&Math.abs(ry)<0.05){
+      if(ms.camMoving){ms.camMoving=false;refreshTrackingTiles();}
+      return false;
+    }
+    let busy=true;
+    if(finish||now>=ms.camDeadline||Math.hypot(rx,ry)>600){
+      ms.panX=g.x;ms.panY=g.y;ms.camVX=ms.camVY=0;busy=false;
+    }else{
+      ms.camVX=trackingChaseSpeed(ms.camVX,rx,ms.camEnd,now,dt);
+      ms.camVY=trackingChaseSpeed(ms.camVY,ry,ms.camEnd,now,dt);
+      ms.panX+=trackingChaseStep(ms.camVX,dt,rx);
+      ms.panY+=trackingChaseStep(ms.camVY,dt,ry);
+    }
+    ms.camMoving=busy;
+    applyTrackingCamera();
+    if(!busy||Math.abs(ms.panX-(ms.tileCheckX||0))>48||Math.abs(ms.panY-(ms.tileCheckY||0))>48){
+      ms.tileCheckX=ms.panX;ms.tileCheckY=ms.panY;refreshTrackingTiles();
+    }
+    return busy;
+  }
+  // The only place the scooter pin is moved once the map is drawn.
+  function placeTrackingRider(ms,rider,at,now,finish){
+    if(ms.riderJump){
+      ms.riderJump=false;
+      const far=ms.slipFar;ms.slipFar=false;
+      const p=ms.riderAt;
+      if(!finish&&now<ms.glideDeadline&&p&&p.zoom===ms.zoom&&p.lat===ms.anchorLat&&p.lng===ms.anchorLng){
+        const dx=p.x-at.x,dy=p.y-at.y,d=Math.hypot(dx,dy);
+        // Longer slides take a little longer, so a rejoin never looks like a jump.
+        if(d>0.5&&d<(far?170:60))ms.slip={x:dx,y:dy,start:now,dur:Math.min(900,300+d*12)};
+      }
+    }
+    let x=at.x,y=at.y;
+    if(ms.slip){
+      const t=finish?1:(now-ms.slip.start)/(ms.slip.dur||450);
+      if(t>=1||t<0)ms.slip=null;
+      else{const e=1-t*t*(3-2*t);x+=ms.slip.x*e;y+=ms.slip.y*e;}
+    }
+    const k=Number(ms.zoomK)||1;
+    const transform='translate3d('+x.toFixed(2)+'px,'+y.toFixed(2)+'px,0)'+(Math.abs(k-1)>0.0001?' scale('+(1/k).toFixed(5)+')':'');
+    if(rider._t!==transform){rider.style.transform=transform;rider._t=transform;}
+    if(rider.style.display==="none")rider.style.display="";
+    if(rider.style.transition)rider.style.transition="";
+    ms.riderAt={x:x,y:y,zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng};
+  }
+  // Draws the line and the scooter where the motion loop has them now.
+  function paintTrackingRoute(card,finish){
+    const ms=state.trackingMap;
+    card=card||document.getElementById("tracking-map-card");
     if(!ms||!card)return;
-    const order=orderById(ms.orderId);
-    if(!order)return;
-    const live=state.tracking[ms.orderId]||{};
-    const view=trackingRouteView(order,live);
-    if(!view)return;
-    const route=view.route,progress=Number.isFinite(ms.routeProgress)?ms.routeProgress:0;
-    const lane=trackingLanePoints(ms,route,progress);
-    const svg=card.querySelector(".map-route");
-    if(svg){
-      const frame=trackingRouteFrame(ms,route);
-      applyTrackingRouteFrame(svg,frame);
-      svg.style.display="";
-      const coords=trackingRouteCoords(ms,route,frame,progress,lane);
-      const lines=svg.querySelectorAll("polyline");
-      for(let i=0;i<lines.length;i++)lines[i].setAttribute("points",coords);
+    const now=Date.now(),rider=card.querySelector(".map-pin.rider"),svg=card.querySelector(".map-route");
+    const route=ms.routeRef;
+    if(ms.riderMode==="route"&&route&&route.points&&route.points.length>1&&Number.isFinite(ms.routeProgress)){
+      const lane=trackingLane(ms,route),progress=ms.routeProgress,head=trackingLaneHead(lane,route,progress);
+      if(svg){
+        if(svg._lane!==lane){applyTrackingRouteFrame(svg,lane.frame);svg._lane=lane;svg._c="";}
+        const coords=trackingLaneCoords(lane,head);
+        if(svg._c!==coords){
+          const lines=svg.querySelectorAll("polyline");
+          for(let i=0;i<lines.length;i++)lines[i].setAttribute("points",coords);
+          svg._c=coords;
+        }
+        if(svg.style.display)svg.style.display="";
+      }
+      // The scooter faces along the road 20 m ahead of where it is drawn.
+      if(ms.headingRoute!==route||!(Math.abs(progress-ms.headingAt)<1)){
+        const at=Math.min(progress,Math.max(0,route.total-20));
+        const a=trackingPointAtProgress(route,at),b=trackingPointAtProgress(route,at+20);
+        if(trackingMetres(a,b)>3)ms.riderHeading=trackingBearing(a,b);
+        ms.headingAt=progress;ms.headingRoute=route;
+        const img=rider&&rider.querySelector("img");
+        if(img){const t=trackingRiderTransform(ms);if(img._t!==t){img.style.transform=t;img._t=t;}}
+      }
+      if(rider)placeTrackingRider(ms,rider,head,now,finish);
+      return;
     }
-    const rider=card.querySelector(".map-pin.rider");
-    if(rider){
-      // The scooter rides on the line, in the same lane.
-      const local=lane[0];
-      rider.style.transition="none";
-      rider.style.display="";
-      rider.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
-    }
+    if(svg){const want=ms.lineHidden?"none":"";if(svg.style.display!==want)svg.style.display=want;}
+    if(ms.riderMode==="free"&&ms.freePoint){
+      if(rider)placeTrackingRider(ms,rider,trackingLocalPoint(ms,ms.freePoint),now,finish);
+    }else if(rider&&ms.riderMode==="none"&&rider.style.display!=="none")rider.style.display="none";
   }
-  // A fixed-duration ease per GPS fix looked like "glide, then hold still for
-  // a second or two, then glide again" whenever fixes arrived slower than
-  // that duration - which is most of the time at realistic GPS/network
-  // cadence. Every documented source for this exact problem (Uber's own
-  // description of their client, Google's reference Android implementation,
-  // general tutorials) converges on the same fix, and it's simpler than a
-  // speed-estimate-and-coast model: animate between the last confirmed
-  // position and the new one over a duration equal to how long that gap
-  // actually took, eased rather than linear. Since both endpoints are always
-  // real, already-confirmed fixes, this can never overshoot and needs no
-  // separate correction term - the animation just finishes exactly when the
-  // next fix's duration begins.
-  const TRACKING_ROUTE_MIN_DURATION_MS=450, TRACKING_ROUTE_MAX_DURATION_MS=6000;
-  function easeInOutQuad(t){ return t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
-  function startTrackingRouteGlide(target,fixAt){
+  // Kept for older callers: aim the scooter along the road and let the loop run.
+  function startTrackingRouteGlide(target){
     const ms=state.trackingMap;
-    if(!ms)return;
-    const now=Number.isFinite(fixAt)?fixAt:Date.now();
-    const prevProgress=Number.isFinite(ms.routeProgress)?ms.routeProgress:target;
-    const prevFixAt=Number.isFinite(ms.routeLastFixAt)?ms.routeLastFixAt:now;
-    // The animation window is the real gap between this fix and the last one
-    // - not a fixed constant - clamped so a near-simultaneous pair of fixes
-    // doesn't snap instantly and a long stationary gap doesn't crawl for
-    // minutes once movement resumes.
-    const gapMs=Math.max(TRACKING_ROUTE_MIN_DURATION_MS,Math.min(TRACKING_ROUTE_MAX_DURATION_MS,now-prevFixAt));
-    ms.routeFrom=prevProgress;
+    if(!ms||!Number.isFinite(target))return;
     ms.routeTarget=target;
-    ms.routeDurationMs=gapMs;
-    ms.routeGlideStart=Date.now();
-    ms.routeLastFixAt=now;
-    if(!ms.routeAnim&&typeof requestAnimationFrame==="function"){
-      ms.routeAnim=requestAnimationFrame(stepTrackingRouteGlide);
-    }else if(!ms.routeAnim){
-      ms.routeProgress=target;paintTrackingRoute();
-    }
+    kickTrackingMotion();
   }
-  function stepTrackingRouteGlide(){
-    const ms=state.trackingMap;
-    if(!ms)return;
-    if(!liveOrderRoute()){ms.routeAnim=null;return;}
-    const elapsed=Date.now()-ms.routeGlideStart;
-    const t=Math.min(1,elapsed/(ms.routeDurationMs||TRACKING_ROUTE_MIN_DURATION_MS));
-    const eased=easeInOutQuad(t);
-    ms.routeProgress=ms.routeFrom+(ms.routeTarget-ms.routeFrom)*eased;
-    paintTrackingRoute();
-    // Stop once this segment is actually finished rather than idling the
-    // loop at 60fps doing no-op repaints - the next fix cold-starts a fresh
-    // one via startTrackingRouteGlide()'s own !ms.routeAnim check, which
-    // costs nothing extra.
-    ms.routeAnim=t<1&&typeof requestAnimationFrame==="function"?requestAnimationFrame(stepTrackingRouteGlide):null;
-  }
+  // Freezes the scooter where it is drawn (for example when the road changes).
   function stopTrackingRouteGlide(){
     const ms=state.trackingMap;
-    if(ms&&ms.routeAnim&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(ms.routeAnim);
-    if(ms)ms.routeAnim=null;
+    if(!ms)return;
+    if(Number.isFinite(ms.routeProgress))ms.routeTarget=ms.routeProgress;
+    ms.riderSpeed=0;
+  }
+  // One frame of a zoom: the new map is drawn, then scaled so it starts exactly
+  // where the old one was and grows or shrinks into place. Pins keep their size.
+  function stepTrackingZoom(ms,card,now,finish){
+    const z=ms.zoomAnim;
+    if(!z)return false;
+    const world=document.getElementById("tracking-map-world");
+    const t=finish?1:Math.max(0,Math.min(1,(now-z.start)/z.dur));
+    const pins=card.querySelectorAll(".map-pin:not(.rider)");
+    if(t>=1){
+      ms.zoomAnim=null;ms.zoomK=1;
+      if(world)world.style.removeProperty("--zk");
+      for(let i=0;i<pins.length;i++)pins[i].style.transform=String(pins[i].style.transform||"").replace(/\s*scale\([^)]*\)\s*$/,"");
+      applyTrackingCamera();
+      return false;
+    }
+    const e=1-Math.pow(1-t,3),k=z.k0+(1-z.k0)*e,w=(1-k)/(1-z.k0);
+    ms.zoomK=k;
+    if(world){
+      world.style.transition="none";
+      world.style.transform='translate3d('+(ms.panX+(z.x0-ms.panX)*w).toFixed(2)+'px,'+(ms.panY+(z.y0-ms.panY)*w).toFixed(2)+'px,0) scale('+k.toFixed(5)+')';
+      world.style.setProperty("--zk",k.toFixed(5));
+    }
+    for(let i=0;i<pins.length;i++)pins[i].style.transform=String(pins[i].style.transform||"").replace(/\s*scale\([^)]*\)\s*$/,"")+" scale("+(1/k).toFixed(5)+")";
+    return true;
+  }
+  function removeTrackingGhostWhenReady(ghost,start){
+    const check=function(){
+      if(!ghost.isConnected)return;
+      const layer=ghost.parentNode&&ghost.parentNode.querySelector(".map-tiles");
+      const imgs=layer?layer.querySelectorAll("img"):[];
+      let ready=imgs.length>0;
+      for(let i=0;i<imgs.length&&ready;i++)if(!imgs[i].classList.contains("ready"))ready=false;
+      if(ready||Date.now()-start>2500){
+        ghost.style.transition="opacity .2s ease";ghost.style.opacity="0";
+        setTimeout(function(){if(ghost.parentNode)ghost.parentNode.removeChild(ghost);},240);
+        return;
+      }
+      setTimeout(check,120);
+    };
+    setTimeout(check,150);
+  }
+  // Updates the drawn map in place after a zoom, a recentre or a new road,
+  // instead of rebuilding the page: no blank tiles, no jumping scooter.
+  // `from` is the view before the change ({zoom,lat,lng,panX,panY} and, after
+  // a pinch, the preview scale f with its origin ox,oy). Returns false when the
+  // map is not on screen, and the caller then does a full draw.
+  function redrawTrackingMap(from,duration){
+    const ms=state.trackingMap,card=document.getElementById("tracking-map-card");
+    if(!ms||!card||card.dataset.orderId!==ms.orderId)return false;
+    const world=document.getElementById("tracking-map-world"),tiles=world&&world.querySelector(".map-tiles");
+    const order=orderById(ms.orderId);
+    if(!world||!tiles||!order)return false;
+    const live=state.tracking[ms.orderId]||{},points=trackingGeoPoints(order,live),now=Date.now();
+    if(ms.zoomAnim)stepTrackingZoom(ms,card,now,true);
+    card.style.setProperty("--rider-w",trackingRiderWidth(ms.zoom)+"px");
+    const zoomed=!!from&&from.zoom!==ms.zoom;
+    let layer=tiles;
+    if(zoomed){
+      world.querySelectorAll(".map-tiles-ghost").forEach(n=>n.remove());
+      const s=Math.pow(2,ms.zoom-from.zoom),o=trackingLocalPoint(ms,{lat:from.lat,lng:from.lng});
+      tiles.className="map-tiles-ghost";
+      tiles.style.transform="translate("+o.x.toFixed(2)+"px,"+o.y.toFixed(2)+"px) scale("+s+")";
+      layer=document.createElement("div");layer.className="map-tiles";
+      tiles.parentNode.insertBefore(layer,tiles.nextSibling);
+      removeTrackingGhostWhenReady(tiles,now);
+    }
+    const hadRoute=!!world.querySelector(".map-route");
+    world.querySelectorAll(".map-route,.map-plan").forEach(n=>n.remove());
+    const delivery=trackingDeliveryLegActive(order,live);
+    const routeView=delivery?trackingRouteView(order,live):null;
+    aimTrackingRider(ms,live,points,routeView);
+    ms.lineEnter=!hadRoute;
+    layer.insertAdjacentHTML("afterend",delivery?trackingRouteMarkup(ms,order,live):trackingPlannedLineMarkup(ms,points));
+    ms.lineEnter=false;
+    setTrackingPin(card,".map-pin.restaurant",ms,points.restaurantPoint,null);
+    setTrackingPin(card,".map-pin.home",ms,points.customerPoint,null);
+    const rider=card.querySelector(".map-pin.rider");
+    if(rider){rider._t="";if(points.riderPoint)rider.classList.toggle("live",!!(live.updatedAt&&now-Number(live.updatedAt)<45000));}
+    const recenter=card.querySelector("#tracking-recenter");
+    if(recenter)recenter.classList.toggle("hidden",!(ms.userPanned||ms.userZoomed));
+    const beta=card.querySelector(".map-beta"),wantBeta=!card.classList.contains("compact")&&trackingGoogleRouteShown(order,live);
+    if(beta&&!wantBeta)beta.remove();
+    else if(!beta&&wantBeta){const overlay=card.querySelector(".map-overlay");if(overlay)overlay.insertAdjacentHTML("beforebegin",'<p class="map-beta">Bike route by Google (beta): some lanes may be missing.</p>');}
+    patchArrivalPill(order,live);
+    if(from){
+      // A new view: the camera waits for the next fix, unless told to glide below.
+      ms.camGoal=null;ms.camVX=ms.camVY=0;ms.slip=null;ms.riderJump=false;
+      const s=Math.pow(2,ms.zoom-from.zoom),o=trackingLocalPoint(ms,{lat:from.lat,lng:from.lng});
+      const f=Number(from.f)||1,k0=f/s;
+      if(zoomed||Math.abs(1-k0)>=0.01){
+        // The new map, scaled by k0 and moved to x0,y0, looks exactly like the old one.
+        ms.zoomAnim={k0:k0,x0:from.panX+(Number(from.ox)||0)*(1-f)-k0*o.x,y0:from.panY+(Number(from.oy)||0)*(1-f)-k0*o.y,start:now,dur:duration||320};
+      }else if(from.lat!==ms.anchorLat||from.lng!==ms.anchorLng||from.panX!==ms.panX||from.panY!==ms.panY){
+        // Same zoom, new centre: glide there.
+        const ex=from.panX-o.x,ey=from.panY-o.y,gx=ms.panX,gy=ms.panY;
+        if(Math.hypot(gx-ex,gy-ey)<600){
+          ms.panX=ex;ms.panY=ey;ms.camGoal={x:gx,y:gy};
+          ms.camEnd=now+(duration||350);ms.camDeadline=now+(duration||350)+900;
+        }
+      }
+    }
+    ms.tileKey="";refreshTrackingTiles();
+    ms.tileCheckX=ms.panX;ms.tileCheckY=ms.panY;
+    if(ms.zoomAnim)stepTrackingZoom(ms,card,now,false);else applyTrackingCamera();
+    paintTrackingRoute(card);
+    ms.stepAt=now;
+    kickTrackingMotion();
+    return true;
   }
   // ---- rider marker: size and direction ------------------------------------
   // The marker shrinks as the map zooms out so it never covers the streets it
@@ -8449,12 +8854,23 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     // not the card itself - see trackingMapThumbMarkup().
     const follow=trackingFollowActive(ms),rain=trackingIsRaining(order);
     const shownRoute=trackingDeliveryLegActive(order,live)?trackingRouteView(order,live):null;
-    // A full redraw shows the partner where they are now, line and scooter together.
-    if(shownRoute&&shownRoute.snapped&&Number.isFinite(ms.routeProgress)&&!(shownRoute.progress<ms.routeProgress&&shownRoute.progress>=ms.routeProgress-TRACKING_MAX_REWIND_M)){
-      stopTrackingRouteGlide();
-      ms.routeProgress=ms.routeFrom=ms.routeTarget=shownRoute.progress;
+    // A full draw while the scooter is moving keeps it where it is drawn and
+    // lets it carry on; otherwise it shows the partner where they are now.
+    const keepMoving=!!ms.routeAnim,modeBefore=ms.riderMode;
+    aimTrackingRider(ms,live,points,shownRoute);
+    const farBehind=ms.riderMode==="route"?Math.abs((ms.routeTarget||0)-(ms.routeProgress||0))>150:(ms.riderMode==="free"&&ms.freePoint&&ms.freeTarget?trackingMetres(ms.freePoint,ms.freeTarget)>150:false);
+    if(!keepMoving||ms.riderMode!==modeBefore||farBehind){
+      if(ms.riderMode==="route")ms.routeProgress=ms.routeTarget;
+      if(ms.riderMode==="free")ms.freePoint=ms.freeTarget;
+      ms.riderSpeed=0;ms.freeSpeed=0;
     }
-    const riderShown=shownRoute&&shownRoute.snapped&&Number.isFinite(ms.routeProgress)?trackingPointAtProgress(shownRoute.route,ms.routeProgress):points.riderPoint;
+    ms.zoomAnim=null;ms.zoomK=1;ms.slip=null;ms.riderJump=false;
+    aimTrackingCamera(ms,points,live);
+    let riderAt=null;
+    if(ms.riderMode==="route"&&shownRoute&&ms.routeRef&&Number.isFinite(ms.routeProgress))riderAt=trackingLaneHead(trackingLane(ms,ms.routeRef),ms.routeRef,ms.routeProgress);
+    else if(ms.riderMode==="free"&&ms.freePoint)riderAt=trackingLocalPoint(ms,ms.freePoint);
+    if(riderAt)ms.riderAt={x:riderAt.x,y:riderAt.y,zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng};
+    const riderShown=points.riderPoint;
     return '<section class="card map-card'+(compact?' compact':'')+(follow?' follow':'')+(trackingIsNight()?' night':'')+(rain?' rain':'')+'" id="tracking-map-card" data-order-id="'+h(order.id)+'" style="--rider-w:'+trackingRiderWidth(ms.zoom)+'px;--map-bearing:'+(follow?ms.bearing:0).toFixed(1)+'deg">'
       +'<div class="map-plane" id="tracking-map-plane" style="transform:'+trackingPlaneTransform(ms)+'">'
       +'<div class="map-world" id="tracking-map-world" style="transform:translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)">'
@@ -8462,7 +8878,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +(trackingDeliveryLegActive(order,live)?trackingRouteMarkup(ms,order,live):trackingPlannedLineMarkup(ms,points))
       +trackingPinMarkup(ms,"restaurant",points.restaurantPoint,"Restaurant","receipt",false)
       +trackingPinMarkup(ms,"home",points.customerPoint,"Delivery address","home",false)
-      +trackingPinMarkup(ms,"rider",riderShown,"Delivery partner","bike",fresh)
+      +trackingPinMarkup(ms,"rider",riderShown,"Delivery partner","bike",fresh,riderAt)
       +'</div></div>'
       +'<div class="map-haze" aria-hidden="true"></div>'+(rain?'<div class="map-rain'+(trackingRainHeavy(order)?' heavy':'')+'" aria-hidden="true"><b class="r1"></b><b class="r2"></b><b class="r3"></b></div>':'')
       // Zoom/recentre controls and the LIVE/STALE badge only make sense at
@@ -8479,11 +8895,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +'</div>')
       +'</section>';
   }
-  function applyTrackingCamera(animate){
+  function applyTrackingCamera(){
     const world=document.getElementById("tracking-map-world"),ms=state.trackingMap;
     if(!world||!ms)return;
-    world.style.transition=animate?("transform "+TRACKING_GLIDE_MS+"ms linear"):"none";
-    world.style.transform='translate3d('+ms.panX.toFixed(1)+'px,'+ms.panY.toFixed(1)+'px,0)';
+    if(world.style.transition!=="none")world.style.transition="none";
+    world.style.transform='translate3d('+ms.panX.toFixed(2)+'px,'+ms.panY.toFixed(2)+'px,0)';
   }
   function refreshTrackingTiles(){
     const ms=state.trackingMap,card=document.getElementById("tracking-map-card");
@@ -8516,15 +8932,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function trackingCameraFollow(points,live){
     const ms=state.trackingMap;
-    if(!ms||ms.userPanned)return;
-    const focus=trackingCameraFocus(points,live);
-    if(!focus)return;
-    const local=trackingLocalPoint(ms,focus),nextX=-local.x,nextY=-local.y;
-    if(Math.abs(nextX-ms.panX)<1&&Math.abs(nextY-ms.panY)<1)return;
-    ms.panX=nextX;ms.panY=nextY;
-    applyTrackingCamera(true);
-    clearTimeout(ms.tileTimer);
-    ms.tileTimer=setTimeout(refreshTrackingTiles,TRACKING_GLIDE_MS+80);
+    if(!ms)return;
+    aimTrackingCamera(ms,points,live);
+    kickTrackingMotion();
   }
   function setTrackingPin(card,selector,ms,point,isLive){
     const element=card.querySelector(selector);
@@ -8533,7 +8943,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const local=trackingLocalPoint(ms,point);
     element.style.display="";
     element.style.transition="";
-    element.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)';
+    const k=Number(state.trackingMap&&state.trackingMap.zoomK)||1;
+    element.style.transform='translate3d('+local.x.toFixed(1)+'px,'+local.y.toFixed(1)+'px,0)'+(Math.abs(k-1)>0.0001?' scale('+(1/k).toFixed(5)+')':'');
     if(isLive!=null)element.classList.toggle("live",!!isLive);
   }
   function patchTrackingMap(orderId){
@@ -8558,9 +8969,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         const next=fits<ms.zoom?fits:(roomy>ms.zoom?roomy:ms.zoom);
         if(next!==ms.zoom){
           const c=trackingBoundsCenter(frame);
+          const from={zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng,panX:ms.panX,panY:ms.panY};
           ms.zoom=next;ms.anchorLat=c.lat;ms.anchorLng=c.lng;
           ms.panX=0;ms.panY=0;ms.tileKey="";
-          return false;
+          if(!redrawTrackingMap(from,600))return false;
         }
       }
     }
@@ -8572,30 +8984,18 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const routeView=trackingRouteView(order,live);
     if(trackingDeliveryLegActive(order,live))ensureTrackingRoute(order,live);
     // A road is known but no line is on screen yet: a full draw adds it.
-    if(routeView&&!card.querySelector(".map-route"))return false;
-    updateTrackingHeading(ms,routeView,points.riderPoint);
-    applyTrackingRiderHeading(card,ms);
+    if(routeView&&!card.querySelector(".map-route")&&!redrawTrackingMap(null))return false;
+    // On the road the motion loop turns the scooter with the road it is drawn on.
+    if(!(routeView&&routeView.snapped)){updateTrackingHeading(ms,routeView,points.riderPoint);applyTrackingRiderHeading(card,ms);}
     if(points.riderPoint){
       if(!ms.lastRiderPoint||trackingMetres(ms.lastRiderPoint,points.riderPoint)>5){ms.lastRiderPoint=points.riderPoint;ms.lastRiderMoveAt=Date.now();}
     }
     applyTrackingPlane();
     patchArrivalPill(order,live);
-    if(routeView&&routeView.snapped){
-      let target=routeView.progress;
-      // GPS noise must not make the line grow back; only real backtracking does.
-      if(Number.isFinite(ms.routeProgress)&&target<ms.routeProgress&&target>=ms.routeProgress-TRACKING_MAX_REWIND_M)target=ms.routeProgress;
-      // Back on the road after leaving it: no slide from where they left.
-      if(ms.routeLeft){ms.routeLeft=false;ms.routeProgress=target;}
-      const rider=card.querySelector(".map-pin.rider");
-      if(rider)rider.classList.toggle("live",fresh);
-      startTrackingRouteGlide(target,Number(live.updatedAt)||Date.now());
-    }else{
-      stopTrackingRouteGlide();
-      setTrackingPin(card,".map-pin.rider",ms,points.riderPoint,fresh);
-      if(routeView)ms.routeLeft=true;
-      const line=card.querySelector(".map-route");
-      if(line)line.style.display=routeView&&routeView.lost?"none":"";
-    }
+    aimTrackingRider(ms,live,points,routeView);
+    const riderPin=card.querySelector(".map-pin.rider");
+    if(riderPin&&points.riderPoint)riderPin.classList.toggle("live",fresh);
+    // Aims the camera and runs the motion loop, which moves scooter, line and map.
     trackingCameraFollow(points,live);
     const pillEl=card.querySelector(".map-status-pill");if(pillEl){pillEl.textContent=trackingSignalText(live,fresh);pillEl.className="status-pill map-status-pill "+(fresh?"success":"warning");}
     const lastLocEl=document.getElementById("tracking-last-location");if(lastLocEl)lastLocEl.textContent=live.updatedAt?dateTime(live.updatedAt):"Not received";
@@ -8605,11 +9005,15 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   // Zooms about a point in the card's own coordinates, so a pinch or a double
   // tap keeps whatever is under the fingers pinned in place.
-  function trackingZoomAround(delta,focusX,focusY){
+  function trackingZoomAround(delta,focusX,focusY,preview){
     const ms=state.trackingMap;
     if(!ms)return false;
     const next=Math.max(TRACKING_MAP_MIN_ZOOM,Math.min(TRACKING_MAP_MAX_ZOOM,ms.zoom+Number(delta||0)));
-    if(next===ms.zoom)return false;
+    const from={zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng,panX:ms.panX,panY:ms.panY,f:preview?preview.f:1,ox:preview?preview.ox:0,oy:preview?preview.oy:0};
+    if(next===ms.zoom){
+      // A pinch too small for a zoom step springs back smoothly.
+      return !!preview&&redrawTrackingMap(from,260);
+    }
     const size=trackingViewportSize();
     const centreX=size.width/2,centreY=size.height*(TRACKING_MAP_VERTICAL_ANCHOR_PCT/100);
     const pointX=Number.isFinite(focusX)?focusX:centreX,pointY=Number.isFinite(focusY)?focusY:centreY;
@@ -8618,7 +9022,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     ms.zoom=next;ms.anchorLat=under.lat;ms.anchorLng=under.lng;
     ms.panX=pointX-centreX;ms.panY=pointY-centreY;
     ms.userZoomed=true;ms.tileKey="";
-    render({preserveScroll:true});
+    if(!redrawTrackingMap(from,320))render({preserveScroll:true});
     return true;
   }
   function trackingZoomBy(delta){
@@ -8632,9 +9036,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const points=trackingGeoPoints(order,state.tracking[ms.orderId]||{});
     const fitted=trackingCameraView(points,state.tracking[ms.orderId]||{},order);
     if(!fitted)return;
+    const from={zoom:ms.zoom,lat:ms.anchorLat,lng:ms.anchorLng,panX:ms.panX,panY:ms.panY};
     ms.userPanned=false;ms.userZoomed=false;ms.zoom=fitted.zoom;ms.anchorLat=fitted.center.lat;ms.anchorLng=fitted.center.lng;
     ms.panX=0;ms.panY=0;ms.tileKey="";
-    render({preserveScroll:true});
+    if(!redrawTrackingMap(from,420))render({preserveScroll:true});
   }
   let trackingDrag=null,trackingPinch=null,trackingLastTap=0,trackingLastTapX=0,trackingLastTapY=0;
   const trackingPointers=Object.create(null);
@@ -8746,15 +9151,17 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function commitTrackingPinch(pinch){
     const world=document.getElementById("tracking-map-world"),card=document.getElementById("tracking-map-card");
+    // Where the preview was scaled about, in map coordinates, before it is cleared.
+    const origin=world?String(world.style.transformOrigin||"").split(" "):[];
+    const preview={f:Number(pinch.scale)||1,ox:parseFloat(origin[0])||0,oy:parseFloat(origin[1])||0};
     if(world)world.style.transformOrigin="";
     const ms=state.trackingMap;
     if(!ms||!card){applyTrackingCamera(false);return;}
     const steps=Math.round(Math.log(pinch.scale)/Math.LN2);
     const point=trackingCardPoint(card,pinch.midX,pinch.midY);
-    // Drop the preview scale first so the map can never be left mid-pinch,
-    // whatever the zoom step turns out to be.
-    applyTrackingCamera(false);
-    if(steps)trackingZoomAround(steps,point.x,point.y);
+    // The map animates from the pinched size to the new zoom step; if that
+    // fails for any reason the preview scale is dropped so it is never left mid-pinch.
+    if(!trackingZoomAround(steps,point.x,point.y,preview))applyTrackingCamera(false);
   }
   function screenChat(){const o=state.orders.find(x=>x.id===state.chat.orderId),messages=state.chat.messages||[];if(!o)return screenOrders();return'<main class="screen"><div class="screen-content page-stack">'+topbar(state.chat.title||"Order chat","Order "+o.id)+'<div class="notice info">'+icon("shield","small")+'<span>Real phone numbers are not displayed. Phone numbers typed in chat are automatically hidden.</span></div><section class="card chat-thread">'+(messages.length?messages.map(m=>'<div class="chat-message '+(m.senderId===state.session.uid?'mine':'')+'"><strong>'+h(m.senderRole||"user")+'</strong><p>'+h(m.body||"")+'</p><span class="caption">'+h(dateTime(m.at))+'</span></div>').join(""):emptyState("help","No messages yet","Use chat to coordinate this order."))+'</section><form id="chat-form" class="card cluster"><input class="input grow" name="message" maxlength="800" placeholder="Type a message" required><button class="button primary" type="submit">Send</button></form></div>'+nav()+'</main>'}
   // ---- tracking map auto-collapse + ad carousel -----------------------------

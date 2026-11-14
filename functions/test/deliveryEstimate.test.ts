@@ -180,3 +180,21 @@ describe("available rider counting", () => {
     expect(countAvailableRiders(live, now, 90_000)).toBe(1);
   });
 });
+
+describe("ETA prep follows the kitchen timer (founder 2026-11-14)", () => {
+  const base = {kitchenEtaMinMinutes: 25, kitchenEtaMaxMinutes: 35, distanceKm: 3, activeOrders: 0, availableRiders: 3, occurredAt: Date.UTC(2026, 10, 14, 10, 0)};
+  it("caps a typed 25-35 at the 15 min timer", () => {
+    const e = estimateDelivery({...base, kitchenTimerMinutes: 15});
+    expect(e.basis.prepMinMinutes).toBe(10);
+    expect(e.basis.prepMaxMinutes).toBe(15);
+    expect([e.etaMinMinutes, e.etaMaxMinutes]).toEqual([20, 30]);
+  });
+  it("uses 20 for a bigger order and keeps a faster kitchen's own time", () => {
+    expect(estimateDelivery({...base, kitchenTimerMinutes: 20}).basis.prepMaxMinutes).toBe(20);
+    const quick = estimateDelivery({...base, kitchenEtaMinMinutes: 8, kitchenEtaMaxMinutes: 12, kitchenTimerMinutes: 15});
+    expect([quick.basis.prepMinMinutes, quick.basis.prepMaxMinutes]).toEqual([7, 12]);
+  });
+  it("without a timer nothing changes", () => {
+    expect(estimateDelivery(base).basis.prepMaxMinutes).toBe(35);
+  });
+});

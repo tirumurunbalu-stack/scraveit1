@@ -404,8 +404,22 @@ async function enqueueAndAttempt(input: NotificationOutboxInput): Promise<Proces
   );
 }
 
+/** True when the latest "Arrived" came from the partner waiting 3 minutes at the customer's campus. */
+export function arrivedAtCampusGate(order: SavrivoOrder): boolean {
+  const arrived = Object.values(order.statusHistory ?? {})
+    .filter((event) => event?.status === "Arrived")
+    .sort((a, b) => Number(b.at) - Number(a.at))[0];
+  return String(arrived?.proof ?? "").startsWith("campus:");
+}
+
 function statusCopy(order: SavrivoOrder): {title: string; body: string} {
   const status = order.status;
+  if (status === "Arrived" && arrivedAtCampusGate(order)) {
+    return {
+      title: "Your delivery partner is waiting near the gate",
+      body: "Please call them or meet them at the gate. Share the delivery OTP only after receiving the order.",
+    };
+  }
   const restaurant = order.restaurant;
   const copy: Record<OrderStatus, {title: string; body: string}> = {
     "Order placed": {title: "Order placed", body: `${restaurant} received your order.`},
@@ -446,6 +460,28 @@ export async function notifyRestaurantNewOrder(order: SavrivoOrder): Promise<voi
   });
 }
 
+/** "Your order is getting late": the store app says it even when it is closed (every minute until Order ready). */
+export async function notifyRestaurantOrderLate(order: SavrivoOrder, reminder: number): Promise<void> {
+  const restaurant = await restaurantRef(firestoreDb, order.restaurantId).get().catch(() => null);
+  const storeType = storeTypeOf((restaurant?.exists ? restaurant.data() as {storeType?: unknown} | undefined : undefined)?.storeType);
+  const tail = String(order.id).slice(-4);
+  await enqueueAndAttempt({
+    eventType: "RESTAURANT_ORDER_LATE",
+    aggregateType: "order",
+    aggregateId: order.id,
+    deduplicationKey: `restaurant-order-late:${order.id}:${reminder}`,
+    recipient: {kind: "restaurant", id: order.restaurantId, app: "restaurant"},
+    message: storedMessage({
+      data: {
+        type: "RESTAURANT_ORDER_LATE", orderId: order.id, restaurantId: order.restaurantId, storeType,
+        title: `Order #${tail} is getting late`, body: "Tap Order ready when it is packed.",
+      },
+      // Data only, so the app plays the voice itself; stale after a minute (the next one is coming).
+      android: {priority: "high", ttl: 60_000},
+    }),
+  });
+}
+
 export async function stopRestaurantAlarm(order: SavrivoOrder): Promise<void> {
   const result = await enqueueAndAttempt({
     eventType: "RESTAURANT_STOP_ORDER_ALARM",
@@ -473,6 +509,27 @@ export async function notifyCustomerStatus(order: SavrivoOrder): Promise<void> {
     recipient: {kind: "user", id: order.customerId, app: "customer"},
     message: storedMessage({
       notification: copy,
+      data: {type: "ORDER_STATUS", orderId: order.id, status: order.status, restaurantId: order.restaurantId},
+      android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
+/** Campus orders: the delivery partner has reached the customer's college or hospital. Sent once. */
+export async function notifyCustomerAtCampus(order: SavrivoOrder, campusName: string): Promise<void> {
+  const place = campusName ? campusName.slice(0, 60) : "your campus";
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_PARTNER_AT_CAMPUS",
+    aggregateType: "order",
+    aggregateId: order.id,
+    deduplicationKey: `customer-at-campus:${order.id}`,
+    recipient: {kind: "user", id: order.customerId, app: "customer"},
+    message: storedMessage({
+      notification: {
+        title: "Your delivery partner is near your campus",
+        body: `They have reached ${place}. Keep your phone close, they may call you.`,
+      },
       data: {type: "ORDER_STATUS", orderId: order.id, status: order.status, restaurantId: order.restaurantId},
       android: {priority: "high", notification: {channelId: "customer_orders", sound: "default"}},
       apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},

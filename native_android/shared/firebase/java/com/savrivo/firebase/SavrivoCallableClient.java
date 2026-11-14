@@ -64,7 +64,9 @@ public final class SavrivoCallableClient {
             "requestRestaurantApplicationChanges", "approveRestaurantApplication", "getAdminToday", "getStorePayoutsDue", "getPayoutAutomationStatus", "previewWeeklyPayouts",
             "getAdminAnalytics", "resolveChatReport", "recordRiderPanCheck", "reviewReel",
             // Ads results across stores and brand ads, and training the models on demand.
-            "getAdsReport", "runLearningNow"));
+            "getAdsReport", "runLearningNow",
+            // Owner switch: the 7 order servers cold now, or warm 7 AM–midnight.
+            "serverWarmth"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement",

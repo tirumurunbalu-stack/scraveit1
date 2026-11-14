@@ -601,3 +601,10 @@ body.drag-on{overscroll-behavior:none}
 /* Handover: staff match the rider's last 4 digits before confirming. */
 .handover-check{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 10px;padding:12px 14px;border-radius:14px;background:#ecfdf5;border:1.5px solid #10b981;color:#064e3b;font-weight:600;line-height:1.35}
 .handover-digits{flex:none;font-family:"Roboto Mono",ui-monospace,monospace;font-size:28px;font-weight:800;letter-spacing:.06em;color:#065f46;text-decoration:underline;text-decoration-thickness:3px;text-underline-offset:5px}
+/* Home: "No active orders" as one compact row, so its icon no longer peeks out half-hidden behind the bottom bar. */
+.home-dash .empty{min-height:0;padding:8px 2px;display:block;text-align:left}
+.home-dash .empty>div{display:grid;grid-template-columns:44px 1fr;column-gap:12px;align-items:center}
+.home-dash .empty-icon{width:44px;height:44px;border-radius:14px;margin:0;grid-row:span 2}
+.home-dash .empty-icon .icon{width:22px;height:22px}
+.home-dash .empty .section-title{font-size:16px}
+.home-dash .empty .supporting{margin-top:2px!important;font-size:13px}

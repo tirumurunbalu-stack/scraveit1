@@ -142,7 +142,10 @@ export async function googleTwoWheelerRoute(origin: LatLng, destination: LatLng,
       origin: {location: {latLng: {latitude: origin.lat, longitude: origin.lng}}},
       destination: {location: {latLng: {latitude: destination.lat, longitude: destination.lng}}},
       travelMode: "TWO_WHEELER", routingPreference: "TRAFFIC_AWARE",
-      polylineEncoding: "ENCODED_POLYLINE", languageCode: "en-IN", regionCode: "IN", units: "METRIC",
+      // Road-hugging line: the default "overview" line cuts corners off the road.
+      // Two-wheeler routes are already on the top price tier, so this costs nothing extra.
+      polylineQuality: "HIGH_QUALITY", polylineEncoding: "ENCODED_POLYLINE",
+      languageCode: "en-IN", regionCode: "IN", units: "METRIC",
     }),
   });
   if (!response.ok) {

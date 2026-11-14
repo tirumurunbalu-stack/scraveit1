@@ -66,7 +66,7 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
         }
 
         // The four store apps share one sign-in, so each skips orders for another store type.
-        if ("RESTAURANT_NEW_ORDER".equals(type) && "restaurant".equals(role)
+        if (("RESTAURANT_NEW_ORDER".equals(type) || "RESTAURANT_ORDER_LATE".equals(type)) && "restaurant".equals(role)
                 && !event.optString("storeType").isEmpty()
                 && !event.optString("storeType").equals(storeType())) {
             Log.i(TAG, "NEW_ORDER_PUSH_OTHER_STORE orderId=" + orderId);
@@ -81,6 +81,15 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
                     event.optString("title", "New Scraveit order"),
                     event.optString("body", "A new order is waiting for your response."), orderId);
             SavrivoCallableClient.warmOrderStatus(this);
+        } else if ("RESTAURANT_ORDER_LATE".equals(type) && "restaurant".equals(role)) {
+            // Open on screen, the app's own kitchen timer already says it; closed, we say it here.
+            if (!appOnScreen()) {
+                playLateVoice();
+                showNotification(event, SavrivoNotifications.RESTAURANT_LATE,
+                        "Order is getting late", "Tap Order ready when it is packed.", false, 0);
+            }
+            Log.i(TAG, "ORDER_LATE_PUSH_RECEIVED orderId=" + orderId);
+            return;
         } else if ("STOP_ORDER_ALARM".equals(type) && "restaurant".equals(role)) {
             String alarmId = event.optString("alarmId", "order:" + orderId);
             OrderAlarmService.stop(this, alarmId);
@@ -125,6 +134,33 @@ public final class SavrivoMessagingService extends FirebaseMessagingService {
                     "Order updated", event.optString("status", "Open Scraveit for details."), false, 0);
         }
         SavrivoPushStore.dispatch(this, event);
+    }
+
+    private boolean appOnScreen() {
+        android.app.ActivityManager.RunningAppProcessInfo info = new android.app.ActivityManager.RunningAppProcessInfo();
+        android.app.ActivityManager.getMyMemoryState(info);
+        android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
+        return info.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                && (power == null || power.isInteractive());
+    }
+
+    /** The same bundled "Your order is getting late" voice the kitchen screen plays. */
+    private void playLateVoice() {
+        try {
+            android.content.res.AssetFileDescriptor file = getAssets().openFd("order-late.m4a");
+            final android.media.MediaPlayer player = new android.media.MediaPlayer();
+            player.setAudioAttributes(new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build());
+            player.setDataSource(file.getFileDescriptor(), file.getStartOffset(), file.getLength());
+            file.close();
+            player.setOnCompletionListener(done -> player.release());
+            player.setOnErrorListener((p, what, extra) -> { player.release(); return true; });
+            player.prepare();
+            player.start();
+        } catch (Exception error) {
+            Log.w(TAG, "ORDER_LATE_VOICE_FAILED " + error);
+        }
     }
 
     private void showNotification(

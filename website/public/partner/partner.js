@@ -238,7 +238,7 @@
       // There is no "Start preparing" step: accepting puts the order in the kitchen.
       if (to === "Ready for pickup" && o.status === "Accepted") await send("Preparing").catch(() => {});
       await send(to);
-      if (to === "Accepted") await send("Preparing").catch(() => {});
+      if (to === "Accepted") { await send("Preparing").catch(() => {}); autoPrintOrder(o); }
       toast(to === "Cancelled" ? "Order rejected." : to === "Accepted" ? "Order accepted. The kitchen timer has started." : to === "Ready for pickup" ? "Marked ready. The rider is on the way." : "Order updated.");
       if (state.alert === id) closeModal();
     } catch (e) { toast(friendly(e), true); } finally { state.busy = ""; render(); }
@@ -325,6 +325,7 @@
     if (g === "new") actions = '<button class="btn good" data-act="status" data-to="Accepted" data-id="' + h(id) + '"' + (awaitingPayment(o) || busy || !can("orders") ? " disabled" : "") + ">Accept</button><button class=\"btn danger\" data-act=\"reject\" data-id=\"" + h(id) + '"' + (busy ? " disabled" : "") + ">Reject</button>";
     else if (PREPARING.includes(o.status)) actions = readyButton(o, busy);
     else if (riderPhotoPickup(o)) actions = pickupNote(o);
+    if (g !== "new") actions += '<button class="btn small" data-act="print-order" data-id="' + h(id) + '">🖨️ Print</button>';
     const rider = o.riderName ? "<strong>" + h(o.riderName) + "</strong><div class=\"small muted\">" + h(g === "ready" && o.riderArrivalVerified === true ? "At your restaurant" : o.status) + "</div>" : g === "ready" ? '<div class="small muted">Finding a delivery partner…</div>' : "";
     return '<article class="card order"><div class="band' + (g === "new" ? " new" : "") + '">' + (g === "new" ? "NEW ORDER" : "SCRAVEIT DELIVERY") + " · " + h(o.status) + "</div>" +
       '<div class="o-info"><div class="oid">#' + h(shortId(o)) + '</div><div class="small muted">Placed ' + h(clock(placedAt(o))) + ' · <span class="timer">' + mins + ' min ago</span></div><p style="margin:10px 0 2px"><strong>' + h(firstName(o)) + "</strong></p>" +
@@ -338,7 +339,7 @@
     const tabs = [["new", "New"], ["preparing", "Preparing"], ["ready", "Ready"], ["picked", "Picked up"]];
     const list = groups[state.orderTab] || [];
     return '<div class="row between"><div class="tabs">' + tabs.map((t) => '<button class="tab' + (state.orderTab === t[0] ? " on" : "") + '" data-act="order-tab" data-tab="' + t[0] + '">' + t[1] + " (" + groups[t[0]].length + ")</button>").join("") + "</div>" +
-      (audioUnlocked ? '<span class="small muted">🔔 Order sounds are on</span>' : '<span class="notice warn small" style="margin:0">🔔 Tap anywhere on this page once so order sounds can play</span>') + "</div>" +
+      '<div class="row" style="gap:8px">' + (audioUnlocked ? '<span class="small muted">🔔 Order sounds are on</span>' : '<span class="notice warn small" style="margin:0">🔔 Tap anywhere on this page once so order sounds can play</span>') + '<button class="btn small" data-act="printer-setup">🖨️ Printer' + (printerSettings().auto ? ": auto" : "") + "</button></div></div>" +
       (!state.liveLoaded ? '<div class="spinner"></div>' : list.length ? '<div class="orders">' + list.map(orderCard).join("") + "</div>" :
         '<div class="card empty"><strong>' + (state.orderTab === "new" ? "No new orders right now" : "Nothing here") + "</strong>" + (state.orderTab === "new" ? "Keep this page open: new orders pop up here with a sound." : "") + "</div>");
   }
@@ -644,6 +645,104 @@
     win.document.write('<!doctype html><html lang="en-IN"><head><meta charset="utf-8"><title>' + h(title) + '</title><link rel="stylesheet" href="' + h(css) + '"></head><body class="printable"><div class="no-print"><button class="btn primary" onclick="print()">Print or save as PDF</button></div>' + inner + "</body></html>");
     win.document.close();
   }
+  // ---------- receipt printer: auto-print on Accept ----------
+  // Same kitchen slip and bill as the Restaurant app. A website can't talk to a
+  // Bluetooth printer directly, so it prints through the computer's printer
+  // (USB, Bluetooth or Wi-Fi receipt printer installed in Windows/Mac). Chrome
+  // started with --kiosk-printing prints with no print window at all.
+  const PRINTER_KEY = "scraveit.partner.printer", PRINTED_KEY = "scraveit.partner.printed";
+  function printerSettings() { let p = {}; try { p = JSON.parse(localStorage.getItem(PRINTER_KEY) || "{}") || {}; } catch (_) {} return {auto: p.auto === true, kitchen: p.kitchen !== false, bill: p.bill !== false, paper: p.paper === 80 ? 80 : 58}; }
+  function savePrinterSettings(next) { try { localStorage.setItem(PRINTER_KEY, JSON.stringify(Object.assign(printerSettings(), next))); } catch (_) {} }
+  const rupees = (p) => (Number(p || 0) / 100).toFixed(2);
+  const itemVariant = (i) => { const v = i && (i.variantName || i.variant); return typeof v === "string" ? v : v && typeof v.name === "string" ? v.name : ""; };
+  function billModel(o) {
+    const d = (outlet() && outlet().doc) || {}, e = o.economics, terms = e && e.calculationVersion === 1 && e.restaurant && e.customer ? e : null, items = o.items || [], placed = placedAt(o);
+    const unit = (i) => i.restaurantPrice != null ? Number(i.restaurantPrice) : Number(i.price || 0) + Number(i.variantPrice || 0) + Number(i.addOnTotal || 0);
+    const lineTotal = (i) => unit(i) * Number(i.quantity || 1), mk = o.pricing && o.pricing.markup, inc = !!(mk && mk.model === "inclusive");
+    const P = [], row = (l, v, cls) => P.push(["row", l, v, cls || ""]), rule = () => P.push(["rule"]), note = (t) => P.push(["note", t]);
+    if (mk && !inc) {
+      const own = terms ? Number(terms.customer.restaurantDiscountPaise || 0) : 0, payout = terms ? Number(terms.restaurant.receivablePaise || 0) : Math.round(Number(mk.restaurantPayout || 0) * 100), gstIn = Math.round(Number(mk.restaurantSubtotal || 0) * 100) - payout - own;
+      row("Your price total (GST incl.)", "₹" + Number(mk.restaurantSubtotal || 0).toFixed(2)); row("GST inside (5%, paid by Scraveit)", "-₹" + rupees(gstIn));
+      if (own) row("Discount (your offer)", "-₹" + rupees(own));
+      rule(); row("YOU RECEIVE", "₹" + rupees(payout), "total");
+      note("Customers paid your prices plus " + String(Number(mk.bps || 0) / 100) + "%. No commission or GST on commission is taken from you.");
+    } else if (terms) {
+      const c = terms.customer, t = terms.restaurant, pct = (Number(t.commissionBps || 0) / 100).toFixed(2).replace(/\.00$/, "");
+      if (inc) { row("Your price total (GST incl.)", "₹" + Number(mk.restaurantSubtotal || 0).toFixed(2)); row("GST inside (5%, paid by Scraveit)", "-₹" + rupees(Math.round(Number(mk.restaurantSubtotal || 0) * 100) - Number(c.itemSubtotalPaise || 0))); }
+      row(inc ? "Item total (before GST)" : "Item total", "₹" + rupees(c.itemSubtotalPaise));
+      if (c.restaurantDiscountPaise) row("Discount (your offer)", "-₹" + rupees(c.restaurantDiscountPaise));
+      row("Your food total", "₹" + rupees(t.commissionBasePaise), "strong");
+      if (c.platformDiscountPaise) note("Scraveit offer of ₹" + rupees(c.platformDiscountPaise) + " is paid by Scraveit, not taken from you.");
+      rule(); P.push(["head", "YOUR SETTLEMENT"]);
+      row("Scraveit commission (" + pct + "%)", "-₹" + rupees(t.commissionPaise));
+      if (t.commissionTaxPaise) row("GST on commission", "-₹" + rupees(t.commissionTaxPaise));
+      if (t.rushFeeSharePaise) row("Busy-kitchen fee (your share)", "+₹" + rupees(t.rushFeeSharePaise));
+      rule(); row("YOU RECEIVE", "₹" + rupees(t.receivablePaise), "total");
+    } else { row("Item total", "₹" + items.reduce((sum, i) => sum + lineTotal(i), 0).toFixed(2), "strong"); note("This order has no locked settlement terms. See your settlement statement for its payout."); }
+    const paid = ["paid", "captured", "settled"].includes(String(o.paymentState || ""));
+    return {tag: o.paymentMethod === "cod" ? "CASH ON DELIVERY" : paid ? "PAID ONLINE" : "ONLINE PAYMENT", store: d.name || "Your store", address: d.address || "", id: orderId(o),
+      placed: placed ? new Date(placed).toLocaleString("en-IN", {day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "",
+      who: firstName(o) + (area(o) ? " · " + area(o) : ""), items: items.map((i) => ({name: (i.name || "Item") + (itemVariant(i) ? " (" + itemVariant(i) + ")" : ""), qty: Number(i.quantity || 1), amount: lineTotal(i)})),
+      totalQty: items.reduce((sum, i) => sum + Number(i.quantity || 1), 0), money: P,
+      gstNote: storeKind() === "restaurant" ? "GST on food is collected and paid by Scraveit, the e-commerce operator, under section 9(5) of the CGST Act." : ""};
+  }
+  function kitchenPrintLines(o) {
+    const items = o.items || [], placed = placedAt(o), L = [];
+    L.push({t: storeKind() === "restaurant" ? "KITCHEN ORDER" : "PACKING SLIP", a: 1, b: 1}); L.push({t: "#" + shortId(o), a: 1, b: 1, big: 1}); L.push({t: orderId(o), a: 1});
+    L.push({t: (placed ? new Date(placed).toLocaleString("en-IN", {day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"}) + " · " : "") + (o.deliveryMode === "pickup" ? "Pickup" : "Delivery"), a: 1});
+    L.push({rule: 1});
+    items.forEach((i) => { L.push({t: Number(i.quantity || 1) + " x " + (i.name || "Item"), b: 1, big: 1});
+      const v = itemVariant(i); if (v) L.push({t: "   (" + v + ")"});
+      if ((i.addOns || []).length) L.push({t: "   + " + i.addOns.map((a) => a && (a.name || a)).filter(Boolean).join(", ")});
+      if (i.note) L.push({t: "   Note: " + i.note, b: 1}); });
+    L.push({rule: 1}); L.push({l: "Total items", r: String(items.reduce((sum, i) => sum + Number(i.quantity || 1), 0)), b: 1}); L.push({cut: 1});
+    return L;
+  }
+  function billPrintLines(o) {
+    const m = billModel(o), L = [];
+    L.push({t: m.tag, a: 1, b: 1}); L.push({t: m.store, a: 1, b: 1, big: 1}); if (m.address) L.push({t: m.address, a: 1});
+    L.push({rule: 1}); L.push({t: "Order via Scraveit", a: 1, b: 1}); L.push({t: m.id, a: 1, b: 1});
+    if (m.placed) L.push({t: m.placed, a: 1}); L.push({t: m.who, a: 1}); L.push({t: "DELIVERY", a: 1, b: 1}); L.push({rule: 1});
+    m.items.forEach((i) => L.push({l: i.qty + " x " + i.name, r: i.amount.toFixed(2)}));
+    L.push({rule: 1}); L.push({l: "Total qty", r: String(m.totalQty)});
+    m.money.forEach((p) => { if (p[0] === "row") L.push({l: p[1], r: p[2], b: p[3] ? 1 : 0}); else if (p[0] === "rule") L.push({rule: 1}); else if (p[0] === "head") L.push({t: p[1], a: 1, b: 1}); else L.push({t: p[1], small: 1}); });
+    if (m.gstNote) L.push({t: m.gstNote, small: 1});
+    L.push({rule: 1}); L.push({t: "Thank you · scraveit.in", a: 1}); L.push({cut: 1});
+    return L;
+  }
+  function receiptHtml(lines) {
+    const slips = [[]]; lines.forEach((x) => { if (x.cut) slips.push([]); else slips[slips.length - 1].push(x); });
+    return slips.filter((s) => s.length).map((s) => '<div class="slip">' + s.map((x) => {
+      const cls = [x.a === 1 ? "c" : "", x.b ? "b" : "", x.big ? "big" : "", x.small ? "small" : ""].filter(Boolean).join(" ");
+      if (x.rule) return '<div class="rule"></div>';
+      if (x.l != null) return '<div class="r' + (cls ? " " + cls : "") + '"><span>' + h(x.l) + "</span><span>" + h(x.r) + "</span></div>";
+      return '<div' + (cls ? ' class="' + cls + '"' : "") + ">" + h(x.t) + "</div>";
+    }).join("") + "</div>").join("");
+  }
+  function printReceipt(lines) {
+    const w = printerSettings().paper, css = "@page{margin:0}html,body{margin:0;background:#fff;color:#000}body{width:" + (w === 80 ? 72 : 48) + "mm;padding:2mm " + (w === 80 ? 4 : 5) + "mm;font:" + (w === 80 ? 13 : 12) + "px/1.35 'Courier New',monospace}" +
+      ".c{text-align:center}.b{font-weight:700}.big{font-size:1.5em;font-weight:700}.small{font-size:.88em}.r{display:flex;justify-content:space-between;gap:6px}.r span:last-child{white-space:nowrap}.rule{border-top:1px dashed #000;margin:4px 0}.slip{padding-bottom:6mm}.slip+.slip{break-before:page}";
+    const f = document.createElement("iframe"); f.setAttribute("aria-hidden", "true"); f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+    document.body.appendChild(f);
+    const d = f.contentDocument; d.open(); d.write('<!doctype html><html><head><meta charset="utf-8"><title>Scraveit</title><style>' + css + "</style></head><body>" + receiptHtml(lines) + "</body></html>"); d.close();
+    setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (_) { toast("Could not open printing in this browser.", true); } setTimeout(() => f.remove(), 60000); }, 300);
+  }
+  function printedOrders() { let all = {}; try { all = JSON.parse(localStorage.getItem(PRINTED_KEY) || "{}") || {}; } catch (_) {} const now = Date.now(), kept = {}; Object.keys(all).forEach((k) => { if (now - Number(all[k]) < 2 * DAY) kept[k] = all[k]; }); return kept; }
+  function markPrinted(id) { try { const all = printedOrders(); all[id] = Date.now(); localStorage.setItem(PRINTED_KEY, JSON.stringify(all)); } catch (_) {} }
+  // Called once an order is accepted on this computer.
+  function autoPrintOrder(o) { const p = printerSettings(), id = orderId(o); if (!p.auto || (!p.kitchen && !p.bill) || printedOrders()[id]) return; markPrinted(id); printReceipt([].concat(p.kitchen ? kitchenPrintLines(o) : [], p.bill ? billPrintLines(o) : [])); }
+  function printerModal() {
+    const p = printerSettings(), chk = (k, on, label, copy) => '<label class="row" style="align-items:flex-start;gap:10px;justify-content:flex-start"><input type="checkbox" data-act="printer-opt" data-key="' + k + '"' + (on ? " checked" : "") + ' style="margin-top:3px"><span><strong>' + h(label) + '</strong><div class="small muted">' + h(copy) + "</div></span></label>";
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal" role="dialog" aria-modal="true" aria-label="Printer"><header><h2>Receipt printer</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="small muted" style="margin:0">Uses the printer installed on this computer (USB, Bluetooth or Wi-Fi). Settings are for this computer only.</p>' +
+      chk("auto", p.auto, "Print automatically when I accept", "Orders accepted on another computer or phone don't print here.") +
+      chk("kitchen", p.kitchen, "Kitchen slip", "Dishes and quantity for the cook, no prices.") +
+      chk("bill", p.bill, "Bill", "Order ID, dishes and what you receive. Stick it on the parcel.") +
+      '<div><strong>Paper width</strong><div class="small muted">Written on the paper roll box.</div><div class="row" style="justify-content:flex-start;margin-top:8px"><button class="btn small' + (p.paper === 58 ? " primary" : "") + '" data-act="printer-paper" data-id="58">58 mm</button><button class="btn small' + (p.paper === 80 ? " primary" : "") + '" data-act="printer-paper" data-id="80">80 mm</button></div></div>' +
+      '<details><summary class="small"><strong>Print without the print window</strong></summary><ol class="small" style="margin:8px 0 0;padding-left:18px"><li>Make the receipt printer the computer\'s default printer.</li><li>Use Google Chrome. Right-click its desktop shortcut → Properties, and add <code>--kiosk-printing</code> at the end of Target.</li><li>Open Chrome from that shortcut. Slips now print straight away.</li></ol><p class="small muted" style="margin:6px 0 0">Without this, Chrome shows the print window: pick the receipt printer once and press Print; Chrome remembers it.</p></details>' +
+      '<div class="row"><button class="btn primary" data-act="printer-test">Print a test slip</button></div></div></div>';
+  }
+  function printerTestLines() { const p = printerSettings(); return [{t: "SCRAVEIT", a: 1, b: 1, big: 1}, {t: "Printer test", a: 1, b: 1}, {rule: 1}, {l: "Paper", r: p.paper + " mm"}, {l: "1 x Idli", r: "30.00"}, {l: "2 x Bean Vanilla Waffle with extra chocolate", r: "154.00"}, {l: "YOU RECEIVE", r: "₹184.00", b: 1}, {rule: 1}, {t: "If every line fits, you are set.", a: 1}, {cut: 1}]; }
   function printStatement(w) {
     const o = outlet(), prof = state.fin.profile || {}, p = w.payout, rows = annexureRows(w);
     printDoc("Payout statement " + isoDay(w.start), '<div class="doc"><div class="row between"><div><div class="wordmark">scraveit<span>*</span></div><div class="small muted">Weekly payout statement</div></div><div class="num"><strong>' + h(fullDay(w.start)) + " – " + h(fullDay(w.end - DAY)) + "</strong></div></div>" +
@@ -2074,6 +2173,11 @@
       unlockAudio(); return;
     }
     if (act === "status") { setStatus(id, el.dataset.to); return; }
+    if (act === "printer-setup") { printerModal(); return; }
+    if (act === "printer-opt") { savePrinterSettings({[el.dataset.key]: !!el.checked}); if (state.page === "orders") render(); return; }
+    if (act === "printer-paper") { savePrinterSettings({paper: Number(id) === 80 ? 80 : 58}); printerModal(); return; }
+    if (act === "printer-test") { printReceipt(printerTestLines()); return; }
+    if (act === "print-order") { const o = state.live.find((x) => orderId(x) === id); if (o) { const p = printerSettings(); printReceipt([].concat(p.kitchen || !p.bill ? kitchenPrintLines(o) : [], p.bill ? billPrintLines(o) : [])); } return; }
     if (act === "reject") { rejectModal(id); return; }
     if (act === "close-alert" || act === "close-modal") { closeModal(); return; }
     if (act === "hist-range") { state.history.range = el.dataset.range; state.history.list = null; render(); return; }

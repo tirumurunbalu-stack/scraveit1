@@ -126,6 +126,26 @@ export function trackingEvidenceRef(database: FirestoreLike, orderId: string): D
   return database.collection("private").doc("trackingEvidence").collection("orders").doc(orderId);
 }
 
+/** Whether this order's pin is inside a college, school or hospital (Google), and that campus's box. */
+export function deliveryCampusRef(database: FirestoreLike, orderId: string): DocumentReferenceLike {
+  return database.collection("private").doc("deliveryCampus").collection("orders").doc(orderId);
+}
+
+/** Gates learned per campus (Google place id): where its orders were really handed over. */
+/** Which opening or closing time the server last applied to this store (private/storeHours/stores/{id}). */
+export function storeHoursStateRef(database: FirestoreLike, restaurantId: string): DocumentReferenceLike {
+  return database.collection("private").doc("storeHours").collection("stores").doc(restaurantId);
+}
+
+export function campusPlaceRef(database: FirestoreLike, placeId: string): DocumentReferenceLike {
+  return database.collection("private").doc("deliveryCampus").collection("places").doc(placeId);
+}
+
+/** Campus check results per delivery pin (~11 m), so a hostel's repeat orders do not ask Google again. */
+export function campusPinRef(database: FirestoreLike, pinKey: string): DocumentReferenceLike {
+  return database.collection("private").doc("deliveryCampus").collection("pins").doc(pinKey);
+}
+
 // Not a denormalized-copy-for-convenience like the other collections this
 // file's comments mention collapsing - this is a genuine, permanent privacy
 // boundary. orderProjection.ts writes a customerPhone/address-stripped view

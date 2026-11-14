@@ -26,6 +26,7 @@ import {
 } from "../src/services/economics";
 import {finalizeRiderTripPay, resolveDeliverySettlementOptions} from "../src/services/deliverySettlement";
 import type {SavrivoOrder} from "../src/types";
+import {buildRiderJobProjection} from "../src/domain/riderJob";
 import {InMemoryFirestore} from "./helpers/inMemoryFirestore";
 
 const policy: RiderTripPayPolicy = {...DEFAULT_RIDER_TRIP_PAY_POLICY, slotAddons: [], vehicleMultiplierBps: {}};
@@ -175,11 +176,12 @@ describe("final trip pay at delivery", () => {
     return order;
   }
 
-  it("pays a new order exactly the bill's delivery fee, with nothing recalculated at delivery", async () => {
+  it("pays a new order the bill's delivery fee when there was no long wait", async () => {
     const order = deliveredOrder();
     expect(order.economics?.rider.deliveryPayPaise).toBe(2_500);
     database.seed("dispatchQueue/SV-1", {candidates: [{riderId: "rider1", distanceKm: 3}]});
-    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 25 * 60_000});
+    // 8 minutes at the restaurant: inside the 10 free minutes.
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 8 * 60_000});
     database.seed("riders/rider1", {city: "Nellore", vehicleType: "bike"});
     expect(await finalizeRiderTripPay(order, database)).toBeNull();
     const options = await resolveDeliverySettlementOptions(order, database);
@@ -188,6 +190,43 @@ describe("final trip pay at delivery", () => {
     expect(amounts.riderDeliveryEarningPaise).toBe(2_500);
     expect(amounts.riderTripSubsidyPaise ?? 0).toBe(0);
     expect((await database.collection("orderEconomics").doc("SV-1").get()).data()?.riderFinal).toBeUndefined();
+  });
+
+  it("adds Scraveit-paid waiting pay to the bill's fee: ₹1 a minute after 10 minutes, fixed once", async () => {
+    const order = deliveredOrder();
+    // Waited 25 minutes at the restaurant: 15 paid minutes.
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 25 * 60_000});
+    const final = await finalizeRiderTripPay(order, database);
+    expect(final).toMatchObject({waitingPaise: 1_500, totalPaise: 4_000, waitMinutes: 25,
+      pickupSource: "bill_delivery_fee", waitSource: "verified_arrival_to_handover"});
+    // A later, longer reading never changes the stored pay.
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW});
+    expect((await finalizeRiderTripPay(order, database))?.totalPaise).toBe(4_000);
+    const options = await resolveDeliverySettlementOptions(order, database);
+    const amounts = orderDeliveryAmounts(order, 1_500, {finalTripPayPaise: options.finalTripPayPaise});
+    expect(amounts.riderDeliveryEarningPaise).toBe(4_000);
+    // The customer paid ₹25; Scraveit pays the ₹15 waiting.
+    expect(amounts.riderTripSubsidyPaise).toBe(1_500);
+    // The delivery partner's trip shows it, and a later rebuild of the trip keeps it.
+    const job = (await database.collection("riderJobs").doc("rider1_SV-1").get()).data() as Record<string, unknown>;
+    expect(job).toMatchObject({waitingPayPaise: 1_500, waitMinutes: 25, payout: 40,
+      payoutBreakdown: {tripPay: 25, waitPay: 15, total: 40}});
+    const full = {...order, restaurantLocation: {address: "Shop", lat: 14.4, lng: 79.9},
+      address: {label: "Home", area: "Stonehousepet", address: "x", lat: 14.41, lng: 79.91}, items: []} as unknown as SavrivoOrder;
+    const rebuilt = buildRiderJobProjection(full, {...job, orderId: "SV-1", riderId: "rider1"});
+    expect(rebuilt).toMatchObject({waitingPayPaise: 1_500, payout: 40, payoutBreakdown: {waitPay: 15}});
+    expect(buildRiderJobProjection(full, {...job, orderId: "SV-1", riderId: "someone-else"}).payout).toBe(25);
+  });
+
+  it("caps waiting pay at ₹30 and pays none for another rider's arrival", async () => {
+    const order = deliveredOrder();
+    // Waited 90 minutes: 80 paid minutes, capped at ₹30.
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider1", arrivedAt: NOW + 1_800_000 - 90 * 60_000});
+    expect((await finalizeRiderTripPay(order, database))?.waitingPaise).toBe(3_000);
+    database = new InMemoryFirestore();
+    const other = deliveredOrder();
+    database.seed("riderRestaurantArrivals/SV-1", {riderId: "rider2", arrivedAt: NOW});
+    expect(await finalizeRiderTripPay(other, database)).toBeNull();
   });
 
   it("keeps the old formula for an order placed before the change: real pickup distance and waiting, fixed once", async () => {

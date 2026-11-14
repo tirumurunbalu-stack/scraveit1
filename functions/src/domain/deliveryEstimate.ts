@@ -69,6 +69,12 @@ export interface DeliveryEstimateInput {
    * models beat these rules: a 20th-80th percentile prep window and the ride time. Null keeps the rules.
    */
   readonly learned?: {readonly prepLow: number; readonly prepHigh: number; readonly travelMinutes: number | null} | null;
+  /**
+   * The kitchen timer the store is held to (domain/kitchenLate: 15, or 20 for a bigger order).
+   * The prep part of the promise never goes past it (founder 2026-11-14: we ask the kitchen for
+   * 15/20 and say "getting late" after that, so quoting a typed 25-35 was wrong).
+   */
+  readonly kitchenTimerMinutes?: number | null;
 }
 
 export interface DeliveryEstimateBasis {
@@ -158,11 +164,21 @@ function roundUpToFive(value: number): number {
 /** Collecting the bag at the counter: part of the rule's handover overhead, not of a learned ride time. */
 const COUNTER_MINUTES = 2;
 
+/** Prep window no longer than the kitchen timer, kept at least 5 minutes wide. */
+export function capToKitchenTimer(prep: {min: number; max: number}, timer: unknown): {min: number; max: number} {
+  const limit = Number(timer);
+  if (!Number.isFinite(limit) || limit <= 0) return prep;
+  const max = Math.min(prep.max, limit);
+  let min = Math.min(prep.min, max);
+  if (max - min < MIN_SPREAD_MINUTES) min = Math.max(3, max - MIN_SPREAD_MINUTES);
+  return {min, max};
+}
+
 export function estimateDelivery(input: DeliveryEstimateInput): DeliveryEstimate {
   const stated = prepWindow(input.kitchenEtaMinMinutes, input.kitchenEtaMaxMinutes);
   const learned = input.learned ?? null;
   const learnedPrep = learned && Number.isFinite(learned.prepLow) && Number.isFinite(learned.prepHigh) && learned.prepHigh > 0;
-  const prep = learnedPrep ? prepWindow(learned.prepLow, learned.prepHigh) : stated;
+  const prep = capToKitchenTimer(learnedPrep ? prepWindow(learned.prepLow, learned.prepHigh) : stated, input.kitchenTimerMinutes);
   const learnedTravel = learned && typeof learned.travelMinutes === "number" && Number.isFinite(learned.travelMinutes) && learned.travelMinutes > 0;
   const distanceKm = Math.max(0, finiteNumber(input.distanceKm, 0));
   const activeOrders = Math.max(0, Math.round(finiteNumber(input.activeOrders, 0)));

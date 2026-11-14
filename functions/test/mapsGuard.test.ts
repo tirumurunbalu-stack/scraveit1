@@ -11,7 +11,7 @@ import {tileClientAllowed} from "../src/services/googleMaps";
 describe("Google Maps guards", () => {
   it("defaults to on, with the suggested daily caps, and respects admin changes", () => {
     expect(normalizeMapsSettings({})).toEqual({routesEnabled: true, tilesEnabled: true, weatherEnabled: true,
-      dailyLimits: {routes: 2_000, tiles: 40_000, weather: 4_000}});
+      placesEnabled: true, dailyLimits: {routes: 2_000, tiles: 40_000, weather: 4_000, places: 3_000}});
     expect(normalizeMapsSettings({routesEnabled: false, dailyLimits: {routes: 500, tiles: -3}})).toMatchObject({
       routesEnabled: false, dailyLimits: {routes: 500, tiles: 40_000, weather: 4_000}});
   });

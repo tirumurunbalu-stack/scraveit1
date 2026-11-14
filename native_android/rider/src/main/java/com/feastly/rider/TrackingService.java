@@ -74,6 +74,11 @@ public class TrackingService extends Service implements LocationListener {
     // Only the last stretch to the door is sent to the server's arrival check,
     // so it runs for the final minutes of a delivery instead of the whole ride.
     private static final float PROXIMITY_SEND_METERS = 1_200f;
+    // Colleges and hospitals can stop delivery partners at a gate far from the
+    // customer's pin; the server's campus check needs readings from there too.
+    private static final float CAMPUS_PROXIMITY_SEND_METERS = 3_000f;
+    private static final long FAR_PROXIMITY_GAP_MS = 9_000L;
+    private long lastFarProximityAt = 0L;
     private static final long JOB_CHECK_INTERVAL_MS = 30_000L;
     private static final long MAX_LIVE_FIX_AGE_MS = 60_000L;
     private static final long MAX_LAST_KNOWN_AGE_MS = 45_000L;
@@ -714,7 +719,15 @@ public class TrackingService extends Service implements LocationListener {
             if (trackingWritten && "delivery".equals(phase) && !Double.isNaN(customerLat) && !Double.isNaN(customerLng)) {
                 float[] toDoor = new float[1];
                 Location.distanceBetween(latitude, longitude, customerLat, customerLng, toDoor);
-                if (toDoor[0] <= PROXIMITY_SEND_METERS) writePatch("/feastly/trackingProximity/" + jobOrderId, payload);
+                // Every reading for the last 1.2 km (door arrival needs them quickly); from 3 km
+                // one every 9 s, so a campus gate far from the customer's pin is still seen.
+                boolean near = toDoor[0] <= PROXIMITY_SEND_METERS;
+                boolean far = !near && toDoor[0] <= CAMPUS_PROXIMITY_SEND_METERS
+                        && timestamp - lastFarProximityAt >= FAR_PROXIMITY_GAP_MS;
+                if (near || far) {
+                    if (far) lastFarProximityAt = timestamp;
+                    writePatch("/feastly/trackingProximity/" + jobOrderId, payload);
+                }
             }
             if (trackingWritten) deniedTrackingWrites = 0;
             else if (trackingResponse == HttpURLConnection.HTTP_FORBIDDEN) {

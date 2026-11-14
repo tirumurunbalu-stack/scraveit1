@@ -10,7 +10,8 @@ import {
   type RiderTripPayPolicy,
 } from "../domain/riderTripPay";
 import type {FirestoreLike, TransactionLike} from "../firestoreTypes";
-import {dispatchQueueRef, riderRef} from "../firestorePaths";
+import {dispatchQueueRef, riderJobRef, riderRef} from "../firestorePaths";
+import {riderOfferPayout, riderPayoutBreakdown} from "../domain/riderJob";
 import type {SavrivoOrder, StatusEvent} from "../types";
 import {loadEconomicsControl, orderEconomicsRef} from "./economics";
 import type {DeliveryLedgerOptions, LedgerAttribution} from "./ledger";
@@ -124,8 +125,11 @@ export async function finalizeRiderTripPay(
   if (!record) return null;
   if (record.riderFinal && typeof record.riderFinal === "object") return record.riderFinal as StoredFinalTrip;
   // No trip-pay formula was frozen at checkout (rider pay = the bill's delivery
-  // fee): the pay frozen on the order is final, nothing is recalculated.
-  if (!record.tripPayPolicy || typeof record.tripPayPolicy !== "object") return null;
+  // fee): the fee stays, plus waiting pay that Scraveit pays (founder 2026-11-14:
+  // the customer can't be charged for a kitchen delay after the price is locked).
+  if (!record.tripPayPolicy || typeof record.tripPayPolicy !== "object") {
+    return finalizeFeeTripWithWaiting(order, record, economicsRef, database);
+  }
   const policy = frozenPolicy(record.tripPayPolicy);
   const estimate = order.economics.rider.tripPay;
   const [queue, arrival, rider] = await Promise.all([
@@ -164,4 +168,76 @@ export async function finalizeRiderTripPay(
     transaction.set(economicsRef, {riderFinal: final}, {merge: true});
     return final;
   });
+}
+
+/** Verified waiting at the restaurant, in whole minutes (0 when not verified). */
+async function verifiedWaitMinutes(order: SavrivoOrder, database: FirestoreLike): Promise<{minutes: number; source: string}> {
+  const arrival = await database.collection("riderRestaurantArrivals").doc(order.id).get();
+  const data = (arrival.exists ? arrival.data() : {}) as {arrivedAt?: unknown; riderId?: unknown};
+  const arrivedAt = Number(data.arrivedAt ?? 0);
+  const handedAt = handoverAt(order);
+  const minutes = arrivedAt > 0 && handedAt > arrivedAt && String(data.riderId ?? "") === order.riderId ?
+    Math.floor((handedAt - arrivedAt) / 60_000) : 0;
+  return {minutes, source: minutes > 0 ? "verified_arrival_to_handover" : arrivedAt > 0 ? "no_wait" : "no_verified_arrival"};
+}
+
+/** Waiting pay on fee-based trips: first 10 minutes free, then ₹1 a minute, at most ₹30. */
+export function feeTripWaitingPaise(waitMinutes: number): number {
+  const policy = DEFAULT_RIDER_TRIP_PAY_POLICY;
+  return Math.min(policy.maxWaitPaise, Math.max(0, Math.floor(waitMinutes) - policy.freeWaitMinutes) * policy.waitPerMinutePaise);
+}
+
+/**
+ * Trip pay = the bill's delivery fee (frozen at checkout) + waiting pay. Stored
+ * once like the formula trips, so the delivery journal never changes on retry.
+ * No waiting pay due = null: the frozen fee is final, exactly as before.
+ */
+async function finalizeFeeTripWithWaiting(
+  order: SavrivoOrder,
+  record: Record<string, unknown>,
+  economicsRef: ReturnType<typeof orderEconomicsRef>,
+  database: FirestoreLike,
+): Promise<StoredFinalTrip | null> {
+  if (record.feeTripWaitChecked === true) return null;
+  const wait = await verifiedWaitMinutes(order, database);
+  const waitingPaise = feeTripWaitingPaise(wait.minutes);
+  const feePaise = Number(order.economics?.rider.deliveryPayPaise ?? 0) || 0;
+  if (waitingPaise <= 0) {
+    await economicsRef.set({feeTripWaitChecked: true}, {merge: true});
+    return null;
+  }
+  const final: StoredFinalTrip = {
+    basePickupPaise: feePaise,
+    pickupDistancePaise: 0,
+    dropDistancePaise: 0,
+    longDistancePaise: 0,
+    vehicleAdjustmentPaise: 0,
+    minimumTopUpPaise: 0,
+    maximumCapPaise: 0,
+    waitingPaise,
+    slotPaise: 0,
+    slotLabels: [],
+    totalPaise: feePaise + waitingPaise,
+    pickupMeters: 0,
+    dropMeters: 0,
+    waitMinutes: wait.minutes,
+    computedAt: Date.now(),
+    pickupSource: "bill_delivery_fee",
+    waitSource: wait.source,
+  };
+  const settled = await database.runTransaction(async (transaction: TransactionLike) => {
+    const current = await transaction.get(economicsRef);
+    const stored = (current.exists ? current.data() : {}) as Record<string, unknown>;
+    if (stored.riderFinal && typeof stored.riderFinal === "object") return stored.riderFinal as StoredFinalTrip;
+    transaction.set(economicsRef, {riderFinal: final}, {merge: true});
+    return final;
+  });
+  // Show it on the delivery partner's trip: "Waiting pay ₹15" beside the trip pay.
+  await riderJobRef(database, String(order.riderId), order.id).set({
+    waitingPayPaise: settled.waitingPaise,
+    waitMinutes: settled.waitMinutes,
+    payout: riderOfferPayout(order, settled.waitingPaise),
+    payoutBreakdown: riderPayoutBreakdown(order, settled.waitingPaise),
+  }, {merge: true}).catch((error: unknown) => logger.warn("RIDER_JOB_WAIT_PAY_DISPLAY_FAILED", {orderId: order.id, error: String(error)}));
+  return settled;
 }

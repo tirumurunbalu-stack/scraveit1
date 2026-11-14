@@ -21,6 +21,8 @@ public final class SavrivoNotifications {
     public static final String RIDER_OFFER_ALARMS = "rider_offer_alarm_v1";
     public static final String ADMIN_SUPPORT = "savrivo_admin_support_v1";
     public static final String ORDER_STATUS = "savrivo_order_status";
+    // Silent: SavrivoMessagingService plays the "getting late" voice itself.
+    public static final String RESTAURANT_LATE = "restaurant_order_late_v1";
 
     private SavrivoNotifications() { }
 
@@ -63,6 +65,13 @@ public final class SavrivoNotifications {
         for (String retired : RETIRED_RIDER_OFFERS) {
             try { manager.deleteNotificationChannel(retired); } catch (Exception ignored) { }
         }
+
+        NotificationChannel late = new NotificationChannel(
+                RESTAURANT_LATE, "Late orders", NotificationManager.IMPORTANCE_HIGH);
+        late.setDescription("Says when an accepted order is past its ready time");
+        late.enableVibration(true);
+        late.setSound(null, null);
+        manager.createNotificationChannel(late);
 
         NotificationChannel status = new NotificationChannel(
                 ORDER_STATUS, "Order status", NotificationManager.IMPORTANCE_DEFAULT);

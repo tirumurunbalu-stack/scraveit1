@@ -65,6 +65,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends ComponentActivity {
@@ -81,6 +82,13 @@ public class MainActivity extends ComponentActivity {
   private static final long MAX_SOURCE_IMAGE_BYTES = 50L * 1024L * 1024L;
   private final Handler handler = new Handler(android.os.Looper.getMainLooper());
   private final ExecutorService imageExecutor = Executors.newSingleThreadExecutor();
+  /** Uploads get their own line, so photo preparing and map address look-ups never hold them up. */
+  private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
+  /** Address look-ups at the map pin: can be slow, so never on the photo lines. */
+  private final ExecutorService lookupExecutor = Executors.newSingleThreadExecutor();
+  /** Sign-up documents (FSSAI, PAN, bank proof): readable at this size, about 3x smaller. */
+  private static final int DOCUMENT_IMAGE_MAX_EDGE = 1200;
+  private static final int DOCUMENT_IMAGE_QUALITY = 75;
   private long openedAt;
   private long lastBackPressed;
   private WebView webView;
@@ -94,6 +102,9 @@ public class MainActivity extends ComponentActivity {
   private boolean awaitingRestaurantLocation;
   private static final int VOICE_REQUEST = 7305;
   private String pendingVoiceRequest = "";
+  private static final int BLUETOOTH_REQUEST = 7306;
+  private final ThermalPrinter thermalPrinter = new ThermalPrinter();
+  private String pendingPrinterListId = "";
 
   @Override public void onCreate(Bundle state) {
     super.onCreate(state);
@@ -390,6 +401,25 @@ public class MainActivity extends ComponentActivity {
         printView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
       });
     }
+    /** Paired Bluetooth devices for the Printer settings list (asks for Nearby devices first). */
+    @JavascriptInterface public void listPrinters(String requestId) {
+      String id = requestId == null ? "" : requestId.trim();
+      runOnUiThread(() -> listPrintersInternal(id, true));
+    }
+    /** Prints a kitchen slip or bill straight to the chosen Bluetooth receipt printer. */
+    @JavascriptInterface public void printSlip(String requestId, String address, int paperMm, String linesJson) {
+      String id = requestId == null ? "" : requestId.trim();
+      String mac = address == null ? "" : address.trim().toUpperCase(Locale.ROOT);
+      String json = linesJson == null ? "" : linesJson;
+      runOnUiThread(() -> printSlipInternal(id, mac, paperMm, json));
+    }
+    @JavascriptInterface public void openBluetoothSettings() {
+      runOnUiThread(() -> {
+        if (!isTrustedPageLoaded()) return;
+        try { startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)); }
+        catch (Exception ignored) { }
+      });
+    }
     @JavascriptInterface public void vibrateSuccess() {
       runOnUiThread(() -> {
         if (!isTrustedPageLoaded()) return;
@@ -470,14 +500,19 @@ public class MainActivity extends ComponentActivity {
           "The prepared image is no longer available. Choose the image again.");
       return;
     }
-    imageExecutor.execute(() -> {
+    uploadExecutor.execute(() -> {
+      File sent = source;
       try {
-        String downloadUrl = uploadImageToFirebase(source, idToken, objectPath);
+        publishImageUploadStarted(requestId);
+        if (objectPath.startsWith("private/restaurant-onboarding/")) sent = shrinkDocument(source);
+        String downloadUrl = uploadImageToFirebase(sent, idToken, objectPath);
         if (preparedImageFile == source) preparedImageFile = null;
         if (preparedThumbFile == source) preparedThumbFile = null;
         source.delete();
+        if (sent != source) sent.delete();
         publishImageUpload(requestId, true, downloadUrl);
       } catch (Exception error) {
+        if (sent != source) sent.delete();
         String message = error.getMessage();
         publishImageUpload(requestId, false, message == null || message.trim().isEmpty()
             ? "Firebase Storage could not upload this image." : message);
@@ -601,6 +636,38 @@ public class MainActivity extends ComponentActivity {
     }
   }
 
+  private void publishImageUploadStarted(String requestId) {
+    String safeId = requestId == null ? "" : requestId;
+    runOnUiThread(() -> {
+      if (webView == null || !isTrustedPageLoaded()) return;
+      webView.evaluateJavascript("window.SavrivoRestaurantMediaCallbacks&&window.SavrivoRestaurantMediaCallbacks.started"
+          + "&&window.SavrivoRestaurantMediaCallbacks.started(" + JSONObject.quote(safeId) + ")", null);
+    });
+  }
+
+  /** A smaller copy of a sign-up document photo; falls back to the original if anything fails. */
+  private File shrinkDocument(File source) {
+    Bitmap decoded = null;
+    try {
+      decoded = BitmapFactory.decodeFile(source.getAbsolutePath());
+      if (decoded == null) return source;
+      if (Math.max(decoded.getWidth(), decoded.getHeight()) <= DOCUMENT_IMAGE_MAX_EDGE && source.length() < 200_000) return source;
+      Bitmap small = flattenAndResize(decoded, DOCUMENT_IMAGE_MAX_EDGE);
+      File out = new File(source.getParentFile(), source.getName().replace(".jpg", "-doc.jpg"));
+      try (FileOutputStream stream = new FileOutputStream(out)) {
+        if (!small.compress(Bitmap.CompressFormat.JPEG, DOCUMENT_IMAGE_QUALITY, stream)) return source;
+        stream.flush();
+      } finally {
+        small.recycle();
+      }
+      return out.length() > 0 && out.length() < source.length() ? out : source;
+    } catch (Exception | OutOfMemoryError ignored) {
+      return source;
+    } finally {
+      if (decoded != null) decoded.recycle();
+    }
+  }
+
   private void publishImageUpload(String requestId, boolean ok, String value) {
     String safeId = requestId == null ? "" : requestId;
     String safeValue = value == null ? "" : value;
@@ -640,7 +707,7 @@ public class MainActivity extends ComponentActivity {
   private void lookUpAddressInternal(String requestId, double lat, double lng) {
     if (!isTrustedPageLoaded() || !requestId.matches("[A-Za-z0-9_-]{1,80}")
         || Double.isNaN(lat) || Double.isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
-    imageExecutor.execute(() -> {
+    lookupExecutor.execute(() -> {
       JSONObject out = new JSONObject();
       try {
         if (android.location.Geocoder.isPresent()) {
@@ -665,6 +732,84 @@ public class MainActivity extends ComponentActivity {
   }
 
   private static String text(String value) { return value == null ? "" : value.trim(); }
+
+  private boolean needsBluetoothPermission() {
+    return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED;
+  }
+
+  private void listPrintersInternal(String id, boolean ask) {
+    if (!isTrustedPageLoaded() || !id.matches("[A-Za-z0-9_-]{1,80}")) return;
+    JSONObject out = new JSONObject();
+    try {
+      if (!ThermalPrinter.hasBluetooth()) out.put("error", "none");
+      else if (needsBluetoothPermission()) {
+        if (ask) {
+          pendingPrinterListId = id;
+          requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, BLUETOOTH_REQUEST);
+          return;
+        }
+        out.put("error", "permission");
+      } else if (!ThermalPrinter.bluetoothReady()) out.put("error", "off");
+      else {
+        JSONArray list = new JSONArray();
+        for (String[] device : ThermalPrinter.pairedDevices()) {
+          list.put(new JSONObject().put("name", device[0]).put("address", device[1]).put("printer", "1".equals(device[2])));
+        }
+        out.put("devices", list);
+      }
+    } catch (Exception error) {
+      try { out.put("error", "failed"); } catch (Exception ignored) { }
+    }
+    publishScript("window.restaurantPrinters&&window.restaurantPrinters(" + JSONObject.quote(id) + "," + out + ")");
+  }
+
+  private void printSlipInternal(String id, String mac, int paperMm, String json) {
+    if (!isTrustedPageLoaded() || !id.matches("[A-Za-z0-9_-]{1,80}")) return;
+    if (!mac.matches("([0-9A-F]{2}:){5}[0-9A-F]{2}") || json.length() > 200_000) {
+      publishPrint(id, false, "Pick the printer again in Printer settings.");
+      return;
+    }
+    if (needsBluetoothPermission()) {
+      publishPrint(id, false, "Allow Nearby devices for Scraveit in Printer settings.");
+      return;
+    }
+    java.util.List<ThermalPrinter.Line> lines;
+    try { lines = parsePrintLines(json); }
+    catch (Exception error) { publishPrint(id, false, "Could not prepare the slip."); return; }
+    thermalPrinter.print(mac, paperMm >= 80 ? 80 : 58, lines,
+        (ok, message) -> runOnUiThread(() -> publishPrint(id, ok, message)));
+  }
+
+  private static java.util.List<ThermalPrinter.Line> parsePrintLines(String json) throws Exception {
+    JSONArray array = new JSONArray(json);
+    if (array.length() > 600) throw new IllegalArgumentException("too long");
+    java.util.List<ThermalPrinter.Line> lines = new java.util.ArrayList<>();
+    for (int i = 0; i < array.length(); i++) {
+      JSONObject item = array.getJSONObject(i);
+      ThermalPrinter.Line line = new ThermalPrinter.Line();
+      if (item.optBoolean("rule")) line.kind = "rule";
+      else if (item.optBoolean("cut")) line.kind = "cut";
+      else if (item.has("feed")) { line.kind = "feed"; line.count = item.optInt("feed", 1); }
+      else if (item.has("l")) { line.kind = "row"; line.text = item.optString("l", ""); line.right = item.optString("r", ""); }
+      else line.text = item.optString("t", "");
+      if (line.text.length() > 500) line.text = line.text.substring(0, 500);
+      line.align = item.optInt("a", 0);
+      line.bold = item.optBoolean("b") || item.optInt("b", 0) == 1;
+      line.big = item.optBoolean("big") || item.optInt("big", 0) == 1;
+      lines.add(line);
+    }
+    return lines;
+  }
+
+  private void publishPrint(String id, boolean ok, String message) {
+    publishScript("window.restaurantPrintDone&&window.restaurantPrintDone(" + JSONObject.quote(id) + "," + ok + ","
+        + JSONObject.quote(message == null ? "" : message) + ")");
+  }
+
+  private void publishScript(String script) {
+    if (webView != null && isTrustedPageLoaded()) webView.evaluateJavascript(script, null);
+  }
 
   private void requestRestaurantLocationInternal() {
     awaitingRestaurantLocation = true;
@@ -716,6 +861,12 @@ public class MainActivity extends ComponentActivity {
 
   @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
     super.onRequestPermissionsResult(requestCode, permissions, results);
+    if (requestCode == BLUETOOTH_REQUEST && !pendingPrinterListId.isEmpty()) {
+      String id = pendingPrinterListId;
+      pendingPrinterListId = "";
+      listPrintersInternal(id, false);
+      return;
+    }
     if (requestCode == LOCATION_REQUEST && awaitingRestaurantLocation) {
       if (!isTrustedPageLoaded()) {
         awaitingRestaurantLocation = false;
@@ -806,12 +957,10 @@ public class MainActivity extends ComponentActivity {
   }
 
   private void prepareSelectedImage(Uri source) {
-    File previous = preparedImageFile;
-    File previousThumb = preparedThumbFile;
     preparedImageFile = null;
     preparedThumbFile = null;
-    if (previous != null && previous.isFile()) previous.delete();
-    if (previousThumb != null && previousThumb.isFile()) previousThumb.delete();
+    // The previous photo may still be queued for upload, so it is not deleted here:
+    // it is deleted after its upload, or by the 24-hour cache sweep.
     imageExecutor.execute(() -> {
       File output = null;
       File thumbOutput = null;
@@ -946,6 +1095,8 @@ public class MainActivity extends ComponentActivity {
     }
     handler.removeCallbacksAndMessages(null);
     imageExecutor.shutdownNow();
+    uploadExecutor.shutdownNow();
+    lookupExecutor.shutdownNow();
     File prepared = preparedImageFile;
     preparedImageFile = null;
     if (prepared != null && prepared.isFile()) prepared.delete();

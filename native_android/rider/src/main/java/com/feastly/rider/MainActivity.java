@@ -149,6 +149,7 @@ public class MainActivity extends ComponentActivity {
         view.removeJavascriptInterface("searchBoxJavaBridge_");
         view.removeJavascriptInterface("accessibility");
         view.removeJavascriptInterface("accessibilityTraversal");
+        readInstallReferralOnce();
         view.addJavascriptInterface(new RiderBridge(), "FeastlyRiderNative");
         view.addJavascriptInterface(
                 new SavrivoOperationsBridge(this, view, this::isTrustedPageLoaded),
@@ -377,7 +378,46 @@ public class MainActivity extends ComponentActivity {
         if (webView != null) webView.setBackgroundColor(color);
     }
 
+    private static final String INSTALL_REFERRAL_PREFS = "install_referral";
+
+    /**
+     * A friend's shared Play link carries "&referrer=ref%3D123456". Play keeps that for
+     * this install; we read it once and the sign-up form fills the code box with it.
+     */
+    private void readInstallReferralOnce() {
+        final android.content.SharedPreferences prefs = getSharedPreferences(INSTALL_REFERRAL_PREFS, MODE_PRIVATE);
+        if (prefs.getBoolean("checked", false)) return;
+        try {
+            final com.android.installreferrer.api.InstallReferrerClient client =
+                    com.android.installreferrer.api.InstallReferrerClient.newBuilder(this).build();
+            client.startConnection(new com.android.installreferrer.api.InstallReferrerStateListener() {
+                @Override public void onInstallReferrerSetupFinished(int code) {
+                    try {
+                        if (code == com.android.installreferrer.api.InstallReferrerClient.InstallReferrerResponse.OK) {
+                            String referrer = client.getInstallReferrer().getInstallReferrer();
+                            java.util.regex.Matcher match = java.util.regex.Pattern
+                                    .compile("(?:^|&)ref=(\\d{6})(?:&|$)").matcher(referrer == null ? "" : referrer);
+                            android.content.SharedPreferences.Editor edit = prefs.edit().putBoolean("checked", true);
+                            if (match.find()) edit.putString("code", match.group(1));
+                            edit.apply();
+                        } else if (code != com.android.installreferrer.api.InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE) {
+                            prefs.edit().putBoolean("checked", true).apply();
+                        }
+                    } catch (Exception ignored) {
+                    } finally {
+                        try { client.endConnection(); } catch (Exception ignored) { }
+                    }
+                }
+                @Override public void onInstallReferrerServiceDisconnected() { }
+            });
+        } catch (Exception ignored) { }
+    }
+
     private class RiderBridge {
+        @JavascriptInterface public String getInstallReferralCode() {
+            String code = getSharedPreferences(INSTALL_REFERRAL_PREFS, MODE_PRIVATE).getString("code", "");
+            return code != null && code.matches("\\d{6}") ? code : "";
+        }
         @JavascriptInterface public void setAppearance(final boolean dark) {
             runOnUiThread(() -> { if (isTrustedPageLoaded()) applyAppearance(dark); });
         }

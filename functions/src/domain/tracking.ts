@@ -1,4 +1,5 @@
 import {haversineKm} from "./order";
+import {atCampus, CAMPUS_STILL_METERS, CAMPUS_WAIT_MS, type CampusZone} from "./campus";
 import type {GeoPoint, OrderStatus} from "../types";
 
 // Must stay >= the rider app's own upload cap (MAX_UPLOAD_ACCURACY_METERS in
@@ -31,6 +32,8 @@ export interface PendingTrackingTransition {
   evidenceEventId: string;
   qualifiedAt: number;
   distanceMeters: number;
+  /** Arrived by waiting 3 minutes at the customer's campus (gate), not by reaching the pin. */
+  campus?: boolean;
 }
 
 export interface TrackingEvidenceRecord extends GeoPoint {
@@ -45,6 +48,13 @@ export interface TrackingEvidenceRecord extends GeoPoint {
   consecutiveFixes: number;
   lastQualifiedAt: number;
   updatedAt: number;
+  /** Campus orders only: when the partner first reached the campus, and the reading that saw it. */
+  campusReachedAt?: number;
+  campusReachedEventId?: string;
+  /** Campus orders only: where and since when the partner has stood still at the campus (0 = not). */
+  stillLat?: number;
+  stillLng?: number;
+  stillSince?: number;
   pendingTransition?: PendingTrackingTransition;
   lastTransition?: {status: ProximityStatus; at: number; evidenceEventId: string};
   lastRejected?: {eventId: string; reason: "impossible_movement"; at: number};
@@ -121,6 +131,8 @@ export interface AdvanceEvidenceInput {
   distanceMeters: number;
   requirement: ProximityRequirement | null;
   serverNow: number;
+  /** Set only when Google says the customer's pin is inside a college, school or hospital. */
+  campus?: CampusZone | null;
 }
 
 /** Pure transaction reducer. The pending transition survives retries/crashes. */
@@ -128,7 +140,7 @@ export function advanceTrackingEvidence(
   previous: TrackingEvidenceRecord | null,
   input: AdvanceEvidenceInput,
 ): TrackingEvidenceRecord | null {
-  const {eventId, fix, distanceMeters, requirement, serverNow} = input;
+  const {eventId, fix, distanceMeters, requirement, serverNow, campus} = input;
   if (previous?.lastEventId === eventId) return previous;
   if (!plausibleMovement(previous, fix)) {
     if (!previous) return null;
@@ -157,11 +169,12 @@ export function advanceTrackingEvidence(
     consecutiveFixes: 0,
     lastQualifiedAt: 0,
     updatedAt: serverNow,
+    ...campusState(sameAssignment ? previous : null, fix, eventId, campus ?? null),
   };
   if (sameAssignment && previous?.pendingTransition) {
     return {...base, pendingTransition: previous.pendingTransition};
   }
-  if (!requirement) return base;
+  if (!requirement) return withCampusWait(base, eventId, serverNow, Boolean(campus));
 
   const gap = sameAssignment ? fix.updatedAt - Number(previous?.lastQualifiedAt ?? 0) : Number.POSITIVE_INFINITY;
   const continues = sameAssignment && previous?.candidate === requirement.status &&
@@ -184,8 +197,52 @@ export function advanceTrackingEvidence(
       qualifiedAt: serverNow,
       distanceMeters,
     };
+    return qualified;
   }
-  return qualified;
+  return withCampusWait(qualified, eventId, serverNow, Boolean(campus));
+}
+
+type CampusState = Pick<TrackingEvidenceRecord, "campusReachedAt" | "campusReachedEventId" | "stillLat" | "stillLng" | "stillSince">;
+
+/** Campus orders: remember when the partner reached the campus and how long they have stood still there. */
+function campusState(
+  previous: TrackingEvidenceRecord | null,
+  fix: TrackingFix,
+  eventId: string,
+  campus: CampusZone | null,
+): CampusState {
+  if (!campus) return {};
+  const here = atCampus(fix, campus);
+  const reachedAt = Number(previous?.campusReachedAt ?? 0);
+  const reached: CampusState = reachedAt > 0 ?
+    {campusReachedAt: reachedAt, campusReachedEventId: String(previous?.campusReachedEventId ?? "")} :
+    here ? {campusReachedAt: fix.updatedAt, campusReachedEventId: eventId} : {campusReachedAt: 0, campusReachedEventId: ""};
+  if (!here) return {...reached, stillLat: 0, stillLng: 0, stillSince: 0};
+  const since = Number(previous?.stillSince ?? 0);
+  const anchor = {lat: Number(previous?.stillLat), lng: Number(previous?.stillLng)};
+  if (previous && since > 0 && Number.isFinite(anchor.lat) && Number.isFinite(anchor.lng) &&
+    fix.updatedAt - previous.lastFixAt <= MAX_CONSECUTIVE_FIX_GAP_MS) {
+    // GPS wanders a little while standing still; a poor reading may wander more.
+    const allowed = CAMPUS_STILL_METERS + Math.min(fix.accuracy, MAX_GEOFENCE_ACCURACY_METERS) / 2;
+    if (haversineKm(anchor, fix) * 1000 <= allowed) return {...reached, stillLat: anchor.lat, stillLng: anchor.lng, stillSince: since};
+  }
+  return {...reached, stillLat: fix.lat, stillLng: fix.lng, stillSince: fix.updatedAt};
+}
+
+/** Campus orders: 3 minutes standing still at the campus counts as arrived (the code box opens). */
+function withCampusWait(record: TrackingEvidenceRecord, eventId: string, serverNow: number, campusOrder: boolean): TrackingEvidenceRecord {
+  const since = Number(record.stillSince ?? 0);
+  if (!campusOrder || since <= 0 || record.lastFixAt - since < CAMPUS_WAIT_MS) return record;
+  return {
+    ...record,
+    pendingTransition: {
+      status: "Arrived",
+      evidenceEventId: eventId,
+      qualifiedAt: serverNow,
+      distanceMeters: record.distanceMeters,
+      campus: true,
+    },
+  };
 }
 
 export function hasReachedProximityStatus(current: OrderStatus, target: ProximityStatus): boolean {

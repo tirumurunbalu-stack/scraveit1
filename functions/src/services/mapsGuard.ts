@@ -11,15 +11,17 @@ import {notifyAdminMapsAlert} from "./notifications";
  * these keep us well inside them and tell the admins early.
  */
 
-export type MapsMeter = "routes" | "tiles" | "weather";
-export const MAPS_METERS: readonly MapsMeter[] = ["routes", "tiles", "weather"];
-export const DEFAULT_DAILY_LIMITS: Readonly<Record<MapsMeter, number>> = Object.freeze({routes: 2_000, tiles: 40_000, weather: 4_000});
+// "places" = the campus check (one reverse geocode + up to 3 place lookups per new delivery pin).
+export type MapsMeter = "routes" | "tiles" | "weather" | "places";
+export const MAPS_METERS: readonly MapsMeter[] = ["routes", "tiles", "weather", "places"];
+export const DEFAULT_DAILY_LIMITS: Readonly<Record<MapsMeter, number>> = Object.freeze({routes: 2_000, tiles: 40_000, weather: 4_000, places: 3_000});
 export const ROUTES_PER_ACCOUNT_PER_HOUR = 20;
 
 export interface MapsSettings {
   routesEnabled: boolean;
   tilesEnabled: boolean;
   weatherEnabled: boolean;
+  placesEnabled: boolean;
   dailyLimits: Record<MapsMeter, number>;
 }
 
@@ -34,7 +36,8 @@ export function normalizeMapsSettings(value: unknown): MapsSettings {
     routesEnabled: raw.routesEnabled !== false,
     tilesEnabled: raw.tilesEnabled !== false,
     weatherEnabled: raw.weatherEnabled !== false,
-    dailyLimits: {routes: limit("routes"), tiles: limit("tiles"), weather: limit("weather")},
+    placesEnabled: raw.placesEnabled !== false,
+    dailyLimits: {routes: limit("routes"), tiles: limit("tiles"), weather: limit("weather"), places: limit("places")},
   };
 }
 
@@ -58,7 +61,7 @@ export async function loadMapsSettings(now = Date.now()): Promise<MapsSettings> 
 
 // Counted in memory per server instance and written in small batches, so a
 // busy map does not turn every tile into a database write.
-const pending: Record<MapsMeter, number> = {routes: 0, tiles: 0, weather: 0};
+const pending: Record<MapsMeter, number> = {routes: 0, tiles: 0, weather: 0, places: 0};
 let lastFlushAt = 0;
 let usageCache: {at: number; day: string; counts: Record<MapsMeter, number>} | null = null;
 
@@ -90,7 +93,8 @@ async function usageToday(now = Date.now()): Promise<Record<MapsMeter, number>> 
   if (usageCache && usageCache.day === day && now - usageCache.at < 30_000) return usageCache.counts;
   const snapshot = await mapsUsageDayRef(day).get();
   const data = (snapshot.exists ? snapshot.data() : {}) as Record<string, unknown>;
-  const counts = {routes: Number(data.routes) || 0, tiles: Number(data.tiles) || 0, weather: Number(data.weather) || 0};
+  const counts = {routes: Number(data.routes) || 0, tiles: Number(data.tiles) || 0, weather: Number(data.weather) || 0,
+    places: Number(data.places) || 0};
   usageCache = {at: now, day, counts};
   return counts;
 }
@@ -98,7 +102,8 @@ async function usageToday(now = Date.now()): Promise<Record<MapsMeter, number>> 
 /** Switched on, and today's use (plus what is about to be used) still under our cap. */
 export async function mapsAllowed(meter: MapsMeter, needed = 1, now = Date.now()): Promise<boolean> {
   const settings = await loadMapsSettings(now);
-  const enabled = meter === "routes" ? settings.routesEnabled : meter === "tiles" ? settings.tilesEnabled : settings.weatherEnabled;
+  const enabled = meter === "routes" ? settings.routesEnabled : meter === "tiles" ? settings.tilesEnabled :
+    meter === "places" ? settings.placesEnabled : settings.weatherEnabled;
   if (!enabled) return false;
   const used = (await usageToday(now))[meter] + pending[meter];
   return used + needed <= settings.dailyLimits[meter];
@@ -164,7 +169,8 @@ export function distanceToRouteMeters(point: LatLng, route: LatLng[]): number {
 // (once per level per day), and once a day make sure the map cache still works.
 // ---------------------------------------------------------------------------
 
-const METER_NAMES: Record<MapsMeter, string> = {routes: "Google routes", tiles: "Google map tiles", weather: "Google weather checks"};
+const METER_NAMES: Record<MapsMeter, string> = {routes: "Google routes", tiles: "Google map tiles", weather: "Google weather checks",
+  places: "Google campus checks"};
 export const MAP_CACHE_PROBE_URL = "https://savrivo-app.web.app/maptile/day/14/11832/7527";
 
 /** Every owner and ops admin account (for admin push alerts). */

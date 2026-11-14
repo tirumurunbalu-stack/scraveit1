@@ -7,7 +7,7 @@ window.Rider3D=(function(){
   const BUF=220;
   const cache={};
   let renderer=null,scene=null,camera=null,canvas=null,hemi=null,sun=null,ground=null,beam=null;
-  let current=null,currentKey="",provider=null,raf=0,lastFrame=0,failed=false;
+  let current=null,currentKey="",provider=null,data=null,placedSize=0,raf=0,lastFrame=0,failed=false;
   const look={rel:null,lean:0};
 
   function blobTexture(){const c=document.createElement("canvas");c.width=c.height=64;const g=c.getContext("2d");
@@ -45,26 +45,30 @@ window.Rider3D=(function(){
     return current;
   }
   function hide(){if(canvas)canvas.style.display="none";}
-  function frame(now){
-    raf=0;
-    const card=document.getElementById("tracking-map-card");
-    if(!card||!provider||failed){detach();return;}
-    if(canvas.parentNode!==card){card.appendChild(canvas);look.rel=null;}
+  // Where the road under the scooter (the scene's 0,0,0) lands in the canvas,
+  // as a share of its height. The canvas is hung so this spot is the pin's centre.
+  // The rings on the map are centred on the pin. The scooter is drawn so the
+  // middle of what the eye sees of it (body and rider, a little above the
+  // point the camera aims at) sits on that same centre, whichever way it faces.
+  const BODY_CENTRE=0.435;
+  function adopt(card){
+    if(canvas.parentNode!==card){card.appendChild(canvas);look.rel=null;lastFrame=0;}
     card.classList.add("has-3d");
-    raf=requestAnimationFrame(frame);
-    if(now-lastFrame<33)return;                                   // about 30 frames a second is plenty
-    const dt=Math.min(0.1,lastFrame?(now-lastFrame)/1000:0.033);lastFrame=now;
-    const d=provider();
-    if(!d){hide();return;}
-    const anchor=card.querySelector(".map-pin.rider");
-    if(!anchor||anchor.style.display==="none"){hide();return;}
+  }
+  // Runs on every screen frame, so the scooter never trails its pin.
+  function place(card){
+    const d=data,anchor=card.querySelector(".map-pin.rider");
+    if(!d||!anchor||anchor.style.display==="none"){hide();return false;}
     const ar=anchor.getBoundingClientRect(),cr=card.getBoundingClientRect(),size=d.size||110;
     // Screen distances are divided by the card's own scale, so the scooter
     // lands on its pin even when the card is drawn smaller than its layout size.
     const scale=card.offsetWidth?cr.width/card.offsetWidth:1,k=scale>0.05?1/scale:1;
-    canvas.style.display="";canvas.style.width=size+"px";canvas.style.height=size+"px";
-    canvas.style.transform="translate3d("+((ar.left+ar.width/2-cr.left)*k-size/2).toFixed(1)+"px,"+((ar.top+ar.height/2-cr.top)*k-size*0.66).toFixed(1)+"px,0)";
-    canvas.style.opacity="1";
+    if(placedSize!==size){canvas.style.width=size+"px";canvas.style.height=size+"px";placedSize=size;}
+    canvas.style.transform="translate3d("+((ar.left+ar.width/2-cr.left)*k-size/2).toFixed(2)+"px,"+((ar.top+ar.height/2-cr.top)*k-size*BODY_CENTRE).toFixed(2)+"px,0)";
+    return true;
+  }
+  function draw(now,dt){
+    const d=data;
     const a=avatar(d.avatar,d.pose||"ride");
     // direction on screen, eased along the shorter way round
     const target=(((d.heading-d.bearing)%360)+360)%360;
@@ -82,15 +86,35 @@ window.Rider3D=(function(){
     const el=(d.elevation||50)*Math.PI/180,dist=4.5;
     camera.position.set(0,Math.sin(el)*dist+0.55,Math.cos(el)*dist);camera.lookAt(0,0.55,0);
     renderer.render(scene,camera);
+    canvas.style.display="";canvas.style.opacity="1";
+  }
+  function frame(now){
+    raf=0;
+    const card=document.getElementById("tracking-map-card");
+    if(!card||!provider||failed){detach();return;}
+    adopt(card);
+    raf=requestAnimationFrame(frame);
+    const due=!(now-lastFrame<33);                                // drawing: about 30 frames a second is plenty
+    const dt=Math.min(0.1,lastFrame?(now-lastFrame)/1000:0.033);
+    if(due){lastFrame=now;data=provider();}
+    if(!place(card)||!due)return;
+    draw(now,dt);
   }
   function attach(fn){
     provider=fn;
     if(!init())return false;
+    // Move into a freshly drawn map straight away, so the scooter is there in
+    // the same frame as the map and not one frame later.
+    const card=document.getElementById("tracking-map-card");
+    if(card){
+      adopt(card);
+      try{data=provider();if(place(card))draw(performance.now(),0.033);}catch(_){}
+    }
     if(!raf)raf=requestAnimationFrame(frame);
     return true;
   }
   function detach(){
-    if(raf)cancelAnimationFrame(raf);raf=0;lastFrame=0;provider=null;
+    if(raf)cancelAnimationFrame(raf);raf=0;lastFrame=0;provider=null;data=null;
     if(canvas&&canvas.parentNode){canvas.parentNode.classList.remove("has-3d");canvas.parentNode.removeChild(canvas);}
   }
   return {attach,detach,available:()=>!failed};

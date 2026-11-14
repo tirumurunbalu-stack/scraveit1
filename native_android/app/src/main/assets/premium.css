@@ -516,26 +516,40 @@ h1, h2, h3, .display, .brand-word {
 .map-world .map-tiles { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 .map-world .map-tiles img { position: absolute; width: 256px; height: 256px; max-width: none; pointer-events: none; opacity: 0; transition: opacity .18s ease; }
 .map-world .map-tiles img.ready { opacity: 1; }
+/* The old zoom's tiles, scaled to fit the new zoom, stay underneath until the new tiles have loaded. */
+.map-world .map-tiles-ghost { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; pointer-events: none; }
+.map-world .map-tiles-ghost img { position: absolute; width: 256px; height: 256px; max-width: none; pointer-events: none; }
+.map-world .map-tiles-ghost img:not(.ready) { visibility: hidden; }
 .map-route { position: absolute; overflow: visible; pointer-events: none; max-width: none; }
 .map-route polyline { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-.map-route-casing { stroke: rgba(255,255,255,.85); stroke-width: 4.6; }
-.map-route-line { stroke: var(--brand); stroke-width: 2.8; }
+.map-route-casing { stroke: rgba(255,255,255,.85); stroke-width: calc(4.6px / var(--zk, 1)); }
+.map-route-line { stroke: var(--brand); stroke-width: calc(2.8px / var(--zk, 1)); }
+/* A new road line fades in instead of popping onto the map. */
+.map-route.enter { animation: map-line-in .45s ease-out both; }
+@keyframes map-line-in { from { opacity: 0; } to { opacity: 1; } }
 .map-plan { position: absolute; overflow: visible; pointer-events: none; max-width: none; }
-.map-plan path { fill: none; stroke: var(--brand); stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 16 14; opacity: .9; }
+.map-plan path { fill: none; stroke: var(--brand); stroke-width: calc(3.5px / var(--zk, 1)); stroke-linecap: round; stroke-dasharray: calc(16px / var(--zk, 1)) calc(14px / var(--zk, 1)); opacity: .9; }
 .map-card-empty .map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; gap: 8px; text-align: center; padding: 24px; color: var(--ink-soft); }
 .map-overlay { position: absolute; top: 14px; right: 14px; left: auto; bottom: auto; display: flex; align-items: center; gap: 6px; z-index: 4; }
 .map-attribution { font-size: 10px; color: var(--ink-soft); background: color-mix(in srgb, var(--surface), transparent 12%); backdrop-filter: blur(8px); padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
-.map-pin { position: absolute; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; display: grid; place-items: center; border: 3px solid white; box-shadow: 0 6px 16px rgba(0,0,0,.2); pointer-events: none; transition: transform .3s ease; }
+.map-pin { position: absolute; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; display: grid; place-items: center; border: 3px solid white; box-shadow: 0 6px 16px rgba(0,0,0,.2); pointer-events: none; }
 .map-pin svg { width: 17px; height: 17px; color: white; }
 .map-pin.restaurant { background: #e07a1f; z-index: 2; }
 .map-pin.home { background: var(--success); z-index: 1; }
 /* An illustration, not a glyph-on-a-badge like the restaurant/home pins -
    drop the circular badge chrome entirely and let the artwork's own shape
    and shadow read directly on the map. */
-.map-pin.rider { --w: var(--rider-w, 46px); background: none; border: 0; border-radius: 0; box-shadow: none; width: var(--w); height: calc(var(--w) * 1.2); margin: calc(var(--w) * -0.6) 0 0 calc(var(--w) * -0.5); z-index: 3; transition: transform 2600ms linear; }
+.map-pin.rider { --w: var(--rider-w, 46px); background: none; border: 0; border-radius: 0; box-shadow: none; width: var(--w); height: calc(var(--w) * 1.2); margin: calc(var(--w) * -0.6) 0 0 calc(var(--w) * -0.5); z-index: 3; }
 .map-pin.rider img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 4px 7px rgba(0,0,0,.35)); transition: transform .5s ease; transform-origin: 50% 60%; }
-.map-pin.rider.live::after { content: ""; position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%); width: calc(var(--w) * .55); height: calc(var(--w) * .2); border-radius: 50%; border: 2px solid var(--brand); animation: map-pulse 1.8s ease-out infinite; }
-@keyframes map-pulse { from { transform: scale(.6); opacity: .6; } to { transform: scale(1.9); opacity: 0; } }
+/* The live rings. They sit on the pin's own centre, which is the exact spot on
+   the map, and are placed with margins so the animation is free to use
+   transform for the growing alone. (Before, the animation's transform replaced
+   the centring transform and the rings slid to the right of the scooter.)
+   Slightly wider than tall: a circle on the road seen from the scooter's camera. */
+.map-pin.rider.live::before, .map-pin.rider.live::after { content: ""; position: absolute; z-index: -1; left: 50%; top: 50%; width: calc(var(--w) * .96); height: calc(var(--w) * .84); margin: calc(var(--w) * -.42) 0 0 calc(var(--w) * -.48); border-radius: 50%; border: 2px solid var(--brand); background: rgba(21,94,239,.13); opacity: 0; pointer-events: none; will-change: transform, opacity; animation: map-pulse 2.4s cubic-bezier(.22,.61,.36,1) infinite; }
+.map-pin.rider.live::before { animation-delay: -1.2s; }
+@keyframes map-pulse { from { transform: scale(.35); opacity: .8; } 70% { opacity: .18; } to { transform: scale(1.85); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .map-pin.rider.live::before { display: none; } .map-pin.rider.live::after { animation: none; transform: scale(1.15); opacity: .45; } }
 .map-minimize { position: absolute; left: 14px; top: 14px; z-index: 5; }
 .map-controls { position: absolute; right: 14px; top: 58px; display: grid; gap: 8px; z-index: 5; }
 .map-control { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); display: grid; place-items: center; font-size: 20px; font-weight: 700; line-height: 1; box-shadow: var(--shadow-soft); }
@@ -634,6 +648,8 @@ h1, h2, h3, .display, .brand-word {
 .hero-float svg { width: 20px; height: 20px; }
 /* Map chrome moves clear of the two floating controls. */
 .live-module .map-overlay { top: auto; bottom: 42px; left: 12px; right: auto; }
+/* The status card covers the bottom of the map here: keep the route note just above the LIVE row, on one line. */
+.live-module .map-beta { bottom: 76px; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 84px); }
 .live-module .map-controls { top: auto; bottom: 94px; right: 12px; }
 .live-module .map-minimize { top: auto; left: auto; right: 12px; bottom: 42px; }
 
@@ -1428,11 +1444,11 @@ em, .display em, .page-title em { font-family: var(--font-serif); font-style: it
 /* night: dark map, same roads */
 .map-card.night { background: #0f1726; }
 /* Google tiles come styled for night; only the OpenStreetMap fallback needs darkening. */
-.map-card.night .map-tiles img.osm { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.55); }
+.map-card.night .map-tiles-ghost img.osm, .map-card.night .map-tiles img.osm { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.55); }
 .map-card.night .map-haze { background: linear-gradient(180deg, #0f1726 0%, rgba(15,23,38,.85) 30%, rgba(15,23,38,0) 100%); }
 /* rain: falling streaks over the map when the order was placed in verified rain */
 .map-rain { position: absolute; inset: 0; pointer-events: none; z-index: 3; overflow: hidden; background: rgba(60,82,112,.10); }
-@media (prefers-reduced-motion: reduce) { .map-plane { transition: none; } .map-rain b { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .map-plane { transition: none; } .map-rain b { animation: none; } .map-route.enter { animation: none; } }
 
 /* Google asks apps to mark two-wheeler routes as beta */
 .map-beta { position: absolute; left: 12px; bottom: 10px; z-index: 4; margin: 0; max-width: 70%; font-size: 11px; line-height: 1.3; color: #55627d; background: rgba(255,255,255,.88); padding: 4px 8px; border-radius: 8px; pointer-events: none; }
