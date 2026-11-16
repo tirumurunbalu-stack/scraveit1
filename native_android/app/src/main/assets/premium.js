@@ -8831,10 +8831,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const points=trackingGeoPoints(order,live);
     const ms=trackingMapState(order,points);
     if(!ms){
-      // Idle-collapse only ever fires once tracking data already exists (see
-      // startTrackingCollapseCycle/armTrackingIdleTimer), so a compact card
-      // with nothing to show yet is not a real path today - skip it rather
-      // than build and maintain an untested placeholder for it.
+      // The screen opens in the small-map view, so before any location exists
+      // the thumbnail simply stays out of the way; it appears on the first
+      // location update and can then be tapped to expand.
       if(compact)return"";
       return '<section class="card map-card map-card-empty"><div class="map-placeholder">'+icon("pin")+'<p class="supporting">The live map will appear once delivery locations are available.</p></div></section>';
     }
@@ -9058,7 +9057,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const card=trackingMapCard(event.target);
     if(!card)return;
     if(!state.trackingMapCollapsed)holdTrackingMapOpen();
-    if(event.target.closest(".map-controls")||event.target.closest(".map-overlay"))return;
+    // Buttons on the map (zoom, recentre, Minimise) must keep their tap: a drag
+    // here would capture the pointer and the click would land on the map instead.
+    if(event.target.closest(".map-controls,.map-control,.map-overlay,button"))return;
     const ms=state.trackingMap;
     if(!ms)return;
     trackingPointers[event.pointerId]={x:event.clientX,y:event.clientY};
@@ -9164,47 +9165,27 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!trackingZoomAround(steps,point.x,point.y,preview))applyTrackingCamera(false);
   }
   function screenChat(){const o=state.orders.find(x=>x.id===state.chat.orderId),messages=state.chat.messages||[];if(!o)return screenOrders();return'<main class="screen"><div class="screen-content page-stack">'+topbar(state.chat.title||"Order chat","Order "+o.id)+'<div class="notice info">'+icon("shield","small")+'<span>Real phone numbers are not displayed. Phone numbers typed in chat are automatically hidden.</span></div><section class="card chat-thread">'+(messages.length?messages.map(m=>'<div class="chat-message '+(m.senderId===state.session.uid?'mine':'')+'"><strong>'+h(m.senderRole||"user")+'</strong><p>'+h(m.body||"")+'</p><span class="caption">'+h(dateTime(m.at))+'</span></div>').join(""):emptyState("help","No messages yet","Use chat to coordinate this order."))+'</section><form id="chat-form" class="card cluster"><input class="input grow" name="message" maxlength="800" placeholder="Type a message" required><button class="button primary" type="submit">Send</button></form></div>'+nav()+'</main>'}
-  // ---- tracking map auto-collapse + ad carousel -----------------------------
-  // The ad carousel is the default view, not a fallback the map decays into:
-  // the screen opens straight into it. Each time the customer taps the
-  // thumbnail to bring the map back, it earns a longer stay before it
-  // auto-collapses again - 6s the first time, 16s the second time, and from
-  // the third expand on it stays open until they minimise it themselves.
-  // Manually minimising never resets that progression; only leaving the
-  // screen and coming back (startTrackingCollapseCycle) does. These handles
-  // live outside `state` on purpose: they are timer ids / counters, not data
-  // that should ever be persisted, diffed, or trigger a render by themselves.
-  let trackingIdleTimer=null, trackingCarouselTimer=null, trackingCarouselIndex=0, trackingExpandCount=0;
-  // Opens on the full map for a second, then the sponsored screen with the
-  // small map. Opened again by the customer it stays 4 s, then 8 s; from the
-  // third time on (or while they are moving or zooming it) it stays open.
-  const TRACKING_FIRST_LOOK_MS=1000, TRACKING_IDLE_SCHEDULE_MS=[4000,8000], TRACKING_CAROUSEL_INTERVAL_MS=4500;
+  // ---- tracking map: small map + ad carousel --------------------------------
+  // Founder 16 Nov 2026: no timers. The tracking screen opens already in the
+  // small-map view (sponsored hero + map thumbnail). Tapping the thumbnail
+  // expands the map and it stays open until the customer taps Minimise, which
+  // goes back to the small-map view. Nothing ever folds the map on its own.
+  let trackingCarouselTimer=null, trackingCarouselIndex=0;
+  const TRACKING_CAROUSEL_INTERVAL_MS=4500;
   function stopTrackingCollapseCycle(){
-    clearTimeout(trackingIdleTimer);trackingIdleTimer=null;
     clearInterval(trackingCarouselTimer);trackingCarouselTimer=null;
-  }
-  function armTrackingIdleTimer(delayMs){
-    clearTimeout(trackingIdleTimer);
-    trackingIdleTimer=setTimeout(()=>{
-      if(!liveOrderRoute()||state.trackingMapCollapsed)return;
-      state.trackingMapCollapsed=true;
-      recentreTrackingForMode();
-      render({preserveScroll:true});
-    },delayMs);
   }
   // Called once, from go()/goBack(), on the transition into the tracking
   // route - never from inside screenOrder() itself, which renders on every
-  // collapse/expand and must not restart the progression each time. Opens
-  // straight into the ad carousel: nothing to idle out of, so no timer here.
+  // collapse/expand. Always opens in the small-map view.
   function startTrackingCollapseCycle(){
-    state.trackingMapCollapsed=false;
+    state.trackingMapCollapsed=true;
     trackingCarouselIndex=0;
-    trackingExpandCount=0;
     stopTrackingCollapseCycle();
-    armTrackingIdleTimer(TRACKING_FIRST_LOOK_MS);
+    recentreTrackingForMode();
   }
-  /** Someone moving or zooming the map is watching it: don't fold it away. */
-  function holdTrackingMapOpen(){clearTimeout(trackingIdleTimer);trackingIdleTimer=null;}
+  /** Kept for the map gesture handlers; there is no auto-collapse to hold off now. */
+  function holdTrackingMapOpen(){}
   function collapseTrackingMap(){
     if(state.trackingMapCollapsed)return;
     state.trackingMapCollapsed=true;
@@ -9216,12 +9197,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(!state.trackingMapCollapsed)return;
     state.trackingMapCollapsed=false;
     recentreTrackingForMode();
-    trackingExpandCount++;
     stopTrackingCollapseCycle();
-    // Past the scheduled expands, undefined -> no timer armed -> stays open
-    // until the customer minimises it themselves.
-    const delay=TRACKING_IDLE_SCHEDULE_MS[trackingExpandCount-1];
-    if(delay!=null)armTrackingIdleTimer(delay);
     render({preserveScroll:true});
   }
   function trackingAdCarouselMarkup(){
