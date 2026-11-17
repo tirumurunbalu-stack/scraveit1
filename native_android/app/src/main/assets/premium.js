@@ -7067,14 +7067,16 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function deliveryGroupFee(){return deliveryFee()+smallOrderFee()+lateNightFee()+rainFee()+surgeFee()+riderIncentiveFee()}
   /** The distance fee before any free-delivery rule, to show what free delivery saved. */
   function deliverySlabFee(){const r=cartRestaurant();return r?deliveryFeeForRestaurant(r,0):0}
-  function billTapRow(key,label,value){return'<button type="button" class="price-row bill-tap" data-action="bill-info" data-key="'+key+'"><span class="bill-dotted">'+label+'</span><span>'+value+'</span></button>'}
+  /** Founder 17 Nov 2026: show how the distance fee is made, e.g. "3.3 km · ₹20 + ₹5/km". */
+  function deliveryDistanceNote(){const p=perKmPricing(),r=cartRestaurant(),km=r?restaurantDistanceKm(r):null;return p&&km!=null?'<small class="caption bill-sub">'+(Math.round(km*10)/10)+' km · '+money(p.base)+' + '+money(p.perKm)+'/km</small>':''}
+  function billTapRow(key,label,value,note){return'<button type="button" class="price-row bill-tap" data-action="bill-info" data-key="'+key+'"><span><span class="bill-dotted">'+label+'</span>'+(note||'')+'</span><span>'+value+'</span></button>'}
   function priceBreakdown(includeTotal){
     const sub=cartSubtotal(),off=discount(),code=state.coupon&&state.coupon.code,server=serverOffer(),slab=deliverySlabFee(),group=deliveryGroupFee();
     const freeDelivery=deliveryFee()===0&&slab>0;
     return'<div class="stack">'
       +'<div class="price-row"><span>Item total'+(off>0&&code?'<small class="caption bill-sub success-text">'+h(code)+' applied</small>':'')+(gstIncluded(cartRestaurant())?'<small class="caption bill-sub">GST included in price</small>':'')+'</span><span>'+(off>0?'<s class="bill-was">'+money(sub)+'</s> ':'')+money(Math.max(0,sub-off))+'</span></div>'
       +(server&&server.limited?limitedOfferNote():'')
-      +billTapRow("delivery",feeLabel("delivery fee"),(freeDelivery?'<s class="bill-was">'+money(slab)+'</s> ':'')+(group?money(group):'<span class="success-text">Free</span>'))
+      +billTapRow("delivery",feeLabel("delivery fee"),(freeDelivery?'<s class="bill-was">'+money(slab)+'</s> ':'')+(group?money(group):'<span class="success-text">Free</span>'),deliveryDistanceNote())
       +billTapRow("platform","Platform fee",money(platformFee()))
       +(tax()?billTapRow("tax",serverCheckout()?"GST &amp; charges":"Estimated GST",money(tax())):'')
       +(state.tip?'<div class="price-row"><span>Delivery partner tip<small class="caption bill-sub">100% goes to your delivery partner</small></span><span>'+money(state.tip)+'</span></div>':'')

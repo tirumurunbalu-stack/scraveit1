@@ -18,6 +18,8 @@ import {
   type FinancePayoutMethod,
 } from "../domain/financePolicy";
 import {DomainError} from "../errors";
+import {CashfreePayoutGateway, liveCashfreePayoutConfig} from "./cashfreePayouts";
+import {DEFAULT_PAYOUT_FEE_TABLE, normalizePayoutFeeTable, payoutAfterFee, type PayoutFeeTable} from "../domain/payoutFees";
 import {LEDGER_JOURNALS_COLLECTION, persistLedgerJournal} from "./ledger";
 import {loadFinancePolicy} from "./platformConfig";
 import {withPrivatePayoutProfiles} from "./restaurantPayoutProfiles";
@@ -96,6 +98,8 @@ export interface FinanceAutomationItemRecord {
   attemptedAt: number;
   completedAt: number;
   minimumThresholdPaise: number;
+  /** Bank transfer fee taken from this payout (settings/payoutFees); the partner received amountPaise − this. */
+  transferFeePaise?: number;
 }
 
 export interface FinanceAutomationRunSummary {
@@ -130,7 +134,7 @@ export interface FinanceAutomationRunSummary {
   message: string;
 }
 
-interface PayoutGatewayRequest {
+export interface PayoutGatewayRequest {
   readonly entityType: FinanceAutomationEntityType;
   readonly entityId: string;
   readonly amountPaise: number;
@@ -143,7 +147,7 @@ interface PayoutGatewayRequest {
   readonly bankIfsc: string;
 }
 
-interface PayoutGatewayResult {
+export interface PayoutGatewayResult {
   readonly provider: string;
   readonly providerOperationId: string;
   readonly referenceId: string;
@@ -208,11 +212,12 @@ export class GuardedPayoutGateway implements FinancePayoutGateway {
 }
 
 /**
- * The bank connector for live payouts. None is connected yet: HDFC API
- * Banking (or a payouts provider) plugs in here once its credentials and
- * specification are issued; until then live runs hold every payout.
+ * The bank connector for live payouts: Cashfree Payouts (founder 17 Nov 2026)
+ * once its keys are saved; until then live runs hold every payout.
  */
 export function selectPayoutGateway(): {gateway: FinancePayoutGateway; name: string} {
+  const cashfree = new CashfreePayoutGateway(liveCashfreePayoutConfig());
+  if (cashfree.configured) return {gateway: cashfree, name: "cashfree_payouts"};
   return {gateway: new UnconfiguredFinancePayoutGateway(), name: ""};
 }
 
@@ -787,6 +792,7 @@ async function processRider(
   coveredRiders: ReadonlySet<string>,
   gateway: FinancePayoutGateway,
   database: FinanceAutomationDatabase,
+  feeTable: PayoutFeeTable = DEFAULT_PAYOUT_FEE_TABLE,
 ): Promise<FinanceAutomationItemRecord> {
   const itemKey = itemId("rider", riderId);
   const lockKey = operationId("rider", riderId, periodKey);
@@ -939,12 +945,23 @@ async function processRider(
         minimumThresholdPaise: minimumPayoutPaise,
       };
     }
+    // Founder 17 Nov 2026: the chosen method's transfer fee comes out of the payout.
+    const fee = payoutAfterFee(selected.method, totalPaise, feeTable);
+    if (fee.transferPaise < 100) {
+      return {
+        schemaVersion: 1, itemId: itemKey, periodKey, entityType: "rider", entityId: riderId, amountPaise: totalPaise,
+        method: selected.method, status: "held_minimum",
+        reason: "Too small after the bank transfer fee; carried to next week.",
+        beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "", providerOperationId: "",
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumPayoutPaise, transferFeePaise: fee.feePaise,
+      };
+    }
     let gatewayResult: PayoutGatewayResult;
     try {
       gatewayResult = await gateway.executePayout({
         entityType: "rider",
         entityId: riderId,
-        amountPaise: totalPaise,
+        amountPaise: fee.transferPaise,
         method: selected.method,
         operationId: lockKey,
         beneficiaryLabel: profile.beneficiaryLabel,
@@ -980,7 +997,7 @@ async function processRider(
         schemaVersion: 1, itemId: itemKey, periodKey, entityType: "rider", entityId: riderId, amountPaise: totalPaise,
         method: selected.method, status: "previewed", reason: "Would be paid in the weekly run.",
         beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "preview", providerOperationId: "",
-        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumPayoutPaise,
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumPayoutPaise, transferFeePaise: fee.feePaise,
       };
     }
     const referenceId = text(gatewayResult.referenceId, 120) || payoutReference(lockKey);
@@ -1005,7 +1022,7 @@ async function processRider(
       `finance-weekly-rider-${hashKey(`${periodKey}:${riderId}`).slice(0, 36)}`,
       "finance_automation.rider_payout_completed",
       `riders/${riderId}`,
-      `${selected.method}; ${totalPaise} paise; ref ${referenceId}; period ${periodKey}`,
+      `${selected.method}; ${totalPaise} paise (fee ${fee.feePaise}); ref ${referenceId}; period ${periodKey}`,
       completedAt,
     );
     return {
@@ -1026,6 +1043,7 @@ async function processRider(
       attemptedAt,
       completedAt,
       minimumThresholdPaise: minimumPayoutPaise,
+      transferFeePaise: fee.feePaise,
     };
   } finally {
     await releaseLock(database, entityLockRef(database, "rider", riderId), riderId, lockKey);
@@ -1041,6 +1059,7 @@ async function processRestaurant(
   coveredRestaurants: ReadonlySet<string>,
   gateway: FinancePayoutGateway,
   database: FinanceAutomationDatabase,
+  feeTable: PayoutFeeTable = DEFAULT_PAYOUT_FEE_TABLE,
 ): Promise<FinanceAutomationItemRecord> {
   const itemKey = itemId("restaurant", restaurantId);
   const lockKey = operationId("restaurant", restaurantId, periodKey);
@@ -1201,12 +1220,23 @@ async function processRestaurant(
         minimumThresholdPaise: minimumSettlementPaise,
       };
     }
+    // Founder 17 Nov 2026: the chosen method's transfer fee comes out of the payout.
+    const fee = payoutAfterFee(selected.method, totalPaise, feeTable);
+    if (fee.transferPaise < 100) {
+      return {
+        schemaVersion: 1, itemId: itemKey, periodKey, entityType: "restaurant", entityId: restaurantId, amountPaise: totalPaise,
+        method: selected.method, status: "held_minimum",
+        reason: "Too small after the bank transfer fee; carried to next week.",
+        beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "", providerOperationId: "",
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumSettlementPaise, transferFeePaise: fee.feePaise,
+      };
+    }
     let gatewayResult: PayoutGatewayResult;
     try {
       gatewayResult = await gateway.executePayout({
         entityType: "restaurant",
         entityId: restaurantId,
-        amountPaise: totalPaise,
+        amountPaise: fee.transferPaise,
         method: selected.method,
         operationId: lockKey,
         beneficiaryLabel: profile.beneficiaryLabel,
@@ -1242,7 +1272,7 @@ async function processRestaurant(
         schemaVersion: 1, itemId: itemKey, periodKey, entityType: "restaurant", entityId: restaurantId, amountPaise: totalPaise,
         method: selected.method, status: "previewed", reason: "Would be paid in the weekly run.",
         beneficiaryLabel: profile.beneficiaryLabel, referenceId: "", provider: "preview", providerOperationId: "",
-        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumSettlementPaise,
+        ledgerJournalId: "", attemptedAt, completedAt: 0, minimumThresholdPaise: minimumSettlementPaise, transferFeePaise: fee.feePaise,
       };
     }
     const referenceId = text(gatewayResult.referenceId, 120) || payoutReference(lockKey);
@@ -1263,7 +1293,7 @@ async function processRestaurant(
       `finance-weekly-restaurant-${hashKey(`${periodKey}:${restaurantId}`).slice(0, 36)}`,
       "finance_automation.restaurant_settlement_completed",
       `catalog/restaurants/${restaurantId}`,
-      `${selected.method}; ${totalPaise} paise; ref ${referenceId}; period ${periodKey}`,
+      `${selected.method}; ${totalPaise} paise (fee ${fee.feePaise}); ref ${referenceId}; period ${periodKey}`,
       completedAt,
     );
     return {
@@ -1286,6 +1316,7 @@ async function processRestaurant(
       attemptedAt,
       completedAt,
       minimumThresholdPaise: minimumSettlementPaise,
+      transferFeePaise: fee.feePaise,
     };
   } finally {
     await releaseLock(database, entityLockRef(database, "restaurant", restaurantId), restaurantId, lockKey);
@@ -1438,6 +1469,12 @@ export async function runWeeklyFinanceAutomation(
         .map(([restaurantId]) => restaurantId) :
       [];
 
+    // Transfer fee per method and amount (settings/payoutFees, also shown in the apps); defaults if unset or unreadable.
+    let feeTable: PayoutFeeTable = DEFAULT_PAYOUT_FEE_TABLE;
+    try {
+      const feeSnapshot = await database.collection("settings").doc("payoutFees").get();
+      feeTable = normalizePayoutFeeTable(feeSnapshot.exists ? feeSnapshot.data() : null);
+    } catch { /* keep defaults */ }
     const items: FinanceAutomationItemRecord[] = [];
     for (const riderId of riderIds) {
       const item = await processRider(
@@ -1450,6 +1487,7 @@ export async function runWeeklyFinanceAutomation(
         coveredRiders,
         payoutGateway,
         database,
+        feeTable,
       );
       await upsertItemRecord(database, periodKey, item);
       items.push(item);
@@ -1464,6 +1502,7 @@ export async function runWeeklyFinanceAutomation(
         coveredRestaurants,
         payoutGateway,
         database,
+        feeTable,
       );
       await upsertItemRecord(database, periodKey, item);
       items.push(item);

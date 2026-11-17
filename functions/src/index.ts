@@ -4,7 +4,7 @@ import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readServerWarmth, setServerWarmth} from "./services/serverWarmth";
-import {requireOwnerClaim} from "./services/authz";
+import {requireOwnerClaim, requirePlatformConfigAdminClaim} from "./services/authz";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
 import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPhoto";
 import * as mealPlans from "./services/mealPlans";
@@ -16,6 +16,7 @@ import * as posts from "./services/posts";
 import * as reels from "./services/reels";
 import * as clusterOrders from "./services/clusterOrders";
 import * as learning from "./services/learning";
+import * as partnerTrail from "./services/partnerTrail";
 import {alarmAdmins, alertAdmins, applicationAlert, privacyRequestAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
 import * as accountDeletion from "./services/accountDeletion";
 import * as cartReminderService from "./services/cartReminders";
@@ -302,6 +303,7 @@ import {
   upsertRiderRewardCampaign,
 } from "./services/riderRewards";
 import {readLatestWeeklyRun, readWeeklyRunItems, runWeeklyFinanceAutomation, selectPayoutGateway} from "./services/financeAutomation";
+import {CASHFREE_PAYOUT_SECRETS} from "./services/cashfreePayouts";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
 import {lawBasedCheckoutTax, recordDeliveredOrderTax, resolveTdsReversal, reverseOrderTaxWithholding} from "./services/taxEngine";
@@ -1845,7 +1847,9 @@ export const settleRiderIncentivePeriods = onSchedule({
 export const settleWeeklyFinancePayouts = onSchedule({
   schedule: "every 15 minutes",
   region: REGION,
-  timeoutSeconds: 300,
+  // Cashfree Payouts keys (founder 17 Nov 2026); without them every payout is held.
+  secrets: CASHFREE_PAYOUT_SECRETS,
+  timeoutSeconds: 540,
   memory: "256MiB",
 }, async (event) => {
   const parsed = Date.parse(String((event as {scheduleTime?: string}).scheduleTime ?? ""));
@@ -2574,7 +2578,7 @@ function economicsCallable<S extends z.ZodTypeAny, R>(
   name: string,
   schema: S,
   handler: (uid: string, token: DecodedIdTokenLike, input: z.infer<S>) => Promise<R>,
-  options: {secrets?: typeof CASHFREE_SECRETS} = {},
+  options: {secrets?: Array<(typeof CASHFREE_SECRETS)[number]>} = {},
 ) {
   // Admin and store set-up screens only: a few instances are plenty (and keep the project inside its CPU quota).
   return onCall({region: REGION, maxInstances: 10, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB",
@@ -3128,6 +3132,65 @@ export const getAdminAnalytics = onCall({region: REGION, enforceAppCheck: true, 
     }
   });
 
+/** Pre-launch watching, once a day: saves each finished day's summary (kept), then deletes trails older than 60 days. */
+export const partnerTrailRecorder = onSchedule({
+  schedule: "every day 03:00",
+  timeZone: "Asia/Kolkata",
+  region: REGION,
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  maxInstances: 1,
+}, async () => {
+  const result = await partnerTrail.cleanPartnerTrails();
+  if (result.summarized || result.cleaned) logger.info("PARTNER_TRAIL_DAILY", result);
+});
+
+/** Pre-launch watching of delivery partners who agreed: saves each position update (about every 15 s) while online. */
+export const partnerTrailOnPresence = onValueWritten({
+  ref: `/${ROOT}/riderPresence/{riderId}`,
+  instance: DATABASE_INSTANCE,
+  region: DATABASE_REGION,
+  retry: false,
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  maxInstances: 10,
+}, async (event) => {
+  const after = event.data.after.exists() ? event.data.after.val() as Presence : null;
+  const at = Date.parse(String(event.time ?? "")) || Date.now();
+  await partnerTrail.recordPresencePoint(String(event.params.riderId), after, at);
+});
+
+/** Admin page: choose who is watched (after they agree), and read a partner's day. */
+export const partnerActivity = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 60, memory: "256MiB", maxInstances: 5},
+  async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+    try {
+      requirePlatformConfigAdminClaim(request.auth.token);
+      const riderId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+      const input = parse(z.discriminatedUnion("action", [
+        z.object({action: z.literal("list")}).strict(),
+        z.object({action: z.literal("day"), riderId, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)}).strict(),
+        z.object({action: z.literal("watch"), riderId, on: z.boolean(), note: z.string().max(200).optional()}).strict(),
+        z.object({action: z.literal("forget"), riderId}).strict(),
+        z.object({action: z.literal("history"), riderId}).strict(),
+      ]), request.data ?? {});
+      if (input.action === "history") return await partnerTrail.partnerHistory(input.riderId);
+      if (input.action === "list") return await partnerTrail.listPartners();
+      if (input.action === "day") return await partnerTrail.partnerDay(input.riderId, input.date);
+      if (input.action === "watch") {
+        const result = await partnerTrail.setWatch(input.riderId, input.on, request.auth.uid, input.note ?? "");
+        logger.info("PARTNER_TRAIL_WATCH", {by: request.auth.uid, riderId: input.riderId, on: input.on});
+        return result;
+      }
+      const result = await partnerTrail.forgetPartner(input.riderId);
+      logger.info("PARTNER_TRAIL_FORGET", {by: request.auth.uid, riderId: input.riderId, ...result});
+      return result;
+    } catch (error) {
+      logger.warn("partnerActivity rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+      throw asHttpsError(error);
+    }
+  });
+
 /**
  * Owner's switch for the 7 warm servers: "always" = warm 24/7; "cold" = all cold now and the 7 AM warm-up paused;
  * "schedule" = back to warm 7 AM–midnight. No mode = just read the state.
@@ -3236,7 +3299,7 @@ export const getPayoutAutomationStatus = economicsCallable("getPayoutAutomationS
       bankConnected: connector.gateway.configured, bankName: connector.name,
       lastRun, lastRunItems: lastRun?.periodKey ? (await readWeeklyRunItems(lastRun.periodKey)).slice(0, 100) : [],
     };
-  });
+  }, {secrets: CASHFREE_PAYOUT_SECRETS});
 
 /** Runs this week's payout calculation without moving or recording any money. */
 export const previewWeeklyPayouts = economicsCallable("previewWeeklyPayouts", z.object({}).strict(),

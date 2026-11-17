@@ -23,6 +23,7 @@ import {
   simulateRiderReferralForAdmin,
   syncRiderReferralForProfile,
   updateRiderRewardSettings,
+  qualifyingReferralOrder, referralItemTotalPaise, RIDER_REFERRAL_MIN_ITEM_TOTAL_PAISE,
 } from "../src/services/riderRewards";
 import {
   applyCustomerReferralCode,
@@ -54,14 +55,14 @@ describe("rider referral programme", () => {
     for (let index = from; index < from + count; index += 1) {
       database.seed(`orders/${riderId}-o${index}`, {
         id: `${riderId}-o${index}`, riderId, customerId: "c", restaurantId: "r1", status: "Delivered",
-        deliveredAt: NOW - 1_000_000 + index, updatedAt: NOW - 1_000_000 + index, paymentState: "paid", ...extra,
+        deliveredAt: NOW - 1_000_000 + index, updatedAt: NOW - 1_000_000 + index, paymentState: "paid", pricing: {subtotal: 320}, ...extra,
       });
     }
   }
 
   function order(riderId: string, orderId: string, at = NOW): SavrivoOrder {
     return {id: orderId, riderId, customerId: "c", restaurantId: "r1", status: "Delivered", deliveredAt: at, updatedAt: at,
-      createdAt: at - 1, paymentState: "paid", pricing: {subtotal: 120}, address: {area: "x"}} as unknown as SavrivoOrder;
+      createdAt: at - 1, paymentState: "paid", pricing: {subtotal: 320}, address: {area: "x"}} as unknown as SavrivoOrder;
   }
 
   /** Seeds the order document, then runs the delivered-order handler. */
@@ -170,6 +171,18 @@ describe("rider referral programme", () => {
     await deliver("new1", "a");
     await deliver("new1", "b");
     expect(referral("new1")).toMatchObject({status: "in_progress", deliveredCount: 2});
+  });
+
+  it("counts only orders with an item total of ₹300 or more", () => {
+    expect(qualifyingReferralOrder({status: "Delivered", riderId: "r", pricing: {subtotal: 299.99}}, "r")).toBe(false);
+    expect(qualifyingReferralOrder({status: "Delivered", riderId: "r", pricing: {subtotal: 300}}, "r")).toBe(true);
+    expect(qualifyingReferralOrder({status: "Delivered", riderId: "r"}, "r")).toBe(false);
+    // GST-inclusive restaurants: the item total the customer saw.
+    expect(referralItemTotalPaise({pricing: {subtotal: 286, markup: {listSubtotal: 300}}})).toBe(30_000);
+    // The bill's Item total is after the coupon: ₹350 food − ₹60 coupon = ₹290, so it does not count.
+    expect(qualifyingReferralOrder({status: "Delivered", riderId: "r", pricing: {subtotal: 350, discount: 60}}, "r")).toBe(false);
+    expect(referralItemTotalPaise({pricing: {subtotal: 330, discount: 20, markup: {listSubtotal: 360, discount: 25}}})).toBe(33_500);
+    expect(RIDER_REFERRAL_MIN_ITEM_TOTAL_PAISE).toBe(30_000);
   });
 
   it("does not count cancelled, refunded or test orders", async () => {

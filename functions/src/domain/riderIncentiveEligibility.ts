@@ -155,6 +155,9 @@ export function labelForRiderIncentiveCampaign(campaign: RiderRewardCampaign): s
   const startHour = Math.floor(slot.startMinute / 60);
   if (startHour >= 21 || startHour < 4) return "Late-night fee";
   if (startHour >= 4 && startHour < 7) return "Early-morning fee";
+  // Founder 17 Nov 2026: the 12–3 PM and 7–11 PM ₹10 extras read as rush fees, not "Surge fee".
+  if (startHour >= 11 && startHour < 15) return "Lunch rush fee";
+  if (startHour >= 19 && startHour < 21) return "Dinner rush fee";
   return "Surge fee";
 }
 

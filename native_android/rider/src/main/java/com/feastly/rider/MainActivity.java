@@ -414,6 +414,21 @@ public class MainActivity extends ComponentActivity {
     }
 
     private class RiderBridge {
+        /** Opens Android's share sheet (WhatsApp, SMS, ...). The WebView has no navigator.share. */
+        @JavascriptInterface public boolean shareText(final String title, final String text) {
+            if (text == null || text.trim().isEmpty() || text.length() > 2000) return false;
+            runOnUiThread(() -> {
+                if (!isTrustedPageLoaded()) return;
+                try {
+                    Intent send = new Intent(Intent.ACTION_SEND);
+                    send.setType("text/plain");
+                    send.putExtra(Intent.EXTRA_TEXT, text);
+                    if (title != null && !title.isEmpty()) send.putExtra(Intent.EXTRA_SUBJECT, title);
+                    startActivity(Intent.createChooser(send, title == null || title.isEmpty() ? "Share" : title));
+                } catch (Exception ignored) { }
+            });
+            return true;
+        }
         @JavascriptInterface public String getInstallReferralCode() {
             String code = getSharedPreferences(INSTALL_REFERRAL_PREFS, MODE_PRIVATE).getString("code", "");
             return code != null && code.matches("\\d{6}") ? code : "";

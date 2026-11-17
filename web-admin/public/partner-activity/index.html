@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delivery partner activity &middot; Savrivo Admin</title>
+<link rel="stylesheet" href="../assets/savrivo-admin.css?v=4">
+<style>
+  .pa { display: grid; gap: 16px; }
+  .pa .note { font-size: 12.5px; color: var(--text-soft); margin: 0; }
+  .pa table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .pa th, .pa td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--border); vertical-align: middle; }
+  .pa th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); border-top: 0; }
+  .pa .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .pa select, .pa input[type=date] { min-height: 38px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: inherit; font: inherit; }
+  .pa .map { position: relative; height: 340px; overflow: hidden; border-radius: 12px; border: 1px solid var(--border); background: #dbeafe; }
+  .pa .map img { position: absolute; width: 256px; height: 256px; }
+  .pa .map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pa .k-restaurant { color: #b45309; font-weight: 700; } .pa .k-drop { color: var(--success); font-weight: 700; }
+  .pa .k-idle { color: var(--danger, #d92d20); font-weight: 700; } .pa .k-stop { color: var(--text-soft); }
+  .pa .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); margin-right: 6px; }
+  .pa .dot.on { background: var(--success); }
+</style>
+</head>
+<body>
+<div class="shell" id="app-shell" hidden>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="mark">S</div>
+      <div><strong>Savrivo</strong><span>Web Admin</span></div>
+    </div>
+    <div class="sidebar-section-label">Sections</div>
+    <a class="sidebar-link" href="../analytics/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+      Customer insights
+    </a>
+    <a class="sidebar-link" href="../riders/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
+      Rider review
+    </a>
+    <a class="sidebar-link" href="../rider-rewards/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Rider Rewards
+    </a>
+    <a class="sidebar-link" href="../finance/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20M7 15h3"/></svg>
+      Finance
+    </a>
+    <a class="sidebar-link" href="../servers/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>
+      Servers
+    </a>
+    <a class="sidebar-link active" href="./">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+      Partner activity
+    </a>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-account">
+      <div class="who" id="sidebar-who"></div>
+      <button class="sidebar-signout" id="signout-btn">Sign out</button>
+    </div>
+  </nav>
+  <div class="main">
+    <header class="topbar"><div><h1>Delivery partner activity</h1><p>Pre-launch watching of delivery partners who agreed: online time, restaurant waits, rides, drops and idle time.</p></div></header>
+    <main class="content pa">
+      <section class="card card-pad">
+        <h2 style="margin:0 0 6px;font-size:16px">Who is watched</h2>
+        <p class="note">Switch someone on only after they agree in writing (for example a WhatsApp "Yes"). Recording starts within a minute while they are online; positions are deleted after 60 days, daily totals are kept. Only approved delivery partners are listed.</p>
+        <div id="partners" style="margin-top:12px">Loading&hellip;</div>
+      </section>
+      <section class="card card-pad" id="day-card" hidden>
+        <div class="controls"><h2 style="margin:0;font-size:16px" id="day-title"></h2><span style="flex:1"></span><input type="date" id="day-date"><button class="btn btn-secondary btn-sm" id="day-reload">Refresh</button></div>
+        <div class="stat-grid" id="stats" style="margin-top:14px"></div>
+        <p class="note" style="margin-top:10px">Read from movement (positions about every 15 seconds): a stop is 1+ minute in one place. A Scraveit store, or a spot he stops at again later the same day (one visit 3+ minutes), counts as a restaurant; the next stop of up to 8 minutes is a drop; other stops of 10+ minutes count as idle. The spot where he went online is never a restaurant. Drop locations are not shown.</p>
+        <p id="last-seen" style="margin:12px 0 0;font-size:14px"></p><div class="map" id="map" style="margin-top:8px"></div>
+        <h3 style="margin:16px 0 6px;font-size:14px">Trips</h3><div id="trips"></div>
+        <h3 style="margin:16px 0 6px;font-size:14px">Stops</h3><div id="stops"></div>
+        <h3 style="margin:20px 0 6px;font-size:14px">Past days</h3><p class="note" style="margin:0 0 6px">One line per day, saved every night and kept (positions are deleted after 60 days). Tap a date to open it.</p><div id="history"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<div id="toast-stack"></div>
+<script type="module" src="./activity.js?v=3"></script>
+</body>
+</html>

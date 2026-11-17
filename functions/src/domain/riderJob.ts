@@ -152,8 +152,13 @@ export function buildRiderJobProjection(
  * which is always 100% the rider's. Orders priced before the economics engine
  * keep the delivery fee as their trip pay, exactly as before.
  */
-export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "economics">, waitingPaise = 0): {
+export function riderPayoutBreakdown(
+  order: Pick<SavrivoOrder, "pricing" | "economics"> & {pricingContext?: Pick<SavrivoOrder["pricingContext"], "distanceKm">},
+  waitingPaise = 0,
+): {
   tripPay: number;
+  /** Restaurant-to-customer distance the delivery fee was priced on (founder 17 Nov 2026: "3.3 km · ₹20 + ₹5/km" on the offer). */
+  feeKm?: number;
   /** Waiting at the restaurant, paid by Scraveit, settled at delivery. */
   waitPay?: number;
   incentives: number;
@@ -169,8 +174,10 @@ export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "econ
   const tip = rider ? rider.tipPaise / 100 : Number(order.pricing.tip) || 0;
   const trip = rider?.tripPay;
   const waitPay = Math.max(0, Math.round(waitingPaise)) / 100;
+  const km = Number(order.pricingContext?.distanceKm);
   return {
-    tripPay, ...(waitPay > 0 ? {waitPay} : {}), incentives, tip,
+    tripPay, ...(Number.isFinite(km) && km >= 0 ? {feeKm: Math.round(km * 100) / 100} : {}),
+    ...(waitPay > 0 ? {waitPay} : {}), incentives, tip,
     total: Math.round((tripPay + waitPay + incentives + tip) * 100) / 100,
     ...(trip ? {components: {
       basePay: trip.basePickupPaise / 100,
@@ -186,7 +193,7 @@ export function riderPayoutBreakdown(order: Pick<SavrivoOrder, "pricing" | "econ
 }
 
 /** Headline figure on the rider's offer card: trip pay plus bonuses, before tip. */
-export function riderOfferPayout(order: Pick<SavrivoOrder, "pricing" | "economics">, waitingPaise = 0): number {
+export function riderOfferPayout(order: Parameters<typeof riderPayoutBreakdown>[0], waitingPaise = 0): number {
   const breakdown = riderPayoutBreakdown(order, waitingPaise);
   return Math.round((breakdown.tripPay + (breakdown.waitPay ?? 0) + breakdown.incentives) * 100) / 100;
 }

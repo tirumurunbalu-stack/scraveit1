@@ -285,7 +285,7 @@ describe("rider rewards engine", () => {
       const historical = deliveryJournal(`order-${index}`, now - (25 - index) * 60_000);
       database.seed(ledgerJournalPath(historical.journalId), historical);
       // The referral counts delivered orders, not ledger rows.
-      database.seed(`orders/order-${index}`, {riderId, status: "Delivered", deliveredAt: now - (25 - index) * 60_000});
+      database.seed(`orders/order-${index}`, {riderId, status: "Delivered", pricing: {subtotal: 320}, deliveredAt: now - (25 - index) * 60_000});
     }
     const delivery = deliveryJournal("order-25", now);
     database.seed(ledgerJournalPath(delivery.journalId), delivery);
@@ -303,7 +303,9 @@ describe("rider rewards engine", () => {
       campaign: sampleCampaign(now),
     }, database, () => now);
 
-    const order = deliveredOrder("order-25", now);
+    const base = deliveredOrder("order-25", now);
+    // Referral counting needs a ₹300+ item total (founder 17 Nov 2026).
+    const order = {...base, pricing: {...base.pricing, subtotal: 320}};
     const first = await evaluateRiderRewardsForDeliveredOrder(order, database, () => now);
     const second = await evaluateRiderRewardsForDeliveredOrder(order, database, () => now);
 

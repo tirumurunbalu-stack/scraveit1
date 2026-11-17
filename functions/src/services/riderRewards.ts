@@ -4905,8 +4905,24 @@ function inviterCountsFrom(value: unknown): {awarded: number; open: number} {
   };
 }
 
-function qualifyingReferralOrder(order: Record<string, unknown>, riderId: string): boolean {
+/** Founder 17 Nov 2026: only orders whose bill "Item total" is ₹300+ count towards a referral. */
+export const RIDER_REFERRAL_MIN_ITEM_TOTAL_PAISE = 30_000;
+
+/** The bill's "Item total" line: food as the customer saw it (GST-inclusive for markup stores) less the coupon, before fees. */
+export function referralItemTotalPaise(order: Record<string, unknown>): number {
+  const pricing = record(order.pricing);
+  const markup = record(pricing.markup);
+  const listed = Number(markup.listSubtotal);
+  const hasMarkup = Number.isFinite(listed) && listed > 0;
+  const food = hasMarkup ? listed : Number(pricing.subtotal);
+  const off = Number(hasMarkup ? markup.discount : pricing.discount);
+  const rupees = (Number.isFinite(food) ? food : 0) - (Number.isFinite(off) && off > 0 ? off : 0);
+  return rupees > 0 ? Math.round(rupees * 100) : 0;
+}
+
+export function qualifyingReferralOrder(order: Record<string, unknown>, riderId: string): boolean {
   if (order.status !== "Delivered") return false;
+  if (referralItemTotalPaise(order) < RIDER_REFERRAL_MIN_ITEM_TOTAL_PAISE) return false;
   if (identifier(order.riderId) !== riderId) return false;
   if (order.paymentState === "refunded") return false;
   if (order.testOrder === true || order.isTest === true) return false;

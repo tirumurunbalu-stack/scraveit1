@@ -255,7 +255,10 @@ describe("checkout rider incentive fee (customer checkout mirror of per-order bo
     }))).toBe("Early-morning fee");
     expect(labelForRiderIncentiveCampaign(perOrderBonus({
       timeSlots: [{label: "Lunch", startMinute: minute("12:00"), endMinute: minute("15:00")}],
-    }))).toBe("Surge fee");
+    }))).toBe("Lunch rush fee");
+    expect(labelForRiderIncentiveCampaign(perOrderBonus({
+      timeSlots: [{label: "Dinner", startMinute: minute("19:00"), endMinute: minute("23:00")}],
+    }))).toBe("Dinner rush fee");
     expect(labelForRiderIncentiveCampaign(perOrderBonus({
       timeSlots: [{label: "Snacks", startMinute: minute("17:00"), endMinute: minute("19:00")}],
     }))).toBe("Surge fee");
@@ -279,9 +282,10 @@ describe("checkout rider incentive fee (customer checkout mirror of per-order bo
       timeSlots: [{label: "Snacks", startMinute: minute("17:00"), endMinute: minute("19:00")}],
     });
     const items = resolveCheckoutRiderIncentiveLineItems([morning, lunch, snacks]);
-    expect(items).toHaveLength(2);
+    expect(items).toHaveLength(3);
     expect(items.find((item) => item.label === "Early-morning fee")?.amountPaise).toBe(1_000);
-    expect(items.find((item) => item.label === "Surge fee")?.amountPaise).toBe(2_500);
+    expect(items.find((item) => item.label === "Lunch rush fee")?.amountPaise).toBe(1_000);
+    expect(items.find((item) => item.label === "Surge fee")?.amountPaise).toBe(1_500);
   });
 
   it("returns no line items when nothing matches", () => {

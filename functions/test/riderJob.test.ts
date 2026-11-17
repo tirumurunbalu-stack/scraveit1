@@ -136,3 +136,13 @@ describe("rider job privacy projection", () => {
     expect(projection).not.toHaveProperty("customerPhone");
   });
 });
+
+describe("delivery distance on the offer pay", () => {
+  it("sends the priced restaurant-to-customer km with the trip pay", () => {
+    const o = {...order("Assigned"), pricing: {deliveryFee: 37}, pricingContext: {distanceKm: 3.3049, platformFeeRule: "x", weatherSeverity: "", surgeActiveOrders: 0, pricedAt: 1}} as SavrivoOrder;
+    expect(buildRiderJobProjection(o).payoutBreakdown).toMatchObject({tripPay: 37, feeKm: 3.3});
+  });
+  it("leaves the km out for orders priced without it", () => {
+    expect(buildRiderJobProjection(order("Assigned")).payoutBreakdown).not.toHaveProperty("feeKm");
+  });
+});

@@ -78,6 +78,8 @@
     outlet: '<path d="M4 10 5.5 4h13L20 10"/><path d="M5 10v10h14V10M4 10h16"/><path d="M10 20v-5h4v5"/>',
     insights: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3Z"/>',
     out: '<path d="M15 4h4v16h-4M10 17l5-5-5-5M15 12H3"/>',
+    dine: '<path d="M3 11h18M5 11v8M19 11v8M8 7h8a2 2 0 0 1 2 2v2H6V9a2 2 0 0 1 2-2Z"/>',
+    meals: '<path d="M3 13h18a9 9 0 0 1-18 0Z"/><path d="M12 4v5M8 6v3M16 6v3"/>',
     staff: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/>',
   };
   const svg = (k) => '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICON[k] + "</svg>";
@@ -122,7 +124,7 @@
       '<div class="field"><label for="em">Email or staff ID</label><input class="input" id="em" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>' +
       '<div class="field"><label for="pw">Password</label><input class="input" id="pw" type="password" autocomplete="current-password" required></div>' +
       '<button class="btn primary block" type="submit">Sign in</button><div class="divider">or</div><button class="btn block" type="button" data-act="google">Continue with Google</button>' +
-      '<p class="small">Staff: use the staff ID and password from your outlet owner. Don\'t have an outlet yet? Download the Scraveit Restaurant app to apply. <a href="/grievance">Help</a></p></form></div>';
+      '<p class="small">Staff: use the staff ID and password from your outlet owner. <a href="/grievance">Help</a></p><p class="small" style="margin:0">New outlet? <button type="button" class="linklike" style="color:var(--brand)" data-act="signup">Create an account and register</button></p><p class="small" style="margin:0"><button type="button" class="linklike" style="color:var(--brand)" data-act="lang" translate="no">' + (window.ScraveitLanguage && ScraveitLanguage.get() === "te" ? "English" : "తెలుగు") + '</button></p></form></div>';
   }
   document.addEventListener("submit", async (e) => {
     if (e.target.id === "signin") {
@@ -131,12 +133,20 @@
       const raw = document.getElementById("em").value.trim(), em = raw.includes("@") ? raw : raw.toLowerCase() + "@" + STAFF_DOMAIN, pw = document.getElementById("pw").value;
       try { await auth.signInWithEmailAndPassword(em, pw); } catch (err) { screenSignIn(friendly(err)); }
     }
+    if (e.target.id === "signup") { e.preventDefault(); createAccount(e.target); }
     if (e.target.id === "item-form") { e.preventDefault(); saveItem(e.target); }
     if (e.target.id === "freebie-form") { e.preventDefault(); submitFreebie(e.target); }
     if (e.target.id === "pairing-form") { e.preventDefault(); submitPairing(e.target); }
     if (e.target.id === "discount-form") { e.preventDefault(); submitDiscount(e.target); }
     if (e.target.id === "tds-claim-form") { e.preventDefault(); sendTdsClaim(e.target); }
     if (e.target.id === "staff-form") { e.preventDefault(); saveStaff(e.target); }
+    if (e.target.id === "bank-form") { e.preventDefault(); saveBank(e.target); }
+    if (e.target.id === "outlet-form") { e.preventDefault(); saveOutlet(e.target); }
+    if (e.target.id === "tax-form") { e.preventDefault(); saveTax(e.target); }
+    if (e.target.id === "dine-form") { e.preventDefault(); saveDine(e.target, {print: e.submitter && e.submitter.value === "print"}); }
+    if (e.target.id === "meal-plan-form") { e.preventDefault(); saveMealPlan(e.target); }
+    if (e.target.id === "deletion-form") { e.preventDefault(); submitDeletion(e.target); }
+    if (e.target.id === "chat-form") { e.preventDefault(); sendChat(e.target); }
     if (e.target.id === "staff-pass-form") { e.preventDefault(); setStaffPassword(e.target); }
     if (e.target.id === "reject-form") { e.preventDefault(); const f = e.target; setStatus(f.dataset.id, "Cancelled", f.reason.value === "Other" ? (f.note.value || "Other") : f.reason.value); closeModal(); }
   });
@@ -165,6 +175,7 @@
   const can = (p) => { const m = outlet() && outlet().member; return isManager() || !!(m && m.active === true && m.permissions && m.permissions[p] === true); };
   function selectOutlet(rid) {
     state.rid = rid; try { localStorage.setItem("scraveit.partner.rid", rid); } catch (_) { /* ignore */ }
+    stopDine(); MP.plans = null; MP.rid = "";
     state.menu.items = null; state.menu.arrange = null; state.offers.data = null; state.fin = {tab: state.fin.tab, week: "", q: "", utrQ: "", tax: {}, wk: {}, mon: {}, month: "", showAll: false};
     state.ads = {data: null, loaded: false, loading: false, error: "", start: "", days: 7, busy: false}; state.staff = {data: null, rid: "", loading: false, error: "", busy: false, share: ""}; state.reports.data = null; state.history.list = null; state.seenNew = new Set(); state.firstLiveLoad = true;
     startLive(); render();
@@ -228,7 +239,7 @@
       (awaitingPayment(o) ? '<div class="notice warn">The customer\'s online payment isn\'t confirmed yet. You can accept once it is.</div>' : "") +
       '<div class="row"><button class="btn danger grow" data-act="reject" data-id="' + h(id) + '">Reject</button><button class="btn good grow" data-act="status" data-to="Accepted" data-id="' + h(id) + '"' + (awaitingPayment(o) || !can("orders") ? " disabled" : "") + ">Accept order</button></div></div></div>";
   }
-  function closeModal() { modalRoot.innerHTML = ""; state.alert = null; state.staff.share = ""; clearInterval(ringTimer); if (state.page === "orders") render(); }
+  function closeModal() { if (chatUnsub) { chatUnsub(); chatUnsub = null; } chatCtx = null; modalRoot.innerHTML = ""; state.alert = null; state.staff.share = ""; clearInterval(ringTimer); if (state.page === "orders") render(); }
   async function setStatus(id, to, reason) {
     const o = state.live.find((x) => orderId(x) === id) || (state.history.list || []).find((x) => orderId(x) === id);
     if (!o) return;
@@ -319,6 +330,48 @@
     if (!soundTurn("late", LATE_REPEAT_MS - 2000)) return;
     playLateVoice();
   }
+
+  // ---------- order chat (same orderChats records as the Restaurant app) ----------
+  let chatUnsub = null, chatCtx = null;
+  const maskPhones = (v) => String(v || "").replace(/(?:\+?91[\s.()-]*)?[6-9](?:[\s.()-]*\d){9}/g, "[phone number hidden]");
+  function chatButtons(o) {
+    if (!can("orders")) return "";
+    const id = h(orderId(o));
+    return '<button class="btn small" data-act="chat" data-id="' + id + '" data-channel="customerRestaurant">💬 Customer</button>' +
+      (o.riderId ? '<button class="btn small" data-act="chat" data-id="' + id + '" data-channel="restaurantRider">💬 Delivery partner</button>' : "");
+  }
+  function drawChat() {
+    const box = document.getElementById("chat-thread"); if (!box || !chatCtx) return;
+    const list = chatCtx.messages;
+    box.innerHTML = list.length ? list.map((m) => '<div class="chat-msg' + (m.senderRole === "restaurant" ? " mine" : "") + '"><strong>' + h(m.senderRole === "restaurant" ? "You" : m.senderRole === "rider" ? "Delivery partner" : m.senderRole === "customer" ? "Customer" : m.senderRole || "Scraveit") + "</strong><p>" + h(m.body || "") + '</p><span class="small muted">' + h(clock(Number(m.at || 0))) + "</span></div>").join("")
+      : '<div class="small muted" style="text-align:center;padding:24px 0">No messages yet. Use chat to sort out the order.</div>';
+    box.scrollTop = box.scrollHeight;
+  }
+  function openChat(id, channel) {
+    const o = state.live.find((x) => orderId(x) === id) || (state.history.list || []).find((x) => orderId(x) === id); if (!o) return;
+    if (chatUnsub) { chatUnsub(); chatUnsub = null; }
+    chatCtx = {order: o, channel, messages: []};
+    const who = channel === "customerRestaurant" ? "customer" : "delivery partner";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="chat-form"><header><h2>Chat with ' + who + ' · #' + h(shortId(o)) + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="notice info small" style="margin:0">Phone numbers are not shown. Any phone number typed here is hidden before sending.</div>' +
+      '<div class="chat-thread" id="chat-thread"><div class="spinner"></div></div>' +
+      '<div class="row"><input class="input grow" name="message" maxlength="800" placeholder="Type a message" required autocomplete="off"><button class="btn primary" type="submit">Send</button></div></form></div>';
+    chatUnsub = db.collection("orderChats").where("orderId", "==", orderId(o)).where("channel", "==", channel).orderBy("at", "asc")
+      .onSnapshot((snap) => { if (!chatCtx) return; chatCtx.messages = snap.docs.map((d) => d.data()); drawChat(); }, (e) => { const b = document.getElementById("chat-thread"); if (b) b.innerHTML = '<div class="notice warn">' + h(friendly(e)) + "</div>"; });
+    setTimeout(() => { const i = document.querySelector("#chat-form input[name=message]"); if (i) i.focus(); }, 50);
+  }
+  async function sendChat(form) {
+    if (!chatCtx) return;
+    const o = chatCtx.order, original = String(form.elements.message.value || "").trim(); if (!original) return;
+    const body = maskPhones(original).slice(0, 800), mid = "m_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const record = {id: mid, orderId: orderId(o), customerId: String(o.userId || o.customerId || ""), restaurantId: o.restaurantId || state.rid, riderId: o.riderId || "",
+      channel: chatCtx.channel, senderId: state.user.uid, senderRole: "restaurant", body, masked: body !== original, at: Date.now()};
+    try {
+      await db.collection("orderChats").doc(orderId(o) + "_" + chatCtx.channel + "_" + mid).set(record);
+      form.elements.message.value = "";
+      if (record.masked) toast("A phone number was hidden for privacy.");
+    } catch (e) { toast(friendly(e), true); }
+  }
   function orderCard(o) {
     const g = groupOf(o), id = orderId(o), mins = Math.floor((Date.now() - placedAt(o)) / 60000), e = earnings(o), busy = state.busy === id;
     let actions = "";
@@ -326,6 +379,7 @@
     else if (PREPARING.includes(o.status)) actions = readyButton(o, busy);
     else if (riderPhotoPickup(o)) actions = pickupNote(o);
     if (g !== "new") actions += '<button class="btn small" data-act="print-order" data-id="' + h(id) + '">🖨️ Print</button>';
+    if (g !== "new") actions += chatButtons(o);
     const rider = o.riderName ? "<strong>" + h(o.riderName) + "</strong><div class=\"small muted\">" + h(g === "ready" && o.riderArrivalVerified === true ? "At your restaurant" : o.status) + "</div>" : g === "ready" ? '<div class="small muted">Finding a delivery partner…</div>' : "";
     return '<article class="card order"><div class="band' + (g === "new" ? " new" : "") + '">' + (g === "new" ? "NEW ORDER" : "SCRAVEIT DELIVERY") + " · " + h(o.status) + "</div>" +
       '<div class="o-info"><div class="oid">#' + h(shortId(o)) + '</div><div class="small muted">Placed ' + h(clock(placedAt(o))) + ' · <span class="timer">' + mins + ' min ago</span></div><p style="margin:10px 0 2px"><strong>' + h(firstName(o)) + "</strong></p>" +
@@ -591,6 +645,108 @@
     return head + server + (F.tab === "taxes" ? pageTaxes() : F.tab === "utr" ? pageUtr() : F.tab === "report" ? pageMonthly() : F.tab === "terms" ? pageTerms() : pagePayouts());
   }
 
+  // Founder 17 Nov 2026: weekly payouts go through Cashfree and the transfer fee of the
+  // chosen method is taken from the payout, so the owner sees each method's fee before
+  // choosing. Same table as the server and the apps (settings/payoutFees).
+  const PAYOUT_FEE_DEFAULT = {deductFromPayout: true, gstBps: 1800, bands: [{upToPaise: 100000, neftPaise: 300, impsPaise: 600, upiPaise: 600}, {upToPaise: 2500000, neftPaise: 500, impsPaise: 800, upiPaise: 800}, {upToPaise: 0, neftPaise: 800, impsPaise: 1500, upiPaise: 1500}]};
+  let payoutFeesAsked = false, payoutFees = null;
+  function payoutFeeTable() {
+    if (!payoutFeesAsked) {
+      payoutFeesAsked = true;
+      db.collection("settings").doc("payoutFees").get().then((snap) => {
+        const d = snap.exists ? snap.data() : null;
+        if (!d || !Array.isArray(d.bands) || !d.bands.length) return;
+        payoutFees = {deductFromPayout: d.deductFromPayout !== false, gstBps: Number(d.gstBps) || 0,
+          bands: d.bands.map((b) => ({upToPaise: Number(b.upToPaise) || 0, neftPaise: Number(b.neftPaise) || 0, impsPaise: Number(b.impsPaise) || 0, upiPaise: Number(b.upiPaise) || 0}))
+            .sort((a, b) => (a.upToPaise || 1e15) - (b.upToPaise || 1e15))};
+        render();
+      }, () => {});
+    }
+    return payoutFees || PAYOUT_FEE_DEFAULT;
+  }
+  function payoutFeePaise(method, amountPaise, t) {
+    const b = t.bands.find((x) => !x.upToPaise || amountPaise <= x.upToPaise) || t.bands[t.bands.length - 1];
+    if (!b) return 0;
+    const base = method === "neft" ? b.neftPaise : method === "imps" ? b.impsPaise : b.upiPaise;
+    return Math.round(base * (10000 + t.gstBps) / 10000);
+  }
+  function payMethodCard() {
+    const p = state.fin.profile || {};
+    const t = payoutFeeTable(), example = 15000, ex = example * 100, owner = isOwner(), busy = state.fin.methodSaving;
+    const hasBank = !!String(p.bankAccountNumber || "").trim() && !!p.bankIfsc, hasUpi = !!String(p.upiId || "").trim();
+    const pick = ["neft", "imps", "upi"].includes(p.preferredMethod) ? p.preferredMethod : "neft";
+    const rows = [["neft", "Bank · NEFT", "Reaches the same day · lowest fee", hasBank, "Add your bank account below first"],
+      ["imps", "Bank · IMPS", "Reaches in minutes", hasBank, "Add your bank account below first"],
+      ["upi", "UPI", "Reaches in minutes", hasUpi, "Add your UPI ID below first"]];
+    return '<div class="card paymethod-card"><div class="row between"><h2 style="margin:0">How you get paid</h2><span class="small muted">' +
+      (owner ? "Pick one · see the fee first" : "Only the outlet owner can change this") + '</span></div><div class="paymethods">' +
+      rows.map(([m, title, speed, ready, need]) => {
+        let fee;
+        if (!t.deductFromPayout) fee = '<span class="pm-fee">No fee · Scraveit pays it</span>';
+        else {
+          const bands = t.bands.map((b, i) => inr(payoutFeePaise(m, b.upToPaise || ((t.bands[i - 1] || {}).upToPaise || 0) + 1, t) / 100) + (b.upToPaise ? " up to " + inr(b.upToPaise / 100) : " above")).join(" · ");
+          const f = payoutFeePaise(m, ex, t);
+          fee = '<span class="pm-fee">Fee ' + bands + '</span><span class="pm-eg">On ' + inr(example) + " you get " + inr((ex - f) / 100) + " (fee " + inr(f / 100) + ")</span>";
+        }
+        const on = m === pick && (hasBank || hasUpi), off = !owner || busy || !ready || on;
+        return '<button type="button" class="paymethod' + (on ? " on" : "") + '" data-act="pay-method" data-id="' + m + '"' + (off ? " disabled" : "") + '>' +
+          '<span class="pm-dot"></span><span class="pm-body"><strong>' + title + (on ? ' <span class="pm-chosen">Chosen</span>' : "") + '</strong><span class="pm-speed">' + speed + "</span>" + fee +
+          (!ready ? '<span class="pm-need">' + need + "</span>" : "") + "</span></button>";
+      }).join("") + '</div><p class="small muted" style="margin:10px 0 0">The fee is the bank transfer charge, taken from your weekly payout. GST included.</p>' + bankForm(p, hasBank, hasUpi, owner) + "</div>";
+  }
+  function bankForm(p, hasBank, hasUpi, owner) {
+    const F = state.fin, open = F.bankEdit || (owner && !hasBank && !hasUpi), acct = String(p.bankAccountNumber || "");
+    const summary = (hasBank ? "Bank ••••" + h(acct.slice(-4)) + (p.bankIfsc ? " · " + h(p.bankIfsc) : "") : "No bank account") + " · " + (hasUpi ? "UPI " + h(p.upiId) : "No UPI ID");
+    if (!owner) return '<p class="small muted" style="margin:8px 0 0">' + summary + "</p>";
+    if (!open) return '<div class="row between bank-summary"><span class="small">' + summary + '</span><button type="button" class="btn small" data-act="bank-edit">Edit bank / UPI</button></div>';
+    const f = (name, label, value, extra) => '<div class="field"><label for="bk-' + name + '">' + label + '</label><input class="input" id="bk-' + name + '" name="' + name + '" value="' + h(value || "") + '"' + (extra || "") + "></div>";
+    return '<form id="bank-form" class="bank-form"><h3 style="margin:0">Bank and UPI details</h3><p class="small muted" style="margin:0">Payouts go here every week. Fill the bank account, the UPI ID, or both.</p><div class="bank-grid">' +
+      f("holder", "Account holder name", p.bankAccountHolderName || p.beneficiaryName || (outlet() && outlet().doc && outlet().doc.name) || "", ' autocomplete="off"') +
+      f("bankName", "Bank name", p.bankName, ' placeholder="HDFC Bank"') +
+      f("account", "Account number", acct, ' inputmode="numeric" autocomplete="off"') +
+      f("account2", "Account number again", acct, ' inputmode="numeric" autocomplete="off"') +
+      f("ifsc", "IFSC", p.bankIfsc, ' placeholder="HDFC0001234" autocapitalize="characters" autocomplete="off"') +
+      f("upi", "UPI ID (optional)", p.upiId, ' placeholder="restaurant@okhdfcbank" autocapitalize="none" autocomplete="off"') +
+      '</div><div class="row" style="gap:8px"><button class="btn primary"' + (F.bankSaving ? " disabled" : "") + ">" + (F.bankSaving ? "Saving…" : "Save details") + "</button>" +
+      (hasBank || hasUpi ? '<button type="button" class="btn" data-act="bank-cancel">Cancel</button>' : "") + "</div></form>";
+  }
+  async function saveBank(form) {
+    const F = state.fin; if (!isOwner() || F.bankSaving) return;
+    const v = (n) => String(form.elements[n].value || "").trim();
+    const holder = v("holder"), bankName = v("bankName"), account = v("account").replace(/\s+/g, ""), account2 = v("account2").replace(/\s+/g, ""), ifsc = v("ifsc").toUpperCase(), upi = v("upi");
+    if (!account && !upi) return toast("Add a bank account or a UPI ID.", true);
+    if (account || ifsc) {
+      if (!/^[0-9]{6,20}$/.test(account)) return toast("Enter a valid bank account number (6–20 digits).", true);
+      if (account !== account2) return toast("The two account numbers don't match.", true);
+      if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) return toast("Enter a valid IFSC, like HDFC0001234.", true);
+      if (!/^[A-Za-z][A-Za-z .]{1,99}$/.test(holder)) return toast("Enter the account holder name as on the bank account.", true);
+    }
+    if (upi && !/^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,64}$/.test(upi)) return toast("Enter a valid UPI ID, like name@okhdfcbank.", true);
+    const old = F.profile || {}, hasBank = !!account, method = old.preferredMethod;
+    const preferredMethod = !hasBank ? "upi" : method === "upi" && !upi ? "neft" : ["neft", "imps", "upi"].includes(method) ? method : "neft";
+    const changes = {restaurantId: state.rid, bankAccountHolderName: holder, bankAccountNumber: account, bankIfsc: ifsc, bankName, upiId: upi, preferredMethod,
+      verificationStatus: preferredMethod === "upi" ? "upi_ready" : "bank_ready", updatedAt: Date.now(), updatedBy: state.user.uid};
+    F.bankSaving = true; render();
+    try {
+      await db.collection("restaurantPayoutProfiles").doc(state.rid).set(changes, {merge: true});
+      F.profile = Object.assign({}, old, changes); F.bankEdit = false;
+      toast("Bank details saved. Weekly payouts go here.");
+    } catch (e) { toast(friendly(e), true); }
+    F.bankSaving = false; render();
+  }
+  async function savePayMethod(method) {
+    const F = state.fin, p = F.profile;
+    if (!p || !isOwner() || F.methodSaving || p.preferredMethod === method) return;
+    F.methodSaving = true; render();
+    try {
+      const changes = {preferredMethod: method, updatedAt: Date.now(), updatedBy: state.user.uid};
+      await db.collection("restaurantPayoutProfiles").doc(state.rid).update(changes);
+      F.profile = Object.assign({}, p, changes);
+      toast("Payouts will now be sent by " + (method === "upi" ? "UPI" : method.toUpperCase()) + ".");
+    } catch (e) { toast(friendly(e), true); }
+    F.methodSaving = false; render();
+  }
+
   function pagePayouts() {
     const F = state.fin, W = weekRows(), s = F.settle, last = payouts().find((p) => p.status === "paid"), acct = payoutAccount();
     if (!F.week) F.week = String(W[1].start);
@@ -599,7 +755,7 @@
     return '<div class="kpis">' + kpiBox("This week so far", inr(W[0].net), W[0].orders.length + " delivered orders · after commission" + (F.stmt ? " and TDS" : "")) +
       kpiBox("Balance due to you", balance, !WEB_CHECK ? "From Scraveit's ledger" : !s ? "Couldn't load" : !s.complete ? "Being checked by Scraveit finance" : auto && auto.enabled && auto.scheduleLabel ? "Paid every " + h(auto.scheduleLabel.replace(/\s*\(Asia\/Kolkata\)$/, "")) : "Paid weekly") +
       kpiBox("Last payout", last ? inr(last.amount) : "—", last ? h(fullDay(last.at)) + (last.utr ? " · UTR " + h(last.utr) : "") : WEB_CHECK ? "No payouts yet" : "From Scraveit's ledger") +
-      kpiBox("Paid to", acct.label ? h(acct.label) : "Not set", acct.label ? h(acct.sub) : '<span style="color:var(--bad)">Add your bank account in the Restaurant app, or payouts are held</span>') + "</div>" +
+      kpiBox("Paid to", acct.label ? h(acct.label) : "Not set", acct.label ? h(acct.sub) : '<span style="color:var(--bad)">Add your bank account below, or payouts are held</span>') + "</div>" + payMethodCard() +
       '<div class="split fin"><div class="card" style="padding:0;overflow:auto"><div class="row between" style="padding:14px 16px"><h2 style="margin:0">Weekly payouts</h2><span class="small muted">Monday to Sunday · pick a week</span></div>' +
       '<table class="table"><thead><tr><th>Week</th><th class="num">Orders</th><th class="num">Item total</th><th class="num">Commission + GST</th><th class="num">TDS + TCS</th><th class="num">Your payout</th><th>Status</th></tr></thead><tbody>' +
       W.map((w) => '<tr class="clickable' + (w === sel ? " sel" : "") + '" data-act="fin-week" data-id="' + w.start + '"><td class="nowrap">' + h(dayLabel(w.start)) + " – " + h(dayLabel(w.end - DAY)) + '</td><td class="num">' + w.orders.length +
@@ -1193,6 +1349,38 @@
       body.map((r) => "<tr>" + r.map((c, i) => "<td" + (i ? ' class="num"' : "") + ">" + c + "</td>").join("") + "</tr>").join("") +
       (foot ? '<tr class="foot">' + foot.map((c, i) => "<td" + (i ? ' class="num"' : "") + "><strong>" + c + "</strong></td>").join("") + "</tr>" : "") + "</tbody></table>";
   }
+
+  // PAN, GSTIN and GST registration: the same fields as the app's "Tax details" (restaurantPayoutProfiles.taxProfile).
+  function taxEditModal() {
+    if (!isOwner()) return;
+    const p = state.fin.profile || {}, t = p.taxProfile || {}, opt = (v, l, cur) => '<option value="' + v + '"' + (cur === v ? " selected" : "") + ">" + l + "</option>";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="tax-form"><header><h2>Tax details</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="small muted" style="margin:0">Used for GST TCS and income-tax TDS on your sales, and on Scraveit\'s commission invoices to you. A GSTIN sets the State automatically.</p>' +
+      '<div class="field"><label for="tx-legal">Legal business name</label><input class="input" id="tx-legal" name="legal" maxlength="120" value="' + h(p.legalBusinessName || "") + '"></div>' +
+      '<div class="ol-grid"><div class="field"><label for="tx-pan">PAN</label><input class="input" id="tx-pan" name="pan" maxlength="10" placeholder="ABCDE1234F" style="text-transform:uppercase" value="' + h(p.panNumber || t.pan || "") + '" autocomplete="off"></div>' +
+      '<div class="field"><label for="tx-gstin">GSTIN</label><input class="input" id="tx-gstin" name="gstin" maxlength="15" placeholder="37ABCDE1234F1Z5" style="text-transform:uppercase" value="' + h(p.gstin || t.gstin || "") + '" autocomplete="off"></div>' +
+      '<div class="field"><label for="tx-reg">GST registration</label><select class="input" id="tx-reg" name="reg">' + opt("regular", "Regular GST", t.registrationType || "regular") + opt("composition", "Composition scheme", t.registrationType) + opt("unregistered_eco", "Not registered: enrolled for e-commerce (Notification 34/2023)", t.registrationType) + opt("unregistered", "Not registered", t.registrationType) + "</select></div>" +
+      '<div class="field"><label for="tx-enrol">E-commerce enrolment number</label><input class="input" id="tx-enrol" name="enrol" maxlength="20" value="' + h(t.ecoEnrolmentNo || "") + '" placeholder="Only if not GST-registered"></div>' +
+      '<div class="field"><label for="tx-entity">Business type</label><select class="input" id="tx-entity" name="entity">' + [["individual", "Individual / proprietor"], ["huf", "HUF"], ["firm", "Partnership firm"], ["llp", "LLP"], ["company", "Company"], ["trust", "Trust / society"], ["other", "Other"]].map(([v, l]) => opt(v, l, t.entityType || "individual")).join("") + "</select></div>" +
+      '<div class="field"><label for="tx-state">State</label><select class="input" id="tx-state" name="state">' + opt("37", "Andhra Pradesh (37)", t.stateCode || "37") + opt("36", "Telangana (36)", t.stateCode) + opt("33", "Tamil Nadu (33)", t.stateCode) + opt("29", "Karnataka (29)", t.stateCode) + "</select></div></div>" +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Save tax details</button></div></form></div>';
+  }
+  async function saveTax(form) {
+    if (!isOwner()) return;
+    const v = (n) => String(form.elements[n].value || "").trim(), pan = v("pan").toUpperCase(), gstin = v("gstin").toUpperCase(), reg = v("reg") || "regular", enrol = v("enrol");
+    if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return toast("Enter a valid PAN, like ABCDE1234F.", true);
+    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/.test(gstin)) return toast("Enter a valid GSTIN.", true);
+    if ((reg === "regular" || reg === "composition") && !gstin) return toast("Enter the GSTIN, or choose Not registered.", true);
+    if (reg === "unregistered_eco" && !enrol) return toast("Enter the e-commerce enrolment number from the GST portal.", true);
+    if (reg === "unregistered_eco" && !pan) return toast("A PAN is required for e-commerce enrolment.", true);
+    const old = state.fin.profile || {}, now = Date.now();
+    const taxProfile = {registrationType: reg, gstin, ecoEnrolmentNo: enrol, pan, panFurnished: Boolean(pan), entityType: v("entity") || "individual", stateCode: gstin ? gstin.slice(0, 2) : v("state") || "37", invoicePrefix: (old.taxProfile || {}).invoicePrefix || "", updatedAt: now};
+    const changes = {restaurantId: state.rid, legalBusinessName: v("legal"), panNumber: pan, gstin, taxProfile, updatedAt: now, updatedBy: state.user.uid};
+    try {
+      await db.collection("restaurantPayoutProfiles").doc(state.rid).set(changes, {merge: true});
+      state.fin.profile = Object.assign({}, old, changes); state.fin.tax = {}; closeModal(); toast("Tax details saved."); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
   function pageTaxes() {
     const F = state.fin, Q = quarterList(), q = Q.find((x) => x.key === F.q) || Q[0], T = F.tax[q.key];
     F.q = q.key;
@@ -1204,11 +1392,12 @@
     const gstin = S ? S.seller.gstin : String(prof.gstin || "").toUpperCase(), pan = S ? S.seller.panMasked : maskPan(prof.panNumber);
     const legal = (S && S.seller.legalName) || prof.legalBusinessName || "", year = S ? S.year : null, rate = year ? year.rateBps : 10, noPan = year ? year.noPanRateBps : 500;
     const warns = [];
-    if (!pan) warns.push("Add your PAN in the Scraveit Restaurant app (Profile → Bank and tax). Without a PAN, income-tax TDS is " + pct(noPan) + " of your sales instead of " + pct(rate) + ".");
+    if (!pan) warns.push("Add your PAN with “Edit tax details” below. Without a PAN, income-tax TDS is " + pct(noPan) + " of your sales instead of " + pct(rate) + ".");
     if (!gstin) warns.push("There's no GSTIN on file, so Scraveit's commission invoices are issued without one. If you're GST-registered, add it so the invoices reach your GSTR-2B.");
     const details = '<div class="card"><h2>Your tax details</h2><div class="facts"><div><span>Legal name</span><strong>' + h(legal || "Not given") + "</strong></div><div><span>GSTIN</span><strong>" + h(gstin || "Not registered") +
       "</strong></div><div><span>PAN</span><strong>" + h(pan || "Not given") + "</strong></div><div><span>Scraveit's GSTIN</span><strong>" + h((I && I.gstin) || "—") + "</strong></div></div>" +
       warns.map((w) => '<div class="notice warn small" style="margin-top:10px">' + h(w) + "</div>").join("") +
+      (isOwner() ? '<div class="row" style="margin-top:10px"><button class="btn" data-act="tax-edit">Edit tax details</button></div>' : "") +
       (T.err ? '<div class="notice warn small" style="margin-top:10px">Invoice numbers and TDS/TCS didn\'t load: ' + h(T.err) + "</div>" : "") +
       (S && !S.gstActive ? '<div class="notice info small" style="margin-top:10px">Scraveit isn\'t charging GST yet, so no GST invoices have been issued and nothing is reported under section 9(5) for this period.</div>' : "") + "</div>";
 
@@ -1300,7 +1489,7 @@
   // ---------- menu ----------
   async function loadMenu() {
     const M = state.menu; M.loading = true; M.arrange = null; render();
-    try { M.items = (await db.collection("menus").doc(state.rid).collection("items").get()).docs.map((d) => Object.assign({id: d.id}, d.data())).filter((i) => i.archived !== true); } catch (e) { toast(friendly(e), true); M.items = []; }
+    try { const all = (await db.collection("menus").doc(state.rid).collection("items").get()).docs.map((d) => Object.assign({id: d.id}, d.data())); M.items = all.filter((i) => i.archived !== true); M.archived = all.filter((i) => i.archived === true); } catch (e) { toast(friendly(e), true); M.items = []; }
     M.loading = false; render();
   }
   const itemImage = (i) => String(i.imageUrl || i.image || "");
@@ -1328,7 +1517,7 @@
     const moves = (kind, i, n) => '<span class="moves">' + [["top", "Move to the top", "⤒", i === 0], ["up", "Move up", "↑", i === 0], ["down", "Move down", "↓", i === n - 1]].map((m) =>
       '<button class="mv" type="button" data-act="mv" data-kind="' + kind + '" data-i="' + i + '" data-to="' + m[0] + '" title="' + m[1] + '" aria-label="' + m[1] + '"' + (m[3] ? " disabled" : "") + ">" + m[2] + "</button>").join("") + "</span>";
     const bar = !editable ? "" : A ? '<div class="card row between arrange-bar"><span class="small">' + (M.cat ? "Move the dishes in <strong>" + h(M.cat) + "</strong>, or pick another category." : "Move categories with ⤒ ↑ ↓. Pick a category to move its dishes.") + '</span><div class="row"><button class="btn" data-act="arrange-cancel">Cancel</button><button class="btn primary" data-act="arrange-save"' + (A.dirty && !A.saving ? "" : " disabled") + ">" + (A.saving ? "Saving…" : "Save order") + "</button></div></div>" :
-      (M.items.length > 1 ? '<div class="row" style="justify-content:flex-end"><button class="btn" data-act="arrange">Arrange menu</button></div>' : "");
+      '<div class="row" style="justify-content:flex-end;gap:8px"><button class="btn primary" data-act="item-new">+ Add ' + (sellsPacked() ? "product" : "dish") + "</button>" + ((M.archived || []).length ? '<button class="btn" data-act="show-archived">Archived (' + M.archived.length + ")</button>" : "") + (M.items.length > 1 ? '<button class="btn" data-act="arrange">Arrange menu</button>' : "") + "</div>";
     return '<div class="card score"><svg class="ring" viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="' + R + '"/><circle class="fg" cx="50" cy="50" r="' + R + '" stroke-dasharray="' + C + '" stroke-dashoffset="' + C * (1 - s.score / 100) + '"/><text x="50" y="58" text-anchor="middle">' + s.score + "%</text></svg>" +
       '<div><h2>Menu health</h2>' + (s.tips.length ? '<ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px">' + s.tips.map((t) => "<li>" + h(t) + "</li>").join("") + "</ul>" : '<p class="muted" style="margin:0">Your menu looks great: photos, descriptions and options are all in place.</p>') + "</div></div>" +
       (editable ? "" : '<div class="notice warn">You can view the menu. Ask the outlet owner for menu permission to change it.</div>') + gstRow() + bar +
@@ -1336,7 +1525,13 @@
       '<div class="items">' + (A ? "" : '<input class="input" placeholder="Search dishes" value="' + h(M.q) + '" data-input="menu-q">') + (items.length ? items.map((i, ii) => '<div class="card item">' + (itemImage(i) ? '<img src="' + h(itemImage(i)) + '" alt="" loading="lazy">' : '<div class="ph"></div>') +
         '<div><h3>' + h(i.name || "Untitled") + '</h3><div class="small muted">' + h(i.category || "Other") + " · " + inr(i.price) + ((i.variants || []).length ? " · " + i.variants.length + " sizes" : "") + ((i.addOns || []).length ? " · " + i.addOns.length + " add-ons" : "") + '</div><div class="small muted">' + h(String(i.description || "").slice(0, 120)) + "</div></div>" +
         (A ? moves("item", ii, items.length) : '<div class="row"><span class="small muted">' + (i.available === false ? "Off" : "In stock") + '</span><button class="switch' + (i.available === false ? "" : " on") + '" data-act="stock" data-id="' + h(i.id) + '" aria-label="In stock"' + (editable ? "" : " disabled") + "></button>" + (editable ? '<button class="btn small" data-act="edit-item" data-id="' + h(i.id) + '">Edit</button>' : "") + "</div>") + "</div>").join("") :
-        A ? '<div class="card empty"><strong>Pick a category</strong>Choose a category on the left to move its dishes.</div>' : '<div class="card empty"><strong>No dishes</strong>Add dishes in the Scraveit Restaurant app.</div>') + "</div></div>";
+        A ? '<div class="card empty"><strong>Pick a category</strong>Choose a category on the left to move its dishes.</div>' : '<div class="card empty"><strong>No dishes</strong>Click “+ Add ' + (sellsPacked() ? "product" : "dish") + '” to start your menu.</div>') + "</div></div>";
+  }
+
+  function archivedModal() {
+    const list = state.menu.archived || [];
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal"><header><h2>Archived (' + list.length + ')</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      (list.length ? list.map((i) => '<div class="row between" style="border-top:1px solid var(--line);padding-top:8px"><span><strong>' + h(i.name) + '</strong><span class="small muted"> · ' + h(i.category || "") + " · " + inr(i.price) + '</span></span><span class="row" style="gap:6px"><button class="btn small good" data-act="item-restore" data-id="' + h(i.id) + '">Restore</button><button class="btn small" data-act="edit-item" data-id="' + h(i.id) + '">Open</button></span></div>').join("") : '<p class="muted">Nothing archived.</p>') + "</div></div>";
   }
   async function toggleStock(id) {
     const it = (state.menu.items || []).find((i) => i.id === id); if (!it || !can("menu")) return;
@@ -1345,45 +1540,153 @@
     try { await db.collection("menus").doc(state.rid).collection("items").doc(id).update({available: next, updatedAt: Date.now()}); toast(next ? it.name + " is back in stock." : it.name + " is switched off."); }
     catch (e) { it.available = !next; render(); toast(friendly(e), true); }
   }
+  // Add or edit a dish or product: everything the Restaurant app's menu form has, plus sizes and add-ons.
+  // Goods stores (grocery, dairy, pharmacy) also get the pack label (Legal Metrology / FSSAI) and GST per product.
+  const PACKAGED_FIELDS = () => {
+    const ph = storeKind() === "pharmacy";
+    return [["brand", "Brand", "", true], ["netQuantity", "Net quantity", "500 g, 1 L, 6 pieces", true], ["mrp", "MRP (₹, incl. of all taxes)", "", true, "number"],
+      ["ingredients", "Ingredients", "As printed on the pack"], ["allergens", "Allergens", "Milk, nuts, gluten"], ["storage", "Storage", "Keep refrigerated below 4 °C"],
+      ["shelfLife", "Shelf life", "6 months from packing"], ["manufacturer", "Manufacturer or packer name and address", "", true], ["manufacturerFssai", "Manufacturer FSSAI licence number", "14-digit number from the label", true],
+      ["countryOfOrigin", "Country of origin", "India"]].filter((f) => !ph || !["ingredients", "allergens", "shelfLife", "manufacturerFssai"].includes(f[0]))
+      .concat(ph ? [["manufacturingLicence", "Manufacturing licence number", "Mfg. Lic. No. on the pack (medicines only)"], ["expiry", "Expiry date", "As on the pack"]] : []);
+  };
+  const GST_GUIDES = () => {
+    const g = [["", "Choose product type", null], ["milk", "Milk (fresh, pasteurised, UHT)", ["0401", 0, "nil", false]], ["paneer", "Paneer / chena", ["0406", 0, "nil", false]],
+      ["curd_loose", "Curd, lassi, buttermilk (loose)", ["0403", 0, "nil", false]], ["curd_packed", "Curd, lassi, buttermilk (packed and labelled)", ["0403", 500, "taxable", true]],
+      ["condensed_milk", "Condensed milk", ["0402", 500, "taxable", true]], ["butter_ghee", "Butter, ghee, dairy spread", ["0405", 500, "taxable", true]],
+      ["cheese", "Cheese (not paneer)", ["0406", 500, "taxable", true]], ["plant_milk", "Plant / soya milk drink", ["2202", 500, "taxable", true]],
+      ["fresh_veg", "Fresh vegetables and fruit", ["0702", 0, "nil", false]], ["eggs", "Fresh eggs", ["0407", 0, "nil", false]],
+      ["rice_packed", "Rice (packed and labelled)", ["1006", 500, "taxable", true]], ["pulses_packed", "Dals and pulses (packed and labelled)", ["0713", 500, "taxable", true]],
+      ["flour_packed", "Atta, rava, flour (packed and labelled)", ["1101", 500, "taxable", true]], ["sugar", "Sugar", ["1701", 500, "taxable", true]], ["salt", "Salt", ["2501", 0, "nil", false]],
+      ["edible_oil", "Cooking oil", ["1512", 500, "taxable", true]], ["spices_packed", "Masala and spice powders (packed)", ["0910", 500, "taxable", true]],
+      ["tea_coffee", "Tea or coffee powder", ["0902", 500, "taxable", true]], ["biscuits", "Biscuits", ["1905", 500, "taxable", true]], ["soap", "Bath soap", ["3401", 500, "taxable", true]],
+      ["other", "Other: enter HSN and rate", null]];
+    if (storeKind() === "pharmacy") g.splice(1, 0, ["medicine_otc", "Medicine sold without prescription (ORS, balm, lozenges)", ["3004", 500, "taxable", true]],
+      ["bandages", "Bandages, cotton, gauze, plasters", ["3005", 500, "taxable", true]], ["thermometer", "Thermometer", ["9025", 500, "taxable", true]],
+      ["diapers", "Baby diapers", ["9619", 500, "taxable", true]], ["sanitary_pads", "Sanitary pads, panty liners, tampons", ["9619", 0, "nil", true]],
+      ["talc", "Talcum or baby powder", ["3304", 500, "taxable", true]], ["shampoo", "Shampoo or hair oil", ["3305", 500, "taxable", true]], ["toothpaste", "Toothpaste or tooth powder", ["3306", 500, "taxable", true]]);
+    return g;
+  };
+  const sellsPacked = () => ["grocery", "dairy", "pharmacy"].includes(storeKind());
+  const openTaxRule = (i) => (Array.isArray(i.taxRules) ? i.taxRules : []).filter((r) => !r.effectiveTo).sort((a, b) => b.effectiveFrom - a.effectiveFrom)[0] || null;
+  const choiceList = (v) => Array.isArray(v) ? v : Object.entries(v || {}).map(([id, c]) => Object.assign({id}, c));
+  function choiceRow(kind, c) {
+    return '<div class="choice-row" data-kind="' + kind + '"><input type="hidden" data-f="id" value="' + h(c.id || "") + '"><input class="input" data-f="name" maxlength="50" placeholder="' + (kind === "variant" ? "e.g. Half, Full, Large" : "e.g. Extra cheese") + '" value="' + h(c.name || "") + '">' +
+      '<input class="input" data-f="price" type="number" min="0" step="1" placeholder="+₹" value="' + h(c.priceDelta != null ? c.priceDelta : c.price != null ? c.price : "") + '"><label class="small"><input type="checkbox" data-f="available"' + (c.available === false ? "" : " checked") + '> On</label><button type="button" class="btn small" data-act="choice-del" aria-label="Remove">✕</button></div>';
+  }
   function editItemModal(id) {
-    const i = (state.menu.items || []).find((x) => x.id === id); if (!i) return;
+    const M = state.menu, i = id ? ((M.items || []).find((x) => x.id === id) || (M.archived || []).find((x) => x.id === id)) : {}; if (!i) return;
     dishPhoto = null;
-    const img = itemImage(i);
-    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="item-form" data-id="' + h(id) + '"><header><h2>Edit dish</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+    const img = itemImage(i), isNew = !id, packed = sellsPacked(), noun = packed ? "product" : "dish", diet = i.diet === "nonveg" || i.diet === "egg" ? i.diet : "veg", c = i.compliance || {};
+    const cats = [...new Set((M.items || []).map((x) => String(x.category || "").trim()).filter(Boolean))].slice(0, 16);
+    const pkgField = ([key, label, ph, req, type]) => '<div class="field"><label>' + h(label) + (req ? ' <span class="small muted">for packed products</span>' : "") + '</label><input class="input" name="pkg_' + key + '"' + (type === "number" ? ' type="number" min="0" step="0.01"' : "") + ' value="' + h(c[key] != null ? c[key] : key === "countryOfOrigin" ? "India" : "") + '" placeholder="' + h(ph) + '" autocomplete="off"></div>';
+    const PF = PACKAGED_FIELDS(), rule = openTaxRule(i) || {}, rate = Number(rule.gstRateBps || 0) / 100, guides = GST_GUIDES();
+    const pkg = !packed ? "" : '<details class="card-sub" open><summary><strong>Label details</strong> <span class="small muted">' + (storeKind() === "pharmacy" ? "The law asks for these on packed products" : "FSSAI asks for these on packed products") + '. Loose items can skip this.</span></summary><div class="ol-grid">' + PF.map(pkgField).join("") + "</div></details>" +
+      '<details class="card-sub" open><summary><strong>GST for this product</strong> <span class="small muted">Pick the product type and we fill the usual GST. Check it against your purchase bill.</span></summary><div class="ol-grid">' +
+      '<div class="field"><label>Product type</label><select class="input" name="tax_guide" data-input="tax-guide">' + guides.map(([k, l]) => '<option value="' + k + '"' + (i.taxGuide === k ? " selected" : "") + ">" + h(l) + "</option>").join("") + "</select></div>" +
+      '<div class="field"><label>HSN code</label><input class="input" name="tax_hsn" inputmode="numeric" maxlength="8" value="' + h(rule.hsnCode || "") + '" placeholder="0401"></div>' +
+      '<div class="field"><label>GST rate</label><select class="input" name="tax_rate">' + [0, 5, 18, 40].map((v) => '<option value="' + v + '"' + (rate === v ? " selected" : "") + ">" + v + "%</option>").join("") + "</select></div>" +
+      '<div class="field"><label>Treatment</label><select class="input" name="tax_kind"><option value="taxable"' + (rule.taxability === "taxable" || (!rule.taxability && rate > 0) ? " selected" : "") + '>Taxable</option><option value="nil"' + (rule.taxability === "nil" || (!rule.taxability && !(rate > 0)) ? " selected" : "") + '>Nil-rated</option><option value="exempt"' + (rule.taxability === "exempt" ? " selected" : "") + ">Exempt</option></select></div></div>" +
+      '<label class="ol-check"><input type="checkbox" name="tax_packed"' + (rule.prepackagedLabelled ? " checked" : "") + "><span><strong>Pre-packaged and labelled</strong></span></label></details>";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="item-form" data-id="' + h(id || "") + '"><header><h2>' + (isNew ? "Add " : "Edit ") + noun + (i.archived ? " (archived)" : "") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      (isNew ? '<p class="small muted" style="margin:0">Only the name and price are needed. The rest is optional.</p>' : "") +
       '<div class="dish-photo"><div class="dish-photo-box" id="dp-box">' + (img ? '<img id="dp-img" src="' + h(img) + '" alt="">' : '<img id="dp-img" alt="" hidden><span class="small muted" id="dp-empty">No photo yet</span>') + "</div>" +
       '<div class="dish-photo-side"><label class="btn small">' + (img ? "Change photo" : "Upload photo") + '<input type="file" accept="image/jpeg,image/png,image/webp" data-input="dish-photo" hidden></label>' +
       '<div class="dp-modes" id="dp-modes" hidden><button type="button" class="dp-mode on" data-act="dp-mode" data-mode="enhanced">✨ Enhanced</button><button type="button" class="dp-mode" data-act="dp-mode" data-mode="original">Original</button></div>' +
-      '<p class="small muted" id="dp-note" style="margin:0">Bright, clear photos sell more. We brighten and sharpen your photo automatically.</p></div></div>' +
-      '<div class="field"><label for="iname">Name</label><input class="input" id="iname" name="name" maxlength="70" required value="' + h(i.name) + '"></div>' +
-      '<div class="field"><div class="row between"><label for="idesc">Description</label><button type="button" class="btn small ai-btn" data-act="ai-desc">✨ Write with AI</button></div>' +
-      '<textarea class="input" id="idesc" name="description" rows="3" maxlength="500">' + h(i.description || "") + "</textarea>" +
+      '<p class="small muted" id="dp-note" style="margin:0">' + (packed ? "The front of the pack. " : "Bright, clear photos sell more. ") + "We brighten and sharpen your photo automatically.</p></div></div>" +
+      '<div class="field"><label for="iname">Name</label><input class="input" id="iname" name="name" maxlength="80" required value="' + h(i.name || "") + '" placeholder="' + (packed ? "e.g. Amul milk" : "e.g. Masala dosa") + '"></div>' +
+      '<div class="row"><div class="field grow"><label for="iprice">' + (packed ? "Selling price (₹)" : priceLabel()) + '</label><input class="input" id="iprice" name="price" type="number" min="0" step="1" required value="' + h(i.price != null ? i.price : "") + '" data-input="dish-price"><span class="small muted" id="iprice-get">' + (packed ? "" : youGetText(i.price)) + "</span></div>" +
+      '<div class="field grow"><label for="icat">' + (packed ? "Section in your store" : "Section in your menu") + '</label><input class="input" id="icat" name="category" maxlength="40" list="icat-list" value="' + h(i.category || "") + '" placeholder="' + (packed ? "Milk, Dals, Snacks" : "Tiffins, Biryani, Drinks") + '"><datalist id="icat-list">' + cats.map((x) => '<option value="' + h(x) + '">').join("") + "</datalist></div></div>" +
+      (packed ? "" : '<div class="field"><label>Veg or non-veg</label><div class="row" style="gap:8px">' + [["veg", "🟢 Veg"], ["nonveg", "🔴 Non-veg"], ["egg", "🟡 Egg"]].map(([v, t]) => '<label class="mp-meal"><input type="radio" name="diet" value="' + v + '"' + (diet === v ? " checked" : "") + "><span>" + t + "</span></label>").join("") + "</div></div>") +
+      '<label class="ol-check"><input type="checkbox" name="available"' + (i.available !== false && !i.archived ? " checked" : "") + "><span><strong>In stock now</strong></span></label>" +
+      '<div class="field"><div class="row between"><label for="idesc">Description</label>' + (packed ? "" : '<button type="button" class="btn small ai-btn" data-act="ai-desc">✨ Write with AI</button>') + "</div>" +
+      '<textarea class="input" id="idesc" name="description" rows="3" maxlength="500" placeholder="' + (packed ? "Anything customers should know" : "What’s in it, how spicy, how much") + '">' + h(i.description || "") + "</textarea>" +
       '<div class="ai-row" id="ai-row" hidden><input class="input" id="ai-ask" maxlength="300" placeholder="Want changes? e.g. mention it\'s made with ghee, less spicy"><button type="button" class="btn small" data-act="ai-rewrite">Rewrite</button><button type="button" class="btn small" data-act="ai-undo" id="ai-undo" hidden>Undo</button></div>' +
       '<p class="small muted" id="ai-note" hidden style="margin:0">AI draft. Read it, change anything, then save.</p></div>' +
-      '<div class="row"><div class="field grow"><label for="iprice">' + priceLabel() + '</label><input class="input" id="iprice" name="price" type="number" min="1" step="1" required value="' + h(i.price) + '"></div>' +
-      '<div class="field grow"><label for="icat">Category</label><input class="input" id="icat" name="category" maxlength="60" value="' + h(i.category || "") + '"></div></div>' +
-      '<p class="small muted" style="margin:0">Sizes and add-ons are edited in the Scraveit Restaurant app.</p><div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit">Save changes</button></div></form></div>';
+      '<details class="card-sub"' + (choiceList(i.variants).length || choiceList(i.addOns).length ? " open" : "") + '><summary><strong>Sizes and add-ons</strong> <span class="small muted">optional</span></summary>' +
+      '<p class="small muted" style="margin:6px 0">Sizes: the customer must pick one. Its price is <strong>added</strong> to the price above (₹0 for the basic size). Add-ons: the customer can pick any; each adds its price.</p>' +
+      '<div class="row between"><strong class="small">Sizes</strong><button type="button" class="btn small" data-act="choice-add" data-id="variant">+ Add size</button></div><div class="choices" id="ch-variant">' + choiceList(i.variants).map((x) => choiceRow("variant", x)).join("") + "</div>" +
+      '<div class="row between" style="margin-top:8px"><strong class="small">Add-ons</strong><button type="button" class="btn small" data-act="choice-add" data-id="addon">+ Add add-on</button></div><div class="choices" id="ch-addon">' + choiceList(i.addOns).map((x) => choiceRow("addon", x)).join("") + "</div></details>" +
+      pkg +
+      '<details class="card-sub"' + (i.popular || i.calories != null ? " open" : "") + '><summary><strong>More details</strong> <span class="small muted">optional</span></summary><div class="ol-grid">' +
+      '<div class="field"><label>' + (packed ? "Packing time (minutes)" : "Cooking time (minutes)") + '</label><input class="input" name="preparationTime" type="number" min="1" max="240" value="' + h(i.preparationTime || (packed ? 10 : 20)) + '"></div>' +
+      (packed ? "" : '<div class="field"><label>Calories per serving (kcal)</label><input class="input" name="calories" type="number" min="0" max="5000" step="1" value="' + h(i.calories != null ? i.calories : "") + '" placeholder="Optional"></div><div class="field"><label>Serving size</label><input class="input" name="servingSize" maxlength="40" value="' + h(i.servingSize || "") + '" placeholder="e.g. 1 plate, 350 g"></div>') +
+      "</div>" + (packed ? "" : '<p class="small muted" style="margin:4px 0">FSSAI needs calories per serving only if you hold a central licence or have 10 or more outlets.</p>') +
+      '<label class="ol-check"><input type="checkbox" name="popular"' + (i.popular ? " checked" : "") + "><span><strong>Mark as popular</strong></span></label></details>" +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' + (isNew ? "" : i.archived ? '<button class="btn good" type="button" data-act="item-restore" data-id="' + h(id) + '">Restore</button>' : '<button class="btn" type="button" data-act="item-archive" data-id="' + h(id) + '">Archive</button>') +
+      (isNew ? "" : '<button class="btn danger" type="button" data-act="item-delete" data-id="' + h(id) + '">Delete permanently</button>') + '<span class="grow"></span><button class="btn" type="button" data-act="close-modal">Cancel</button><button class="btn primary" type="submit">' + (isNew ? "Add " + noun : "Save changes") + "</button></div></form></div>";
     // A dish without a real description gets an AI draft straight away.
-    if (String(i.description || "").trim().length < 25) aiDescription(false);
+    if (!packed && !isNew && String(i.description || "").trim().length < 25) aiDescription(false);
   }
   // Markup restaurants (set by Scraveit): prices include GST and customers pay them plus the markup.
   function priceLabel() { return outlet() && outlet().doc && outlet().doc.pricingModel === "markup" ? "Your price, GST included (₹)" : gstIncluded() ? "Price, GST included (₹)" : "Price before GST (₹)"; }
   async function saveItem(form) {
-    const id = form.dataset.id, it = (state.menu.items || []).find((x) => x.id === id); if (!it) return;
-    const patch = {name: form.name.value.trim().slice(0, 70), description: form.description.value.trim().slice(0, 500), price: Math.round(Number(form.price.value)), category: form.category.value.trim().slice(0, 60) || "Other", updatedAt: Date.now()};
-    if (!patch.name || !(patch.price > 0)) { toast("Enter a name and a price.", true); return; }
-    const saveBtn = form.querySelector('[type="submit"]');
-    if (dishPhoto) {
-      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Uploading photo…"; }
-      try { Object.assign(patch, await uploadDishPhoto(id)); }
-      catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save changes"; } toast("Photo upload failed. " + friendly(e), true); return; }
+    if (!can("menu")) return;
+    const M = state.menu, existing = form.dataset.id, before = existing ? ((M.items || []).find((x) => x.id === existing) || (M.archived || []).find((x) => x.id === existing) || {}) : {};
+    const packed = sellsPacked(), v = (n) => String((form.elements[n] || {}).value || "").trim();
+    const name = v("name").slice(0, 80), price = Number(v("price")), category = v("category").slice(0, 40) || "Others";
+    if (!name || v("price") === "" || !Number.isFinite(price) || price < 0) return toast("Add the name and price.", true);
+    const readChoices = (kind) => Array.from(form.querySelectorAll('.choice-row[data-kind="' + kind + '"]')).map((r) => {
+      const g = (f) => r.querySelector('[data-f="' + f + '"]'), nm = g("name").value.trim().slice(0, 50), pr = Number(g("price").value || 0);
+      return nm ? {id: g("id").value || (kind === "variant" ? "v_" : "a_") + Math.random().toString(36).slice(2, 9), name: nm, price: Number.isFinite(pr) && pr >= 0 ? Math.round(pr) : 0, available: g("available").checked} : null;
+    }).filter(Boolean);
+    const variants = readChoices("variant"), addOns = readChoices("addon");
+    if (new Set(variants.map((x) => x.name.toLowerCase())).size !== variants.length || new Set(addOns.map((x) => x.name.toLowerCase())).size !== addOns.length) return toast("Two sizes or two add-ons have the same name.", true);
+    const id = existing || "item_" + Date.now().toString(36) + "_" + (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 36) || "dish");
+    const record = Object.assign({}, before, {id, name, description: v("description").slice(0, 500), category, price: Math.round(price * 100) / 100,
+      diet: packed ? "veg" : ((form.querySelector('input[name="diet"]:checked') || {}).value || "veg"), preparationTime: Math.max(1, Math.min(240, Number(v("preparationTime")) || 20)),
+      available: form.elements.available.checked, popular: form.elements.popular.checked, archived: false, variants, addOns, updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid});
+    if (!existing) record.createdAt = Date.now();
+    if (!packed) {
+      const kcal = v("calories"), serving = v("servingSize").slice(0, 40);
+      if (kcal !== "" && Number(kcal) >= 0 && Number(kcal) <= 5000) record.calories = Math.round(Number(kcal)); else delete record.calories;
+      if (serving) record.servingSize = serving; else delete record.servingSize;
+    } else {
+      const PF = PACKAGED_FIELDS();
+      const isPacked = form.elements.tax_packed.checked, mrpText = v("pkg_mrp"), mrp = Number(mrpText);
+      if (isPacked) { const missing = PF.filter((f) => f[3] && !v("pkg_" + f[0])).map((f) => f[0] === "netQuantity" ? "Pack size" : f[1].replace(/ \(.*\)$/, "")); if (missing.length) return toast("Packed products need: " + missing.join(", ") + ".", true); }
+      if ((isPacked || mrpText) && (!Number.isFinite(mrp) || mrp < price)) return toast("MRP must be at least the selling price.", true);
+      const c = Object.assign({}, before.compliance || {}); PF.forEach(([key, , , , type]) => { const x = v("pkg_" + key); c[key] = type === "number" ? Number(x) : x; }); delete c.sampleValues; record.compliance = c;
+      const hsn = v("tax_hsn").replace(/[^0-9]/g, "").slice(0, 8), kind = v("tax_kind") || "taxable", rateBps = kind === "taxable" ? Math.round(Number(v("tax_rate") || 0) * 100) : 0;
+      if (!/^[0-9]{4,8}$/.test(hsn)) return toast("Enter the product's HSN code (4 to 8 digits).", true);
+      if (kind === "taxable" && rateBps <= 0) return toast("A taxable product needs a GST rate above 0%, or mark it nil-rated.", true);
+      // A changed GST treatment closes the old rule and starts a new one, so past orders keep theirs.
+      const rules = (Array.isArray(before.taxRules) ? before.taxRules : []).map((r) => Object.assign({}, r)), open = rules.filter((r) => !r.effectiveTo).sort((a, b) => b.effectiveFrom - a.effectiveFrom)[0], now = Date.now();
+      const same = open && open.hsnCode === hsn && Number(open.gstRateBps || 0) === rateBps && open.taxability === kind && Boolean(open.prepackagedLabelled) === isPacked;
+      if (!same) { if (open) open.effectiveTo = now; rules.push({hsnCode: hsn, gstRateBps: rateBps, taxability: kind, prepackagedLabelled: isPacked, effectiveFrom: open ? now : 0, effectiveTo: 0}); }
+      record.taxRules = rules; if (v("tax_guide")) record.taxGuide = v("tax_guide");
     }
-    const placed = patch.category !== (it.category || "") ? menuPlacement(patch.category, id) : {}, write = Object.assign({}, patch);
-    Object.keys(placed).forEach((k) => { write[k] = placed[k] === null ? firebase.firestore.FieldValue.delete() : placed[k]; });
+    if (!existing || String(before.category || "") !== category) { const placed = menuPlacement(category, id); Object.keys(placed).forEach((k) => { if (placed[k] === null) delete record[k]; else record[k] = placed[k]; }); }
+    const saveBtn = form.querySelector('[type="submit"]'), label = saveBtn ? saveBtn.textContent : "";
+    if (saveBtn) saveBtn.disabled = true;
+    if (dishPhoto) {
+      if (saveBtn) saveBtn.textContent = "Uploading photo…";
+      try { Object.assign(record, await uploadDishPhoto(id)); }
+      catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = label; } return toast("Photo upload failed. " + friendly(e), true); }
+    }
     try {
-      await db.collection("menus").doc(state.rid).collection("items").doc(id).update(write);
-      Object.assign(it, patch); Object.keys(placed).forEach((k) => { if (placed[k] === null) delete it[k]; else it[k] = placed[k]; });
-      dishPhoto = null; closeModal(); toast("Saved."); render();
-    } catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Save changes"; } toast(friendly(e), true); }
+      await db.collection("menus").doc(state.rid).collection("items").doc(id).set(record);
+      M.archived = (M.archived || []).filter((x) => x.id !== id); M.items = (M.items || []).filter((x) => x.id !== id).concat([record]);
+      dishPhoto = null; closeModal(); toast(existing ? "Saved." : name + " is on your menu."); render();
+    } catch (e) { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = label; } toast(friendly(e), true); }
+  }
+  async function archiveItem(id, back) {
+    const M = state.menu, it = (M.items || []).concat(M.archived || []).find((x) => x.id === id); if (!it || !can("menu")) return;
+    const patch = {archived: !back, available: !!back, updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid};
+    try {
+      await db.collection("menus").doc(state.rid).collection("items").doc(id).update(patch); Object.assign(it, patch);
+      M.items = (M.items || []).filter((x) => x.id !== id); M.archived = (M.archived || []).filter((x) => x.id !== id);
+      (back ? M.items : M.archived).push(it); closeModal(); toast(back ? it.name + " is back on your menu." : it.name + " archived. Restore it any time from Archived."); render();
+    } catch (e) { toast(friendly(e), true); }
+  }
+  async function deleteItem(id) {
+    const M = state.menu, it = (M.items || []).concat(M.archived || []).find((x) => x.id === id); if (!it || !can("menu")) return;
+    if (!confirm("Delete “" + it.name + "” permanently? This cannot be undone. Archive it instead if it may come back.")) return;
+    try {
+      await db.collection("menus").doc(state.rid).collection("items").doc(id).delete();
+      M.items = (M.items || []).filter((x) => x.id !== id); M.archived = (M.archived || []).filter((x) => x.id !== id);
+      closeModal(); toast("Deleted."); render();
+    } catch (e) { toast(friendly(e), true); }
   }
 
   // ---------- dish photo: auto-enhance ----------
@@ -1966,14 +2269,14 @@
   function pageOutlet() {
     const o = outlet(); if (!o) return "";
     const r = o.doc, open = r.open !== false, cuisines = Array.isArray(r.cuisines) ? r.cuisines.join(", ") : (r.cuisine || r.cuisines || "");
-    const cover = (Array.isArray(r.coverPhotos) && r.coverPhotos[0] && (r.coverPhotos[0].url || r.coverPhotos[0])) || r.imageUrl || r.image || "";
-    const rows = [["Address", [r.address, r.area, r.city].filter(Boolean).join(", ")], ["Phone", r.phone || r.contactPhone], ["Cuisines", cuisines], ["FSSAI", r.fssaiNumber], ["Rating", r.rating ? Number(r.rating).toFixed(1) + " ★ (" + Number(r.ratingCount || 0) + " ratings)" : "New"], ["Outlet ID", o.id], ["Your role", ROLE_NAME[o.member.role] || "Staff"],
+    const cover = (coverList(r)[0] || {}).url || "";
+    const rows = [["Address", [r.address, r.area, r.city].filter(Boolean).join(", ")], ["Phone", r.phone || r.contactPhone], ["Cuisines", cuisines], ["Hours", r.opensAt || r.opensUntil ? (r.opensAt || "—") + " to " + (r.opensUntil || "—") : ""], ["FSSAI", r.fssaiNumber], ["Rating", r.rating ? Number(r.rating).toFixed(1) + " ★ (" + Number(r.ratingCount || 0) + " ratings)" : "New"], ["Outlet ID", o.id], ["Your role", ROLE_NAME[o.member.role] || "Staff"],
       ["You can use", isManager() ? "" : FEATURES.filter((f) => can(f[0])).map((f) => f[1]).join(", ") || "Outlet info only"]];
     return '<div class="card" style="padding:0;overflow:hidden">' + (cover ? '<img src="' + h(cover) + '" alt="" style="width:100%;height:200px;object-fit:cover;display:block">' : "") +
       '<div style="padding:16px"><div class="row between"><div><h2 style="font-size:22px;margin:0">' + h(r.name) + '</h2><div class="muted">' + h(cuisines) + "</div></div>" +
       '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Accepting orders" : "Not accepting orders") + "</button></div>" +
       '<table class="table" style="margin-top:12px"><tbody>' + rows.filter((x) => x[1]).map((x) => '<tr><td class="muted" style="width:160px">' + h(x[0]) + "</td><td>" + h(x[1]) + "</td></tr>").join("") + "</tbody></table>" +
-      '<p class="small muted">To change your address, timings, photos or bank details, use the Scraveit Restaurant app or write to <a href="mailto:balaji@scraveit.in">balaji@scraveit.in</a>.</p></div></div>';
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' + (can("profile") ? '<button class="btn primary" data-act="outlet-edit">Edit outlet details</button>' : "") + '<button class="btn" data-act="agreement">📄 Your agreement (commission)</button>' + (can("menu") || can("offers") ? '<button class="btn" data-act="price-check">🧮 Price check</button>' : "") + "</div>" + '<p class="small muted">Bank and UPI details are in Finance → Payouts. Questions? Write to <a href="mailto:balaji@scraveit.in">balaji@scraveit.in</a>.</p><p class="small" style="margin:14px 0 0"><a href="/privacy" target="_blank" rel="noopener">Privacy policy</a> · <a href="/terms" target="_blank" rel="noopener">Terms</a> · <button class="linklike" data-act="delete-account">Delete account</button>' + (isOwner() ? ' · <button class="linklike" data-act="rg-new-outlet">Register another outlet</button>' : "") + "</p></div></div>";
   }
   async function toggleOpen() {
     const o = outlet(); if (!o || !can("availability")) return;
@@ -1983,6 +2286,416 @@
       await db.collection("restaurants").doc(o.id).update({open: next, offlineUntil: null, offlineReason: next ? "" : "Paused from the partner dashboard", updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid});
       o.doc.open = next; toast(next ? "You're accepting orders." : "Outlet is offline."); render();
     } catch (e) { toast(friendly(e), true); }
+  }
+
+  // ---------- outlet details: edit (same fields as the Restaurant app's Restaurant screen) ----------
+  // Founder 17 Nov 2026: everything in the app should be on the website too.
+  const MAX_COVERS = 10;
+  const OL = {draft: null, covers: null, zoom: 16, uploading: false, saving: false};
+  function coverList(r) {
+    r = r || {};
+    const list = (Array.isArray(r.coverImages) ? r.coverImages : []).map((x) => typeof x === "string" ? {url: x, thumbUrl: x} : x && x.url ? {url: String(x.url), thumbUrl: String(x.thumbUrl || x.url)} : null).filter(Boolean);
+    if (!list.length && (r.imageUrl || r.image)) list.push({url: String(r.imageUrl || r.image), thumbUrl: String(r.imageThumbUrl || r.imageUrl || r.image)});
+    return list.slice(0, MAX_COVERS);
+  }
+  const worldPx = (lat, lng, z) => { const sc = 256 * Math.pow(2, z), sn = Math.sin(lat * Math.PI / 180); return {x: (lng + 180) / 360 * sc, y: (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * sc}; };
+  const pxLatLng = (x, y, z) => { const sc = 256 * Math.pow(2, z), n = Math.PI - 2 * Math.PI * y / sc; return {lat: 180 / Math.PI * Math.atan(Math.sinh(n)), lng: x / sc * 360 - 180}; };
+  function olMapHtml() {
+    const d = OL.draft, lat = Number.isFinite(d.lat) ? d.lat : 14.9077, lng = Number.isFinite(d.lng) ? d.lng : 79.8946, z = OL.zoom;
+    const box = document.getElementById("ol-map"), w = box ? box.clientWidth || 520 : 520, ht = 260, wp = worldPx(lat, lng, z), left = wp.x - w / 2, top = wp.y - ht / 2, n = Math.pow(2, z);
+    let tiles = "";
+    for (let tx = Math.floor(left / 256); tx <= Math.floor((left + w) / 256); tx++) for (let ty = Math.floor(top / 256); ty <= Math.floor((top + ht) / 256); ty++) {
+      const wrap = ((tx % n) + n) % n;
+      tiles += '<img src="https://savrivo-app.web.app/maptile/day/' + z + "/" + wrap + "/" + ty + '" alt="" draggable="false" style="position:absolute;left:' + (tx * 256 - left) + "px;top:" + (ty * 256 - top) + 'px;width:256px;height:256px">';
+    }
+    return tiles + '<div class="ol-pin">📍</div>';
+  }
+  function olDrawMap() {
+    const box = document.getElementById("ol-map"); if (!box) return;
+    box.innerHTML = olMapHtml();
+    const c = document.getElementById("ol-coords"); if (c) c.textContent = Number.isFinite(OL.draft.lat) ? OL.draft.lat.toFixed(6) + ", " + OL.draft.lng.toFixed(6) : "No pin yet";
+  }
+  function olCoversHtml() {
+    return OL.covers.map((x, i) => '<figure class="ol-cover' + (i === 0 ? " first" : "") + '"><img src="' + h(x.thumbUrl || x.url) + '" alt="Cover photo ' + (i + 1) + '">' + (i === 0 ? '<span class="ol-first">First</span>' : "") +
+      '<div class="ol-tools">' + (i > 0 ? '<button type="button" class="btn small" data-act="ol-cover-first" data-id="' + i + '">Make first</button>' : "") + '<button type="button" class="btn small danger" data-act="ol-cover-remove" data-id="' + i + '">Remove</button></div></figure>').join("") +
+      (OL.covers.length < MAX_COVERS ? '<label class="ol-add' + (OL.uploading ? " busy" : "") + '">' + (OL.uploading ? "Uploading…" : "<strong>+</strong><span>Add photo</span>") + '<input type="file" accept="image/jpeg,image/png,image/webp" data-input="ol-cover" hidden' + (OL.uploading ? " disabled" : "") + "></label>" : "");
+  }
+  function olDrawCovers() { const g = document.getElementById("ol-covers"); if (g) g.innerHTML = olCoversHtml(); const c = document.getElementById("ol-cover-count"); if (c) c.textContent = OL.covers.length + "/" + MAX_COVERS; }
+  function outletEditModal() {
+    const o = outlet(); if (!o || !can("profile")) return;
+    const r = o.doc;
+    OL.draft = {lat: Number(r.lat), lng: Number(r.lng)}; OL.covers = coverList(r); OL.zoom = 16; OL.uploading = false; OL.saving = false;
+    const f = (name, label, value, extra) => '<div class="field"><label for="ol-' + name + '">' + label + '</label><input class="input" id="ol-' + name + '" name="' + name + '" value="' + h(value == null ? "" : value) + '"' + (extra || "") + "></div>";
+    const chk = (name, on, title, copy) => '<label class="ol-check"><input type="checkbox" name="' + name + '"' + (on ? " checked" : "") + '><span><strong>' + title + '</strong><span class="small muted">' + copy + "</span></span></label>";
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="outlet-form"><header><h2>Edit outlet details</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="field"><label>Outlet</label><input class="input" value="' + h(r.name || "") + '" disabled></div>' +
+      '<div class="field"><label for="ol-description">Description</label><textarea class="input" id="ol-description" name="description" rows="3" maxlength="1000">' + h(r.description || "") + "</textarea></div>" +
+      '<div class="ol-grid">' + f("cuisines", "Cuisines (comma separated)", (r.cuisines || []).join ? (r.cuisines || []).join(", ") : r.cuisines) + f("category", "Category", r.category || r.type, ' placeholder="Biryani, Cafe, Fast food"') +
+      f("city", "City", r.city) + f("etaMin", "Minimum ETA (min)", r.etaMin || 25, ' type="number" min="5" max="240"') + f("etaMax", "Maximum ETA (min)", r.etaMax || 35, ' type="number" min="5" max="360"') + "<span></span>" +
+      f("opensAt", "Opens at", r.opensAt, ' placeholder="11:00 AM"') + f("opensUntil", "Open until", r.opensUntil, ' placeholder="11:00 PM"') + "</div>" +
+      '<p class="small muted" style="margin:0">The outlet opens and closes itself at these times. You can still switch it by hand; that holds until the next opening or closing time. Leave either empty to switch only by hand.</p>' +
+      '<h3 style="margin:6px 0 0">Location</h3><div class="field"><label for="ol-address">Address</label><textarea class="input" id="ol-address" name="address" rows="2">' + h(r.address || "") + "</textarea></div>" +
+      '<div class="row between"><span class="small muted">Click the map to move the pin to your kitchen door.</span><span class="row" style="gap:6px"><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button><button type="button" class="btn small" data-act="ol-zoom" data-id="-1">−</button><button type="button" class="btn small" data-act="ol-zoom" data-id="1">+</button></span></div>' +
+      '<div id="ol-map" class="ol-map" data-act="ol-map"></div><p class="small muted" id="ol-coords" style="margin:0"></p>' +
+      '<h3 style="margin:6px 0 0">Kitchen capacity</h3>' + f("maxConcurrentOrders", "Maximum orders at a time", r.maxConcurrentOrders || 20, ' type="number" min="1" max="500"') +
+      chk("autoAcceptOrders", r.autoAcceptOrders === true, "Accept new orders automatically", "While the outlet is online and below the limit above.") +
+      chk("autoPauseWhenBusy", r.autoPauseWhenBusy === true, "Pause for 30 minutes when the limit is reached", "New orders stop until the kitchen catches up.") +
+      chk("pureVeg", r.pureVeg === true, "Pure vegetarian outlet", "Shows the Pure Veg badge and hides non-veg filters for customers.") +
+      '<div class="row between"><h3 style="margin:6px 0 0">Cover photos</h3><span class="small muted" id="ol-cover-count"></span></div><p class="small muted" style="margin:0">Customers see these as a slideshow at the top of your page. The first is also your card photo in the list.</p><div class="ol-covers" id="ol-covers"></div>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit" id="ol-save">Save outlet details</button></div></form></div>';
+    olDrawMap(); olDrawCovers();
+  }
+  async function addOutletCover(file) {
+    if (!file || OL.uploading || !OL.covers) return;
+    if (file.size > 15 * 1024 * 1024) return toast("Pick a photo under 15 MB.", true);
+    OL.uploading = true; olDrawCovers();
+    try {
+      const im = await loadImage(file), big = drawScaled(im, 1600), base = "restaurants/" + state.rid + "/users/" + state.user.uid + "/cover/" + Date.now();
+      const put = async (c, q, path) => { const ref = firebase.storage().ref(path); await ref.put(await toBlob(c, q), {contentType: "image/jpeg", cacheControl: "public, max-age=31536000"}); return ref.getDownloadURL(); };
+      const [url, thumbUrl] = await Promise.all([put(big, .82, base + ".jpg"), put(drawScaled(big, 640), .74, base + "-thumb.jpg")]);
+      OL.covers.push({url, thumbUrl});
+    } catch (e) { toast(friendly(e), true); }
+    OL.uploading = false; olDrawCovers();
+  }
+  async function saveOutlet(form) {
+    const o = outlet(); if (!o || !can("profile") || OL.saving) return;
+    if (OL.uploading) return toast("Wait for the photo to finish uploading.", true);
+    const v = (n) => String(form.elements[n].value || "").trim(), num = (n, d) => { const x = Number(form.elements[n].value); return Number.isFinite(x) && x > 0 ? Math.round(x) : d; };
+    const etaMin = num("etaMin", 25), etaMax = num("etaMax", 35);
+    if (etaMax < etaMin) return toast("Maximum ETA can't be less than minimum ETA.", true);
+    const changes = {description: v("description"), cuisines: v("cuisines").split(",").map((x) => x.trim()).filter(Boolean), city: v("city"), category: v("category"), etaMin, etaMax,
+      opensAt: v("opensAt"), opensUntil: v("opensUntil"), address: v("address"), pureVeg: form.elements.pureVeg.checked, maxConcurrentOrders: Math.min(500, num("maxConcurrentOrders", 20)),
+      autoAcceptOrders: form.elements.autoAcceptOrders.checked, autoPauseWhenBusy: form.elements.autoPauseWhenBusy.checked, updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid};
+    if (Number.isFinite(OL.draft.lat) && Number.isFinite(OL.draft.lng)) { changes.lat = OL.draft.lat; changes.lng = OL.draft.lng; }
+    const covers = OL.covers.map((x) => ({url: x.url, thumbUrl: x.thumbUrl || x.url}));
+    changes.coverImages = covers; changes.imageUrl = covers[0] ? covers[0].url : ""; changes.imageThumbUrl = covers[0] ? covers[0].thumbUrl : "";
+    OL.saving = true; const btn = document.getElementById("ol-save"); if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try {
+      await db.collection("restaurants").doc(o.id).update(changes);
+      Object.assign(o.doc, changes); closeModal(); render(); toast("Outlet details saved.");
+    } catch (e) { toast(friendly(e), true); if (btn) { btn.disabled = false; btn.textContent = "Save outlet details"; } }
+    OL.saving = false;
+  }
+
+  // ---------- agreement, price check, account deletion (as in the Restaurant app's More screen) ----------
+  const OMATH = window.ScraveitOfferMath || null;
+  const rupeesP = (paise) => inr(Math.round(Number(paise) || 0) / 100);
+  function priceRules() {
+    const r = (outlet() || {}).doc || {}, markup = r.pricingModel === "markup", raw = r.markupBps, mb = Number(raw);
+    const markupBps = !markup ? null : raw == null || raw === "" ? 1000 : Number.isInteger(mb) && mb >= 0 && mb <= 5000 ? mb : 1000;
+    const cb = Number(r.commissionBps), commissionBps = Number.isFinite(cb) && cb >= 0 && cb <= 5000 ? cb : 3000;
+    return {markupBps, commissionBps, gstIncluded: markup || r.pricesIncludeGst === true};
+  }
+  const exGst = (price) => Math.round(Number(price || 0) * 100 * 10000 / 10500);
+  function getPerDish(price) {
+    const p = Number(price || 0), R = priceRules(); if (!(p > 0) || !OMATH) return 0;
+    if (R.markupBps != null) return exGst(p);
+    return OMATH.payout(R.gstIncluded ? exGst(p) : Math.round(p * 100), 0, R.commissionBps).receive;
+  }
+  function youGetText(price) {
+    const p = Number(price || 0), R = priceRules();
+    if (!OMATH) return "";
+    if (!(p > 0)) return "Type a price to see what you get per dish.";
+    if (R.markupBps != null) return "Customers see <strong>₹" + Math.round(p * (10000 + R.markupBps) / 10000) + "</strong> · You get <strong>" + rupeesP(exGst(p)) + "</strong> per dish. We pay the 5% GST for you.";
+    if (R.gstIncluded) return "Customers pay <strong>₹" + p + "</strong>, GST included · You get <strong>" + rupeesP(getPerDish(p)) + "</strong> per dish. We pay the 5% GST from it.";
+    return "You get <strong>" + rupeesP(getPerDish(p)) + "</strong> per dish. Food GST is added for the customer at checkout.";
+  }
+  function wantText(want) {
+    const w = Number(want || 0), R = priceRules(); if (!(w > 0) || !OMATH) return "Type an amount.";
+    if (R.markupBps != null) { const price = Math.ceil(w * 1.05 - 1e-9); return "Set your price to <strong>₹" + price + "</strong> and you get " + rupeesP(exGst(price)) + "."; }
+    if (R.gstIncluded) {
+      const target = Math.round(w * 100); let price = Math.ceil(OMATH.priceForReceive(target, R.commissionBps) * 1.05 / 100 - 1e-9);
+      while (getPerDish(price) < target) price++;
+      return "Set your price to <strong>₹" + price + "</strong> (GST included) and you get " + rupeesP(getPerDish(price)) + ".";
+    }
+    const pp = OMATH.priceForReceive(Math.round(w * 100), R.commissionBps);
+    return pp ? "Set your price to <strong>" + rupeesP(pp) + "</strong> and you get " + rupeesP(OMATH.payout(pp, 0, R.commissionBps).receive) + "." : "Type an amount.";
+  }
+  function priceCheckModal() {
+    const R = priceRules();
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal"><header><h2>Price check</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="small muted" style="margin:0">' + (R.markupBps != null ? "Your prices include GST" : "At your " + R.commissionBps / 100 + "% commission" + (R.gstIncluded ? ", prices with GST included" : "")) + "</p>" +
+      '<div class="field"><label for="pc-price">My menu price ₹</label><input class="input" id="pc-price" inputmode="numeric" value="150" data-input="pc-price"><span class="small" id="pc-get">' + youGetText(150) + "</span></div>" +
+      '<div class="field"><label for="pc-want">I want to get, per dish ₹</label><input class="input" id="pc-want" inputmode="numeric" value="100" data-input="pc-want"><span class="small" id="pc-want-out">' + wantText(100) + "</span></div>" +
+      '<p class="small muted" style="margin:0">The free Scraveit Price Planner app does the same, offline, and lets you try offers too.</p></div></div>';
+  }
+  // Partner agreement for an outlet that is already live: the server fills in what Scraveit holds;
+  // the owner adds only what's missing, reads it, and signs (IT Act s.10A).
+  const AG = {view: null, loading: false, signing: false, error: "", details: {}, shownFor: "{}"};
+  function agFields() {
+    const out = {}, v = (id) => String((document.getElementById(id) || {}).value || "").trim();
+    if (document.getElementById("la-owner")) out.ownerName = v("la-owner");
+    if (document.getElementById("la-pan")) out.pan = v("la-pan").toUpperCase();
+    if (document.getElementById("la-fssai")) out.fssaiNumber = v("la-fssai").replace(/\s+/g, "");
+    if (document.getElementById("la-drug")) out.drugLicenceNumber = v("la-drug").toUpperCase();
+    if (document.getElementById("la-gstin")) out.gstin = v("la-gstin").toUpperCase();
+    const mode = document.querySelector('input[name="la-gstmode"]:checked'); if (mode) out.gstMode = mode.value;
+    if (document.getElementById("la-enrol")) out.gstEnrolment = v("la-enrol").toUpperCase();
+    Object.keys(out).forEach((k) => { if (!out[k]) delete out[k]; });
+    return out;
+  }
+  async function loadAgreement(details) {
+    if (AG.loading) return;
+    AG.loading = true; AG.error = ""; if (details) AG.details = details; drawAgreement();
+    try { AG.view = await call("getLiveRestaurantAgreement", {restaurantId: state.rid, details: AG.details}); AG.shownFor = JSON.stringify(AG.details); }
+    catch (e) { AG.error = friendly(e); }
+    AG.loading = false; drawAgreement();
+  }
+  function agreementModal() {
+    if (AG.rid !== state.rid) Object.assign(AG, {rid: state.rid, view: null, details: {}, shownFor: "{}", error: ""});
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide"><header><h2>Partner agreement</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header><div id="ag-body"></div></div></div>';
+    drawAgreement(); if (!AG.view) loadAgreement();
+  }
+  function drawAgreement() {
+    const box = document.getElementById("ag-body"); if (!box) return;
+    const ag = AG.view, when = (t) => new Date(t).toLocaleDateString("en-IN", {day: "numeric", month: "short", year: "numeric"}) + ", " + clock(t);
+    if (!ag) { box.innerHTML = AG.error ? '<div class="notice warn">' + h(AG.error) + '</div><button class="btn" data-act="ag-reload">Try again</button>' : '<div class="spinner"></div>'; return; }
+    if (!ag.partiesReady) { box.innerHTML = '<div class="notice warn">The agreement isn\'t ready yet. Please check again later.</div>'; return; }
+    const title = '<p class="small muted" style="margin:0">' + ag.commissionBps / 100 + "% commission · " + ag.termMonths + " months</p>";
+    const body = '<div class="ag-text">' + (ag.sections || []).map((x) => "<h3>" + h(x.heading) + "</h3><p>" + h(x.body) + "</p>").join("") + "</div>";
+    if (ag.status === "signed") { box.innerHTML = title + body + '<div class="notice info">✓ Signed by ' + h(ag.signedBy) + " on " + h(when(ag.signedAt)) + ". Scraveit keeps the signed copy with the time, account and device it was signed from.</div>"; return; }
+    const owner = isOwner(), d = AG.details || {}, k = ag.known || {}, goods = ["grocery", "dairy", "pharmacy"].includes(ag.storeType), asks = [];
+    const fld = (id, label, val, extra, note) => '<div class="field"><label for="' + id + '">' + label + '</label><input class="input" id="' + id + '" value="' + h(val || "") + '" autocomplete="off" spellcheck="false"' + (extra || "") + ">" + (note ? '<span class="small muted">' + note + "</span>" : "") + "</div>";
+    if (!k.ownerName) asks.push(fld("la-owner", "Owner's full name (as on PAN)", d.ownerName));
+    if (!k.pan) asks.push(fld("la-pan", "PAN of the business or owner", d.pan, ' maxlength="10" placeholder="ABCDE1234F" style="text-transform:uppercase"'));
+    if (ag.storeType === "pharmacy") { if (!k.drugLicenceNumber) asks.push(fld("la-drug", "Drug licence number", d.drugLicenceNumber, ' maxlength="60"', "As printed on your retail drug licence (Form 20 and 21).")); }
+    else if (!k.fssaiNumber) asks.push(fld("la-fssai", "FSSAI licence or registration number", d.fssaiNumber, ' inputmode="numeric" maxlength="14" placeholder="14 digits"', "14 digits, starting with 1 (licence) or 2 (registration), as on your FSSAI certificate."));
+    if (goods && !k.gstin) {
+      asks.push(fld("la-gstin", "GSTIN, if you have one", d.gstin, ' maxlength="15"'));
+      asks.push('<fieldset class="ag-mode"><legend class="small muted">No GSTIN? Choose one</legend><label><input type="radio" name="la-gstmode" value="enrolment"' + (d.gstMode !== "exempt_only" ? " checked" : "") + "> I have a GST enrolment number</label>" + fld("la-enrol", "GST enrolment number", d.gstEnrolment, ' maxlength="20"') +
+        '<label><input type="radio" name="la-gstmode" value="exempt_only"' + (d.gstMode === "exempt_only" ? " checked" : "") + "> I sell only GST-exempt goods (fresh milk, fruits, vegetables)</label></fieldset>");
+    }
+    const issues = ag.issues || [], missing = issues.length ? '<div class="notice warn">Still needed: ' + h(issues.join(", ")) + ". Fill " + (issues.length > 1 ? "these" : "this") + " and click “Put these in my agreement”; the sign box appears below the agreement after that.</div>" : "";
+    const form = asks.length ? '<div class="card ag-ask"><h3 style="margin:0">Your details for the agreement</h3><p class="small muted" style="margin:0">Only what Scraveit doesn\'t have yet. It goes into the agreement and your payout records.</p>' + asks.join("") + missing +
+      '<button class="btn" data-act="ag-details"' + (AG.loading || !owner ? " disabled" : "") + ">" + (AG.loading ? "Updating…" : "Put these in my agreement") + "</button></div>" : missing;
+    const sign = issues.length ? "" : !owner ? '<div class="notice info">Only the outlet owner can sign the agreement.</div>' :
+      '<div class="ag-sign"><div class="field"><label for="la-sign-name">Type your full name to sign</label><input class="input" id="la-sign-name" autocomplete="name"></div><label class="ol-check"><input type="checkbox" id="la-sign-consent"><span><strong>I have read this agreement and I agree to it</strong></span></label>' +
+      '<button class="btn primary" data-act="ag-sign"' + (AG.signing ? " disabled" : "") + ">" + (AG.signing ? "Signing…" : "Accept and sign") + '</button><p class="small muted" style="margin:0">Your name, account, time and device are recorded with the agreement. It is a valid electronic agreement under the IT Act, 2000 (s.10A).</p></div>';
+    box.innerHTML = title + form + body + sign;
+  }
+  async function signAgreement() {
+    const ag = AG.view; if (!ag || AG.signing || !isOwner()) return;
+    if (JSON.stringify(Object.assign({}, AG.details, agFields())) !== AG.shownFor) return toast("Click “Put these in my agreement” first, then read it again.", true);
+    const name = String((document.getElementById("la-sign-name") || {}).value || "").trim(), consent = !!(document.getElementById("la-sign-consent") || {}).checked;
+    if (!consent) return toast("Tick the box to confirm you agree.", true);
+    if (name.length < 2) return toast("Type your full name to sign.", true);
+    AG.signing = true; drawAgreement();
+    try {
+      await call("signLiveRestaurantAgreement", {restaurantId: state.rid, details: AG.details, hash: ag.hash, typedName: name, consent: true, method: "in_app"});
+      AG.view = null; toast("Agreement signed. Thank you!"); AG.signing = false; loadAgreement(); return;
+    } catch (e) { toast(friendly(e), true); }
+    AG.signing = false; drawAgreement();
+  }
+  function deletionModal() {
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="deletion-form"><header><h2>Delete your account</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="notice warn">Your outlet stops taking orders. Pending settlements are paid before the account closes. Invoices, settlement and tax records that the law makes us keep are kept; everything else is deleted within 30 days.</div>' +
+      '<div class="field"><label for="del-confirm">Type DELETE to confirm</label><input class="input" id="del-confirm" name="confirmation" autocomplete="off" required></div>' +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Keep my account</button><button class="btn danger grow" type="submit">Delete my account</button></div></form></div>';
+  }
+  async function submitDeletion(form) {
+    if (String(form.elements.confirmation.value || "").trim().toUpperCase() !== "DELETE") return toast("Type DELETE exactly to confirm.", true);
+    const id = "privacy_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    try {
+      await db.collection("privacyRequests").doc(id).set({id, type: "account_deletion", app: "restaurant", uid: state.user.uid, email: state.user.email || "", status: "requested", createdAt: Date.now(), source: "partner_website"});
+      closeModal(); toast("Your deletion request is in. We'll settle any payments and close your account within 30 days.");
+      setTimeout(() => { if (state.liveUnsub) state.liveUnsub(); auth.signOut(); }, 2500);
+    } catch (e) { toast(friendly(e), true); }
+  }
+
+  // ---------- dine-in: tables, QR stickers, bookings, table rounds (same data and functions as the app) ----------
+  const DINE_TABLE_URL = "https://savrivo-app.web.app/t/";
+  const DINE = {rid: "", unsub: [], roundUnsub: {}, sessions: [], bookings: [], rounds: {}, seen: {}, ready: false, tableId: ""};
+  const dineAllowed = () => (outlet() && (outlet().doc.storeType || "restaurant") === "restaurant") && (can("orders") || can("profile"));
+  function dineSettings() {
+    const d = ((outlet() || {}).doc || {}).dineIn || {}, tables = Array.isArray(d.tables) ? d.tables : [];
+    return {enabled: d.enabled === true && tables.length > 0, autoAccept: d.autoAccept !== false, tables, slotMinutes: [15, 30, 60].includes(Number(d.slotMinutes)) ? Number(d.slotMinutes) : 30,
+      openFrom: d.openFrom || "12:00", openTo: d.openTo || "22:30", maxParty: Number(d.maxParty) || 10};
+  }
+  function stopDine() { DINE.unsub.forEach((u) => { try { u(); } catch (_) {} }); Object.values(DINE.roundUnsub).forEach((u) => { try { u(); } catch (_) {} }); Object.assign(DINE, {unsub: [], roundUnsub: {}, sessions: [], bookings: [], rounds: {}, ready: false, rid: ""}); }
+  function dineRedraw() {
+    if (document.getElementById("dine-table-body")) { drawDineTable(); return; }
+    const el = document.activeElement;
+    if (state.page === "dinein" && !modalRoot.innerHTML && !(el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) render();
+  }
+  function startDine() {
+    if (DINE.rid === state.rid) return;
+    stopDine(); if (!dineAllowed()) return; const rid = state.rid; DINE.rid = rid;
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    DINE.unsub.push(db.collection("tableSessions").where("restaurantId", "==", rid).where("status", "in", ["open", "bill"]).onSnapshot((snap) => {
+      const prev = {}; DINE.sessions.forEach((x) => { prev[x.id] = x; }); DINE.sessions = snap.docs.map((d) => d.data());
+      DINE.sessions.forEach((x) => { const p = prev[x.id]; if (p && x.status === "bill" && p.status !== "bill") toast(x.tableLabel + " asked for the bill"); if (x.waiterCalledAt && (!p || p.waiterCalledAt !== x.waiterCalledAt)) toast(x.tableLabel + " is calling a waiter"); if (!p && DINE.ready) toast(x.tableLabel + " is seated"); });
+      const open = new Set(DINE.sessions.map((x) => x.id));
+      Object.keys(DINE.roundUnsub).forEach((id) => { if (!open.has(id)) { try { DINE.roundUnsub[id](); } catch (_) {} delete DINE.roundUnsub[id]; delete DINE.rounds[id]; } });
+      DINE.sessions.forEach((x) => {
+        if (DINE.roundUnsub[x.id]) return;
+        DINE.roundUnsub[x.id] = db.collection("tableSessions").doc(x.id).collection("rounds").onSnapshot((rs) => {
+          const rounds = rs.docs.map((d) => d.data()).sort((a, b) => a.number - b.number);
+          rounds.forEach((r) => { if (!DINE.seen[r.id]) { DINE.seen[r.id] = true; if (DINE.ready && r.status === "sent") toast(x.tableLabel + " · new round"); } });
+          DINE.rounds[x.id] = rounds; dineRedraw();
+        }, () => {});
+      });
+      dineRedraw(); setTimeout(() => { DINE.ready = true; }, 1500);
+    }, (e) => console.warn("DINE_SESSIONS", e)));
+    DINE.unsub.push(db.collection("dineBookings").where("restaurantId", "==", rid).where("slotAt", ">=", start.getTime()).onSnapshot((snap) => {
+      const before = new Set(DINE.bookings.map((b) => b.id)); DINE.bookings = snap.docs.map((d) => d.data()).sort((a, b) => a.slotAt - b.slotAt);
+      if (DINE.ready) DINE.bookings.forEach((b) => { if (!before.has(b.id)) toast((b.status === "requested" ? "Booking request: " : "New booking: ") + b.customerName + " · " + b.party); });
+      dineRedraw();
+    }, (e) => console.warn("DINE_BOOKINGS", e)));
+  }
+  const dineDay = (at) => { const d = new Date(at), t = new Date(); t.setHours(0, 0, 0, 0); const diff = Math.round((new Date(d).setHours(0, 0, 0, 0) - t.getTime()) / 86400000); return diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : d.toLocaleDateString("en-IN", {weekday: "short", day: "numeric", month: "short"}); };
+  const dineNew = (sid) => (DINE.rounds[sid] || []).filter((r) => r.status === "sent").length;
+  function pageDine() {
+    startDine();
+    const st = dineSettings(), byTable = {}, bookings = DINE.bookings.filter((b) => ["requested", "confirmed", "seated"].includes(b.status));
+    DINE.sessions.forEach((x) => { byTable[x.tableId] = x; });
+    const board = st.tables.map((t) => {
+      const x = byTable[t.id]; let cls = "free", label = "Free", extra = "";
+      if (x) { cls = x.status === "bill" ? "bill" : "seated"; label = x.status === "bill" ? "Bill asked" : "Seated"; const nr = dineNew(x.id); if (nr) extra += '<span class="tb-flag">' + nr + " new</span>"; if (x.waiterCalledAt) extra += '<span class="tb-flag call">Waiter</span>'; }
+      return '<button class="table-tile ' + cls + '" data-act="' + (x ? "dine-table" : "dine-qr-one") + '" data-id="' + h(x ? x.id : t.id) + '" title="' + (x ? "Open table" : "Print this table's QR sticker") + '"><strong>' + h(t.label) + "</strong><span>" + h(t.seats) + " seats</span><em>" + label + "</em>" + (x ? '<span class="tb-money">' + inr(x.subtotal) + "</span>" : "") + extra + "</button>";
+    }).join("");
+    const setup = can("profile") ? '<button class="btn" data-act="dine-setup">⚙️ ' + (st.enabled ? "Dine-in settings" : "Set up dine-in") + "</button>" : "";
+    return (st.enabled ? "" : '<div class="card"><h2 style="margin-top:0">Set up dine-in in a minute</h2><p class="muted">Count your tables, pick your hours, print the QR stickers. Guests can then book ahead or order from the table, and pay at your counter. Scraveit takes no fee on dine-in at launch.</p>' + (setup || '<p class="small muted">Ask the outlet owner to set it up.</p>') + "</div>") +
+      (st.enabled ? '<div class="card"><div class="row between"><h2 style="margin:0">Tables</h2><div class="row" style="gap:8px"><button class="btn small" data-act="dine-qr">🖨️ Print all QR stickers</button>' + setup + '</div></div><div class="table-board">' + board + "</div><p class=\"small muted\" style=\"margin:8px 0 0\">Click a seated table to see its rounds and bill. Click a free table to print its QR sticker.</p></div>" : "") +
+      '<div class="card"><h2 style="margin-top:0">Bookings</h2>' + (bookings.length ? bookings.map((b) => '<div class="booking-row ' + h(b.status) + '"><div class="booking-time"><strong>' + h(clock(b.slotAt)) + "</strong><span>" + h(dineDay(b.slotAt)) + '</span></div><div class="grow"><strong>' + h(b.customerName) + " · " + b.party + (b.party === 1 ? " person" : " people") + '</strong><div class="small muted">' + h(b.status === "requested" ? "Waiting for you" : b.status === "seated" ? "Seated" : "Confirmed") + (b.note ? " · " + h(b.note) : "") + "</div></div>" +
+        (b.status === "requested" ? '<div class="row" style="gap:6px"><button class="btn good small" data-act="dine-accept" data-id="' + h(b.id) + '">Accept</button><button class="btn small" data-act="dine-decline" data-id="' + h(b.id) + '">Decline</button></div>' : b.status === "confirmed" ? '<button class="btn small danger" data-act="dine-decline" data-id="' + h(b.id) + '">Cancel</button>' : "") + "</div>").join("") : '<p class="muted" style="margin:0">No bookings yet today.</p>') + "</div>";
+  }
+  function dineTableModal(sid) {
+    DINE.tableId = sid;
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide"><header><h2 id="dine-table-title">Table</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header><div id="dine-table-body"></div></div></div>';
+    drawDineTable();
+  }
+  function drawDineTable() {
+    const box = document.getElementById("dine-table-body"); if (!box) return;
+    const x = DINE.sessions.find((s) => s.id === DINE.tableId), t = document.getElementById("dine-table-title");
+    if (!x) { if (t) t.textContent = "Table closed"; box.innerHTML = '<p class="muted">This table is no longer open.</p>'; return; }
+    if (t) t.textContent = x.tableLabel;
+    const paid = document.getElementById("dine-paid"), paidVal = paid ? paid.value : String(Math.round(Number(x.subtotal || 0)));
+    const rounds = DINE.rounds[x.id] || [], totals = x.memberTotals || {}, op = (o, label, cls, rid) => '<button class="btn ' + (cls || "") + '" data-act="dine-op" data-op="' + o + '" data-id="' + h(x.id) + '"' + (rid ? ' data-round="' + h(rid) + '"' : "") + ">" + label + "</button>";
+    box.innerHTML = '<p class="small muted" style="margin:0">' + h((x.members || []).map((m) => m.name).join(", ")) + " · opened " + h(clock(x.openedAt)) + "</p>" +
+      (x.waiterCalledAt ? '<div class="notice warn row between"><span><strong>Waiter called</strong> at ' + h(clock(x.waiterCalledAt)) + "</span>" + op("ackWaiter", "Done", "small") + "</div>" : "") +
+      (rounds.length ? rounds.map((r) => '<div class="round-row ' + h(r.status) + '"><div class="row between"><strong>Round ' + r.number + " · " + h(r.byName) + '</strong><span class="small muted">' + h(clock(r.createdAt)) + '</span></div><ul class="round-items">' +
+        (r.items || []).map((i) => "<li><b>" + i.quantity + "×</b> " + h(i.name) + (i.variant ? " (" + h(i.variant) + ")" : "") + ((i.addOns || []).length ? " + " + h(i.addOns.map((a) => a.name).join(", ")) : "") + (i.note ? " <i>“" + h(i.note) + "”</i>" : "") + "</li>").join("") +
+        '</ul><div class="row" style="gap:6px">' + (r.status === "sent" ? op("cooking", "Start cooking", "primary small", r.id) : "") + (r.status !== "served" ? op("served", "Served", (r.status === "sent" ? "" : "primary ") + "small", r.id) : '<span class="pill paid">Served</span>') + "</div></div>").join("") : '<p class="muted">No rounds yet.</p>') +
+      '<div class="bill-box">' + (x.members || []).filter((m) => Number(totals[m.uid] || 0) > 0).map((m) => '<div class="row between"><span>' + h(m.name) + "</span><strong>" + inr(totals[m.uid]) + "</strong></div>").join("") +
+      '<div class="row between total"><span>Food total</span><strong>' + inr(x.subtotal) + '</strong></div><p class="small muted" style="margin:0">Add your GST and any service charge on your own bill.</p></div>' +
+      '<div class="field"><label for="dine-paid">Amount paid (with taxes)</label><input class="input" id="dine-paid" type="number" inputmode="decimal" value="' + h(paidVal) + '"></div>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' + op("paid", "Mark paid and free the table", "primary") + (x.status === "bill" ? op("reopen", "Reopen for more orders") : "") + op("close", "Close without payment", "danger") + "</div>";
+  }
+  async function dineOp(el) {
+    const o = el.dataset.op, payload = {sessionId: el.dataset.id, action: o}; if (el.dataset.round) payload.roundId = el.dataset.round;
+    if (o === "paid") { const v = Number((document.getElementById("dine-paid") || {}).value || 0); if (v > 0) payload.paidAmount = v; }
+    if (o === "close" && !confirm("Close this table without marking it paid?")) return;
+    el.disabled = true;
+    try {
+      await call("dineInStaff", payload);
+      if (o === "paid" || o === "close") { closeModal(); render(); toast(o === "paid" ? "Paid. The table is free." : "Table closed."); }
+      else toast(o === "served" ? "Marked served. The table gets a ping." : o === "cooking" ? "Cooking." : "Done.");
+    } catch (e) { el.disabled = false; toast(friendly(e), true); }
+  }
+  async function dineRespond(id, accept) {
+    if (!accept && !confirm("Decline this booking? The customer is told.")) return;
+    try { await call("dineInRespondBooking", {bookingId: id, accept}); toast(accept ? "Booking accepted." : "Booking declined."); } catch (e) { toast(friendly(e), true); }
+  }
+  function dineSetupModal() {
+    const st = dineSettings(), seats = st.tables.length ? st.tables.map((t) => Math.max(1, Number(t.seats) || 4)) : Array(8).fill(4);
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="dine-form"><header><h2>' + (st.enabled ? "Dine-in settings" : "Set up dine-in") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="ol-grid"><div class="field"><label for="dn-count">Number of tables</label><input class="input" id="dn-count" name="count" type="number" min="1" max="60" value="' + seats.length + '" data-input="dine-count"></div>' +
+      '<div class="field"><label for="dn-all">Most tables seat</label><select class="input" id="dn-all" data-input="dine-all"><option value="">Pick to set all…</option>' + [2, 4, 6, 8].map((k) => "<option>" + k + "</option>").join("") + "</select></div></div>" +
+      '<div class="dine-seat-grid" id="dn-seats">' + dineSeatInputs(seats, st.tables) + "</div>" +
+      '<div class="ol-grid"><div class="field"><label for="dn-from">Guests can book from</label><input class="input" id="dn-from" name="openFrom" type="time" value="' + h(st.tables.length ? st.openFrom : "12:00") + '"></div><div class="field"><label for="dn-to">Until</label><input class="input" id="dn-to" name="openTo" type="time" value="' + h(st.tables.length ? st.openTo : "23:00") + '"></div>' +
+      '<div class="field"><label for="dn-slot">Booking slots every</label><select class="input" id="dn-slot" name="slotMinutes">' + [15, 30, 60].map((m) => '<option value="' + m + '"' + (m === st.slotMinutes ? " selected" : "") + ">" + m + " min</option>").join("") + "</select></div>" +
+      '<div class="field"><label for="dn-party">Largest group for one booking</label><input class="input" id="dn-party" name="maxParty" type="number" min="1" max="30" value="' + st.maxParty + '"></div></div>' +
+      '<label class="ol-check"><input type="checkbox" name="autoAccept"' + (st.tables.length ? (st.autoAccept ? " checked" : "") : " checked") + '><span><strong>Confirm bookings automatically</strong><span class="small muted">Guests get an instant yes. You can still cancel one.</span></span></label>' +
+      '<p class="small muted" style="margin:0">QR stickers print 4 to an A4 page. No printer? Choose “Save as PDF” and get it printed at any shop.</p>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' + (st.enabled ? '<button class="btn danger" type="button" data-act="dine-pause">Pause dine-in</button>' : "") + '<span class="grow"></span><button class="btn" type="submit" name="go" value="save">' + (st.enabled ? "Save changes" : "Turn on dine-in") + '</button><button class="btn primary" type="submit" name="go" value="print">' + (st.enabled ? "Save and print QR stickers" : "Turn on and print QR stickers") + "</button></div></form></div>";
+  }
+  function dineSeatInputs(seats, old) {
+    return seats.map((n, i) => '<label class="dine-seat"><span>' + h((old && old[i] && old[i].label) || "Table " + (i + 1)) + '</span><input class="input" type="number" min="1" max="30" name="seat' + i + '" value="' + n + '"><small>seats</small></label>').join("");
+  }
+  async function saveDine(form, opts) {
+    const o = opts || {}, out = outlet(); if (!out || !can("profile")) return;
+    const old = dineSettings().tables, count = Math.max(1, Math.min(60, Number(form.elements.count.value) || 1)), seats = [];
+    for (let i = 0; i < count; i++) seats.push(Math.max(1, Math.min(30, Number((form.elements["seat" + i] || {}).value) || 4)));
+    const tables = seats.map((n, i) => ({id: String(i + 1), label: (old[i] && old[i].label) || "Table " + (i + 1), seats: n}));
+    const dineIn = {enabled: !o.pause, autoAccept: form.elements.autoAccept.checked, tables, openFrom: form.elements.openFrom.value || "12:00", openTo: form.elements.openTo.value || "23:00",
+      slotMinutes: [15, 30, 60].includes(Number(form.elements.slotMinutes.value)) ? Number(form.elements.slotMinutes.value) : 30, maxParty: Math.max(1, Math.min(30, Number(form.elements.maxParty.value) || 10)), updatedAt: Date.now()};
+    try {
+      await db.collection("restaurants").doc(out.id).set({dineIn}, {merge: true});
+      out.doc.dineIn = dineIn; closeModal(); DINE.rid = ""; render();
+      toast(o.pause ? "Dine-in paused. Your tables are kept." : "Dine-in is on. " + tables.length + (tables.length === 1 ? " table is" : " tables are") + " ready.");
+      if (o.print && !o.pause) setTimeout(() => printDineQr(""), 300);
+    } catch (e) { toast(friendly(e), true); }
+  }
+  function printDineQr(onlyId) {
+    if (typeof window.qrcode !== "function") return toast("QR codes couldn't load. Refresh the page and try again.", true);
+    const r = (outlet() || {}).doc || {}, rid = state.rid, tables = dineSettings().tables.filter((t) => !onlyId || t.id === onlyId);
+    const cards = tables.map((t) => { const q = window.qrcode(0, "M"); q.addData(DINE_TABLE_URL + rid + "/" + t.id); q.make(); return '<div class="qr-card"><div class="brand">Scraveit</div><div class="rname">' + h(r.name || "") + '</div><img src="' + q.createDataURL(7, 2) + '" alt=""><div class="tname">' + h(t.label) + '</div><div class="how">Scan with your phone camera to order<br>and share one bill with your table</div></div>'; }).join("");
+    const css = "@page{size:A4;margin:12mm}body{font-family:Arial,sans-serif;margin:0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10mm}.qr-card{border:2px dashed #9aa6c2;border-radius:6mm;padding:6mm;text-align:center;page-break-inside:avoid}.brand{font-weight:900;font-size:20pt;color:#1460f0}.rname{font-size:11pt;color:#4A5878;margin:1mm 0 3mm}.qr-card img{width:55mm;height:55mm;image-rendering:pixelated}.tname{font-size:22pt;font-weight:800;margin-top:2mm}.how{font-size:9pt;color:#4A5878;margin-top:2mm}";
+    const f = document.createElement("iframe"); f.setAttribute("aria-hidden", "true"); f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0"; document.body.appendChild(f);
+    const d = f.contentDocument; d.open(); d.write('<!doctype html><html><head><meta charset="utf-8"><title>Scraveit table QR codes</title><style>' + css + '</style></head><body><div class="grid">' + cards + "</div></body></html>"); d.close();
+    setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (_) { toast("Could not open printing in this browser.", true); } setTimeout(() => f.remove(), 60000); }, 400);
+  }
+
+  // ---------- daily meal plans (getRestaurantMealPlans / saveMealPlan, as in the app) ----------
+  const MEAL_LABEL = {breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner"}, MEAL_TIMES = {breakfast: ["07:30", "09:00"], lunch: ["12:30", "13:30"], dinner: ["19:30", "21:00"]}, MEAL_ICON = {breakfast: "🌅", lunch: "🍛", dinner: "🌙"};
+  const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+  const MP = {rid: "", plans: null, busy: false, error: "", saving: false};
+  const fmt12 = (t) => { const [hh, mm] = String(t || "0:0").split(":").map(Number); return ((hh % 12) || 12) + (mm ? ":" + String(mm).padStart(2, "0") : "") + (hh < 12 ? " am" : " pm"); };
+  function mpDaysText(days) { const d = WEEK_ORDER.filter((i) => days.includes(i)); if (d.length === 7) return "Every day"; if (d.length === 6 && !d.includes(0)) return "Mon–Sat"; if (d.length === 5 && !d.includes(0) && !d.includes(6)) return "Mon–Fri"; return d.map((i) => WD[i]).join(", ") || "No days"; }
+  async function loadMealPlans() {
+    MP.busy = true; MP.rid = state.rid; render();
+    try { const r = await call("getRestaurantMealPlans", {restaurantId: state.rid}); MP.plans = Array.isArray(r && r.plans) ? r.plans : []; MP.error = ""; } catch (e) { MP.error = friendly(e); MP.plans = MP.plans || []; }
+    MP.busy = false; if (state.page === "meals") render();
+  }
+  function pageMeals() {
+    if (MP.rid !== state.rid) { MP.plans = null; MP.rid = state.rid; }
+    if (!MP.plans && !MP.busy) setTimeout(loadMealPlans, 0);
+    if (state.menu.items == null && !state.menu.loading) setTimeout(loadMenu, 0);
+    const list = MP.plans || [];
+    return '<div class="row between"><p class="muted" style="margin:0">Customers subscribe and skip days in the Scraveit app. Each day, 45 minutes before your delivery window, every meal arrives in Live orders as a normal order to accept and cook. The price is the dish’s menu price.</p>' +
+      (can("orders") ? '<button class="btn primary" data-act="mp-edit" data-id="">+ New meal plan</button>' : "") + "</div>" +
+      (MP.error ? '<div class="notice warn">' + h(MP.error) + "</div>" : "") +
+      (MP.busy && !list.length ? '<div class="spinner"></div>' : list.length ? '<div class="mp-list">' + list.map((p) => '<div class="card"><div class="row between"><div><div class="small muted">' + h(MEAL_LABEL[p.meal] || "Meal") + " · " + h(fmt12(p.windowStart)) + "–" + h(fmt12(p.windowEnd)) + '</div><h2 style="margin:2px 0">' + h(p.name) + '</h2><div class="small muted">' + h(p.menuItemName || "") + " · ₹" + Math.round(Number(p.price || 0)) + " · " + h(mpDaysText(p.days || [])) + '</div></div><span class="pill ' + (p.active ? "paid" : "wait") + '">' + (p.active ? "Live" : "Paused") + "</span></div>" +
+        '<div class="kpis" style="margin:12px 0">' + [["Today", p.mealsToday], ["Tomorrow", p.mealsTomorrow], ["Subscribers", p.subscribers]].map((k) => '<div class="kpi"><div class="small muted">' + k[0] + "</div><strong>" + Number(k[1] || 0) + "</strong></div>").join("") + "</div>" +
+        (can("orders") ? '<button class="btn" data-act="mp-edit" data-id="' + h(p.id) + '">Edit plan</button>' : "") + "</div>").join("") + "</div>"
+        : '<div class="card empty"><strong>No meal plans yet</strong>Offer a daily thali or tiffin. Regular customers get it every day without opening the app.</div>');
+  }
+  function mealPlanModal(id) {
+    const p = (MP.plans || []).find((x) => x.id === id) || {meal: "lunch", days: [1, 2, 3, 4, 5, 6], windowStart: "12:30", windowEnd: "13:30", maxPerDay: 30, active: true, weeklyMenu: {}};
+    const items = (state.menu.items || []).filter((i) => Number(i.price) > 0), menu = p.weeklyMenu || {}, days = p.days || [];
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="meal-plan-form" data-id="' + h(p.id || "") + '"><header><h2>' + (p.id ? "Edit meal plan" : "New meal plan") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<div class="field"><label for="mp-name">Plan name</label><input class="input" id="mp-name" name="name" required minlength="3" maxlength="60" value="' + h(p.name || "") + '" placeholder="e.g. Lunch thali"></div>' +
+      '<div class="field"><label for="mp-desc">What’s in it</label><textarea class="input" id="mp-desc" name="description" rows="2" maxlength="240" placeholder="Rice, dal, 2 curries, curd, pickle">' + h(p.description || "") + "</textarea></div>" +
+      '<p class="small" style="margin:0"><span class="muted">Customers see </span><strong id="mp-summary"></strong></p>' +
+      '<div class="field"><label>Meal</label><div class="row" style="gap:8px">' + ["breakfast", "lunch", "dinner"].map((m) => '<label class="mp-meal"><input type="radio" name="meal" value="' + m + '"' + (m === p.meal ? " checked" : "") + ' data-input="mp-meal"><span>' + MEAL_ICON[m] + " " + MEAL_LABEL[m] + "</span></label>").join("") + "</div></div>" +
+      '<div class="ol-grid"><div class="field"><label for="mp-from">Delivery from</label><input class="input" id="mp-from" name="windowStart" type="time" required value="' + h(p.windowStart) + '" data-input="mp-sum"></div><div class="field"><label for="mp-to">Until</label><input class="input" id="mp-to" name="windowEnd" type="time" required value="' + h(p.windowEnd) + '" data-input="mp-sum"></div></div>' +
+      '<div class="field"><div class="row between"><label>Days</label><span class="row" style="gap:6px"><button type="button" class="btn small" data-act="mp-days" data-id="1,2,3,4,5,6">Mon–Sat</button><button type="button" class="btn small" data-act="mp-days" data-id="0,1,2,3,4,5,6">Every day</button></span></div><div class="row" style="gap:6px;flex-wrap:wrap">' +
+        WEEK_ORDER.map((i) => '<label class="mp-day"><input type="checkbox" name="day" value="' + i + '"' + (days.includes(i) ? " checked" : "") + ' data-input="mp-sum"><span>' + WD[i] + "</span></label>").join("") + "</div></div>" +
+      (items.length ? '<div class="field"><label for="mp-item">Price: the same as this dish on your menu</label><select class="input" id="mp-item" name="menuItemId" required data-input="mp-sum">' + items.map((i) => '<option value="' + h(i.id) + '" data-price="' + h(Number(i.price || 0)) + '"' + (i.id === p.menuItemId ? " selected" : "") + ">" + h(i.name) + " · ₹" + Math.round(Number(i.price || 0)) + "</option>").join("") + "</select></div>"
+        : '<div class="notice warn">' + (state.menu.items == null ? "Loading your menu…" : "Add the plan meal to your menu first. Its menu price is the plan price.") + "</div>") +
+      '<div class="ol-grid"><div class="field"><label for="mp-max">Most meals a day</label><input class="input" id="mp-max" name="maxPerDay" type="number" min="1" max="500" required value="' + h(p.maxPerDay || 30) + '"><span class="small muted">New subscribers wait once it’s full.</span></div>' +
+      '<label class="ol-check"><input type="checkbox" name="active"' + (p.active !== false ? " checked" : "") + '><span><strong>Plan is live</strong><span class="small muted">Off stops new subscribers and daily orders.</span></span></label></div>' +
+      '<details' + (WEEK_ORDER.some((i) => menu[i]) ? " open" : "") + '><summary><strong>Daily menu</strong> <span class="small muted">optional · tell customers what’s cooking each day</span></summary><div class="mp-week">' + WEEK_ORDER.map((i) => '<label><span>' + WD[i] + '</span><input class="input" name="menu' + i + '" maxlength="160" value="' + h(menu[i] || "") + '" placeholder="Sambar, beans poriyal, curd"></label>').join("") + "</div></details>" +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">Cancel</button><button class="btn primary grow" type="submit"' + (items.length ? "" : " disabled") + ">" + (p.id ? "Save changes" : "Create plan") + "</button></div></form></div>";
+    mpSummary();
+  }
+  function mpSummary() {
+    const f = document.getElementById("meal-plan-form"), out = document.getElementById("mp-summary"); if (!f || !out) return;
+    const meal = (f.querySelector('input[name="meal"]:checked') || {}).value, days = Array.from(f.querySelectorAll('input[name="day"]:checked')).map((x) => Number(x.value));
+    const opt = f.elements.menuItemId && f.elements.menuItemId.selectedOptions[0], price = opt ? Number(opt.dataset.price || 0) : 0;
+    out.textContent = (MEAL_LABEL[meal] || "Meal") + " · " + fmt12(f.elements.windowStart.value) + "–" + fmt12(f.elements.windowEnd.value) + " · " + mpDaysText(days) + (price ? " · ₹" + Math.round(price) : "");
+  }
+  async function saveMealPlan(form) {
+    if (MP.saving) return;
+    const days = Array.from(form.querySelectorAll('input[name="day"]:checked')).map((x) => Number(x.value)); if (!days.length) return toast("Choose at least one day.", true);
+    const weeklyMenu = {}; for (let i = 0; i < 7; i++) { const v = String((form.elements["menu" + i] || {}).value || "").trim(); if (v) weeklyMenu[String(i)] = v; }
+    const input = {restaurantId: state.rid, name: form.elements.name.value.trim(), description: form.elements.description.value.trim(), meal: (form.querySelector('input[name="meal"]:checked') || {}).value || "lunch", menuItemId: form.elements.menuItemId.value,
+      days, windowStart: form.elements.windowStart.value, windowEnd: form.elements.windowEnd.value, weeklyMenu, maxPerDay: Number(form.elements.maxPerDay.value), active: form.elements.active.checked};
+    if (form.dataset.id) input.planId = form.dataset.id;
+    MP.saving = true; const btn = form.querySelector('button[type="submit"]'); if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    try { await call("saveMealPlan", input); toast("Meal plan saved."); closeModal(); MP.plans = null; render(); }
+    catch (e) { toast("Couldn’t save the plan. " + friendly(e), true); if (btn) { btn.disabled = false; btn.textContent = form.dataset.id ? "Save changes" : "Create plan"; } }
+    MP.saving = false;
   }
 
   // ---------- staff ----------
@@ -2014,6 +2727,8 @@
     if (p === "menu") return can("menu") || can("availability");
     if (p === "offers") return can("offers");
     if (p === "ads") return can("offers") || can("finance");
+    if (p === "dinein") return dineAllowed();
+    if (p === "meals") return can("orders") || can("profile");
     return false;
   }
   // Easy to read out and type on a billing machine: no 0/o or 1/l.
@@ -2130,8 +2845,432 @@
     S.busy = false; loadStaff();
   }
 
+  // ---------- register a new outlet (the same application as the Restaurant app) ----------
+  // Writes restaurantApplications/{uid | uid_grocery | uid_dairy | uid_pharmacy} with the same fields
+  // the app writes; Scraveit checks it, confirms the rate and approves. Nothing here decides money.
+  const REG_TYPES = {
+    restaurant: {title: "Restaurant", noun: "restaurant", example: "The Waffle Spot", packaged: false, pharmacy: false},
+    grocery: {title: "Store", noun: "store", example: "Sri Lakshmi Kirana", packaged: true, pharmacy: false},
+    dairy: {title: "Dairy", noun: "dairy", example: "Sai Milk Point", packaged: true, pharmacy: false},
+    pharmacy: {title: "Pharmacy", noun: "pharmacy", example: "Sri Sai Medicals", packaged: true, pharmacy: true},
+  };
+  const REG_TYPE_LABEL = {restaurant: "Restaurant", grocery: "Grocery store", dairy: "Dairy", pharmacy: "Pharmacy (health care)"};
+  const REG_STEPS = [["basics", "About you"], ["location", "Location and hours"], ["documents", "Licence and tax"], ["bank", "Payouts"], ["menu", "Menu"], ["review", "Review"]];
+  const REG_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const REG_RATE = 30;
+  const REG = {loaded: false, loading: false, apps: {}, type: "", draft: null, step: 0, busy: "", saving: false, error: "", editing: false, ag: null, agLoading: false, agError: "", watch: null, mapSynced: false, signup: false, creating: false, pendingConsent: false};
+  const regT = () => REG_TYPES[REG.type] || REG_TYPES.restaurant;
+  const regAppId = (type) => type === "restaurant" ? state.user.uid : state.user.uid + "_" + type;
+  const regDoc = (type) => db.collection("restaurantApplications").doc(regAppId(type || REG.type));
+  const regNum = (v) => v === "" || v == null ? NaN : Number(v);
+  function regOutlets(t) {
+    return t.pharmacy ? ["Pharmacy", "Medical store", "Surgical store"] : REG.type === "dairy" ? ["Dairy shop", "Milk booth", "Dairy farm"] : REG.type === "grocery" ? ["Supermarket", "Kirana store", "Fruits and vegetables", "Organic store"] : ["Restaurant", "Cafe", "Cloud kitchen", "Sweets and bakery", "Fast food", "Dhaba"];
+  }
+  function regCuisines(t) {
+    return t.pharmacy ? ["Everyday", "Baby care", "Women care", "Cold and cough", "First aid", "Personal care"] : REG.type === "dairy" ? ["Milk", "Curd", "Paneer", "Ghee", "Butter", "Sweets"] : REG.type === "grocery" ? ["Staples", "Fruits", "Vegetables", "Snacks", "Beverages", "Household", "Personal care"] : ["South Indian", "Andhra", "Biryani", "Tiffins", "North Indian", "Chinese", "Fast food", "Pizza and burgers", "Desserts", "Bakery", "Ice cream", "Beverages", "Chaat and snacks", "Sea food", "Healthy"];
+  }
+  function regHours(t) {
+    return t.pharmacy ? [["all", "8 am to 10 pm", "08:00", "22:00"], ["day", "9 am to 9 pm", "09:00", "21:00"], ["late", "8 am to 11 pm", "08:00", "23:00"], ["custom", "Custom", "", ""]]
+      : REG.type === "dairy" ? [["all", "5 am to 9 pm", "05:00", "21:00"], ["morning", "5 am to 11 am", "05:00", "11:00"], ["day", "6 am to 10 pm", "06:00", "22:00"], ["custom", "Custom", "", ""]]
+      : REG.type === "grocery" ? [["all", "7 am to 10 pm", "07:00", "22:00"], ["day", "8 am to 9 pm", "08:00", "21:00"], ["late", "9 am to 11 pm", "09:00", "23:00"], ["custom", "Custom", "", ""]]
+      : [["all", "7 am to 11 pm", "07:00", "23:00"], ["lunch", "11 am to 11 pm", "11:00", "23:00"], ["evening", "4 pm to 11 pm", "16:00", "23:00"], ["custom", "Custom", "", ""]];
+  }
+  // The same checks the app and the server make.
+  const OBC = {
+    fssai: (v) => /^[12]\d{13}$/.test(String(v || "")),
+    drugLicence: (v) => { const t = String(v || "").toUpperCase().trim(); return /^[A-Z0-9][A-Z0-9 /().,-]{3,59}$/.test(t) && /\d/.test(t); },
+    pan: (v) => /^[A-Z]{3}[ABCFGHLJPT][A-Z]\d{4}[A-Z]$/.test(String(v || "").toUpperCase()),
+    ifsc: (v) => /^[A-Z]{4}0[A-Z0-9]{6}$/.test(String(v || "").toUpperCase()),
+    upi: (v) => /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/.test(String(v || "").trim()),
+    phone: (v) => String(v || "").replace(/\D/g, "").length >= 10,
+    gstin: (v) => {
+      const g = String(v || "").toUpperCase(); if (!/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(g)) return false;
+      const C = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; let sum = 0;
+      for (let i = 0; i < 14; i++) { const p = C.indexOf(g[i]) * (i % 2 ? 2 : 1); sum += Math.floor(p / 36) + p % 36; }
+      return C[(36 - sum % 36) % 36] === g[14];
+    },
+  };
+
+  // ----- loading -----
+  async function regLoad() {
+    if (REG.loading || !state.user) return;
+    REG.loading = true;
+    const uid = state.user.uid, apps = {};
+    await Promise.all(Object.keys(REG_TYPES).map(async (type) => {
+      try { const s = await regDoc(type).get(); if (s.exists && s.data().uid === uid) apps[type] = s.data(); } catch (_) { /* not readable = none */ }
+    }));
+    REG.loading = false;
+    if (!state.user || state.user.uid !== uid) return;
+    REG.apps = apps; REG.loaded = true; REG.loading = false;
+    const types = Object.keys(apps);
+    if (!REG.type && types.length === 1) regOpen(types[0]);
+    render();
+  }
+  function regReset() {
+    regStopWatch();
+    Object.assign(REG, {loaded: false, loading: false, apps: {}, type: "", draft: null, step: 0, busy: "", saving: false, error: "", editing: false, ag: null, agLoading: false, agError: "", mapSynced: false});
+  }
+  function regOpen(type) {
+    REG.type = type; REG.draft = null; REG.ag = null; REG.agError = ""; REG.error = ""; REG.editing = false; REG.mapSynced = false;
+    const a = REG.apps[type] || {};
+    REG.step = Math.max(0, Math.min(REG_STEPS.length - 1, Number(a.step || 0)));
+  }
+  async function regStart(type) {
+    if (!state.user || REG.busy) return;
+    if (REG.apps[type]) { regOpen(type); render(); return; }
+    const now = Date.now(), rec = {uid: state.user.uid, email: state.user.email || "", storeType: type, status: "draft", step: 0, ownerName: state.user.displayName || "", createdAt: now, updatedAt: now};
+    REG.busy = "start"; render();
+    try { await regDoc(type).set(rec); REG.apps[type] = rec; regOpen(type); }
+    catch (e) { toast(friendly(e), true); }
+    REG.busy = ""; render(); window.scrollTo(0, 0);
+  }
+
+  // ----- the draft -----
+  function regDraft() {
+    if (REG.draft) return REG.draft;
+    const t = regT(), a = JSON.parse(JSON.stringify(REG.apps[REG.type] || {})), hrs = regHours(t);
+    a.location = a.location || {};
+    a.hours = a.hours || {preset: "all", open: hrs[0][2], close: hrs[0][3], days: REG_DAYS.slice()};
+    if (t.packaged && !a.gstMode) a.gstMode = a.hasGst ? "registered" : "enrolment";
+    a.fssai = a.fssai || {}; if (t.pharmacy) a.drugLicence = a.drugLicence || {};
+    a.pan = a.pan || {}; a.bank = a.bank || {method: "bank"}; if (!a.bank.accountNumber) a.bank.accountNumberAgain = "";
+    a.menu = a.menu || {}; a.menu.dishes = Array.isArray(a.menu.dishes) ? a.menu.dishes : []; a.menu.cardPhotoPaths = Array.isArray(a.menu.cardPhotoPaths) ? a.menu.cardPhotoPaths : [];
+    a.cuisines = Array.isArray(a.cuisines) ? a.cuisines : String(a.cuisines || "").split(",").map((x) => x.trim()).filter(Boolean);
+    if (!a.location.address && a.address) a.location.address = a.address;
+    if (!a.location.city && a.city) a.location.city = a.city;
+    while (a.menu.dishes.length < 5) a.menu.dishes.push({name: "", price: "", diet: "veg"});
+    REG.draft = a; return a;
+  }
+  const regGet = (path) => path.split(".").reduce((o, k) => o == null ? undefined : o[k], regDraft());
+  function regPut(path, value) { const keys = path.split("."), last = keys.pop(); let o = regDraft(); keys.forEach((k) => { if (o[k] == null || typeof o[k] !== "object") o[k] = {}; o = o[k]; }); o[last] = value; }
+  // The map pin lives in OL.draft (the same map as Edit outlet details).
+  function regPullMap() { if (REG.mapSynced && OL.draft && Number.isFinite(OL.draft.lat)) { const l = regDraft().location; l.lat = OL.draft.lat; l.lng = OL.draft.lng; } }
+  function regIssues(step) {
+    regPullMap();
+    const a = regDraft(), t = regT(), out = [], need = (ok, msg) => { if (!ok) out.push(msg); };
+    if (step === "basics" || !step) { need(String(a.restaurantName || "").trim().length >= 2, "Add your " + t.noun + " name"); need(String(a.ownerName || "").trim().length >= 2, "Add the owner's full name"); need(OBC.phone(a.phone), "Add a 10-digit phone number"); need(a.cuisines.length > 0, "Pick at least one " + (t.packaged ? "category" : "cuisine")); }
+    if (step === "location" || !step) { need(Number.isFinite(regNum(a.location.lat)), "Click the map to set your pin"); need(String(a.location.address || "").trim().length >= 6, "Add the street address"); need(String(a.location.city || "").trim(), "Add the town or city"); need(!a.location.pincode || /^\d{6}$/.test(a.location.pincode), "PIN code should be 6 digits"); need((a.hours.days || []).length > 0, "Pick the days you're open"); }
+    if (step === "documents" || !step) {
+      if (t.pharmacy) { need(OBC.drugLicence(a.drugLicence.number), "Add your drug licence number"); need(a.drugLicence.photoPath, "Add a photo of the drug licence"); need(!a.fssai.number || OBC.fssai(a.fssai.number), "FSSAI number should be 14 digits"); need(a.noPrescriptionOnly, "Confirm you'll list only items that need no prescription"); }
+      else { need(OBC.fssai(a.fssai.number), "FSSAI number should be 14 digits"); need(a.fssai.photoPath, "Add a photo of the FSSAI certificate"); }
+      need(OBC.pan(a.pan.number), "PAN should look like ABCPK1234D"); need(a.pan.photoPath, "Add a photo of the PAN card");
+      if (t.packaged) { if (a.gstMode === "registered") need(OBC.gstin(a.gstin), "GSTIN doesn't look right. Check it against your certificate"); else if (a.gstMode === "enrolment") need(/^[A-Z0-9]{10,20}$/.test(String(a.gstEnrolment || "").toUpperCase()), "Add your GST enrolment number"); }
+      else if (a.hasGst) need(OBC.gstin(a.gstin), "GSTIN doesn't look right. Check it against your certificate");
+    }
+    if (step === "bank" || !step) {
+      if (a.bank.method === "upi") need(OBC.upi(a.bank.upiId), "UPI ID should look like name@bank");
+      else { need(String(a.bank.holderName || "").trim(), "Add the account holder's name"); need(/^\d{9,18}$/.test(String(a.bank.accountNumber || "")), "Account number should be 9 to 18 digits"); if (a.bank.accountNumberAgain !== undefined) need(a.bank.accountNumber === a.bank.accountNumberAgain, "The two account numbers don't match"); need(OBC.ifsc(a.bank.ifsc), "IFSC should look like SBIN0001234"); }
+    }
+    if (step === "menu" || !step) { const n = a.menu.dishes.filter((d) => String(d.name || "").trim() && Number(d.price) > 0).length; need(n >= 5 || a.menu.cardPhotoPaths.length > 0, "Add 5 " + (t.packaged ? "products" : "dishes") + ", or a photo of your " + (t.packaged ? "price list" : "menu card")); }
+    return out;
+  }
+  function regClean() {
+    regPullMap();
+    const t = regT(), o = JSON.parse(JSON.stringify(regDraft())), prev = REG.apps[REG.type] || {};
+    delete o.bank.accountNumberAgain;
+    o.menu.dishes = o.menu.dishes.filter((d) => String(d.name || "").trim()).map((d) => Object.assign({name: String(d.name).trim().slice(0, 80), price: Math.round(Number(d.price) || 0), diet: d.diet || "veg", category: String(d.category || "").trim().slice(0, 40)}, t.packaged ? {packSize: String(d.packSize || "").trim().slice(0, 40)} : {}));
+    o.fssai.kind = OBC.fssai(o.fssai.number) ? (String(o.fssai.number)[0] === "1" ? "licence" : "registration") : "";
+    o.pan.number = String(o.pan.number || "").toUpperCase();
+    if (o.drugLicence) o.drugLicence.number = String(o.drugLicence.number || "").toUpperCase().trim().slice(0, 60);
+    if (t.packaged) { o.hasGst = o.gstMode === "registered"; o.gstEnrolment = o.gstMode === "enrolment" ? String(o.gstEnrolment || "").toUpperCase().replace(/\s/g, "") : ""; }
+    o.gstin = o.hasGst ? String(o.gstin || "").toUpperCase() : "";
+    o.bank.ifsc = String(o.bank.ifsc || "").toUpperCase();
+    o.address = o.location.address || ""; o.city = o.location.city || "";
+    ["terms", "agreement", "reviewedAt", "reviewedBy", "reviewMessage", "restaurantId", "approvedAt"].forEach((k) => delete o[k]);
+    o.uid = state.user.uid; o.email = state.user.email || o.email || "";
+    if (prev.storeType) o.storeType = prev.storeType; else delete o.storeType;
+    o.updatedAt = Date.now();
+    return o;
+  }
+  async function regSave(status) {
+    const prev = REG.apps[REG.type] || {}, o = regClean();
+    o.status = status || (["submitted", "changes_requested"].includes(prev.status) ? "submitted" : "draft");
+    o.step = REG.step;
+    if (o.status === "submitted" && !o.submittedAt) o.submittedAt = Date.now();
+    await regDoc().set(o, {merge: true});
+    REG.apps[REG.type] = Object.assign({}, prev, o);
+    return o;
+  }
+  async function regNext(submit) {
+    const step = REG_STEPS[REG.step][0], issues = submit ? regIssues() : regIssues(step);
+    if (issues.length) { REG.error = issues[0]; render(); return; }
+    REG.error = ""; REG.saving = true; render();
+    try {
+      if (submit) { await regSave("submitted"); REG.editing = false; REG.ag = null; toast("Submitted. We'll check your details shortly."); }
+      else { REG.step++; await regSave(); }
+    } catch (e) { REG.error = friendly(e); }
+    REG.saving = false; render(); window.scrollTo(0, 0);
+  }
+  async function regUpload(kind, file) {
+    if (!file || REG.busy) return;
+    if (file.size > 15 * 1024 * 1024) { toast("Pick a photo under 15 MB.", true); return; }
+    REG.busy = kind; render();
+    try {
+      const path = "private/restaurant-onboarding/" + state.user.uid + "/" + kind + "-" + Date.now() + ".jpg", im = await loadImage(file);
+      await firebase.storage().ref(path).put(await toBlob(drawScaled(im, 1200), .75), {contentType: "image/jpeg"});
+      const a = regDraft();
+      if (kind === "fssai") a.fssai.photoPath = path;
+      else if (kind === "drug") a.drugLicence.photoPath = path;
+      else if (kind === "pan") a.pan.photoPath = path;
+      else if (kind === "bank") a.bank.proofPath = path;
+      else if (kind === "gst") a.gstPhotoPath = path;
+      else if (kind === "menu") a.menu.cardPhotoPaths = a.menu.cardPhotoPaths.concat(path).slice(0, 6);
+      await regSave(); toast("Photo added.");
+    } catch (e) { toast("Upload failed. " + friendly(e), true); }
+    REG.busy = ""; render();
+  }
+
+  // ----- markup -----
+  function regField(path, label, opt) {
+    opt = opt || {}; const v = regGet(path);
+    return '<div class="field"><label for="rg-' + h(path) + '">' + h(label) + '</label><input id="rg-' + h(path) + '" class="input' + (opt.mono ? " mono" : "") + '" data-ob="' + h(path) + '" value="' + h(v == null ? "" : v) + '"' +
+      (opt.type ? ' type="' + opt.type + '"' : "") + (opt.mode ? ' inputmode="' + opt.mode + '"' : "") + (opt.max ? ' maxlength="' + opt.max + '"' : "") + (opt.upper ? ' data-upper="1"' : "") + (opt.digits ? ' data-digits="1"' : "") +
+      ' placeholder="' + h(opt.ph || "") + '" autocomplete="off">' + (opt.hint ? '<span class="small muted">' + opt.hint + "</span>" : "") + "</div>";
+  }
+  function regChips(path, options, multi) {
+    const v = regGet(path), on = (x) => multi ? (v || []).includes(x) : v === x;
+    return '<div class="reg-chips">' + options.map((x) => '<button type="button" class="reg-chip' + (on(x) ? " on" : "") + '" data-act="rg-chip" data-path="' + h(path) + '" data-value="' + h(x) + '" data-multi="' + (multi ? 1 : 0) + '" aria-pressed="' + on(x) + '">' + h(x) + "</button>").join("") + "</div>";
+  }
+  function regPhoto(kind, label, copy, path) {
+    const done = !!regGet(path), busy = REG.busy === kind;
+    return '<label class="reg-photo' + (done ? " done" : "") + (busy ? " busy" : "") + '"><span class="reg-photo-icon">' + (busy ? "…" : done ? "✓" : "📷") + '</span><span class="grow"><strong>' + h(done ? label + " added" : label) + '</strong><span class="small muted">' + h(busy ? "Uploading…" : done ? "Click to replace" : copy) + '</span></span><input type="file" accept="image/jpeg,image/png,image/webp" data-ob-photo="' + kind + '" hidden' + (REG.busy ? " disabled" : "") + "></label>";
+  }
+  const regOk = (ok, text) => ok ? '<span class="reg-ok">✓ ' + h(text) + "</span>" : "";
+  function regCheck(key, on, title, copy) {
+    return '<label class="ol-check"><input type="checkbox" data-ob-check="' + key + '"' + (on ? " checked" : "") + "><span><strong>" + h(title) + '</strong><span class="small muted">' + h(copy) + "</span></span></label>";
+  }
+  function regStepBody() {
+    const a = regDraft(), t = regT(), step = REG_STEPS[REG.step][0];
+    if (step === "basics") return '<h2>Tell us about your ' + h(t.noun) + '</h2><p class="muted">This is how customers will find you.</p>' +
+      regField("restaurantName", t.title + " name", {ph: "e.g. " + t.example, max: 80}) +
+      '<div class="field"><label>What kind of place is it?</label>' + regChips("outletType", regOutlets(t), false) + "</div>" +
+      '<div class="field"><label>' + (t.packaged ? "What do you sell?" : "What do you serve?") + ' <span class="muted">(pick all that fit)</span></label>' + regChips("cuisines", regCuisines(t), true) + "</div>" +
+      '<div class="ol-grid">' + regField("ownerName", "Owner's full name", {ph: "As on your PAN card", max: 80, hint: "The person who will sign the partner agreement."}) + regField("phone", "Phone number for orders", {type: "tel", mode: "tel", ph: "98765 43210", max: 16}) + "</div>" +
+      regField("legalName", "Business name on PAN or GST (if different)", {ph: "Optional", max: 120});
+    if (step === "location") {
+      const hrs = regHours(t);
+      return '<h2>Where are you?</h2><p class="muted">Delivery partners come here to pick up orders.</p>' +
+        '<div class="row between"><span class="small muted">Click the map to move the pin to your shop door.</span><span class="row" style="gap:6px"><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button><button type="button" class="btn small" data-act="ol-zoom" data-id="-1">−</button><button type="button" class="btn small" data-act="ol-zoom" data-id="1">+</button></span></div>' +
+        '<div id="ol-map" class="ol-map" data-act="ol-map"></div><p class="small muted" id="ol-coords" style="margin:0"></p>' +
+        regField("location.address", "Street address", {ph: "Shop number, street, landmark", max: 200}) +
+        '<div class="ol-grid">' + regField("location.area", "Area", {ph: "e.g. Gandhi Nagar", max: 60}) + regField("location.city", "Town or city", {ph: "Naidupeta", max: 60}) + regField("location.pincode", "PIN code", {mode: "numeric", digits: 1, max: 6, ph: "524126"}) + "</div>" +
+        '<div class="field"><label>Opening hours</label><div class="reg-chips">' + hrs.map((x) => '<button type="button" class="reg-chip' + (a.hours.preset === x[0] ? " on" : "") + '" data-act="rg-hours" data-value="' + x[0] + '">' + h(x[1]) + "</button>").join("") + "</div></div>" +
+        (a.hours.preset === "custom" ? '<div class="ol-grid">' + regField("hours.open", "Opens at", {type: "time"}) + regField("hours.close", "Closes at", {type: "time"}) + "</div>" : "") +
+        '<div class="field"><label>Open on</label>' + regChips("hours.days", REG_DAYS, true) + "</div>";
+    }
+    if (step === "documents") {
+      const fssaiHint = (num) => num ? regOk(OBC.fssai(num), String(num)[0] === "2" ? "Registration number" : "Licence number") : "";
+      const docs = t.pharmacy
+        ? '<section class="reg-doc"><h3>Drug licence</h3><p class="small muted">Your retail drug licence (Form 20 and 21).</p>' + regPhoto("drug", "Drug licence", "Upload a clear photo", "drugLicence.photoPath") +
+          '<div class="ol-grid">' + regField("drugLicence.number", "Licence number", {max: 60, mono: 1, upper: 1, ph: "As printed on the licence", hint: regOk(OBC.drugLicence(a.drugLicence.number), "Looks right")}) + regField("drugLicence.expiresOn", "Valid until", {type: "date"}) + "</div>" +
+          regCheck("noPrescriptionOnly", a.noPrescriptionOnly, "I'll list only items that need no prescription", "No Schedule H, H1 or X medicines. Customers can't upload prescriptions on Scraveit.") + "</section>" +
+          '<section class="reg-doc"><h3>FSSAI (optional)</h3><p class="small muted">Only if you sell food such as baby food or nutrition drinks.</p>' + regField("fssai.number", "FSSAI number", {mode: "numeric", digits: 1, max: 14, mono: 1, ph: "14 digits", hint: fssaiHint(a.fssai.number)}) + "</section>"
+        : '<section class="reg-doc"><h3>FSSAI licence or registration</h3><p class="small muted">Required by law for anyone selling food online.</p>' + regPhoto("fssai", "FSSAI certificate", "Upload a clear photo", "fssai.photoPath") +
+          '<div class="ol-grid">' + regField("fssai.number", "FSSAI number", {mode: "numeric", digits: 1, max: 14, mono: 1, ph: "14 digits", hint: fssaiHint(a.fssai.number)}) + regField("fssai.expiresOn", "Valid until", {type: "date"}) + "</div></section>";
+      const pan = '<section class="reg-doc"><h3>PAN</h3><p class="small muted">For tax on your sales. The owner\'s PAN, or the business PAN.</p>' + regPhoto("pan", "PAN card", "Front side, all text readable", "pan.photoPath") +
+        '<div class="ol-grid">' + regField("pan.number", "PAN", {upper: 1, max: 10, mono: 1, ph: "ABCPK1234D", hint: regOk(OBC.pan(a.pan.number), "Looks right")}) + regField("pan.name", "Name on PAN", {ph: "As printed on the card", max: 80}) + "</div></section>";
+      const gstinField = regPhoto("gst", "GST certificate (optional)", "Upload it if you have it", "gstPhotoPath") + regField("gstin", "GSTIN", {upper: 1, max: 15, mono: 1, ph: "37ABCPK1234D1Z5", hint: regOk(OBC.gstin(a.gstin), "Looks right")});
+      let gst;
+      if (t.packaged) {
+        const m = a.gstMode || "enrolment", opt = (v, ti, c) => '<button type="button" class="reg-opt' + (m === v ? " on" : "") + '" data-act="rg-gst" data-value="' + v + '"><strong>' + h(ti) + '</strong><span class="small muted">' + h(c) + "</span></button>";
+        gst = '<section class="reg-doc"><h3>GST</h3><p class="small muted">Shops selling goods online need one of these.</p><div class="reg-opts">' + opt("registered", "I have GST registration", "Add your GSTIN") + opt("enrolment", "Not registered: I have a GST enrolment number", "Free on gst.gov.in for small sellers on apps like Scraveit") +
+          opt("exempt_only", "I sell only GST-free items", REG.type === "dairy" ? "Such as fresh milk and unpacked curd" : t.pharmacy ? "Such as sanitary pads" : "Such as fresh fruits and vegetables") + "</div>" +
+          (m === "registered" ? gstinField : m === "enrolment" ? regField("gstEnrolment", "GST enrolment number", {upper: 1, max: 20, mono: 1, ph: "From the GST portal", hint: "No number yet? On gst.gov.in choose User Services › Generate User ID for Unregistered Applicant › supplier to e-commerce operators. It's free and uses your PAN."}) : '<p class="small muted">If you later add packed or taxable products, you\'ll need GST registration or an enrolment number first.</p>') + "</section>";
+      } else gst = '<section class="reg-doc"><h3>GST</h3>' + regCheck("hasGst", a.hasGst, "I have GST registration", "Not registered? That's fine. Scraveit pays the GST on food sold through the app.") + (a.hasGst ? gstinField : "") + "</section>";
+      return '<h2>Licence and tax details</h2><p class="muted">Only Scraveit\'s verification team sees these.</p>' + docs + pan + gst;
+    }
+    if (step === "bank") {
+      const upi = a.bank.method === "upi";
+      return '<h2>Where should we pay you?</h2><p class="muted">Payouts every week, with a statement for every order.</p><div class="reg-chips"><button type="button" class="reg-chip' + (!upi ? " on" : "") + '" data-act="rg-bank" data-value="bank">Bank account</button><button type="button" class="reg-chip' + (upi ? " on" : "") + '" data-act="rg-bank" data-value="upi">UPI</button></div>' +
+        (upi ? regField("bank.upiId", "UPI ID", {ph: "name@okaxis", max: 80, hint: regOk(OBC.upi(a.bank.upiId), "Looks right")})
+          : regPhoto("bank", "Cancelled cheque or passbook", "Upload a photo of the first page", "bank.proofPath") + regField("bank.holderName", "Account holder's name", {ph: "As in the bank", max: 80}) +
+            '<div class="ol-grid">' + regField("bank.accountNumber", "Account number", {mode: "numeric", digits: 1, max: 18, mono: 1}) + regField("bank.accountNumberAgain", "Type the account number again", {mode: "numeric", digits: 1, max: 18, mono: 1}) + "</div>" +
+            regField("bank.ifsc", "IFSC", {upper: 1, max: 11, mono: 1, ph: "SBIN0001234", hint: regOk(OBC.ifsc(a.bank.ifsc), "Looks right")}));
+    }
+    if (step === "menu") {
+      const what = t.packaged ? "products" : "dishes";
+      return '<h2>Add your first ' + what + '</h2><p class="muted">Five is enough to start. You can add photos' + (t.packaged ? ", brand and label details" : "") + " and more once you're live.</p>" +
+        '<div class="reg-dishes">' + a.menu.dishes.map((d, i) => '<div class="reg-dish' + (t.packaged ? " pk" : "") + '"><input class="input" data-ob="menu.dishes.' + i + '.name" value="' + h(d.name || "") + '" placeholder="' + (t.packaged ? "Product" : "Dish") + " " + (i + 1) + '" maxlength="80" autocomplete="off">' +
+          '<input class="input" data-ob="menu.dishes.' + i + '.price" data-digits="1" inputmode="numeric" value="' + h(d.price || "") + '" placeholder="' + (t.packaged ? "MRP ₹" : "₹") + '" maxlength="5">' +
+          (t.packaged ? '<input class="input" data-ob="menu.dishes.' + i + '.packSize" value="' + h(d.packSize || "") + '" placeholder="' + (REG.type === "dairy" ? "500 ml" : t.pharmacy ? "20 pieces" : "1 kg") + '" maxlength="20" aria-label="Pack size">'
+            : '<button type="button" class="reg-diet' + (d.diet === "nonveg" ? " nonveg" : "") + '" data-act="rg-diet" data-id="' + i + '">' + (d.diet === "nonveg" ? "Non-veg" : "Veg") + "</button>") + "</div>").join("") + "</div>" +
+        '<button type="button" class="btn" data-act="rg-add-dish">+ Add another</button><div class="divider">or</div>' +
+        regPhoto("menu", (t.packaged ? "Price list" : "Menu card") + " photo" + (a.menu.cardPhotoPaths.length > 1 ? "s (" + a.menu.cardPhotoPaths.length + ")" : ""), "Scraveit types it in for you", "menu.cardPhotoPaths.0");
+    }
+    const row = (l, v, s) => '<div class="reg-row"><span>' + h(l) + "</span><span>" + v + ' <button type="button" class="linklike" data-act="rg-goto" data-id="' + s + '">Edit</button></span></div>', issues = regIssues();
+    const gstText = t.packaged ? (a.gstMode === "registered" ? (OBC.gstin(a.gstin) ? "✓ " + h(String(a.gstin).toUpperCase()) : "Check GSTIN") : a.gstMode === "exempt_only" ? "GST-free items only" : (a.gstEnrolment ? "✓ Enrolment " + h(String(a.gstEnrolment).toUpperCase()) : "Add enrolment number")) : a.hasGst ? (OBC.gstin(a.gstin) ? "✓ " + h(String(a.gstin).toUpperCase()) : "Check GSTIN") : "Not registered";
+    return '<h2>Check and submit</h2><p class="muted">Scraveit checks your documents, usually within a day.</p><div class="reg-review">' +
+      row(t.title, h(a.restaurantName || "—"), 0) + row("Owner", h(a.ownerName || "—"), 0) + row("Location", h([a.location.area, a.location.city].filter(Boolean).join(", ") || "—"), 1) +
+      (t.pharmacy ? row("Drug licence", OBC.drugLicence(a.drugLicence.number) && a.drugLicence.photoPath ? "✓ " + h(String(a.drugLicence.number).toUpperCase()) : "Missing", 2) : row("FSSAI", OBC.fssai(a.fssai.number) ? "✓ " + h(a.fssai.number) : "Missing", 2)) +
+      row("PAN", OBC.pan(a.pan.number) ? "✓ " + h(String(a.pan.number).toUpperCase()) : "Missing", 2) + row("GST", gstText, 2) +
+      row("Payouts", a.bank.method === "upi" ? (OBC.upi(a.bank.upiId) ? "✓ UPI" : "Missing") : (OBC.ifsc(a.bank.ifsc) && a.bank.accountNumber ? "✓ Bank account ••" + h(String(a.bank.accountNumber).slice(-4)) : "Missing"), 3) +
+      row(t.packaged ? "Products" : "Menu", a.menu.dishes.filter((d) => d.name && Number(d.price) > 0).length + " items" + (a.menu.cardPhotoPaths.length ? " + photo" : ""), 4) + "</div>" +
+      (issues.length ? '<div class="notice warn">Still needed: ' + h(issues.join(" · ")) + "</div>" : "") +
+      '<div class="notice info"><span><strong>What happens next.</strong> 1. Scraveit checks your documents. 2. We confirm your commission (standard rate ' + REG_RATE + "%). 3. You sign the partner agreement here. 4. You go live.</span></div>";
+  }
+  function regWizard() {
+    const app0 = REG.apps[REG.type] || {}, i = REG.step, last = i === REG_STEPS.length - 1, t = regT();
+    const steps = REG_STEPS.map((s, k) => '<button type="button" class="reg-step' + (k === i ? " on" : k < i ? " done" : "") + '" data-act="rg-goto" data-id="' + k + '"' + (k > i && app0.status === "draft" && k > Number(app0.step || 0) ? " disabled" : "") + "><b>" + (k < i ? "✓" : k + 1) + "</b><span>" + h(k === 4 && t.packaged ? "Products" : s[1]) + "</span></button>").join("");
+    return '<div class="reg"><header class="reg-top"><div class="wordmark">scraveit<span>*</span></div><span class="muted">Register your ' + h(t.noun) + '</span><span class="grow"></span>' + regLangBtn() + '<button class="btn small" data-act="rg-home">All registrations</button>' + (state.rid ? "" : '<button class="btn small" data-act="signout">Sign out</button>') + "</header>" +
+      '<div class="reg-body"><nav class="reg-steps">' + steps + '<p class="small muted">Saved as you go. You can close this and finish later, here or in the app.</p></nav><section class="reg-card">' +
+      (app0.status === "changes_requested" && app0.reviewMessage ? '<div class="notice warn"><span><strong>Scraveit asked for a change:</strong> ' + h(app0.reviewMessage) + "</span></div>" : "") +
+      (REG.error ? '<div class="notice bad">' + h(REG.error) + "</div>" : "") + regStepBody() +
+      '<footer class="reg-foot">' + (i ? '<button class="btn" data-act="rg-back">Back</button>' : "<span></span>") + '<button class="btn primary" data-act="' + (last ? "rg-submit" : "rg-next") + '"' + (REG.saving || REG.busy ? " disabled" : "") + ">" + (REG.saving ? "Saving…" : last ? "Submit for review" : "Continue") + "</button></footer></section></div></div>";
+  }
+  function regLangBtn() { return '<button class="btn small" data-act="lang" translate="no">' + (window.ScraveitLanguage && ScraveitLanguage.get() === "te" ? "English" : "తెలుగు") + "</button>"; }
+
+  // ----- after submitting: live status and the agreement -----
+  function regWatch() {
+    if (REG.watch || !REG.type) return;
+    const type = REG.type;
+    try {
+      REG.watch = regDoc(type).onSnapshot((s) => {
+        if (state.rid || REG.type !== type || !s.exists) return;
+        const next = s.data(), prev = REG.apps[type] || {}, key = (a) => JSON.stringify([a.status || "", a.terms || null, (a.agreement || {}).status || "", a.reviewMessage || ""]);
+        const changed = key(next) !== key(prev); REG.apps[type] = next;
+        if (changed && !REG.editing) { REG.draft = null; regLoadAgreement(true); if (!modalRoot.innerHTML) render(); }
+      }, () => { REG.watch = null; });
+    } catch (_) { REG.watch = null; }
+  }
+  function regStopWatch() { if (REG.watch) { try { REG.watch(); } catch (_) { /* gone */ } REG.watch = null; } }
+  async function regLoadAgreement(force) {
+    if (!REG.type || (!force && (REG.agLoading || REG.ag))) return;
+    REG.agLoading = true; const type = REG.type;
+    try { const ag = await call("getRestaurantAgreement", {appId: regAppId(type)}); if (REG.type === type) { REG.ag = ag; REG.agError = ""; } }
+    catch (e) { REG.agError = friendly(e); }
+    REG.agLoading = false;
+    if (!state.rid && !modalRoot.innerHTML) render();
+    if (document.getElementById("reg-ag")) regAgreementModal();
+  }
+  function regStatus() {
+    const app0 = REG.apps[REG.type] || {}, t = regT(), ag = REG.ag, missing = regIssues(), signed = ag && ag.status === "signed", rateSet = ag && ag.rateAgreed, approved = app0.status === "approved", pct = ag && Number.isFinite(Number(ag.commissionBps)) && ag.commissionBps !== null ? Number(ag.commissionBps) / 100 : REG_RATE;
+    regWatch(); if (!REG.ag && !REG.agLoading && !REG.agError) setTimeout(() => regLoadAgreement(false), 0);
+    const steps = [["Submitted", true, "We have your details"], ["Documents checked", !missing.length && (rateSet || signed || approved), missing.length ? "Add the missing details below" : "Usually within a day"],
+      ["Rate confirmed", rateSet || approved, rateSet ? pct + "% commission" : "Standard rate " + REG_RATE + "% until we agree yours"], ["Agreement signed", signed || approved, signed ? "Signed " + new Date(ag.signedAt).toLocaleDateString("en-IN") : "Read and sign it here when your rate is confirmed"], ["Live on Scraveit", approved, "Open your " + t.noun + " and take orders"]];
+    const firstOpen = steps.findIndex((s) => !s[1]);
+    return '<div class="signin"><div class="signin-card reg-status"><div class="row between"><div class="wordmark">scraveit<span>*</span></div>' + regLangBtn() + '</div><p class="small muted" style="margin:0">Your registration · ' + h(REG_TYPE_LABEL[REG.type]) + '</p><h1 style="font-size:22px">' + h(app0.restaurantName || "Your " + t.noun) + "</h1>" +
+      "<p>" + (approved ? "You're approved! Open your " + h(t.noun) + " to start." : app0.status === "changes_requested" ? "Scraveit asked for a few changes." : signed ? "All done from your side. Scraveit will switch you on shortly." : rateSet ? "Your rate is confirmed. Read and sign your partner agreement." : "Thanks! We're checking your details.") + "</p>" +
+      '<ol class="reg-track">' + steps.map((s, i) => '<li class="' + (s[1] ? "done" : i === firstOpen ? "now" : "") + '"><b>' + (s[1] ? "✓" : i + 1) + "</b><div><strong>" + h(s[0]) + '</strong><span class="small muted">' + h(s[2]) + "</span></div></li>").join("") + "</ol>" +
+      (missing.length && !approved ? '<div class="notice warn"><span>' + h(missing.join(" · ")) + "</span></div>" : "") +
+      (!ag && !approved && REG.agError ? '<div class="notice bad">Couldn\'t load your rate: ' + h(REG.agError) + "</div>" : "") +
+      (approved ? '<button class="btn primary block" data-act="rg-open-outlet">Open my ' + h(t.noun) + "</button>"
+        : '<div class="reg-rate"><span>' + (rateSet ? "Your rate" : "Standard rate") + "</span><strong>" + h(pct) + '%</strong></div><p class="small muted" style="margin:0">' + (rateSet ? "Commission on the item total after your own offers, plus 18% GST on the commission. Fixed for " + h(ag.termMonths) + " months." : "Commission on the item total after your own offers. Your Scraveit partner manager will confirm your rate with you.") + "</p>" +
+          (rateSet && !signed ? '<button class="btn primary block" data-act="rg-agreement">Read and sign the agreement</button>' : signed ? '<button class="btn block" data-act="rg-agreement">View your signed agreement</button>' : "")) +
+      (!approved && !signed ? '<button class="btn block" data-act="rg-edit">' + (missing.length ? "Add missing details" : "Edit my details") + "</button>" : "") +
+      (!approved ? '<button class="btn block" data-act="rg-refresh">Check status</button>' : "") +
+      '<div class="row"><button class="btn grow" data-act="rg-home">All registrations</button>' + (state.rid ? "" : '<button class="btn grow" data-act="signout">Sign out</button>') + "</div></div></div>";
+  }
+  function regAgreementModal() {
+    const ag = REG.ag;
+    const body = !ag ? '<div class="spinner"></div>' : !ag.partiesReady ? '<div class="notice warn">The agreement isn\'t ready yet. Please check again later.</div>'
+      : '<div class="ag-text">' + (ag.sections || []).map((s) => "<h3>" + h(s.heading) + "</h3><p>" + h(s.body) + "</p>").join("") + "</div>" +
+        (ag.status === "signed" ? '<div class="notice info">Signed by ' + h(ag.signedBy) + " on " + h(new Date(ag.signedAt).toLocaleString("en-IN", {day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit"})) + ".</div>"
+          : '<div class="field"><label for="rg-sign-name">Type your full name to sign</label><input class="input" id="rg-sign-name" autocomplete="name"></div><label class="ol-check"><input type="checkbox" id="rg-sign-consent"><span><strong>I have read this agreement and I agree to it</strong></span></label>' +
+            '<button class="btn primary block" data-act="rg-sign"' + (REG.signing ? " disabled" : "") + ">" + (REG.signing ? "Signing…" : "Accept and sign") + '</button><p class="small muted" style="margin:0">Your name, account, time and device are recorded with the agreement. It is a valid electronic agreement under the IT Act, 2000 (s.10A).</p>');
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide" id="reg-ag" role="dialog" aria-modal="true" aria-label="Partner agreement"><header><h2>Partner agreement' + (ag && ag.partiesReady ? ' <span class="small muted">' + h(ag.commissionBps / 100) + "% · " + h(ag.termMonths) + " months</span>" : "") + '</h2><button class="x" data-act="close-modal" aria-label="Close">×</button></header>' + body + "</div></div>";
+  }
+  async function regSign() {
+    const ag = REG.ag, name = (document.getElementById("rg-sign-name") || {}).value || "", consent = !!(document.getElementById("rg-sign-consent") || {}).checked;
+    if (!ag || REG.signing) return;
+    if (!consent) { toast("Tick the box to confirm you agree.", true); return; }
+    if (name.trim().length < 2) { toast("Type your full name to sign.", true); return; }
+    REG.signing = true; regAgreementModal();
+    try { await call("signRestaurantAgreement", {appId: regAppId(REG.type), hash: ag.hash, typedName: name.trim(), consent: true, method: "in_app"}); REG.ag = null; REG.signing = false; closeModal(); toast("Agreement signed. Thank you!"); await regLoadAgreement(true); return; }
+    catch (e) { toast(friendly(e), true); }
+    REG.signing = false; regAgreementModal();
+  }
+
+  // ----- the screen for an account with no outlet -----
+  function regHome() {
+    const apps = REG.apps, types = Object.keys(apps), statusText = {draft: "Not finished", submitted: "Being checked", changes_requested: "Changes asked", approved: "Approved"};
+    const pick = Object.keys(REG_TYPES).filter((x) => !apps[x]).map((x) => '<button class="btn" data-act="rg-start" data-id="' + x + '"' + (REG.busy ? " disabled" : "") + ">" + h(REG_TYPE_LABEL[x]) + "</button>").join("");
+    return '<div class="signin"><div class="signin-card"><div class="row between"><div class="wordmark">scraveit<span>*</span></div>' + regLangBtn() + "</div>" +
+      (types.length ? '<h1 style="font-size:20px">Your registrations</h1>' + types.map((x) => '<button class="reg-app" data-act="rg-open" data-id="' + x + '"><span class="grow"><strong>' + h(apps[x].restaurantName || REG_TYPE_LABEL[x]) + '</strong><span class="small muted">' + h(REG_TYPE_LABEL[x]) + "</span></span><span class=\"pill\">" + h(statusText[apps[x].status] || "Being checked") + "</span></button>").join("") +
+          (pick ? '<p class="small muted" style="margin:0">Register another kind of outlet:</p><div class="reg-chips">' + pick + "</div>" : "")
+        : '<h1 style="font-size:20px">Register your outlet on Scraveit</h1><p>' + h(state.user.email || "") + " isn't linked to an outlet yet. Register here: about 10 minutes, saved as you go.</p>" +
+          '<div class="notice info"><span><strong>Keep these ready:</strong> FSSAI licence (pharmacy: drug licence) · PAN card · bank passbook or cancelled cheque · menu card or price list.</span></div>' +
+          '<p class="small muted" style="margin:0">What are you registering?</p><div class="reg-types">' + pick + "</div>" +
+          '<p class="small muted" style="margin:0">Staff? Ask your outlet owner to add you from Staff, then sign in with that staff ID.</p>') +
+      (state.rid ? '<button class="btn" data-act="rg-dashboard">Back to dashboard</button>' : '<button class="btn" data-act="signout">Sign out</button>') + "</div></div>";
+  }
+  function regScreen() {
+    if (!REG.loaded) { regLoad(); return '<div class="spinner" style="margin-top:20vh"></div>'; }
+    if (!REG.type || !REG.apps[REG.type]) return regHome();
+    const st = REG.apps[REG.type].status;
+    if (st === "draft" || st === "changes_requested" || REG.editing) return regWizard();
+    return regStatus();
+  }
+  // After the screen is drawn: put the map in.
+  function regAfterDraw() {
+    if (!REG.type || REG_STEPS[REG.step][0] !== "location" || !document.getElementById("ol-map")) return;
+    if (!REG.mapSynced) { const l = regDraft().location; OL.draft = {lat: regNum(l.lat), lng: regNum(l.lng)}; OL.zoom = 16; REG.mapSynced = true; }
+    olDrawMap();
+  }
+  function regClick(act, el) {
+    const id = el.dataset.id;
+    if (act === "rg-start") { regStart(id); return true; }
+    if (act === "rg-open") { regOpen(id); render(); window.scrollTo(0, 0); return true; }
+    if (act === "rg-home") { if (REG.type && REG.draft && (REG.apps[REG.type] || {}).status === "draft") regSave().catch(() => { /* saved next time */ }); regStopWatch(); REG.type = ""; REG.draft = null; REG.editing = false; REG.error = ""; render(); return true; }
+    if (act === "rg-dashboard") { regStopWatch(); state.regMode = false; REG.type = ""; REG.draft = null; REG.editing = false; render(); return true; }
+    if (act === "rg-new-outlet") { state.regMode = true; REG.loaded = false; REG.type = ""; render(); window.scrollTo(0, 0); return true; }
+    if (act === "rg-next") { regNext(false); return true; }
+    if (act === "rg-submit") { regNext(true); return true; }
+    if (act === "rg-back") { regPullMap(); REG.error = ""; if (REG.step > 0) REG.step--; render(); window.scrollTo(0, 0); return true; }
+    if (act === "rg-goto") { regPullMap(); REG.error = ""; REG.step = Number(id) || 0; render(); window.scrollTo(0, 0); return true; }
+    if (act === "rg-edit") { REG.draft = null; REG.editing = true; REG.mapSynced = false; const k = REG_STEPS.findIndex((s) => regIssues(s[0]).length); REG.step = k >= 0 ? k : REG_STEPS.length - 1; render(); window.scrollTo(0, 0); return true; }
+    if (act === "rg-chip") { const path = el.dataset.path, v = el.dataset.value; if (el.dataset.multi === "1") { const list = (regGet(path) || []).slice(), i = list.indexOf(v); if (i >= 0) list.splice(i, 1); else list.push(v); regPut(path, list); } else regPut(path, v); regPullMap(); render(); return true; }
+    if (act === "rg-hours") { const x = regHours(regT()).find((o) => o[0] === el.dataset.value), hrs = regDraft().hours; hrs.preset = x[0]; if (x[2]) { hrs.open = x[2]; hrs.close = x[3]; } regPullMap(); render(); return true; }
+    if (act === "rg-gst") { regDraft().gstMode = el.dataset.value; render(); return true; }
+    if (act === "rg-bank") { regDraft().bank.method = el.dataset.value; render(); return true; }
+    if (act === "rg-diet") { const d = regDraft().menu.dishes[Number(id)]; if (d) d.diet = d.diet === "nonveg" ? "veg" : "nonveg"; el.classList.toggle("nonveg", d && d.diet === "nonveg"); el.textContent = d && d.diet === "nonveg" ? "Non-veg" : "Veg"; return true; }
+    if (act === "rg-add-dish") { const m = regDraft().menu; if (m.dishes.length < 30) m.dishes.push({name: "", price: "", diet: "veg"}); render(); return true; }
+    if (act === "rg-agreement") { regAgreementModal(); regLoadAgreement(!REG.ag); return true; }
+    if (act === "rg-sign") { regSign(); return true; }
+    if (act === "rg-refresh") { REG.ag = null; REG.agError = ""; REG.loaded = false; const t = REG.type; regStopWatch(); REG.loading = false; regLoad().then(() => { if (REG.apps[t]) { REG.type = t; render(); } }); render(); return true; }
+    if (act === "rg-open-outlet") { regReset(); state.regMode = false; loadOutlets(); return true; }
+    if (act === "signup") { REG.signup = true; screenSignUp(); return true; }
+    if (act === "signin-back") { REG.signup = false; screenSignIn(); return true; }
+    if (act === "google-signup") { REG.pendingConsent = true; auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch((err) => { REG.pendingConsent = false; screenSignUp(friendly(err)); }); return true; }
+    return false;
+  }
+  // Typing into the form keeps the draft; nothing is redrawn, so the cursor stays put.
+  function regInput(el) {
+    let v = el.value;
+    if (el.dataset.upper) { const p = el.selectionStart; v = v.toUpperCase(); if (v !== el.value) { el.value = v; try { el.setSelectionRange(p, p); } catch (_) { /* number inputs */ } } }
+    if (el.dataset.digits) { const d = v.replace(/\D/g, ""); if (d !== v) { el.value = d; v = d; } }
+    regPut(el.dataset.ob, v);
+  }
+
+  // ----- create an account -----
+  function screenSignUp(error) {
+    const tap = window.ScraveitPrivacy ? '<p class="small" style="margin:0">' + ScraveitPrivacy.tapLine("store", ScraveitPrivacy.lang()) + "</p>" : "";
+    app.innerHTML = '<div class="signin"><form class="signin-card" id="signup"><div class="row between"><div class="wordmark">scraveit<span>*</span></div>' + regLangBtn() + '</div><div><h1 style="font-size:22px">Create your account</h1><p>To register your restaurant, store, dairy or pharmacy. You\'ll use it to sign in here and in the Scraveit app.</p></div>' +
+      (error ? '<div class="notice bad">' + h(error) + "</div>" : "") +
+      '<button class="btn block" type="button" data-act="google-signup">Continue with Google</button><div class="divider">or use email</div>' +
+      '<div class="field"><label for="su-em">Email</label><input class="input" id="su-em" type="email" autocomplete="email" required></div>' +
+      '<div class="field"><label for="su-pw">Create a password</label><input class="input" id="su-pw" type="password" minlength="6" autocomplete="new-password" required><span class="small muted">At least 6 characters.</span></div>' +
+      '<button class="btn primary block" type="submit"' + (REG.creating ? " disabled" : "") + ">" + (REG.creating ? "Creating…" : "Create account") + "</button>" + tap +
+      '<p class="small" style="margin:0">Already have an account? <button type="button" class="linklike" style="color:var(--brand)" data-act="signin-back">Sign in</button></p></form></div>';
+  }
+  async function createAccount(form) {
+    if (REG.creating) return;
+    const email = form.querySelector("#su-em").value.trim().toLowerCase(), password = form.querySelector("#su-pw").value;
+    if (!email || password.length < 6) { screenSignUp("Enter your email and a password of at least 6 characters."); return; }
+    REG.creating = true; REG.pendingConsent = true; screenSignUp();
+    try { await auth.createUserWithEmailAndPassword(email, password); }
+    catch (e) { REG.pendingConsent = false; REG.creating = false; screenSignUp(friendly(e)); return; }
+    REG.creating = false;
+  }
+  // Consent to the privacy notice, recorded the way the apps record it (privacyConsents/{uid}_store).
+  async function saveSignupConsent(user) {
+    if (!REG.pendingConsent || !user || !window.ScraveitPrivacy) return;
+    REG.pendingConsent = false;
+    try { await db.collection("privacyConsents").doc(ScraveitPrivacy.consentDocId(user.uid, "store")).set(ScraveitPrivacy.consentRecord(user.uid, "store", ScraveitPrivacy.lang(), "signup", "partner_website")); }
+    catch (e) { console.warn("consent not saved", e); }
+  }
+
   // ---------- shell ----------
-  const PAGES = [["orders", "Live orders", "orders"], ["history", "Order history", "history"], ["reports", "Reports", "reports"], ["insights", "Insights", "insights"], ["finance", "Finance", "payouts"], ["menu", "Menu", "menu"], ["offers", "Offers", "offers"], ["ads", "Ads", "ads"], ["staff", "Staff", "staff"], ["outlet", "Outlet info", "outlet"]];
+  const PAGES = [["orders", "Live orders", "orders"], ["history", "Order history", "history"], ["reports", "Reports", "reports"], ["insights", "Insights", "insights"], ["finance", "Finance", "payouts"], ["menu", "Menu", "menu"], ["offers", "Offers", "offers"], ["ads", "Ads", "ads"], ["dinein", "Dine-in", "dine"], ["meals", "Meal plans", "meals"], ["staff", "Staff", "staff"], ["outlet", "Outlet info", "outlet"]];
   // A page that fails to draw shows what went wrong, not the last spinner forever.
   function pageOrProblem(body) {
     try { return body(); } catch (e) {
@@ -2140,16 +3279,13 @@
     }
   }
   function render() {
-    if (!state.user) return screenSignIn();
+    if (!state.user) return REG.signup ? screenSignUp() : screenSignIn();
     if (state.loadingOutlets) { app.innerHTML = '<div class="spinner" style="margin-top:20vh"></div>'; return; }
-    if (!state.rid) {
-      app.innerHTML = '<div class="signin"><div class="signin-card"><div class="wordmark">scraveit<span>*</span></div><h1 style="font-size:20px">No outlet on this account</h1><p>' + h(state.user.email || "") + ' isn\'t linked to a Scraveit outlet yet. Sign in with the account you use in the Scraveit Restaurant app, or ask your outlet owner to add you as staff.</p><button class="btn" data-act="signout">Sign out</button></div></div>';
-      return;
-    }
+    if (!state.rid || state.regMode) { app.innerHTML = regScreen(); regAfterDraw(); return; }
     const o = outlet(), open = o.doc.open !== false, ids = Object.keys(state.outlets), newCount = liveIn("new").length;
     // Staff land on the first page the owner gave them.
     if (!pageAllowed(state.page)) state.page = PAGES.map((p) => p[0]).find(pageAllowed) || "outlet";
-    const body = {orders: pageOrders, history: pageHistory, reports: pageReports, insights: pageInsights, menu: pageMenu, offers: pageOffers, ads: pageAds, finance: pageFinance, staff: pageStaff, outlet: pageOutlet}[state.page] || pageOutlet;
+    const body = {orders: pageOrders, history: pageHistory, reports: pageReports, insights: pageInsights, menu: pageMenu, offers: pageOffers, ads: pageAds, finance: pageFinance, dinein: pageDine, meals: pageMeals, staff: pageStaff, outlet: pageOutlet}[state.page] || pageOutlet;
     const title = (PAGES.find((p) => p[0] === state.page) || PAGES[0])[1];
     const scroll = window.scrollY;
     app.innerHTML = '<div class="shell"><aside class="side"><div class="wordmark">scraveit<span>*</span><small>Partner dashboard</small></div>' +
@@ -2157,6 +3293,7 @@
       '<div class="spacer"></div><div class="who">' + h(staffIdOf(state.user.email) ? (o.member.name || "Staff") + " · " + staffIdOf(state.user.email) : state.user.email || "") + '</div><button class="nav-item" data-act="signout">' + svg("out") + "<span>Sign out</span></button></aside>" +
       '<div class="main"><header class="topbar"><h1>' + h(title) + "</h1>" +
       (ids.length > 1 ? '<select class="input outlet-select" data-input="outlet" aria-label="Outlet">' + ids.map((id) => '<option value="' + h(id) + '"' + (id === state.rid ? " selected" : "") + ">" + h(state.outlets[id].doc.name || id) + "</option>").join("") + "</select>" : '<strong>' + h(o.doc.name) + "</strong>") +
+      '<button class="btn small lang-btn" data-act="lang" translate="no" title="Language · భాష">' + (window.ScraveitLanguage && ScraveitLanguage.get() === "te" ? "English" : "తెలుగు") + "</button>" +
       '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open" title="Accepting orders"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Online" : "Offline") + "</button></header>" +
       '<main class="content">' + (WEB_CHECK ? "" : '<div class="notice warn">You can see everything here. Accepting and updating orders from the website switches on soon; until then, use the Scraveit Restaurant app for order actions.</div>') + pageOrProblem(body) + "</main></div></div>";
     window.scrollTo(0, scroll);
@@ -2166,7 +3303,8 @@
     const el = e.target.closest("[data-act]"); if (!el) return;
     const act = el.dataset.act, id = el.dataset.id;
     if (act === "google") { auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch((err) => screenSignIn(friendly(err))); return; }
-    if (act === "signout") { if (state.liveUnsub) state.liveUnsub(); auth.signOut(); return; }
+    if (act === "signout") { if (state.liveUnsub) state.liveUnsub(); regReset(); state.regMode = false; REG.signup = false; auth.signOut(); return; }
+    if ((act.startsWith("rg-") || act === "signup" || act === "signin-back" || act === "google-signup") && regClick(act, el)) return;
     if (act === "page") { state.page = el.dataset.page; render(); window.scrollTo(0, 0); return; }
     if (act === "order-tab") { state.orderTab = el.dataset.tab; render(); return; }
     if (act === "sound") {
@@ -2190,6 +3328,34 @@
     if (act === "rep-range") { state.reports.range = el.dataset.range; state.reports.data = null; render(); return; }
     if (act === "fin-tab") { state.fin.tab = el.dataset.tab; render(); return; }
     if (act === "fin-week") { state.fin.week = id; render(); return; }
+    if (act === "pay-method") { savePayMethod(id); return; }
+    if (act === "outlet-edit") { outletEditModal(); return; }
+    if (act === "dine-table") { dineTableModal(id); return; }
+    if (act === "dine-qr-one") { printDineQr(id); return; }
+    if (act === "dine-qr") { printDineQr(""); return; }
+    if (act === "dine-op") { dineOp(el); return; }
+    if (act === "dine-accept") { dineRespond(id, true); return; }
+    if (act === "dine-decline") { dineRespond(id, false); return; }
+    if (act === "dine-setup") { dineSetupModal(); return; }
+    if (act === "dine-pause") { const f = document.getElementById("dine-form"); if (f && confirm("Pause dine-in? Your tables are kept.")) saveDine(f, {pause: true}); return; }
+    if (act === "mp-edit") { mealPlanModal(id); return; }
+    if (act === "mp-days") { const f = document.getElementById("meal-plan-form"), want = String(id).split(","); if (f) { f.querySelectorAll('input[name="day"]').forEach((x) => { x.checked = want.includes(x.value); }); mpSummary(); } return; }
+    if (act === "price-check") { priceCheckModal(); return; }
+    if (act === "agreement") { agreementModal(); return; }
+    if (act === "ag-reload") { loadAgreement(); return; }
+    if (act === "ag-details") { loadAgreement(Object.assign({}, AG.details, agFields())); return; }
+    if (act === "ag-sign") { signAgreement(); return; }
+    if (act === "delete-account") { deletionModal(); return; }
+    if (act === "chat") { openChat(id, el.dataset.channel); return; }
+    if (act === "ol-zoom") { OL.zoom = Math.max(4, Math.min(19, OL.zoom + Number(id))); olDrawMap(); return; }
+    if (act === "ol-map") { const box = document.getElementById("ol-map"), rect = box.getBoundingClientRect(), lat = Number.isFinite(OL.draft.lat) ? OL.draft.lat : 14.9077, lng = Number.isFinite(OL.draft.lng) ? OL.draft.lng : 79.8946, wp = worldPx(lat, lng, OL.zoom);
+      OL.draft = pxLatLng(wp.x + e.clientX - rect.left - rect.width / 2, wp.y + e.clientY - rect.top - rect.height / 2, OL.zoom); olDrawMap(); return; }
+    if (act === "ol-detect") { if (!navigator.geolocation) return toast("This browser can't share its location. Click the map instead.", true);
+      navigator.geolocation.getCurrentPosition((p) => { OL.draft = {lat: p.coords.latitude, lng: p.coords.longitude}; olDrawMap(); toast("Pin moved to this device's location. Check it is your kitchen."); }, () => toast("Location not allowed. Click the map instead.", true), {enableHighAccuracy: true, timeout: 15000}); return; }
+    if (act === "ol-cover-first") { const i = Number(id); OL.covers.unshift(OL.covers.splice(i, 1)[0]); olDrawCovers(); return; }
+    if (act === "ol-cover-remove") { OL.covers.splice(Number(id), 1); olDrawCovers(); return; }
+    if (act === "bank-edit") { state.fin.bankEdit = true; render(); return; }
+    if (act === "bank-cancel") { state.fin.bankEdit = false; render(); return; }
     if (act === "fin-annex" || act === "fin-print") {
       const w = weekRows().find((x) => String(x.start) === state.fin.week); if (!w) return;
       if (act === "fin-print") printStatement(w); else download("scraveit-payout-" + isoDay(w.start) + ".csv", csv(annexureRows(w)));
@@ -2215,6 +3381,15 @@
     if (act === "gst") { toggleGst(); return; }
     if (act === "stock") { toggleStock(id); return; }
     if (act === "edit-item") { editItemModal(id); return; }
+    if (act === "item-new") { editItemModal(""); return; }
+    if (act === "lang") { if (window.ScraveitLanguage) ScraveitLanguage.set(ScraveitLanguage.get() === "te" ? "en" : "te"); return; }
+    if (act === "tax-edit") { taxEditModal(); return; }
+    if (act === "item-archive") { if (confirm("Archive this item? Customers stop seeing it; you can restore it later.")) archiveItem(id, false); return; }
+    if (act === "item-restore") { archiveItem(id, true); return; }
+    if (act === "item-delete") { deleteItem(id); return; }
+    if (act === "show-archived") { archivedModal(); return; }
+    if (act === "choice-add") { const box = document.getElementById("ch-" + id); if (box) { box.insertAdjacentHTML("beforeend", choiceRow(id, {})); const n = box.lastElementChild.querySelector('[data-f="name"]'); if (n) n.focus(); } return; }
+    if (act === "choice-del") { const r = el.closest(".choice-row"); if (r) r.remove(); return; }
     if (act === "dp-mode") { if (dishPhoto) { dishPhoto.use = el.dataset.mode; showDishPhoto(); } return; }
     if (act === "ai-desc") { aiDescription(false); return; }
     if (act === "ai-rewrite") { aiDescription(true); return; }
@@ -2249,7 +3424,10 @@
     if (act === "ad-inv-print") { const b = state.ads.data && state.ads.data.bookings.find((x) => x.bookingId === id); if (b) printDoc("Invoice " + b.invoiceNo, adInvoiceHtml(b)); return; }
   });
   document.addEventListener("change", (e) => {
-    const k = e.target.dataset && e.target.dataset.input; if (!k) return;
+    const ds = e.target.dataset || {};
+    if (ds.obCheck) { regDraft()[ds.obCheck] = !!e.target.checked; if (ds.obCheck === "hasGst") { regPullMap(); render(); } return; }
+    if (ds.obPhoto) { regUpload(ds.obPhoto, e.target.files && e.target.files[0]); e.target.value = ""; return; }
+    const k = ds.input; if (!k) return;
     if (k === "outlet") selectOutlet(e.target.value);
     if (k === "hist-status") { state.history.status = e.target.value; render(); }
     if (k === "hist-all") { state.history.all = e.target.checked; state.history.list = null; render(); }
@@ -2259,12 +3437,22 @@
     if (k === "fb-trigger" || k === "fb-preview") freebiePreview();
     if (k === "pr-preview") pairingPreview();
     if (k === "dish-photo") { pickDishPhoto(e.target.files && e.target.files[0]); e.target.value = ""; }
+    if (k === "ol-cover") { addOutletCover(e.target.files && e.target.files[0]); e.target.value = ""; }
+    if (k === "mp-meal") { const f = e.target.form, t = MEAL_TIMES[e.target.value]; if (f && t) { f.elements.windowStart.value = t[0]; f.elements.windowEnd.value = t[1]; } mpSummary(); }
+    if (k === "mp-sum") mpSummary();
+    if (k === "tax-guide") { const g = GST_GUIDES().find((x) => x[0] === e.target.value), f = e.target.form; if (g && g[2] && f) { f.elements.tax_hsn.value = g[2][0]; f.elements.tax_rate.value = String(g[2][1] / 100); f.elements.tax_kind.value = g[2][2]; f.elements.tax_packed.checked = g[2][3]; } }
+    if (k === "dine-all" && e.target.value) { document.querySelectorAll('#dn-seats input').forEach((x) => { x.value = e.target.value; }); e.target.value = ""; }
     if (k === "dc-kind") { const f = document.getElementById("discount-form"); if (f) f.dataset.kind = e.target.value; }
   });
   let typing = null;
   document.addEventListener("input", (e) => {
+    if (e.target.dataset && e.target.dataset.ob) { regInput(e.target); return; }
     const f = e.target.dataset && e.target.dataset.input;
     if (f === "fb-preview") { freebiePreview(); return; }
+    if (f === "dine-count") { const box = document.getElementById("dn-seats"), n = Math.max(1, Math.min(60, Number(e.target.value) || 0)); if (box && n) { const cur = Array.from(box.querySelectorAll("input")).map((x) => Number(x.value) || 4); while (cur.length < n) cur.push(cur[cur.length - 1] || 4); box.innerHTML = dineSeatInputs(cur.slice(0, n), dineSettings().tables); } return; }
+    if (f === "pc-price") { const o = document.getElementById("pc-get"); if (o) o.innerHTML = youGetText(e.target.value); return; }
+    if (f === "pc-want") { const o = document.getElementById("pc-want-out"); if (o) o.innerHTML = wantText(e.target.value); return; }
+    if (f === "dish-price") { const o = document.getElementById("iprice-get"); if (o) o.innerHTML = youGetText(e.target.value); return; }
     if (f === "pr-preview") { pairingPreview(); return; }
     if (f === "dish-search") { const q = e.target.value.trim().toLowerCase(), pick = e.target.nextElementSibling; if (!pick) return; pick.querySelectorAll(".dish-opt").forEach((x) => { x.hidden = !!q && !x.dataset.name.includes(q); }); pick.querySelectorAll(".dish-cat").forEach((c) => { c.hidden = !c.querySelector(".dish-opt:not([hidden])"); }); return; }
     const k = e.target.dataset && e.target.dataset.input; if (k !== "hist-q" && k !== "menu-q" && k !== "utr-q") return;
@@ -2276,7 +3464,7 @@
   setInterval(() => { if (state.user) tickKitchen(); }, 1000);
 
   auth.onAuthStateChanged((user) => {
-    state.user = user; state.outlets = {}; state.rid = "";
-    if (user) loadOutlets(); else render();
+    state.user = user; state.outlets = {}; state.rid = ""; state.regMode = false; regReset();
+    if (user) { REG.signup = false; REG.creating = false; saveSignupConsent(user); loadOutlets(); } else render();
   });
 })();

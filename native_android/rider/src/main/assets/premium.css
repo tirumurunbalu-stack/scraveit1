@@ -368,3 +368,12 @@ html{overscroll-behavior-y:none}
 .input-wrap .input-icon{position:absolute;left:14px;top:50%;transform:translateY(-50%);display:flex;color:var(--muted);pointer-events:none}
 .input-wrap .input-icon .icon{width:20px;height:20px}
 .input.with-icon{padding-left:44px}
+
+/* Founder 17 Nov 2026: payout options with their transfer fee */
+.pay-methods{display:grid;gap:8px}
+.pay-method{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid var(--border);border-radius:14px;cursor:pointer}
+.pay-method input{margin-top:3px;accent-color:var(--primary,#ff5a1f);width:18px;height:18px;flex:0 0 auto}
+.pay-method:has(input:checked){border-color:var(--primary,#ff5a1f);background:color-mix(in srgb,var(--primary,#ff5a1f) 7%,transparent)}
+.pay-method>span{display:grid;gap:2px}
+.pay-speed,.pay-fee,.pay-eg{font-size:13px;color:var(--muted)}
+.pay-eg{color:var(--text,inherit);font-weight:650}

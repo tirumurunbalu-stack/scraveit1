@@ -225,7 +225,6 @@
     app.innerHTML =
       '<section class="s-hero"><div><p class="eyebrow">Restaurants · Groceries · Dairy</p><h1>Good food, <em>delivered</em> with care.</h1></div>' +
       "<p>Order from partner restaurants, grocery stores and dairies near you. Every product page shows the full FSSAI label information, and each store's own FSSAI licence.</p></section>" +
-      (ORDERS_OPEN ? "" : '<div class="notice info" style="margin-bottom:20px"><div><strong>Launching soon in Nellore district.</strong>Every store and product shown here is a sample listing, to show how SCRAVEIT will work. Ordering opens once SCRAVEIT\'s FSSAI licence is issued.</div></div>') +
       '<h2 class="kind-title">' + h((KIND_TABS.find(([k]) => k === kind) || [])[1] || "") + "</h2>" +
       (shown.length ? '<div class="store-grid">' + shown.map(storeCard).join("") + "</div>" : '<p class="s-empty">No stores in this category yet.</p>');
   }
@@ -249,8 +248,8 @@
   }
   function sampleNotice(store) {
     return store.sample ? '<div class="notice warn"><div><strong>Sample listing.</strong>' + (store.storeType === "restaurant" ?
-      "The dishes, prices and food details on this page are examples shown before launch. Ordering opens once SCRAVEIT's FSSAI licence is issued." :
-      "This store and its products show how " + h(KIND_LABEL[store.storeType].toLowerCase()) + " partners will appear on SCRAVEIT. Products and label values are examples, not real products. Ordering opens once SCRAVEIT's FSSAI licence is issued.") + "</div></div>" : "";
+      "The dishes and prices on this page are a short preview of the menu. To order, use the SCRAVEIT app." :
+      "This store and its products show how " + h(KIND_LABEL[store.storeType].toLowerCase()) + " partners will appear on SCRAVEIT. Products and label values are examples, not real products.") + "</div></div>" : "";
   }
   async function viewStore(id) {
     await loadStores();
@@ -722,7 +721,7 @@
     app.innerHTML = '<div class="two-col"><section class="panel"><h2>Cart · ' + h(store.name) + "</h2>" + cartLinesMarkup(store, lines) + "</section>" +
       '<aside class="panel"><h2>Summary</h2><div class="bill-row"><span>Item total</span><span>' + rs(subtotal) + "</span></div>" +
       '<p style="margin:0;font-size:13px;color:var(--muted)">Delivery, platform fee and taxes are calculated at checkout from your address.</p>' +
-      (blocked === "sample" ? '<div class="notice warn"><div><strong>Ordering opens soon.</strong>All listings are samples until SCRAVEIT\'s FSSAI licence is issued. Try the demo checkout to see every step of ordering; nothing is placed or charged.</div></div><a class="btn block peach" href="/shop/demo-checkout">Continue to demo checkout</a>' : "") +
+      (blocked === "sample" ? '<div class="notice warn"><div><strong>Order on the SCRAVEIT app.</strong>Website ordering is coming soon. Try the demo checkout to see every step of ordering; nothing is placed or charged.</div></div><a class="btn block peach" href="/shop/demo-checkout">Continue to demo checkout</a>' : "") +
       (blocked === "closed" ? '<div class="notice bad"><div><strong>' + h(store.name) + " is closed right now.</strong>Try again when it opens.</div></div>" : "") +
       (blocked === "sample" ? "" : '<a class="btn block" href="/shop/checkout"' + (blocked ? ' aria-disabled="true" style="pointer-events:none;opacity:.5"' : "") + ">Proceed to checkout</a>") + "</aside></div>";
   }
@@ -961,7 +960,7 @@
       total: Math.round((subtotal + deliveryFee + platformFee + maintenanceFee + tax) * 100) / 100};
   }
   function demoBanner() {
-    return '<div class="notice warn demo-banner"><div><strong>Demo checkout.</strong>This shows every step of ordering on SCRAVEIT. No order is placed, no payment is taken and no seller is contacted. Ordering opens once SCRAVEIT\'s FSSAI licence is issued.</div></div>';
+    return '<div class="notice warn demo-banner"><div><strong>Demo checkout.</strong>This shows every step of ordering on SCRAVEIT. No order is placed, no payment is taken and no seller is contacted. To place a real order, use the SCRAVEIT app.</div></div>';
   }
   function billMarkup(b) {
     return '<div class="bill-row"><span>Item total</span><span>' + rs(b.subtotal) + '</span></div><div class="bill-row"><span>Delivery fee</span><span>' + rs(b.deliveryFee) +

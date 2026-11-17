@@ -154,7 +154,7 @@ type QueueWithOfferData = DispatchQueueRecord & {
   approximateDropZone: string;
   itemCount: number;
   payout: number;
-  payoutBreakdown?: {tripPay: number; incentives: number; tip: number; total: number};
+  payoutBreakdown?: {tripPay: number; feeKm?: number; incentives: number; tip: number; total: number};
   estimatedMinutes: number;
   restaurantArea: string;
   offeredRiderId?: string;

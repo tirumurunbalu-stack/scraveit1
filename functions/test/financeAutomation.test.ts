@@ -386,7 +386,8 @@ describe("weekly finance automation", () => {
     expect(gateway.calls[0]).toMatchObject({
       entityType: "restaurant",
       method: "neft",
-      amountPaise: 150_000,
+      // ₹1,500 owed − NEFT fee ₹5 + 18% GST (₹5.90) = ₹1,494.10 sent (founder 17 Nov 2026).
+      amountPaise: 149_410,
     });
   });
 });
