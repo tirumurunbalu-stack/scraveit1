@@ -2453,7 +2453,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         rainFee:Math.max(0,Number(preview.rainFee||0)),
         surgeFee:Math.max(0,Number(preview.surgeFee||0)),
         riderIncentiveFee:Math.max(0,Number(preview.riderIncentiveFee||0)),
-        riderIncentiveItems:Array.isArray(preview.riderIncentiveItems)?preview.riderIncentiveItems.map(x=>({label:String(x&&x.label||"Surge fee"),amount:Math.max(0,Number(x&&x.amount||0))})).filter(x=>x.amount>0):[],
+        returnTripFee:Math.max(0,Number(preview.returnTripFee||0)),returnTripKm:Math.max(0,Number(preview.returnTripKm||0)),roadKm:Number(preview.roadKm)>0?Number(preview.roadKm):null,riderIncentiveItems:Array.isArray(preview.riderIncentiveItems)?preview.riderIncentiveItems.map(x=>({label:String(x&&x.label||"Surge fee"),amount:Math.max(0,Number(x&&x.amount||0))})).filter(x=>x.amount>0):[],
         weatherSeverity:String(preview.weatherSeverity||""),weatherChecked:true,activeOrders:Math.max(0,Number(preview.activeOrders||0)),
         serverAuthoritative:true,checkedAt:Date.now(),offer,
         // The server's own bill for exactly this cart, coupon, tip and wallet choice.
@@ -7068,7 +7068,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   /** The distance fee before any free-delivery rule, to show what free delivery saved. */
   function deliverySlabFee(){const r=cartRestaurant();return r?deliveryFeeForRestaurant(r,0):0}
   /** Founder 17 Nov 2026: show how the distance fee is made, e.g. "3.3 km · ₹20 + ₹5/km". */
-  function deliveryDistanceNote(){const p=perKmPricing(),r=cartRestaurant(),km=r?restaurantDistanceKm(r):null;return p&&km!=null?'<small class="caption bill-sub">'+(Math.round(km*10)/10)+' km · '+money(p.base)+' + '+money(p.perKm)+'/km</small>':''}
+  function feeKm(){const dp=state.dynamicPricing||{};if(serverLine("deliveryFee")!=null&&Number(dp.roadKm)>0)return{km:Number(dp.roadKm),road:true};const r=cartRestaurant(),km=r?restaurantDistanceKm(r):null;return km!=null?{km,road:false}:null}
+  function deliveryDistanceNote(){const p=perKmPricing(),f=feeKm();if(!p||!f)return'';const dp=state.dynamicPricing||{},ret=serverLine("deliveryFee")!=null?Number(dp.returnTripFee||0):0;return'<small class="caption bill-sub">'+(Math.round(f.km*10)/10)+' km'+(f.road?' by road':'')+' · '+money(p.base)+' + '+money(p.perKm)+'/km'+(ret>0?' + ride back':'')+'</small>'}
   function billTapRow(key,label,value,note){return'<button type="button" class="price-row bill-tap" data-action="bill-info" data-key="'+key+'"><span><span class="bill-dotted">'+label+'</span>'+(note||'')+'</span><span>'+value+'</span></button>'}
   function priceBreakdown(includeTotal){
     const sub=cartSubtotal(),off=discount(),code=state.coupon&&state.coupon.code,server=serverOffer(),slab=deliverySlabFee(),group=deliveryGroupFee();
@@ -7088,8 +7089,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const row=(label,value,cls)=>'<div class="bill-pop-row'+(cls?' '+cls:'')+'"><span>'+label+'</span><span>'+value+'</span></div>';
     let body="";
     if(key==="delivery"){
-      const r=cartRestaurant(),km=r?restaurantDistanceKm(r):null,slab=deliverySlabFee(),free=deliveryFee()===0&&slab>0,threshold=Number(state.settings.freeDeliveryAbove||0);
-      body=row('Base fee'+(km!=null?' for '+(Math.round(km*10)/10)+' km':'')+'<small>'+(perKmPricing()?money(perKmPricing().base)+' per order plus '+money(perKmPricing().perKm)+' per km':'Based on distance from the restaurant')+'</small>',money(free?slab:deliveryFee()))
+      const f=feeKm(),km=f?f.km:null,slab=deliverySlabFee(),free=deliveryFee()===0&&slab>0,threshold=Number(state.settings.freeDeliveryAbove||0);
+      const dp=state.dynamicPricing||{},ret=serverLine("deliveryFee")!=null?Math.max(0,Number(dp.returnTripFee||0)):0;body=row('Ride to you'+(km!=null?' · '+(Math.round(km*10)/10)+' km'+(f&&f.road?' by road':''):'')+'<small>'+(perKmPricing()?money(perKmPricing().base)+' per order plus '+money(perKmPricing().perKm)+' per km':'Based on distance from the restaurant')+'</small>',money(free?slab:Math.max(0,deliveryFee()-ret)))+(ret>0?row('Ride back · '+(Math.round(Number(dp.returnTripKm||0)*10)/10)+' km'+'<small>Your delivery partner rides back to the stores. Paid after the first 2 km</small>',money(ret)):'')
         +(smallOrderFee()>0?row('Small-order fee<small>On orders below '+money(Number(state.settings.smallOrderThreshold||149))+'</small>',money(smallOrderFee())):'')
         +(lateNightFee()>0?row('Late-night fee',money(lateNightFee())):'')
         +(rainFee()>0?row('Rain fee<small>Verified rain on the route</small>',money(rainFee())):'')

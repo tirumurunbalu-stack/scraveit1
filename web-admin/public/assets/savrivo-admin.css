@@ -235,7 +235,7 @@ table.data-table tr.row-clickable:hover { background: var(--panel-alt); }
 .rv-details { display: grid; gap: 14px; }
 .id-photos { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .id-photo { margin: 0; display: grid; gap: 6px; }
-.id-photo img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: var(--panel-alt); }
+.id-photo img { cursor: zoom-in; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px; background: var(--panel-alt); }
 .id-photo.empty div { aspect-ratio: 1; border-radius: 10px; display: grid; place-items: center; background: var(--panel-alt); color: var(--text-faint); }
 .id-photo figcaption { font-size: 11.5px; color: var(--text-soft); text-align: center; }
 .pan-card { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--brand-soft); }

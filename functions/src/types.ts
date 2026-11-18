@@ -183,6 +183,8 @@ export interface SavrivoOrder {
   pricing: PricingBreakdown;
   pricingContext: {
     distanceKm: number;
+    /** Road km the delivery fee was charged on (road pricing, 18 Nov 2026). */
+    roadKm?: number;
     platformFeeRule: string;
     weatherSeverity: string;
     surgeActiveOrders: number;

@@ -11,12 +11,16 @@
  *   rarely do, and a red light seldom holds anyone 3 minutes);
  * - the next stop of up to 8 minutes after a restaurant is a drop;
  * - any other stop of 10+ minutes is idle;
- * - the spot where the day starts (often home) is never a restaurant: time there is idle or a stop.
+ * - the spot where the day starts (often home) is never a restaurant: time there is idle or a stop;
+ * - home (founder, 18 Nov 2026: partners stay online all day, so home time must not look like work)
+ *   is the spot where most of the night (22:00–07:00) is spent. Stops within 100 m of it are "home":
+ *   kept out of idle and out of "out working" time, and their position is not sent to the page.
  */
 
 export interface TrailPoint {sec: number; lat: number; lng: number; job: boolean}
 export interface StorePlace {name: string; lat: number; lng: number}
-export type StopKind = "restaurant" | "drop" | "idle" | "stop";
+export type StopKind = "restaurant" | "drop" | "idle" | "stop" | "home";
+export interface HomePlace {lat: number; lng: number}
 export interface Stop {
   start: number; end: number; minutes: number; lat: number; lng: number;
   kind: StopKind; place: string; repeat: boolean; scraveitOrder: boolean;
@@ -24,7 +28,7 @@ export interface Stop {
 export interface Trip {pickupAt: number; waitMinutes: number; rideMinutes: number; dropMinutes: number; place: string}
 export interface DayActivity {
   onlineMinutes: number; movingMinutes: number; restaurantWaitMinutes: number; dropMinutes: number;
-  idleMinutes: number; otherStopMinutes: number; trips: Trip[]; stops: Stop[];
+  idleMinutes: number; otherStopMinutes: number; homeMinutes: number; outMinutes: number; home: HomePlace | null; trips: Trip[]; stops: Stop[];
   firstSeen: number | null; lastSeen: number | null; offlineGaps: Array<{start: number; end: number}>;
 }
 
@@ -40,6 +44,10 @@ const GAP_SEC = 180;
 const MERGE_M = 100;
 const MERGE_SEC = 120;
 const LEFT_M = 300;
+const HOME_RADIUS_M = 100;
+const NIGHT_END_SEC = 7 * 3600;
+const NIGHT_START_SEC = 22 * 3600;
+const HOME_MIN_NIGHT_SEC = 60 * 60;
 const STEP_CAP_SEC = 60;
 
 export function metres(aLat: number, aLng: number, bLat: number, bLng: number): number {
@@ -52,8 +60,39 @@ export function metres(aLat: number, aLng: number, bLat: number, bLng: number): 
 const mins = (sec: number) => Math.round(sec / 60);
 const minuteOf = (sec: number) => Math.floor(sec / 60);
 
-export function summarizeDay(input: TrailPoint[], stores: StorePlace[]): DayActivity {
-  const points = input.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.sec)).sort((a, b) => a.sec - b.sec);
+const cleanPoints = (input: TrailPoint[]) =>
+  input.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Number.isFinite(p.sec)).sort((a, b) => a.sec - b.sec);
+
+/**
+ * Where the partner spends the night: the spot holding the most night-time positions (22:00–07:00),
+ * if that adds up to an hour or more. null when the day has no long night stay.
+ */
+export function nightHome(input: TrailPoint[]): HomePlace | null {
+  const pts = cleanPoints(input);
+  const night: Array<{p: TrailPoint; w: number}> = [];
+  pts.forEach((p, i) => {
+    if (p.sec >= NIGHT_END_SEC && p.sec < NIGHT_START_SEC) return;
+    const next = pts[i + 1];
+    night.push({p, w: next && next.sec - p.sec <= GAP_SEC ? Math.min(STEP_CAP_SEC, next.sec - p.sec) : STEP_CAP_SEC});
+  });
+  if (!night.length) return null;
+  const step = Math.max(1, Math.ceil(night.length / 400));
+  let best: {lat: number; lng: number; sec: number} | null = null;
+  for (let i = 0; i < night.length; i += step) {
+    const c = (night[i] as {p: TrailPoint}).p;
+    let sec = 0, lat = 0, lng = 0, n = 0;
+    for (const {p, w} of night) {
+      if (metres(c.lat, c.lng, p.lat, p.lng) <= HOME_RADIUS_M) { sec += w; lat += p.lat; lng += p.lng; n += 1; }
+    }
+    if (!best || sec > best.sec) best = {lat: lat / n, lng: lng / n, sec};
+  }
+  return best && best.sec >= HOME_MIN_NIGHT_SEC ? {lat: best.lat, lng: best.lng} : null;
+}
+
+/** home: the saved home; undefined = learn it from this day's night; null = no home. */
+export function summarizeDay(input: TrailPoint[], stores: StorePlace[], savedHome?: HomePlace | null): DayActivity {
+  const points = cleanPoints(input);
+  const homePlace = savedHome === undefined ? nightHome(points) : savedHome;
   // Each position stands for the time until the next one (capped, so a gap is not counted as online).
   const weight = points.map((p, i) => {
     const next = points[i + 1], prev = points[i - 1];
@@ -115,17 +154,23 @@ export function summarizeDay(input: TrailPoint[], stores: StorePlace[]): DayActi
   const startStop = raw[0] && points[0] && raw[0].startSec - points[0].sec <= 120 ? raw[0] : null;
   const startIsStore = !!startStop && !!startStop.place;
   const atStart = (s: RawStop) => !!startStop && !startIsStore && metres(s.lat, s.lng, startStop.lat, startStop.lng) <= SAME_PLACE_M;
+  const atHome = (s: RawStop) => !!homePlace && !s.place && metres(s.lat, s.lng, homePlace.lat, homePlace.lng) <= HOME_RADIUS_M;
   const kinds: StopKind[] = [];
   const repeats: boolean[] = [];
   const home: boolean[] = [];
   raw.forEach((s, i) => {
     home.push(atStart(s) && !s.place);
+    if (atHome(s)) {
+      repeats.push(false);
+      kinds.push("home");
+      return;
+    }
     if (home[i]) {
       repeats.push(false);
       kinds.push(s.seconds >= IDLE_MIN_SEC ? "idle" : "stop");
       return;
     }
-    const others = raw.filter((o) => sameSpot(o, s) && !atStart(o));
+    const others = raw.filter((o) => sameSpot(o, s) && !atStart(o) && !atHome(o));
     const repeat = others.length > 0 && [s, ...others].some((v) => v.seconds >= REPEAT_ANCHOR_SEC);
     repeats.push(repeat);
     const before = i > 0 ? kinds[i - 1] : undefined;
@@ -135,7 +180,7 @@ export function summarizeDay(input: TrailPoint[], stores: StorePlace[]): DayActi
   });
   const stops: Stop[] = raw.map((s, i) => ({
     start: minuteOf(s.startSec), end: minuteOf(s.endSec), minutes: Math.max(1, mins(s.seconds)), lat: s.lat, lng: s.lng,
-    kind: kinds[i] ?? "stop", place: home[i] ? "Where he went online" : s.place, repeat: repeats[i] ?? false, scraveitOrder: s.job,
+    kind: kinds[i] ?? "stop", place: kinds[i] === "home" ? "Home" : home[i] ? "Where he went online" : s.place, repeat: repeats[i] ?? false, scraveitOrder: s.job,
   }));
   const trips: Trip[] = [];
   for (let i = 0; i < raw.length - 1; i++) {
@@ -146,8 +191,9 @@ export function summarizeDay(input: TrailPoint[], stores: StorePlace[]): DayActi
   }
   const total = (k: StopKind) => mins(raw.reduce((n, s, i) => n + (kinds[i] === k ? s.seconds : 0), 0));
   const first = points[0], last = points[points.length - 1];
+  const onlineMinutes = mins(weight.reduce((a, b) => a + b, 0)), homeMinutes = total("home");
   return {
-    onlineMinutes: mins(weight.reduce((a, b) => a + b, 0)), movingMinutes: mins(movingSec),
+    onlineMinutes, movingMinutes: mins(movingSec), homeMinutes, outMinutes: Math.max(0, onlineMinutes - homeMinutes), home: homePlace,
     restaurantWaitMinutes: total("restaurant"), dropMinutes: total("drop"), idleMinutes: total("idle"), otherStopMinutes: total("stop"),
     trips, stops, firstSeen: first ? minuteOf(first.sec) : null, lastSeen: last ? minuteOf(last.sec) : null, offlineGaps,
   };
@@ -157,7 +203,7 @@ export function summarizeDay(input: TrailPoint[], stores: StorePlace[]): DayActi
 export function daySummary(a: DayActivity) {
   const avg = (k: "waitMinutes" | "rideMinutes") => a.trips.length ? Math.round(a.trips.reduce((s, t) => s + t[k], 0) / a.trips.length) : null;
   return {
-    onlineMinutes: a.onlineMinutes, movingMinutes: a.movingMinutes, trips: a.trips.length,
+    onlineMinutes: a.onlineMinutes, outMinutes: a.outMinutes, homeMinutes: a.homeMinutes, movingMinutes: a.movingMinutes, trips: a.trips.length,
     restaurantWaitMinutes: a.restaurantWaitMinutes, avgWaitMinutes: avg("waitMinutes"), avgRideMinutes: avg("rideMinutes"),
     dropMinutes: a.dropMinutes, idleMinutes: a.idleMinutes, otherStopMinutes: a.otherStopMinutes, stops: a.stops.length,
     gaps: a.offlineGaps.length, firstSeen: a.firstSeen, lastSeen: a.lastSeen,

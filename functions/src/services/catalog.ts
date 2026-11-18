@@ -15,6 +15,8 @@ import {restaurantWorkloadRef} from "./workload";
 import {loadEconomicsControl, promotionDiscountPaise, resolveCheckoutPromotion} from "./economics";
 import {economicsScopeKey, rupeesToPaise} from "../domain/economics";
 import {applyCustomerPricingOverride, resolveCustomerPricing} from "../domain/customerPricing";
+import {returnTripFee, returnTripPolicy, type StorePoint} from "../domain/returnTrip";
+import {roadDistanceKm} from "./roadDistance";
 import type {Address, CatalogItem, CatalogRestaurant} from "../types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -127,7 +129,27 @@ export function distanceDeliveryFee(settings: UnknownRecord, distanceKm: number)
   const base = Number(settings.deliveryBaseFee);
   const perKm = Number(settings.deliveryPerKm);
   if (!Number.isFinite(base) || !Number.isFinite(perKm) || base < 0 || perKm < 0 || base + perKm <= 0) return null;
-  return Math.round(base + perKm * Math.max(0, distanceKm));
+  // Paise kept (founder 18 Nov): every 0.1 km at ₹5/km is ₹0.50, never rounded to the rupee.
+  return Math.round((base + perKm * Math.max(0, distanceKm)) * 100) / 100;
+}
+
+/** settings/customer deliveryDistanceMode "road" = charge road km (Google two-wheeler route); else straight line. */
+export function usesRoadDistance(settings: UnknownRecord): boolean {
+  return settings.deliveryDistanceMode === "road";
+}
+
+// Store locations for return-trip pay, read at most every 10 minutes per server copy.
+let storePointsCache: {at: number; points: StorePoint[]} | null = null;
+async function loadStorePoints(): Promise<StorePoint[]> {
+  if (storePointsCache && Date.now() - storePointsCache.at < 10 * 60 * 1000) return storePointsCache.points;
+  const snapshot = await firestoreDb.collection("restaurants").select("lat", "lng", "archived").get();
+  const points = snapshot.docs
+    .map((doc) => doc.data() as UnknownRecord)
+    .filter((data) => data.archived !== true)
+    .map((data) => ({lat: Number(data.lat), lng: Number(data.lng)}))
+    .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng) && !(point.lat === 0 && point.lng === 0));
+  storePointsCache = {at: Date.now(), points};
+  return points;
 }
 
 export async function loadServerFees(
@@ -149,6 +171,11 @@ export async function loadServerFees(
   riderSurgeFee: number;
   riderIncentiveCampaignIds: string[];
   riderIncentiveItems: {label: string; amount: number}[];
+  /** Part of deliveryFee paid for riding back from a drop far from every store (domain/returnTrip.ts). */
+  returnTripFee: number;
+  returnTripKm: number;
+  /** Road km charged (null when the fee uses straight-line km). */
+  roadKm: number | null;
   distanceKm: number;
   activeOrders: number;
   pricingScopes: string[];
@@ -198,9 +225,21 @@ export async function loadServerFees(
   if (matchingSlab) deliveryFee = Number(matchingSlab.fee);
   // Per-km pricing (Admin: base fee + per-km rate) replaces the slabs when set. Part kilometres
   // are charged pro rata (0.7 km at ₹2/km is ₹1.40) and the total is rounded to the rupee.
-  const perKmFee = distanceDeliveryFee(settings, distanceKm);
+  // Road km (founder 18 Nov 2026) when deliveryDistanceMode is "road": the per-km fee and the
+  // ride back use the road the delivery partner actually rides; the service radius stays straight-line.
+  const road = usesRoadDistance(settings) ? await roadDistanceKm(restaurant, address, distanceKm) : null;
+  const feeKm = road ? road.km : distanceKm;
+  const perKmFee = distanceDeliveryFee(settings, feeKm);
   if (perKmFee !== null) deliveryFee = perKmFee;
   if (finite(settings.freeDeliveryAbove) > 0 && subtotal >= finite(settings.freeDeliveryAbove)) deliveryFee = 0;
+  // Far drop: the delivery partner rides back empty to the nearest store. Included in
+  // the delivery fee, so the delivery partner is paid all of it. A failed read = no extra.
+  const returnPolicy = returnTripPolicy(settings);
+  const roadFactor = road && distanceKm > 0.05 ? road.km / distanceKm : 1;
+  const returnTrip = returnPolicy.perKm > 0 ?
+    returnTripFee(address, [restaurant, ...await loadStorePoints().catch(() => [] as StorePoint[])], returnPolicy, roadFactor) :
+    {km: 0, fee: 0};
+  deliveryFee = Math.round((deliveryFee + returnTrip.fee) * 100) / 100;
 
   const hour = Number(new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata", hour: "2-digit", hourCycle: "h23",
@@ -259,6 +298,9 @@ export async function loadServerFees(
     riderSurgeFee: await cityRiderSurgeFee(settings as RiderSurgeSettings, restaurant.city),
     riderIncentiveCampaignIds: riderIncentive.campaignIds,
     riderIncentiveItems,
+    returnTripFee: returnTrip.fee,
+    returnTripKm: returnTrip.km,
+    roadKm: road ? road.km : null,
     distanceKm,
     activeOrders,
     pricingScopes: pricing.scopes,

@@ -318,3 +318,51 @@ requireAdminSession().then((sessionState) => {
   document.getElementById("sidebar-who").textContent = sessionState.user.email + " · " + sessionState.claims.savrivoRole;
   loadQueue(true);
 });
+
+// ---------------------------------------------------------------------------
+// Full-size photo viewer (founder 18 Nov 2026: thumbnails are cropped squares and did nothing on tap).
+// Tap a photo → full screen, fitted; tap the photo again (or the +/− buttons) to zoom; Esc or ✕ closes.
+// ---------------------------------------------------------------------------
+(function photoViewer() {
+  let scale = 1;
+  function close() { const v = document.getElementById("photo-viewer"); if (v) v.remove(); scale = 1; }
+  function zoom(next) {
+    const img = document.querySelector("#photo-viewer img"); if (!img) return;
+    scale = Math.max(1, Math.min(4, next));
+    img.style.width = scale === 1 ? "" : (scale * 100) + "%";
+    img.style.maxWidth = scale === 1 ? "100%" : "none";
+    img.style.maxHeight = scale === 1 ? "calc(100vh - 110px)" : "none";
+    img.style.cursor = scale >= 4 ? "zoom-out" : "zoom-in";
+  }
+  document.addEventListener("click", (event) => {
+    const thumb = event.target.closest(".id-photo img");
+    if (thumb) {
+      event.preventDefault();
+      close();
+      const label = thumb.getAttribute("alt") || "Photo";
+      const box = document.createElement("div");
+      box.id = "photo-viewer";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-label", label);
+      box.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(10,12,16,.94);display:flex;flex-direction:column;";
+      box.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;color:#fff;font:600 14px system-ui">'
+        + '<span style="flex:1">' + h(label) + "</span>"
+        + '<button type="button" data-pv="out" class="btn btn-secondary btn-sm">−</button>'
+        + '<button type="button" data-pv="in" class="btn btn-secondary btn-sm">+</button>'
+        + '<button type="button" data-pv="close" class="btn btn-secondary btn-sm" aria-label="Close">✕</button></div>'
+        + '<div style="flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:0 12px 12px">'
+        + '<img alt="' + h(label) + '" src="' + h(thumb.currentSrc || thumb.src) + '" style="max-width:100%;max-height:calc(100vh - 110px);object-fit:contain;margin:auto;border-radius:8px;cursor:zoom-in;background:#222"></div>';
+      document.body.appendChild(box);
+      return;
+    }
+    const viewer = event.target.closest("#photo-viewer");
+    if (!viewer) return;
+    const action = event.target.closest("[data-pv]")?.dataset.pv;
+    if (action === "close") close();
+    else if (action === "in") zoom(scale + 1);
+    else if (action === "out") zoom(scale - 1);
+    else if (event.target.tagName === "IMG") zoom(scale >= 4 ? 1 : scale + 1);
+    else if (event.target === viewer || event.target === viewer.lastElementChild) close();
+  });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && document.getElementById("photo-viewer")) close(); });
+})();

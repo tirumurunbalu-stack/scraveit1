@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Screens are locked to portrait, but portrait is not a hardware requirement: without this,
+         Play treats android.hardware.screen.portrait as required and blocks devices that cannot show it. -->
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />

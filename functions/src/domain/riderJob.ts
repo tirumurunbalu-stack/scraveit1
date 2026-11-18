@@ -153,7 +153,7 @@ export function buildRiderJobProjection(
  * keep the delivery fee as their trip pay, exactly as before.
  */
 export function riderPayoutBreakdown(
-  order: Pick<SavrivoOrder, "pricing" | "economics"> & {pricingContext?: Pick<SavrivoOrder["pricingContext"], "distanceKm">},
+  order: Pick<SavrivoOrder, "pricing" | "economics"> & {pricingContext?: Pick<SavrivoOrder["pricingContext"], "distanceKm" | "roadKm">},
   waitingPaise = 0,
 ): {
   tripPay: number;
@@ -174,7 +174,8 @@ export function riderPayoutBreakdown(
   const tip = rider ? rider.tipPaise / 100 : Number(order.pricing.tip) || 0;
   const trip = rider?.tripPay;
   const waitPay = Math.max(0, Math.round(waitingPaise)) / 100;
-  const km = Number(order.pricingContext?.distanceKm);
+  const road = Number(order.pricingContext?.roadKm);
+  const km = Number.isFinite(road) && road > 0 ? road : Number(order.pricingContext?.distanceKm);
   return {
     tripPay, ...(Number.isFinite(km) && km >= 0 ? {feeKm: Math.round(km * 100) / 100} : {}),
     ...(waitPay > 0 ? {waitPay} : {}), incentives, tip,

@@ -20,9 +20,9 @@ const base = {
 };
 const campaigns = {
   "live-20261114-lunch-rush": {
-    ...base, internalName: "live-lunch-rush", section: "lunch", title: "Lunch rush extra · 12 – 3 PM",
-    description: "Customer pays ₹10; the delivery partner gets all ₹10 per order delivered 12 – 3 PM.",
-    timeSlots: [{label: "12 PM – 3 PM", startMinute: 720, endMinute: 900}],
+    ...base, internalName: "live-lunch-rush", section: "lunch", title: "Lunch rush extra · 11:30 AM – 3 PM",
+    description: "Customer pays ₹10; the delivery partner gets all ₹10 per order delivered 11:30 AM – 3 PM.",
+    timeSlots: [{label: "11:30 AM – 3 PM", startMinute: 690, endMinute: 900}],
   },
   "live-20261114-dinner-rush": {
     ...base, internalName: "live-dinner-rush", section: "dinner", title: "Dinner rush extra · 7 – 11 PM",

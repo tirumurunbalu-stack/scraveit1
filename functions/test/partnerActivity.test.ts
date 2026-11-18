@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {daySummary, summarizeDay, type TrailPoint} from "../src/domain/partnerActivity";
+import {daySummary, nightHome, summarizeDay, type TrailPoint} from "../src/domain/partnerActivity";
 
 // About 111 m per 0.001 degree of latitude. Positions every 15 seconds, like the app sends.
 const STEP = 15;
@@ -58,7 +58,7 @@ describe("summarizeDay", () => {
 describe("daySummary", () => {
   it("keeps totals and averages but no positions", () => {
     const a = {
-      onlineMinutes: 120, movingMinutes: 60, restaurantWaitMinutes: 20, dropMinutes: 6, idleMinutes: 15, otherStopMinutes: 4,
+      onlineMinutes: 120, outMinutes: 120, homeMinutes: 0, home: null, movingMinutes: 60, restaurantWaitMinutes: 20, dropMinutes: 6, idleMinutes: 15, otherStopMinutes: 4,
       trips: [{pickupAt: 600, waitMinutes: 5, rideMinutes: 10, dropMinutes: 2, place: ""}, {pickupAt: 660, waitMinutes: 8, rideMinutes: 13, dropMinutes: 4, place: "X"}],
       stops: [], firstSeen: 590, lastSeen: 720, offlineGaps: [{start: 700, end: 705}],
     };
@@ -85,5 +85,31 @@ describe("GPS drift while waiting", () => {
     expect(waits[0]?.kind).toBe("idle");
     expect(waits[0]?.minutes).toBeGreaterThanOrEqual(17);
     expect(d.trips).toHaveLength(0);
+  });
+});
+
+describe("home learned from the night", () => {
+  it("finds the night spot, counts it as home and keeps it out of idle and out-working time", () => {
+    const pts: TrailPoint[] = [];
+    const at = (from: number, to: number, lat: number, lng: number) => { for (let t = from; t < to; t += 15) pts.push({sec: t, lat, lng, job: false}); };
+    at(0, 6 * 3600, 14.41743, 79.94175);               // night at home
+    for (let i = 1; i <= 20; i++) pts.push({sec: 6 * 3600 + i * 15, lat: 14.41743 - i * 0.0006, lng: 79.94175 + i * 0.0006, job: false});
+    at(6 * 3600 + 400, 6 * 3600 + 400 + 40 * 60, 14.4050, 79.9540); // 40 min out, away from home
+    for (let i = 1; i <= 20; i++) pts.push({sec: 7 * 3600 + i * 15, lat: 14.4050 + i * 0.0006, lng: 79.9540 - i * 0.0006, job: false});
+    at(7 * 3600 + 400, 8 * 3600, 14.41740, 79.94170);  // back home
+    const home = nightHome(pts);
+    expect(home).not.toBeNull();
+    const d = summarizeDay(pts, []);
+    expect(d.homeMinutes).toBeGreaterThan(6 * 60);
+    expect(d.idleMinutes).toBeGreaterThanOrEqual(39);
+    expect(d.idleMinutes).toBeLessThan(45);
+    expect(d.outMinutes).toBeLessThan(60);
+    expect(d.stops.filter((s) => s.kind === "home").every((s) => s.place === "Home")).toBe(true);
+  });
+  it("no long night stay: no home", () => {
+    const pts: TrailPoint[] = [];
+    for (let t = 12 * 3600; t < 14 * 3600; t += 15) pts.push({sec: t, lat: 14.4, lng: 79.9, job: false});
+    expect(nightHome(pts)).toBeNull();
+    expect(summarizeDay(pts, []).homeMinutes).toBe(0);
   });
 });

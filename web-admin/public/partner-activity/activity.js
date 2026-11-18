@@ -5,7 +5,7 @@ import {requireAdminSession, signOutUser, callFunction} from "../assets/firebase
 const h = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const hm = (minute) => minute == null ? "—" : String(Math.floor(minute / 60)).padStart(2, "0") + ":" + String(minute % 60).padStart(2, "0");
 const dur = (m) => m >= 60 ? Math.floor(m / 60) + " h " + (m % 60) + " min" : m + " min";
-const KIND = {restaurant: "Restaurant", drop: "Drop", idle: "Idle", stop: "Short stop"};
+const KIND = {restaurant: "Restaurant", drop: "Drop", idle: "Idle", stop: "Short stop", home: "At home"};
 let selected = "", partners = [];
 
 function toast(message, kind) {
@@ -36,7 +36,7 @@ async function watch(riderId, on) {
   const p = partners.find((x) => x.riderId === riderId); if (!p) return;
   let note = "";
   if (on) {
-    if (!confirm("Has " + p.name + " agreed in writing to location recording while online (positions deleted after 60 days; daily totals kept)?")) return;
+    if (!confirm("Has " + p.name + " agreed in writing to location recording while online (detailed positions deleted after 60 days; daily totals and a map of each day kept)?")) return;
     note = prompt("How did they agree? (for the record)", "WhatsApp yes, " + new Date().toLocaleDateString("en-IN")) || "";
   } else if (!confirm("Stop recording " + p.name + "? Their positions stay until they are 60 days old and their daily totals stay, until you delete them.")) return;
   try { await callFunction("partnerActivity", {action: "watch", riderId, on, note}); toast(on ? "Watching " + p.name + "." : "Stopped.", "success"); }
@@ -58,8 +58,8 @@ async function loadHistory() {
   try {
     const {days} = await callFunction("partnerActivity", {action: "history", riderId: selected});
     const m = (v) => v == null ? "—" : dur(v);
-    box.innerHTML = days.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Online</th><th>Hours</th><th>Trips</th><th>Avg wait</th><th>Avg ride</th><th>Idle</th><th>Gaps</th></tr></thead><tbody>' +
-      days.map((d) => '<tr><td><a href="#" data-date="' + h(d.date) + '">' + h(new Date(d.date + "T00:00:00").toLocaleDateString("en-IN", {weekday: "short", day: "numeric", month: "short"})) + "</a>" + (d.live ? ' <span class="note">today, so far</span>' : "") + "</td><td>" + m(d.onlineMinutes) + "</td><td>" + hm(d.firstSeen) + " – " + hm(d.lastSeen) + "</td><td>" + h(d.trips) + "</td><td>" + m(d.avgWaitMinutes) + "</td><td>" + m(d.avgRideMinutes) + "</td><td>" + m(d.idleMinutes) + "</td><td>" + h(d.gaps) + "</td></tr>").join("") + "</tbody></table></div>"
+    box.innerHTML = days.length ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Out working</th><th>At home</th><th>Hours</th><th>Trips</th><th>Avg wait</th><th>Avg ride</th><th>Idle</th><th>Gaps</th></tr></thead><tbody>' +
+      days.map((d) => '<tr><td><a href="#" data-date="' + h(d.date) + '">' + h(new Date(d.date + "T00:00:00").toLocaleDateString("en-IN", {weekday: "short", day: "numeric", month: "short"})) + "</a>" + (d.live ? ' <span class="note">today, so far</span>' : "") + "</td><td>" + m(d.outMinutes ?? d.onlineMinutes) + "</td><td>" + m(d.homeMinutes) + "</td><td>" + hm(d.firstSeen) + " – " + hm(d.lastSeen) + "</td><td>" + h(d.trips) + "</td><td>" + m(d.avgWaitMinutes) + "</td><td>" + m(d.avgRideMinutes) + "</td><td>" + m(d.idleMinutes) + "</td><td>" + h(d.gaps) + "</td></tr>").join("") + "</tbody></table></div>"
       : '<p class="note">No days yet. Each finished day is saved here at 3 AM.</p>';
   } catch (error) { box.textContent = error.message; }
 }
@@ -103,12 +103,13 @@ async function loadDay() {
     // Older than 60 days: only the saved totals are left (no map, trips or stops).
     if (d.summaryOnly) {
       const sm = d.summary || {};
-      d = {...d, ...sm, trips: [], stops: [], path: [], offlineGaps: Array(sm.gaps || 0).fill({}), tripCount: sm.trips, avgW: sm.avgWaitMinutes, avgR: sm.avgRideMinutes};
+      d = {...d, ...sm, trips: [], stops: d.stops || [], path: d.path || [], offlineGaps: Array(sm.gaps || 0).fill({}), tripCount: sm.trips, avgW: sm.avgWaitMinutes, avgR: sm.avgRideMinutes};
     }
     const avg = (k) => d.summaryOnly ? ((k === "waitMinutes" ? d.avgW : d.avgR) == null ? "—" : (k === "waitMinutes" ? d.avgW : d.avgR) + " min") : d.trips.length ? Math.round(d.trips.reduce((s, t) => s + t[k], 0) / d.trips.length) + " min" : "—";
     const stat = (label, value, sub) => '<div class="stat-card"><div class="label">' + label + '</div><div class="value">' + value + '</div><div class="sub">' + (sub || "") + "</div></div>";
     document.getElementById("stats").innerHTML =
-      stat("Online", dur(d.onlineMinutes), d.firstSeen == null ? "Nothing recorded" : hm(d.firstSeen) + " – " + hm(d.lastSeen)) +
+      stat("Out working", dur(d.outMinutes ?? d.onlineMinutes), "online " + dur(d.onlineMinutes) + (d.firstSeen == null ? "" : " · " + hm(d.firstSeen) + " – " + hm(d.lastSeen))) +
+      stat("At home", dur(d.homeMinutes || 0), d.home ? "learned from where he spends the night" : "home not known yet") +
       stat("Trips (likely)", d.summaryOnly ? d.tripCount : d.trips.length, "restaurant → drop") +
       stat("Restaurant wait", dur(d.restaurantWaitMinutes), "avg " + avg("waitMinutes") + " per trip") +
       stat("Ride to drop", avg("rideMinutes"), "average") +
@@ -116,7 +117,9 @@ async function loadDay() {
       stat("Idle", dur(d.idleMinutes), "stops of 10+ min") +
       stat("Other stops", dur(d.otherStopMinutes + d.dropMinutes), "incl. drops " + dur(d.dropMinutes)) +
       stat("Gaps", d.offlineGaps.length, "app off or no signal");
-    if (d.summaryOnly) {
+    if (d.summaryOnly && d.mapSaved && d.path.length) {
+      // Older than 60 days: the map saved before the positions were deleted is drawn below like any day.
+    } else if (d.summaryOnly) {
       document.getElementById("map").innerHTML = '<p class="note" style="padding:14px">Over 60 days old: positions were deleted, only the day\'s totals are kept.</p>';
       document.getElementById("last-seen").innerHTML = ""; document.getElementById("trips").innerHTML = ""; document.getElementById("stops").innerHTML = "";
       return;
@@ -126,7 +129,7 @@ async function loadDay() {
       d.trips.map((t) => "<tr><td>" + hm(t.pickupAt) + "</td><td>" + h(t.place || "Repeat spot") + "</td><td>" + dur(t.waitMinutes) + "</td><td>" + dur(t.rideMinutes) + "</td><td>" + dur(t.dropMinutes) + "</td></tr>").join("") + "</tbody></table></div>" : '<p class="note">No trips found yet.</p>';
     document.getElementById("stops").innerHTML = d.stops.length ? '<div class="table-wrap"><table><thead><tr><th>From</th><th>To</th><th>Length</th><th>What</th><th>Where</th></tr></thead><tbody>' +
       d.stops.map((s) => "<tr><td>" + hm(s.start) + "</td><td>" + hm(s.end) + "</td><td>" + dur(s.minutes) + '</td><td class="k-' + s.kind + '">' + KIND[s.kind] + (s.scraveitOrder ? " · Scraveit order" : "") + "</td><td>" +
-        (s.lat == null ? '<span class="note">hidden (customer door)</span>' : (s.place ? h(s.place) + " · " : "") + '<a href="https://www.google.com/maps?q=' + s.lat.toFixed(5) + "," + s.lng.toFixed(5) + '" target="_blank" rel="noopener">map</a>') + "</td></tr>").join("") + "</tbody></table></div>" : '<p class="note">No stops yet.</p>';
+        (s.lat == null ? '<span class="note">' + (s.kind === "home" ? "hidden (home)" : "hidden (customer door)") + "</span>" : (s.place ? h(s.place) + " · " : "") + '<a href="https://www.google.com/maps?q=' + s.lat.toFixed(5) + "," + s.lng.toFixed(5) + '" target="_blank" rel="noopener">map</a>') + "</td></tr>").join("") + "</tbody></table></div>" : '<p class="note">No stops yet.</p>';
   } catch (error) { document.getElementById("stats").textContent = error.message; }
 }
 

@@ -7,13 +7,16 @@
  *   feastly/partnerTrailConsent/{riderId} = {name, since, by, note}
  *   feastly/partnerTrail/{riderId}/{YYYY-MM-DD}/{HHMMSS} = {a: lat, o: lng, c: accuracy m, j: 1 on a Scraveit order}
  *   feastly/partnerTrailDays/{YYYY-MM-DD}/{riderId} = true   (index for the 60-day clean-up)
+ *   feastly/partnerHome/{riderId} = {lat, lng, from}   (where the night is spent; learned, admin SDK only)
+ *   feastly/partnerDayMap/{riderId}/{YYYY-MM-DD} = {path, stops}: the day's map, saved just before the
+ *     60-day delete and kept (founder, 18 Nov 2026); home and drops left out as on the page
  *   feastly/partnerDaySummary/{riderId}/{YYYY-MM-DD} = one line of totals, no locations; kept with no
  *     time limit (founder, 17 Nov 2026), removed only by "Delete history".
  */
 import {db, firestoreDb} from "../admin";
 import {ROOT} from "../config";
 import {DomainError} from "../errors";
-import {daySummary, summarizeDay, type DayActivity, type StorePlace, type TrailPoint} from "../domain/partnerActivity";
+import {daySummary, metres, nightHome, summarizeDay, type DayActivity, type HomePlace, type StorePlace, type TrailPoint} from "../domain/partnerActivity";
 
 const KEEP_DAYS = 60;
 const FRESH_MS = 2 * 60 * 1000;
@@ -77,6 +80,15 @@ async function saveDaySummaries(now: number): Promise<number> {
 async function cleanOldTrails(now: number): Promise<number> {
   const cutoff = istParts(now - KEEP_DAYS * 24 * 60 * 60 * 1000).date;
   const old = ((await db.ref(`${ROOT}/partnerTrailDays`).orderByKey().endAt(cutoff).get()).val() ?? {}) as Record<string, Record<string, boolean>>;
+  // Keep the day's map (founder, 18 Nov 2026) before its positions go.
+  const stores = Object.keys(old).length ? await storePlaces() : [];
+  for (const [day, riders] of Object.entries(old)) {
+    for (const id of Object.keys(riders ?? {})) {
+      if ((await db.ref(`${ROOT}/partnerDayMap/${id}/${day}/savedAt`).get()).exists()) continue;
+      const {points, activity} = await readDay(id, day, stores);
+      if (points.length) await db.ref(`${ROOT}/partnerDayMap/${id}/${day}`).set({...mapView(points, activity, 400), savedAt: now});
+    }
+  }
   const removal: Record<string, null> = {};
   for (const [day, riders] of Object.entries(old)) {
     for (const id of Object.keys(riders ?? {})) removal[`partnerTrail/${id}/${day}`] = null;
@@ -139,7 +151,7 @@ export async function setWatch(riderId: string, on: boolean, by: string, note: s
 /** Deletes everything recorded for one partner (they asked, or they stopped). */
 export async function forgetPartner(riderId: string) {
   const days = Object.keys(((await db.ref(`${ROOT}/partnerTrail/${riderId}`).get()).val() ?? {}) as Record<string, unknown>);
-  const removal: Record<string, null> = {[`partnerTrail/${riderId}`]: null, [`partnerDaySummary/${riderId}`]: null};
+  const removal: Record<string, null> = {[`partnerTrail/${riderId}`]: null, [`partnerDaySummary/${riderId}`]: null, [`partnerHome/${riderId}`]: null, [`partnerDayMap/${riderId}`]: null};
   for (const d of days) removal[`partnerTrailDays/${d}/${riderId}`] = null;
   await db.ref(ROOT).update(removal);
   return {deletedDays: days.length};
@@ -151,21 +163,43 @@ async function readDay(riderId: string, date: string, stores?: StorePlace[]): Pr
   const points: TrailPoint[] = Object.entries(raw).map(([key, p]) => ({
     sec: Number(key.slice(0, 2)) * 3600 + Number(key.slice(2, 4)) * 60 + (key.length >= 6 ? Number(key.slice(4, 6)) : 0), lat: Number(p.a), lng: Number(p.o), job: p.j === 1,
   })).filter((p) => Number.isFinite(p.sec));
-  const activity = summarizeDay(points, points.length ? stores ?? await storePlaces() : []);
+  // Home: this day's own night stay if it has one, else the last learned home.
+  const saved = (await db.ref(`${ROOT}/partnerHome/${riderId}`).get()).val() as (HomePlace & {from?: string}) | null;
+  const tonight = nightHome(points);
+  const home = tonight ?? (saved && Number.isFinite(saved.lat) ? {lat: saved.lat, lng: saved.lng} : null);
+  if (tonight && (!saved || metres(saved.lat, saved.lng, tonight.lat, tonight.lng) > 100 || (saved.from ?? "") < date)) {
+    await db.ref(`${ROOT}/partnerHome/${riderId}`).set({lat: Math.round(tonight.lat * 1e5) / 1e5, lng: Math.round(tonight.lng * 1e5) / 1e5, from: date});
+  }
+  const activity = summarizeDay(points, points.length ? stores ?? await storePlaces() : [], home);
   return {points, activity};
 }
 
 export async function partnerDay(riderId: string, date: string) {
   const {points, activity} = await readDay(riderId, date);
   const saved = (await db.ref(`${ROOT}/partnerDaySummary/${riderId}/${date}`).get()).val() as Record<string, unknown> | null;
-  if (!points.length && saved) return {date, summaryOnly: true, summary: saved, trips: [], stops: [], path: [], offlineGaps: []};
+  if (!points.length && saved) {
+    const map = (await db.ref(`${ROOT}/partnerDayMap/${riderId}/${date}`).get()).val() as {path?: unknown[]; stops?: unknown[]} | null;
+    return {date, summaryOnly: true, summary: saved, trips: [], stops: map?.stops ?? [], path: map?.path ?? [], mapSaved: !!map, offlineGaps: []};
+  }
   // Drops are customers' doors (often other apps' customers): their positions are not sent to the page.
+  const {stops, path} = mapView(points, activity, 1500);
+  return {date, ...activity, home: activity.home ? true : null, stops, path};
+}
+
+/**
+ * What the page's map shows: the path (up to maxPoints) and the stops. Drops (customers' doors) and
+ * home are private: their positions, and the path near them, are left out.
+ */
+function mapView(points: TrailPoint[], activity: DayActivity, maxPoints: number) {
   const drops = activity.stops.filter((s) => s.kind === "drop");
-  const stops = activity.stops.map((s) => s.kind === "drop" ? {...s, lat: null, lng: null} : s);
-  const sorted = points.slice().sort((a, b) => a.sec - b.sec), every = Math.max(1, Math.ceil(sorted.length / 1500));
-  const path = sorted.filter((p, i) => (i % every === 0 || i === sorted.length - 1) && !drops.some((d) => p.sec / 60 >= d.start - 2 && p.sec / 60 <= d.end + 2))
-    .map((p) => [Math.floor(p.sec / 60), p.lat, p.lng]);
-  return {date, ...activity, stops, path};
+  const stops = activity.stops.map((s) => s.kind === "drop" || s.kind === "home" ? {...s, lat: null, lng: null} : s);
+  const home = activity.home;
+  const nearHome = (p: TrailPoint) => !!home && metres(home.lat, home.lng, p.lat, p.lng) <= 100;
+  const sorted = points.slice().sort((a, b) => a.sec - b.sec), every = Math.max(1, Math.ceil(sorted.length / maxPoints));
+  const r5 = (v: number) => Math.round(v * 1e5) / 1e5;
+  const path = sorted.filter((p, i) => (i % every === 0 || i === sorted.length - 1) && !nearHome(p) && !drops.some((d) => p.sec / 60 >= d.start - 2 && p.sec / 60 <= d.end + 2))
+    .map((p) => [Math.floor(p.sec / 60), r5(p.lat), r5(p.lng)]);
+  return {stops, path};
 }
 
 /** Saved daily summaries for one partner (newest first, up to a year), plus today's live totals. */

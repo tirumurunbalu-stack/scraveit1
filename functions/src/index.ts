@@ -303,7 +303,7 @@ import {
   upsertRiderRewardCampaign,
 } from "./services/riderRewards";
 import {readLatestWeeklyRun, readWeeklyRunItems, runWeeklyFinanceAutomation, selectPayoutGateway} from "./services/financeAutomation";
-import {CASHFREE_PAYOUT_SECRETS} from "./services/cashfreePayouts";
+import {CASHFREE_PAYOUT_SECRETS, CashfreePayoutGateway, liveCashfreePayoutConfig} from "./services/cashfreePayouts";
 import {movePayoutProfileToPrivate} from "./services/restaurantPayoutProfiles";
 import {recordRiderDeliveredOrder} from "./services/riderDeliveryCount";
 import {lawBasedCheckoutTax, recordDeliveredOrderTax, resolveTdsReversal, reverseOrderTaxWithholding} from "./services/taxEngine";
@@ -416,6 +416,7 @@ async function sideEffectLease(key: string, work: () => Promise<void>): Promise<
 export const createCodOrder = onCall({
   cpu: 0.5, // hot path: half a CPU, quicker than gcf_gen1 (see lightCpu)
   region: REGION,
+  secrets: [GOOGLE_WEATHER_API_KEY], // road km for the delivery fee (services/roadDistance)
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "256MiB",
@@ -445,6 +446,7 @@ export const createCodOrder = onCall({
 export const createClusterOrder = onCall({
   cpu: 0.5,
   region: REGION,
+  secrets: [GOOGLE_WEATHER_API_KEY], // road km for the delivery fee (services/roadDistance)
   enforceAppCheck: true,
   timeoutSeconds: 60,
   memory: "256MiB",
@@ -489,7 +491,7 @@ export const createOrder = onCall({
   // warm-<name> / cold-<name> set the Cloud Run service's minimum, so no minInstances here.
   maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
-  secrets: CASHFREE_SECRETS,
+  secrets: [...CASHFREE_SECRETS, GOOGLE_WEATHER_API_KEY], // + road km for the delivery fee
   enforceAppCheck: true,
   timeoutSeconds: 30,
   memory: "512MiB",
@@ -762,7 +764,7 @@ export const getCheckoutConfiguration = onCall({
   // warm-<name> / cold-<name> set the Cloud Run service's minimum, so no minInstances here.
   maxInstances: 3, // 60 calls at once; kept small for the region's 20 vCPU quota (see mapTile)
   region: REGION,
-  secrets: CASHFREE_SECRETS,
+  secrets: [...CASHFREE_SECRETS, GOOGLE_WEATHER_API_KEY], // + road km for the delivery fee
   enforceAppCheck: true,
   timeoutSeconds: 15,
   memory: "512MiB",
@@ -917,6 +919,9 @@ export const getCheckoutConfiguration = onCall({
             ...(fees.riderSurgeFee > 0 ? [{label: "Rider surge fee", amount: fees.riderSurgeFee}] : []),
           ],
           riderSurgeFee: fees.riderSurgeFee,
+          returnTripFee: fees.returnTripFee,
+          returnTripKm: fees.returnTripKm,
+          roadKm: fees.roadKm,
           weatherSeverity: fees.rainFee > 0 ? "verified_rain" : "",
           activeOrders: fees.activeOrders,
         },
@@ -3302,6 +3307,38 @@ export const getPayoutAutomationStatus = economicsCallable("getPayoutAutomationS
   }, {secrets: CASHFREE_PAYOUT_SECRETS});
 
 /** Runs this week's payout calculation without moving or recording any money. */
+/**
+ * Founder 17 Nov 2026: a one-off Rs 1 Cashfree transfer to the payout details saved for one delivery
+ * partner or store, to prove the connection. Owner only, fixed Rs 1, one per entity per minute (same
+ * transfer id), and it never touches balances or ledgers.
+ */
+export const sendTestPayout = economicsCallable("sendTestPayout",
+  z.object({entityType: z.enum(["rider", "restaurant"]), entityId: z.string().trim().min(1).max(128)}).strict(),
+  async (uid, token, input) => {
+    if (token.savrivoRole !== "owner") throw new DomainError("permission-denied", "Owner only.");
+    const snap = input.entityType === "rider" ?
+      await firestoreDb.collection("riders").doc(input.entityId).get() :
+      await firestoreDb.collection("restaurantPayoutProfiles").doc(input.entityId).get();
+    if (!snap.exists) throw new DomainError("not-found", "No such delivery partner or store payout profile.");
+    const data = (snap.data() ?? {}) as Record<string, unknown>;
+    const p = (input.entityType === "rider" ? data.payoutProfile ?? {} : data) as Record<string, unknown>;
+    const str = (v: unknown) => typeof v === "string" ? v.trim() : "";
+    const upiId = str(p.upiId), bankAccountNumber = str(p.bankAccountNumber), bankIfsc = str(p.bankIfsc);
+    const preferred = str(p.preferredMethod);
+    const method = (preferred === "upi" || preferred === "imps" || preferred === "neft") ? preferred : (upiId ? "upi" : "imps");
+    const label = str(p.beneficiaryName) || str(p.legalBusinessName) || str(data.fullName) || str(data.name) || input.entityId;
+    // One transfer id per minute: a rejected test can be tried again after Cashfree fixes something.
+    const day = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 16);
+    const gateway = new CashfreePayoutGateway(liveCashfreePayoutConfig());
+    const result = await gateway.executePayout({
+      entityType: input.entityType, entityId: input.entityId, amountPaise: 100, method: method as never,
+      operationId: `test-payout:${input.entityType}:${input.entityId}:${day}`, beneficiaryLabel: label,
+      upiId, bankAccountHolderName: str(p.bankAccountHolderName) || label, bankAccountNumber, bankIfsc,
+    });
+    logger.info("TEST_PAYOUT_SENT", {by: uid, entityType: input.entityType, entityId: input.entityId, method, ref: result.referenceId});
+    return {ok: true, method, amountRupees: 1, referenceId: result.referenceId, providerOperationId: result.providerOperationId};
+  }, {secrets: CASHFREE_PAYOUT_SECRETS});
+
 export const previewWeeklyPayouts = economicsCallable("previewWeeklyPayouts", z.object({}).strict(),
   async (_uid, token) => {
     if (token.savrivoRole !== "owner") throw new DomainError("permission-denied", "Only the owner can preview payouts.");

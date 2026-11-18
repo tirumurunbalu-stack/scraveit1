@@ -10,9 +10,12 @@ import {distanceDeliveryFee} from "../src/services/catalog";
 describe("per-km delivery fee", () => {
   const zomatoLike = {deliveryBaseFee: 16, deliveryPerKm: 2};
 
-  it("charges part kilometres pro rata and rounds the total to the rupee", () => {
-    expect(distanceDeliveryFee(zomatoLike, 1.7)).toBe(19); // 16 + 3.40
-    expect(distanceDeliveryFee(zomatoLike, 0.7)).toBe(17); // 16 + 1.40
+  it("charges part kilometres pro rata and keeps the paise", () => {
+    expect(distanceDeliveryFee(zomatoLike, 1.7)).toBe(19.4); // 16 + 3.40
+    expect(distanceDeliveryFee(zomatoLike, 0.7)).toBe(17.4); // 16 + 1.40
+    const live = {deliveryBaseFee: 20, deliveryPerKm: 5};
+    expect(distanceDeliveryFee(live, 1.3)).toBe(26.5);
+    expect(distanceDeliveryFee(live, 8.1)).toBe(60.5);
     expect(distanceDeliveryFee(zomatoLike, 7)).toBe(30);
     expect(distanceDeliveryFee(zomatoLike, 0)).toBe(16);
   });

@@ -704,6 +704,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     pricing,
     pricingContext: {
       distanceKm: roundMoney(fees.distanceKm),
+      ...(fees.roadKm != null ? {roadKm: fees.roadKm} : {}),
       platformFeeRule: "server_authoritative",
       weatherSeverity: fees.rainFee > 0 ? "verified_rain" : "",
       surgeActiveOrders: fees.activeOrders,
