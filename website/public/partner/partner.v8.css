@@ -306,6 +306,7 @@ a { color: var(--brand); }
 .paymethod-card { margin: 0 0 16px; }
 .paymethods { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 12px; }
 .paymethod { display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); font: inherit; color: inherit; cursor: pointer; }
+.paymethod.soon { opacity: .55; cursor: not-allowed; } .paymethod.soon .pm-speed { font-weight: 700; color: var(--accent, #0a7); }
 .paymethod:hover:not(:disabled) { border-color: var(--brand); }
 .paymethod:disabled { cursor: default; }
 .paymethod.on { border-color: var(--brand); background: var(--brand-soft); }

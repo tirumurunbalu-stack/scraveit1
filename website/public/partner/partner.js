@@ -656,7 +656,7 @@
       db.collection("settings").doc("payoutFees").get().then((snap) => {
         const d = snap.exists ? snap.data() : null;
         if (!d || !Array.isArray(d.bands) || !d.bands.length) return;
-        payoutFees = {deductFromPayout: d.deductFromPayout !== false, gstBps: Number(d.gstBps) || 0,
+        payoutFees = {upiAvailable: d.upiAvailable === true, deductFromPayout: d.deductFromPayout !== false, gstBps: Number(d.gstBps) || 0,
           bands: d.bands.map((b) => ({upToPaise: Number(b.upToPaise) || 0, neftPaise: Number(b.neftPaise) || 0, impsPaise: Number(b.impsPaise) || 0, upiPaise: Number(b.upiPaise) || 0}))
             .sort((a, b) => (a.upToPaise || 1e15) - (b.upToPaise || 1e15))};
         render();
@@ -673,14 +673,16 @@
   function payMethodCard() {
     const p = state.fin.profile || {};
     const t = payoutFeeTable(), example = 15000, ex = example * 100, owner = isOwner(), busy = state.fin.methodSaving;
-    const hasBank = !!String(p.bankAccountNumber || "").trim() && !!p.bankIfsc, hasUpi = !!String(p.upiId || "").trim();
-    const pick = ["neft", "imps", "upi"].includes(p.preferredMethod) ? p.preferredMethod : "neft";
+    const hasBank = !!String(p.bankAccountNumber || "").trim() && !!p.bankIfsc, upiOpen = t.upiAvailable === true, hasUpi = upiOpen && !!String(p.upiId || "").trim();
+    // UPI payouts are not offered by Cashfree from the wallet yet (18 Nov 2026): shown as "Available soon".
+    const pick = p.preferredMethod === "upi" && !upiOpen ? "neft" : ["neft", "imps", "upi"].includes(p.preferredMethod) ? p.preferredMethod : "neft";
     const rows = [["neft", "Bank · NEFT", "Reaches the same day · lowest fee", hasBank, "Add your bank account below first"],
       ["imps", "Bank · IMPS", "Reaches in minutes", hasBank, "Add your bank account below first"],
       ["upi", "UPI", "Reaches in minutes", hasUpi, "Add your UPI ID below first"]];
     return '<div class="card paymethod-card"><div class="row between"><h2 style="margin:0">How you get paid</h2><span class="small muted">' +
       (owner ? "Pick one · see the fee first" : "Only the outlet owner can change this") + '</span></div><div class="paymethods">' +
       rows.map(([m, title, speed, ready, need]) => {
+        if (m === "upi" && !upiOpen) return '<button type="button" class="paymethod soon" disabled><span class="pm-dot"></span><span class="pm-body"><strong>UPI</strong><span class="pm-speed">Available soon</span><span class="pm-fee">Use bank (NEFT or IMPS) for now</span></span></button>';
         let fee;
         if (!t.deductFromPayout) fee = '<span class="pm-fee">No fee · Scraveit pays it</span>';
         else {
@@ -696,17 +698,17 @@
   }
   function bankForm(p, hasBank, hasUpi, owner) {
     const F = state.fin, open = F.bankEdit || (owner && !hasBank && !hasUpi), acct = String(p.bankAccountNumber || "");
-    const summary = (hasBank ? "Bank ••••" + h(acct.slice(-4)) + (p.bankIfsc ? " · " + h(p.bankIfsc) : "") : "No bank account") + " · " + (hasUpi ? "UPI " + h(p.upiId) : "No UPI ID");
+    const summary = (hasBank ? "Bank ••••" + h(acct.slice(-4)) + (p.bankIfsc ? " · " + h(p.bankIfsc) : "") : "No bank account") + " · " + (hasUpi ? "UPI " + h(p.upiId) : payoutFeeTable().upiAvailable === true ? "No UPI ID" : "UPI available soon");
     if (!owner) return '<p class="small muted" style="margin:8px 0 0">' + summary + "</p>";
-    if (!open) return '<div class="row between bank-summary"><span class="small">' + summary + '</span><button type="button" class="btn small" data-act="bank-edit">Edit bank / UPI</button></div>';
+    if (!open) return '<div class="row between bank-summary"><span class="small">' + summary + '</span><button type="button" class="btn small" data-act="bank-edit">Edit bank details</button></div>';
     const f = (name, label, value, extra) => '<div class="field"><label for="bk-' + name + '">' + label + '</label><input class="input" id="bk-' + name + '" name="' + name + '" value="' + h(value || "") + '"' + (extra || "") + "></div>";
-    return '<form id="bank-form" class="bank-form"><h3 style="margin:0">Bank and UPI details</h3><p class="small muted" style="margin:0">Payouts go here every week. Fill the bank account, the UPI ID, or both.</p><div class="bank-grid">' +
+    return '<form id="bank-form" class="bank-form"><h3 style="margin:0">Bank details</h3><p class="small muted" style="margin:0">Payouts go to this bank account every week. UPI payouts: available soon.</p><div class="bank-grid">' +
       f("holder", "Account holder name", p.bankAccountHolderName || p.beneficiaryName || (outlet() && outlet().doc && outlet().doc.name) || "", ' autocomplete="off"') +
       f("bankName", "Bank name", p.bankName, ' placeholder="HDFC Bank"') +
       f("account", "Account number", acct, ' inputmode="numeric" autocomplete="off"') +
       f("account2", "Account number again", acct, ' inputmode="numeric" autocomplete="off"') +
       f("ifsc", "IFSC", p.bankIfsc, ' placeholder="HDFC0001234" autocapitalize="characters" autocomplete="off"') +
-      f("upi", "UPI ID (optional)", p.upiId, ' placeholder="restaurant@okhdfcbank" autocapitalize="none" autocomplete="off"') +
+      (payoutFeeTable().upiAvailable === true ? f("upi", "UPI ID (optional)", p.upiId, ' placeholder="restaurant@okhdfcbank" autocapitalize="none" autocomplete="off"') : '<input type="hidden" name="upi" value="' + h(p.upiId || "") + '">') +
       '</div><div class="row" style="gap:8px"><button class="btn primary"' + (F.bankSaving ? " disabled" : "") + ">" + (F.bankSaving ? "Saving…" : "Save details") + "</button>" +
       (hasBank || hasUpi ? '<button type="button" class="btn" data-act="bank-cancel">Cancel</button>' : "") + "</div></form>";
   }
@@ -714,7 +716,7 @@
     const F = state.fin; if (!isOwner() || F.bankSaving) return;
     const v = (n) => String(form.elements[n].value || "").trim();
     const holder = v("holder"), bankName = v("bankName"), account = v("account").replace(/\s+/g, ""), account2 = v("account2").replace(/\s+/g, ""), ifsc = v("ifsc").toUpperCase(), upi = v("upi");
-    if (!account && !upi) return toast("Add a bank account or a UPI ID.", true);
+    if (!account && (!upi || payoutFeeTable().upiAvailable !== true)) return toast("Add your bank account.", true);
     if (account || ifsc) {
       if (!/^[0-9]{6,20}$/.test(account)) return toast("Enter a valid bank account number (6–20 digits).", true);
       if (account !== account2) return toast("The two account numbers don't match.", true);
@@ -723,7 +725,7 @@
     }
     if (upi && !/^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,64}$/.test(upi)) return toast("Enter a valid UPI ID, like name@okhdfcbank.", true);
     const old = F.profile || {}, hasBank = !!account, method = old.preferredMethod;
-    const preferredMethod = !hasBank ? "upi" : method === "upi" && !upi ? "neft" : ["neft", "imps", "upi"].includes(method) ? method : "neft";
+    const preferredMethod = !hasBank ? "upi" : method === "upi" && (!upi || payoutFeeTable().upiAvailable !== true) ? "neft" : ["neft", "imps", "upi"].includes(method) ? method : "neft";
     const changes = {restaurantId: state.rid, bankAccountHolderName: holder, bankAccountNumber: account, bankIfsc: ifsc, bankName, upiId: upi, preferredMethod,
       verificationStatus: preferredMethod === "upi" ? "upi_ready" : "bank_ready", updatedAt: Date.now(), updatedBy: state.user.uid};
     F.bankSaving = true; render();

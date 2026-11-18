@@ -7,7 +7,7 @@ export SCRAVEIT_KEY_PASS
 JS=$(/usr/libexec/java_home -v 17 2>/dev/null)/bin/jarsigner
 [ -x "$JS" ] || JS=/opt/homebrew/Cellar/openjdk@17/17.0.20.1/libexec/openjdk.jdk/Contents/Home/bin/jarsigner
 ok=0; out=""
-FILES=(Scraveit-Customer-3.32.7.aab Scraveit-Rider-3.16.14.aab)
+FILES=(Scraveit-Restaurant-3.14.13.aab Scraveit-Rider-3.16.15.aab)
 for f in $FILES; do
   if "$JS" -storepass:env SCRAVEIT_KEY_PASS -keystore ~/scraveit-upload-key/scraveit-upload.jks "$f" scraveit-upload >/dev/null 2>&1 \
      && "$JS" -verify "$f" 2>/dev/null | grep -q "jar verified"; then
