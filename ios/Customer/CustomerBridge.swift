@@ -4,6 +4,9 @@ import UserNotifications
 import AVFoundation
 import AudioToolbox
 import PhotosUI
+import FirebaseMessaging
+import AuthenticationServices
+import CryptoKit
 
 enum AppEntry: ScraveitApp {
     static func makeBridge() -> NativeBridge { CustomerBridge() }
@@ -12,7 +15,8 @@ enum AppEntry: ScraveitApp {
 /// The iOS side of window.FeastlyNative for the Customer app - the same
 /// methods, arguments and replies as the Android app's MainActivity, so the
 /// web screens run unchanged.
-final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
+final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
+                            ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
     /// Page method -> Cloud Function, all called as (requestId, idToken, payloadJson).
     private static let callables: [String: String] = [
         "createCodOrder": "createCodOrder", "createOrder": "createOrder",
@@ -35,7 +39,7 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
     private static let asyncMethods = Array(callables.keys) + [
         "invokeDineIn", "openExternalPayment", "getDeliveryOtp", "recoverDeliveryOtp", "deleteDeliveryOtp",
         "clearDeliveryOtps", "setStatusBarStyle", "requestCurrentLocation", "haptic", "shareText", "shareImage",
-        "notifyOrder", "registerPushToken", "unregisterPushToken",
+        "notifyOrder", "registerPushToken", "unregisterPushToken", "clearPushIdentity", "signInWithApple",
         "invokeSocial", "callPermissions", "callAudio", "pickChatPhoto", "pickProfilePhoto",
     ]
 
@@ -56,7 +60,7 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
         return """
         (function(){
           if (window.FeastlyNative) return;
-          var state = window.__scraveitNative = {locationReady:false, tableLink:null};
+          var state = window.__scraveitNative = {locationReady:\(locationAllowed), tableLink:null};
           var post = function(m, a){ try { window.webkit.messageHandlers.native.postMessage({m:m, a:Array.prototype.slice.call(a||[])}); } catch(e) {} };
           var api = {};
           [\(names)].forEach(function(m){ api[m] = function(){ post(m, arguments); }; });
@@ -65,6 +69,19 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
           window.FeastlyNative = api;
         })();
         """
+    }
+
+    /// Whether the person has let the app use location (any "while using" or "always").
+    private var locationAllowed: Bool {
+        [.authorizedWhenInUse, .authorizedAlways].contains(location.authorizationStatus)
+    }
+
+    // At launch iOS reports the location permission before the page exists, so
+    // the page used to think location was off ("Location is off" banner and the
+    // address sheet every time). Tell it again once it has loaded.
+    func pageDidLoad(shell: WebShellViewController) {
+        self.shell = shell
+        shell.evaluate("window.__scraveitNative && (window.__scraveitNative.locationReady = \(locationAllowed));")
     }
 
     func handle(_ method: String, _ args: [Any], shell: WebShellViewController) {
@@ -127,11 +144,18 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
             share(items)
         case "notifyOrder":
             notify(title: text(0), body: text(1), id: text(2))
-        case "registerPushToken", "unregisterPushToken":
-            // Push needs the Apple push service, which comes with the Apple
-            // Developer account; until then the app keeps working without it.
-            shell.publish(requestId: text(0), operation: method,
-                          result: .failure(.init(code: "PUSH_UNAVAILABLE", message: "Notifications aren't set up on iPhone yet.")))
+        case "registerPushToken":
+            registerPush(requestId: text(0), idToken: text(1))
+        case "unregisterPushToken":
+            unregisterPush(requestId: text(0), idToken: text(1))
+        case "signInWithApple":
+            DispatchQueue.main.async { self.signInWithApple() }
+        case "clearPushIdentity":
+            // Signed out: drop this phone's push token so no account's
+            // notifications reach it, as Android does.
+            UserDefaults.standard.removeObject(forKey: Self.pushTokenKey)
+            Messaging.messaging().deleteToken { _ in }
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         default:
             break
         }
@@ -287,6 +311,114 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate {
             }
             self?.shell?.publish(requestId: requestId, operation: operation, result: result)
         }
+    }
+
+    // MARK: Sign in with Apple
+
+    private var appleNonce: String?
+
+    private func signInWithApple() {
+        let nonce = Self.randomNonce()
+        appleNonce = nonce
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = SHA256.hash(data: Data(nonce.utf8)).map { String(format: "%02x", $0) }.joined()
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        shell?.view.window ?? UIWindow()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+              let tokenData = credential.identityToken, let idToken = String(data: tokenData, encoding: .utf8),
+              let nonce = appleNonce else {
+            appleFailed("Apple sign-in could not be completed. Try again."); return
+        }
+        appleNonce = nil
+        let name = [credential.fullName?.givenName, credential.fullName?.familyName]
+            .compactMap { $0 }.joined(separator: " ")
+        shell?.evaluate("window.appleSignInReceived && window.appleSignInReceived(\(WebShellViewController.jsString(idToken)), \(WebShellViewController.jsString(nonce)), \(WebShellViewController.jsString(name)))")
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        appleNonce = nil
+        // Closing Apple's sheet isn't an error worth a message.
+        let cancelled = (error as? ASAuthorizationError)?.code == .canceled
+        appleFailed(cancelled ? "" : "Apple sign-in could not be completed. Try again.")
+    }
+
+    private func appleFailed(_ message: String) {
+        shell?.evaluate("window.appleSignInFailed && window.appleSignInFailed(\(WebShellViewController.jsString(message)))")
+    }
+
+    private static func randomNonce(length: Int = 32) -> String {
+        let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var bytes = [UInt8](repeating: 0, count: length)
+        _ = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)
+        return String(bytes.map { charset[Int($0) % charset.count] })
+    }
+
+    // MARK: push notifications
+
+    private static let pushTokenKey = "scraveit.pushToken"
+
+    /// Same payload as Android's registerPushToken, with platform "ios".
+    private func registerPush(requestId: String, idToken: String) {
+        let fail = { [weak self] in
+            self?.shell?.publish(requestId: requestId, operation: "registerPushToken",
+                                 result: .failure(.init(code: "PUSH_TOKEN_UNAVAILABLE",
+                                                        message: "Notifications could not be enabled on this device.")))
+        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+            DispatchQueue.main.async {
+                UIApplication.shared.registerForRemoteNotifications()
+                Task { [weak self] in
+                    guard let token = await Self.fcmToken(), let self else { fail(); return }
+                    UserDefaults.standard.set(token, forKey: Self.pushTokenKey)
+                    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+                    self.callFunction("registerPushToken", operation: "registerPushToken", requestId: requestId, idToken: idToken,
+                                      payload: ["token": token, "app": "customer", "platform": "ios",
+                                                "appVersion": version, "deviceModel": Self.deviceModel()])
+                }
+            }
+        }
+    }
+
+    private func unregisterPush(requestId: String, idToken: String) {
+        let token = UserDefaults.standard.string(forKey: Self.pushTokenKey) ?? ""
+        guard token.count >= 20 else {
+            shell?.publish(requestId: requestId, operation: "unregisterPushToken", result: .success(["removed": false]))
+            return
+        }
+        Task { [weak self] in
+            let result = await CallableClient.call("unregisterPushToken", idToken: idToken, data: ["token": token])
+            if case .success = result { UserDefaults.standard.removeObject(forKey: Self.pushTokenKey) }
+            self?.shell?.publish(requestId: requestId, operation: "unregisterPushToken", result: result)
+        }
+    }
+
+    /// The FCM token needs Apple's device token first, which arrives a moment
+    /// after registerForRemoteNotifications; retry briefly while it does.
+    private static func fcmToken() async -> String? {
+        for attempt in 0..<8 {
+            if let token = try? await Messaging.messaging().token(), token.count >= 20 { return token }
+            try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1)))
+        }
+        return nil
+    }
+
+    private static func deviceModel() -> String {
+        var info = utsname()
+        uname(&info)
+        let machine = withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        return "Apple " + machine
     }
 
     // MARK: payments, sharing, notifications

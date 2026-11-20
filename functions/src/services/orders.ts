@@ -35,6 +35,7 @@ import type {ActorRole, OrderStatus, PricingBreakdown, SavrivoOrder, StatusEvent
 import {authorizeTransition, requireApprovedRider} from "./authz";
 import {deliveryCampusFor} from "./campus";
 import {assertMayOrder} from "./accountAge";
+import {assertMayPlaceOrder} from "./testAccounts";
 import {loadCustomerAddress, loadRestaurantAndMenu, loadServerFees} from "./catalog";
 import {loadPriceQuote} from "./priceQuotes";
 import {
@@ -482,15 +483,16 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     return {order: stripPrivateOrderFields(existing), deliveryOtp, recovered: true};
   }
 
-  // Under-18 accounts order only after a parent approves (DPDP Act 2023, s.9).
-  await assertMayOrder(uid);
+  // Before launch only test accounts can order; test accounts may order from any store (on any app
+  // version), and their orders go only to test delivery partners. Under-18 accounts order only after a parent approves (DPDP Act 2023, s.9).
+  const [{testOrder}] = await Promise.all([assertMayPlaceOrder(uid, input.restaurantId), assertMayOrder(uid)]);
   const [{restaurant, menuById}, {address, profile}] = await Promise.all([
     loadRestaurantAndMenu(input.restaurantId),
     loadCustomerAddress(uid, input.addressId),
   ]);
   // No free delivery partner near the store: nothing is written and no payment starts.
   // Loaded on use (like adminToday.ts): dispatch brings rider-side modules order code otherwise never needs.
-  if (!options.skipDeliveryPartnerCheck && !options.cluster) await (await import("./dispatch")).assertDeliveryPartnerFreeNear(restaurant);
+  if (!options.skipDeliveryPartnerCheck && !options.cluster) await (await import("./dispatch")).assertDeliveryPartnerFreeNear(restaurant, testOrder);
   const {items, subtotal, markup} = priceCart(input.items, menuById, menuPricingOf(restaurant));
   const pricedAt = Date.now();
   const [loadedFees, promotion, economicsControl, availableRiders] = await Promise.all([
@@ -733,6 +735,7 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     ...(economicsPlan.offer ? {appliedOffer: economicsPlan.offer} : {}),
     ...(cluster ? {clusterId: cluster.id, clusterIndex: cluster.index, clusterSize: cluster.size, clusterHold: true} : {}),
     ...(adClickAt ? {adClickAt} : {}),
+    ...(testOrder ? {testOrder: true} : {}),
   };
   const order: SavrivoOrder = {...orderBase, ...deriveLifecycleFromCanonicalState(orderBase)};
 

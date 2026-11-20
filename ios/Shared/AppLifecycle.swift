@@ -2,6 +2,7 @@ import UIKit
 import UserNotifications
 import FirebaseCore
 import FirebaseAppCheck
+import FirebaseMessaging
 
 /// Each app target provides its bridge through this one function.
 protocol ScraveitApp {
@@ -29,6 +30,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         let config = UISceneConfiguration(name: "Default", sessionRole: connectingSceneSession.role)
         config.delegateClass = SceneDelegate.self
         return config
+    }
+
+    // Firebase swizzling also forwards these, but passing the token directly
+    // keeps push working if swizzling is ever turned off.
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Messaging.messaging().apnsToken = deviceToken
     }
 
     // Order updates still show while the app is open.

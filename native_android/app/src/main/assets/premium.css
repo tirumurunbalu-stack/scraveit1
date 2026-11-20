@@ -3186,15 +3186,15 @@ html.keyboard-open .menu-fab { display: none; }
 .reco-grid { display: grid; grid-auto-flow: column; grid-template-rows: auto; grid-auto-columns: calc((100% - 24px) / 2.45); gap: 20px 12px; margin: 0 -20px; padding: 2px 20px 6px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scroll-padding: 0 20px; scrollbar-width: none; }
 .reco-grid::-webkit-scrollbar { display: none; }
 .reco-grid.two-rows { grid-template-rows: auto auto; }
-.reco-card { min-width: 0; display: grid; gap: 4px; align-content: start; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; scroll-snap-align: start; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.reco-card { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; scroll-snap-align: start; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .reco-card:active .reco-media { transform: scale(.97); }
-.reco-media { position: relative; display: block; aspect-ratio: 1 / .8; margin-bottom: 10px; border-radius: 18px; background: var(--surface); box-shadow: 0 12px 24px -18px rgba(14, 27, 61, .6); transition: transform .15s ease; }
+.reco-media { position: relative; display: block; flex: none; width: 100%; aspect-ratio: 1 / .8; margin-bottom: 10px; border-radius: 18px; background: var(--surface); box-shadow: 0 12px 24px -18px rgba(14, 27, 61, .6); transition: transform .15s ease; }
 .reco-media img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .reco-offer { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 12px); padding: 3px 7px; border-radius: 8px; background: rgba(10, 12, 18, .72); color: #fff; font-size: 10.5px; font-weight: 800; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 .reco-rating { position: absolute; left: 8px; bottom: -11px; padding: 3px 8px; border-radius: 9px; background: var(--rating, #1f8a3b); color: #fff; font-size: 12px; font-weight: 850; line-height: 1.35; box-shadow: 0 0 0 3px var(--canvas); }
 .reco-rating.new { background: var(--brand); }
-.reco-name { margin-top: 4px; font-family: var(--font-head); font-size: 15.5px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reco-sub { position: relative; height: 19px; overflow: hidden; font-size: 13px; font-weight: 650; color: var(--ink-soft); }
+.reco-name { display: block; margin-top: 4px; font-family: var(--font-head); font-size: 15.5px; font-weight: 800; line-height: 1.3; min-height: 1.3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reco-sub { position: relative; flex: none; height: 19px; overflow: hidden; font-size: 13px; font-weight: 650; color: var(--ink-soft); }
 .reco-sub > span { position: absolute; inset: 0; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; }
 .reco-sub .icon { flex: none; width: 14px; height: 14px; color: #1f8a3b; }
 .reco-sub.flip > span { animation: reco-flip 6s ease-in-out infinite; }
@@ -3705,3 +3705,59 @@ html.keyboard-open .menu-fab { display: none; }
 #app .home2 .mood-chip span { font-size: 15px; }
 /* Delivery partners busy: ADD buttons look switched off (a tap explains why). */
 .store-page.adds-paused .add-button, .store-page.adds-paused .usual-add, .store-page.adds-paused .add-stepper [data-action="quick-add"], .store-page.adds-paused .add-stepper [data-action="usual-add"] { opacity: .4; filter: grayscale(1); }
+/* Before launch: "Opening soon" on store cards, store pages and checkout (settings/customer.openingSoon). */
+.notice.opening-soon { border-color: color-mix(in srgb, var(--brand), transparent 65%); background: var(--brand-soft); }
+.notice.opening-soon strong { color: var(--brand); }
+.rc2-eta.soon, [data-theme="dark"] .rc2-eta.soon, :root:not([data-theme="dark"]) .rc2-eta.soon { background: var(--brand); color: #fff; }
+.store-chip.soon { color: var(--brand); }
+.store-chip.soon::first-letter { color: inherit; }
+
+/* Bill amount waiting for the server's final price (founder 19 Nov 2026: one value only, never a guess). */
+.price-wait { display: inline-block; width: 52px; height: 14px; border-radius: 7px; vertical-align: middle; }
+.price-row.total .price-wait { width: 72px; height: 18px; }
+.price-row.bill-retry { width: 100%; background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; color: var(--ink); }
+
+/* Sign in with Apple: black button, white logo (Apple's guidelines); white in dark mode. */
+.apple-button { display: flex; align-items: center; justify-content: center; gap: 8px; background: #000 !important; color: #fff !important; border-color: #000 !important; margin-bottom: 10px; }
+.apple-button .apple-logo { width: 17px; height: 17px; margin-top: -3px; }
+[data-theme="dark"] .apple-button { background: #fff !important; color: #000 !important; border-color: #fff !important; }
+
+/* Location first: no store lists until the address has a map pin. */
+.location-first { display: grid; gap: 12px; justify-items: center; text-align: center; padding: 28px 20px; margin-top: 8px; }
+.location-first-icon { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--brand-soft); color: var(--brand); }
+.location-first .button { display: flex; align-items: center; justify-content: center; gap: 8px; }
+
+/* iPhone: a date box keeps its own minimum width and spills out of the card; keep it inside. */
+input.input[type="date"] { -webkit-appearance: none; appearance: none; display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; min-height: 48px; text-align: left; }
+input.input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+
+/* iPhone fixes (20 Nov): names in "Your people" were cut on both sides and a
+   bubble with a status line sat higher than the others. */
+.people-bubble { align-content: start; }
+.people-name { display: flex; flex-direction: column; align-items: center; width: 72px; max-width: 72px; }
+.people-name > b { display: block; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+/* iPhone zooms the whole page into any text box under 16px and stays zoomed,
+   cutting off both edges and pushing the bottom bar off screen. 16px boxes
+   never zoom; the Android look is unchanged. */
+@supports (-webkit-touch-callout: none) {
+  input, textarea, select { font-size: 16px !important; }
+}
+
+/* Sign in, full page once a box is tapped (20 Nov): the sky and rider slide away and the
+   white card fills the screen above the keyboard (premium.js focusin → .login2-full). */
+#app > main.welcome2.login2 { transition: padding-top .28s ease; }
+main.login2 .welcome2-top { max-height: 90px; transition: max-height .28s ease, opacity .2s ease; }
+main.login2 .login2-card { transition: margin-top .28s ease, border-radius .28s ease, padding-top .28s ease, box-shadow .28s ease; }
+#app > main.welcome2.login2.login2-full { padding-top: 0; }
+main.login2.login2-full .welcome2-top { max-height: 0; opacity: 0; overflow: hidden; }
+html main.login2.login2-full .login2-stage { height: 0; margin: 0; opacity: 0; overflow: hidden; transition: height .28s ease, margin .28s ease, opacity .2s ease; }
+main.login2.login2-full .login2-card { margin-top: 0; border-radius: 0; box-shadow: none; padding-top: calc(var(--safe-top) + 26px); }
+main.login2.login2-full .login2-grab { visibility: hidden; height: 0; margin: 0; }
+
+/* "What should we call you?" — one tap on home, asked once (premium.js callNameCard). */
+.callname-card { display: grid; gap: 10px; padding: 14px 16px; border-radius: 18px; background: var(--surface); border: 1px solid var(--border); box-shadow: 0 10px 26px -22px rgba(14,27,61,.5); }
+.callname-card strong { font: 800 15.5px/1.3 var(--font-head); color: var(--ink); }
+.callname-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.callname-chip { min-height: 40px; padding: 0 18px; border: 1.5px solid color-mix(in srgb, var(--brand) 55%, var(--border)); border-radius: 99px; background: color-mix(in srgb, var(--brand) 8%, var(--surface)); color: var(--ink); font: 700 15px var(--font-body); }
+.callname-chip:active { transform: scale(.97); }
+.hero2-name { display: inline; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; cursor: pointer; }

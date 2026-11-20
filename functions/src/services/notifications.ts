@@ -833,6 +833,23 @@ export async function notifyCartReminder(input: {uid: string; key: string; title
   });
 }
 
+/** A birthday greeting (birthdays.ts). Opens the home screen, which shows the birthday header. */
+export async function notifyBirthday(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_BIRTHDAY",
+    aggregateType: "birthday",
+    aggregateId: input.key.slice(0, 120),
+    deduplicationKey: `customer-birthday:${input.key}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "BIRTHDAY", route: "home"},
+      android: {priority: "normal", notification: {channelId: "customer_reminders", sound: "default"}},
+      apns: {headers: {"apns-priority": "5"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+}
+
 /** A breakfast, lunch or dinner idea for one customer (mealSuggestions.ts). */
 export async function notifyMealSuggestion(input: {uid: string; key: string; title: string; body: string}): Promise<void> {
   await enqueueAndAttempt({

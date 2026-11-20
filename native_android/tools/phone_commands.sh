@@ -25,6 +25,17 @@ case "$ACTION" in
       exit 1
     fi
     ;;
+  deploy-main-website)
+    # www.scraveit.in (home, shop, partner website, short app links) — website/firebase.json
+    cd "$REPO/website" || { echo "Website folder not found."; exit 1; }
+    if firebase deploy --only hosting --project savrivo-app --non-interactive > /tmp/scraveit-phone-deploy.log 2>&1; then
+      echo "Done ✓ www.scraveit.in deployed."
+    else
+      echo "Failed ✗"
+      tail -n 6 /tmp/scraveit-phone-deploy.log
+      exit 1
+    fi
+    ;;
   cashfree-client-id|cashfree-client-secret)
     # The value comes from the Shortcut's "Ask for Input" on standard input; it is never logged or echoed.
     NAME=CASHFREE_PAYOUT_${${ACTION#cashfree-}//-/_}

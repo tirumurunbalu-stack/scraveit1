@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test accounts &middot; Savrivo Admin</title>
+<link rel="stylesheet" href="../assets/savrivo-admin.css?v=4">
+<style>
+  .ta { max-width: 720px; }
+  .ta h2 { font-size: 15px; margin: 0 0 2px; }
+  .ta .lede { font-size: 12.5px; color: var(--text-soft); margin: 0 0 12px; }
+  .ta .list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .ta .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13.5px; }
+  .ta .item .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .ta .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .ta .badge.yes { color: var(--success); background: var(--success-soft); }
+  .ta .badge.no { color: var(--text-soft); background: var(--surface, rgba(127,127,127,.12)); }
+  .ta .add { display: flex; gap: 8px; }
+  .ta .add .input { flex: 1; }
+  .ta .add .btn, .ta .item .btn { min-height: 36px; }
+  .ta .store { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13.5px; cursor: pointer; }
+  .ta .store input { width: 18px; height: 18px; }
+  .ta .store small { color: var(--text-soft); }
+  .ta .empty { font-size: 13px; color: var(--text-soft); padding: 6px 0; }
+  .ta .saved { font-size: 12px; color: var(--text-faint); margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="shell" id="app-shell" hidden>
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="mark">S</div>
+      <div><strong>Savrivo</strong><span>Web Admin</span></div>
+    </div>
+    <div class="sidebar-section-label">Sections</div>
+    <a class="sidebar-link" href="../analytics/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+      Customer insights
+    </a>
+    <a class="sidebar-link" href="../riders/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
+      Rider review
+    </a>
+    <a class="sidebar-link" href="../rider-rewards/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      Rider Rewards
+    </a>
+    <a class="sidebar-link" href="../finance/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M2 10h20M7 15h3"/></svg>
+      Finance
+    </a>
+    <a class="sidebar-link" href="../servers/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>
+      Servers
+    </a>
+    <a class="sidebar-link active" href="./">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3"/><path d="M7.5 15h9"/></svg>
+      Test accounts
+    </a>
+    <a class="sidebar-link" href="../partner-activity/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+      Partner activity
+    </a>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-account">
+      <div class="who" id="sidebar-who"></div>
+      <button class="sidebar-signout" id="signout-btn">Sign out</button>
+    </div>
+  </nav>
+  <div class="main">
+    <header class="topbar"><div><h1>Test accounts</h1><p>Your own accounts for testing every app update, before and after launch.</p></div></header>
+    <main class="content">
+      <section class="card card-pad ta">
+        <p class="lede" style="margin-bottom:0">Test customers order only from test stores, even while Scraveit is &ldquo;Opening soon&rdquo;. Test stores are hidden from real customers. Test stores&rsquo; orders go only to test delivery partners, who get no real orders. Changes work within about 30 seconds.</p>
+      </section>
+      <section class="card card-pad ta" data-list="customers">
+        <h2>Customer app</h2><p class="lede">Google account emails that place test orders.</p>
+        <div class="list"></div>
+        <form class="add"><input class="input" type="email" placeholder="name@gmail.com" required><button class="btn btn-primary" type="submit">Add</button></form>
+      </section>
+      <section class="card card-pad ta" data-list="deliveryPartners">
+        <h2>Delivery partner app</h2><p class="lede">Only these delivery partners get test orders.</p>
+        <div class="list"></div>
+        <form class="add"><input class="input" type="email" placeholder="name@gmail.com" required><button class="btn btn-primary" type="submit">Add</button></form>
+      </section>
+      <section class="card card-pad ta" data-list="restaurants">
+        <h2>Restaurant app</h2><p class="lede">Your restaurant app accounts used for testing (kept as a record; the stores below decide where test orders go).</p>
+        <div class="list"></div>
+        <form class="add"><input class="input" type="email" placeholder="name@gmail.com" required><button class="btn btn-primary" type="submit">Add</button></form>
+      </section>
+      <section class="card card-pad ta">
+        <h2>Test stores</h2><p class="lede">Tick the stores that take test orders. Real customers never see them.</p>
+        <div class="list" id="stores"><p class="empty">Loading&hellip;</p></div>
+        <p class="saved" id="saved"></p>
+      </section>
+    </main>
+  </div>
+</div>
+<div id="toast-stack"></div>
+<script type="module" src="./test-accounts.js?v=1"></script>
+</body>
+</html>

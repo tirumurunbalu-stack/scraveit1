@@ -4,6 +4,7 @@ import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readServerWarmth, setServerWarmth} from "./services/serverWarmth";
+import {isTestCustomer, readTestAccounts, saveTestAccounts} from "./services/testAccounts";
 import {requireOwnerClaim, requirePlatformConfigAdminClaim} from "./services/authz";
 import {readAdminToday, readStorePayoutsDue} from "./services/adminToday";
 import {attachPackedPhoto as attachPackedPhotoToOrder} from "./services/packedPhoto";
@@ -20,6 +21,7 @@ import * as partnerTrail from "./services/partnerTrail";
 import {alarmAdmins, alertAdmins, applicationAlert, privacyRequestAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
 import * as accountDeletion from "./services/accountDeletion";
 import * as cartReminderService from "./services/cartReminders";
+import * as birthdayService from "./services/birthdays";
 import * as mealSuggestionService from "./services/mealSuggestions";
 import {createHash, randomUUID} from "node:crypto";
 import {logger} from "firebase-functions";
@@ -776,10 +778,16 @@ export const getCheckoutConfiguration = onCall({
     // Restaurant page: is a delivery partner free near this store? Same check as Place order.
     if (data && data.deliveryPartnerCheck === true) {
       const check = parse(deliveryPartnerCheckSchema, data);
-      return {deliveryPartners: await deliveryPartnerStatusForRestaurant(check.restaurantId)};
+      const tester = await isTestCustomer(request.auth.uid).catch(() => false);
+      return {deliveryPartners: await deliveryPartnerStatusForRestaurant(check.restaurantId, tester)};
     }
     // priceLock tells the app this server takes quotedTotal on an order.
-    const config = {...await loadCheckoutConfiguration(paymentGateway.configured), priceLock: true};
+    // tester: this account is a test account (it may order from any store, even before launch).
+    const [loaded, tester] = await Promise.all([
+      loadCheckoutConfiguration(paymentGateway.configured),
+      isTestCustomer(request.auth.uid).catch(() => false),
+    ]);
+    const config = {...loaded, priceLock: true, tester};
     if (!data || !data.restaurantId) return config;
     try {
       const input = parse(checkoutPricingPreviewSchema, data);
@@ -3216,6 +3224,27 @@ export const serverWarmth = onCall({region: REGION, enforceAppCheck: true, timeo
     }
   });
 
+/** Owner only: read or replace the test accounts and test stores (services/testAccounts.ts). */
+const testAccountListSchema = z.array(z.string().max(200)).max(50);
+export const testAccounts = onCall({region: REGION, enforceAppCheck: true, timeoutSeconds: 30, memory: "256MiB"},
+  async (request) => {
+    if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+    try {
+      requireOwnerClaim(request.auth.token);
+      const input = parse(z.object({save: z.object({
+        customers: testAccountListSchema,
+        deliveryPartners: testAccountListSchema,
+        restaurants: testAccountListSchema,
+        storeIds: testAccountListSchema,
+      }).strict().optional()}).strict(), request.data ?? {});
+      if (!input.save) return await readTestAccounts();
+      return await saveTestAccounts(request.auth.uid, input.save);
+    } catch (error) {
+      logger.warn("testAccounts rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+      throw asHttpsError(error);
+    }
+  });
+
 /**
  * Tell Scraveit's admins when a store applies, and when it signs and is ready to approve; tell the
  * store's owner when Scraveit confirms their rate, asks for changes or approves them.
@@ -3262,6 +3291,14 @@ export const onPrivacyRequestCreated = onDocumentCreated({
 export const cartReminders = onSchedule({schedule: "*/15 8-21 * * *", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 300, memory: "256MiB", maxInstances: 1}, async () => {
   const sent = await cartReminderService.runCartReminders();
   if (sent) logger.info("CART_REMINDERS_SENT", {sent});
+});
+
+/** Birthday greetings at 9 am, 1 pm and 6 pm India time (birthdays.ts). */
+export const birthdayGreetings = onSchedule({schedule: "0 9,13,18 * * *", timeZone: "Asia/Kolkata", region: REGION, timeoutSeconds: 300, memory: "256MiB", maxInstances: 1}, async () => {
+  const slot = birthdayService.birthdaySlotFor(Date.now());
+  if (!slot) return;
+  const sent = await birthdayService.runBirthdayGreetings(slot);
+  logger.info("BIRTHDAY_GREETINGS_SENT", {slot, sent});
 });
 
 /** Breakfast, lunch and dinner ideas for customers (mealSuggestions.ts). */

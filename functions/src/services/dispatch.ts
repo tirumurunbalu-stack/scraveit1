@@ -97,6 +97,7 @@ import {refreshRiderDispatchEligibility, riderDispatchEligibilityCollectionRef} 
 import {recordRiderRewardOrderAccepted, recordRiderRewardOrderRejected} from "./riderRewards";
 import {riderPublicStats} from "./riderDeliveryCount";
 import {riderRegistrationRequired} from "./taxEngine";
+import {isAppReviewStore, isTestStore, testDeliveryPartnerUids} from "./testAccounts";
 
 /** Map avatars the customer and rider apps can draw. */
 const RIDER_AVATARS = new Set(["bloom", "lilac", "mint", "classic", "midnight", "forest", "blue"]);
@@ -247,9 +248,12 @@ async function candidatesFor(
     const fallbackSnapshot = await db.ref(`${ROOT}/riderPresence`).limitToFirst(500).get();
     presences = objectMap<Presence>(fallbackSnapshot.val());
   }
+  // Test orders (test customer, or a test store) go only to test delivery partners, and real orders never to them.
+  const [testStore, testPartners] = await Promise.all([isTestStore(order.restaurantId), testDeliveryPartnerUids()]);
+  const testSide = testStore || order.testOrder === true;
   const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
   const now = Date.now();
-  const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0};
+  const rejected = {offline: 0, stale: 0, location: 0, accuracy: 0, distance: 0, busy: 0, cooldown: 0, test: 0};
   let backupSignalCount = 0;
   let eligibilityProjectionHits = 0;
   let eligibilityProjectionFallbacks = 0;
@@ -258,6 +262,7 @@ async function candidatesFor(
   const nearestPresence = Object.entries(presences).flatMap(([riderId, presence]) => {
     const lat = Number(presence?.lat);
     const lng = Number(presence?.lng);
+    if (testPartners.has(riderId) !== testSide) { rejected.test++; return []; }
     if (presence?.online !== true) { rejected.offline++; return []; }
     // An Online rider stays Online until they toggle off, even when their phone has stopped
     // reporting. They rank after every live rider, at their last known position.
@@ -359,14 +364,17 @@ export const DELIVERY_PARTNERS_BUSY_MESSAGE = (restaurantName: string): string =
 type DeliveryPartnerCheckRestaurant = Pick<CatalogRestaurant, "id" | "name" | "lat" | "lng"> & {selfDelivery?: unknown};
 
 /** Free delivery partners near the store right now; null when it cannot be told (never treated as busy). */
-async function freeDeliveryPartnersNear(restaurant: DeliveryPartnerCheckRestaurant): Promise<{free: number; radiusKm: number} | null> {
+async function freeDeliveryPartnersNear(restaurant: DeliveryPartnerCheckRestaurant, testOrder = false): Promise<{free: number; radiusKm: number} | null> {
   if (restaurant.selfDelivery === true) return null;
+  // App-review stores (Scraveit Review Restaurant/Grocery/Dairy): a reviewer's test order is never told
+  // "delivery partners busy", so the reviewer can finish an order wherever they are.
+  if (testOrder && await isAppReviewStore(restaurant.id)) return null;
   const lat = Number(restaurant.lat);
   const lng = Number(restaurant.lng);
   if (!isValidDispatchCoordinate(lat, lng)) return null;
   try {
     const policy = await loadDispatchPolicy();
-    const probe = {id: `partner-check:${restaurant.id}`, restaurantId: restaurant.id, restaurantLocation: {lat, lng}};
+    const probe = {id: `partner-check:${restaurant.id}`, restaurantId: restaurant.id, restaurantLocation: {lat, lng}, ...(testOrder ? {testOrder: true} : {})};
     const free = (await candidatesFor(probe as unknown as SavrivoOrder, policy)).length;
     return {free, radiusKm: policy.maxRadiusKm};
   } catch (error) {
@@ -375,8 +383,8 @@ async function freeDeliveryPartnersNear(restaurant: DeliveryPartnerCheckRestaura
   }
 }
 
-export async function assertDeliveryPartnerFreeNear(restaurant: DeliveryPartnerCheckRestaurant): Promise<void> {
-  const found = await freeDeliveryPartnersNear(restaurant);
+export async function assertDeliveryPartnerFreeNear(restaurant: DeliveryPartnerCheckRestaurant, testOrder = false): Promise<void> {
+  const found = await freeDeliveryPartnersNear(restaurant, testOrder);
   if (!found || found.free > 0) return;
   logger.info("ORDER_BLOCKED_DELIVERY_PARTNERS_BUSY", {restaurantId: restaurant.id, radiusKm: found.radiusKm});
   throw new DomainError("failed-precondition", DELIVERY_PARTNERS_BUSY_MESSAGE(restaurant.name));
@@ -386,12 +394,12 @@ export async function assertDeliveryPartnerFreeNear(restaurant: DeliveryPartnerC
  * The same answer for the customer app before any order exists, so the
  * restaurant page can say it as soon as it opens. Same check as Place order.
  */
-export async function deliveryPartnerStatusForRestaurant(restaurantId: string): Promise<{busy: boolean; message: string}> {
+export async function deliveryPartnerStatusForRestaurant(restaurantId: string, testOrder = false): Promise<{busy: boolean; message: string}> {
   try {
     const snapshot = await restaurantRef(firestoreDb, restaurantId).get();
     if (!snapshot.exists) return {busy: false, message: ""};
     const restaurant = {...(snapshot.data() as CatalogRestaurant), id: restaurantId};
-    const found = await freeDeliveryPartnersNear(restaurant);
+    const found = await freeDeliveryPartnersNear(restaurant, testOrder);
     if (!found || found.free > 0) return {busy: false, message: ""};
     return {busy: true, message: DELIVERY_PARTNERS_BUSY_MESSAGE(restaurant.name)};
   } catch (error) {
@@ -662,7 +670,11 @@ async function findBatch(order: SavrivoOrder, policy: DispatchPolicy): Promise<B
   const next = batchOrderInput(order, await prepFor(order), now);
   const outcomes: Array<{riderId: string; reason: string}> = [];
   const plans: Array<{riderId: string; riderName: string; riderKm: number; lead: SavrivoOrder; plan: BatchPlan}> = [];
+  // A test order joins only a test delivery partner's trip, and a real order never does.
+  const [testStore, testPartners] = await Promise.all([isTestStore(order.restaurantId), testDeliveryPartnerUids()]);
+  const testSide = testStore || order.testOrder === true;
   for (const {riderId, leadOrderId} of leads) {
+    if (testPartners.has(riderId) !== testSide) { outcomes.push({riderId, reason: "test_account_split"}); continue; }
     const [presenceSnapshot, jobsSnapshot, leadSnapshot, eligibilitySnapshot] = await Promise.all([
       db.ref(`${ROOT}/riderPresence/${riderId}`).get(),
       riderJobsCollectionRef(firestoreDb).where("riderId", "==", riderId).get(),

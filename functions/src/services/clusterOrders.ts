@@ -123,7 +123,9 @@ export async function createClusterOrder(
   // What the customer saw: markup restaurants' food GST included.
   // No free delivery partner near one of the stores: stop before any part exists.
   const {assertDeliveryPartnerFreeNear} = await import("./dispatch");
-  for (const part of priced) await assertDeliveryPartnerFreeNear(part.restaurant);
+  const {isTestCustomer} = await import("./testAccounts");
+  const testOrder = await isTestCustomer(uid);
+  for (const part of priced) await assertDeliveryPartnerFreeNear(part.restaurant, testOrder);
   const cartSubtotal = priced.reduce((sum, part) => sum + (part.markup?.listSubtotal ?? part.subtotal), 0);
   const firstFees = await loadServerFees((priced[0] as {restaurant: CatalogRestaurant}).restaurant, address, cartSubtotal);
   const waiveSmallOrderFee = !(firstFees.smallOrderThreshold > 0 && cartSubtotal < firstFees.smallOrderThreshold);

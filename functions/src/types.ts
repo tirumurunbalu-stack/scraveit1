@@ -237,6 +237,8 @@ export interface SavrivoOrder {
   clusterSize?: number;
   /** Set while the other restaurants' parts are still being created: no restaurant sees it yet. */
   clusterHold?: boolean;
+  /** Placed by a test account at a test store (services/testAccounts.ts). */
+  testOrder?: boolean;
   /** When the kitchen should start, so every part of the cluster arrives together. */
   kitchenStartAt?: number;
   /** Multi-restaurant parts one rider collects in one trip (see domain/clusterPlan): pickup order. */

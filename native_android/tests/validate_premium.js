@@ -208,7 +208,8 @@ test("Customer production cloud bridge is authenticated, attested, and server-au
   check(!js.includes("weather.googleapis.com") && !js.includes("googleWeather") && !js.includes("CONFIG.apiKey,lat"), "Customer APK must not contain a Weather API endpoint or Firebase-key weather fallback");
   // Fees read "Estimated …" and the total "Estimated total" until the server
   // quote (serverAuthoritative) is in hand; only then does it read "To pay".
-  check(js.includes("c.serverAuthoritative!==true)return null") && js.includes("serverCheckout()?'To pay':'Estimated total'") && js.includes('feeLabel("delivery fee")') && js.includes('return serverCheckout()?name.charAt(0).toUpperCase()+name.slice(1):"Estimated "+name'), "Dynamic fees and final COD total must be labelled server-authoritative");
+  // Founder 19 Nov 2026: one value only. Fees and total show only the server's price for this cart (grey bar until then), never an estimate.
+  check(js.includes("c.serverAuthoritative!==true)return null") && js.includes("const ready=!!serverCheckout()") && js.includes("v=html=>ready?html:priceWait()") && js.includes("To pay</span><span>'+v(money(orderTotal()))") && !js.includes("Estimated total"), "Dynamic fees and final COD total must be labelled server-authoritative");
   // Sign-in tokens last an hour; a stale one made checkout fall back to the
   // app's own estimate and dropped server-only fees (late-night, surge).
   check(js.includes("return user.getIdToken().then(idToken =>") && js.includes("function nativeInvokeWithToken("), "Signed-in server calls must send a current sign-in token");
@@ -409,7 +410,7 @@ test("Savrivo operational upgrade contracts are present", () => {
   check(customer.includes("platformFeeDetails"), "Customer must resolve platform-fee overrides");
   check(!customer.includes("weather.googleapis.com"), "Customer must not call Google Weather directly");
   check(!customerHtml.includes("https://weather.googleapis.com"), "Customer CSP must not expose an unused Weather API origin");
-  check(customer.includes("c.serverAuthoritative!==true)return null") && customer.includes("serverCheckout()?'To pay':'Estimated total'"), "Weather/demand fees and the final COD total must be explicitly backend-authoritative");
+  check(customer.includes("c.serverAuthoritative!==true)return null") && customer.includes("To pay</span><span>'+v(money(orderTotal()))") && customer.includes('ps==="ready"?\'<span class="pay-cta-total">'), "Weather/demand fees and the final COD total must be explicitly backend-authoritative");
   check(customer.includes('state.sort==="nearby"'), "Customer must offer nearby sorting");
   check(customer.includes("customerCity"), "Customer discovery must use saved city scope");
   check(fs.existsSync(path.join(nativeRoot, "app", "src", "main", "assets", "restaurant-placeholder.svg")), "Customer must have a clean restaurant image fallback");

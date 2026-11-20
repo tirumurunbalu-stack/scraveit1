@@ -103,8 +103,9 @@ check(firstSearchTimer !== secondSearchTimer && context.__cancelled.has(firstSea
 check(state.syncTimers.catalog === 801 && state.syncTimers.orders === 802, "search debounce cannot cancel catalogue or order synchronization");
 check(context.__scheduled.get(secondSearchTimer).delay === 180, "search results use a short deterministic debounce interval");
 
-state.profile.addresses = [];
-state.profile.selectedAddressId = "";
+// Stores only show once the delivery address has a map pin.
+state.profile.addresses = [{ id: "home", label: "Home", city: "Naidupeta", lat: 14.2, lng: 79.9 }];
+state.profile.selectedAddressId = "home";
 state.profile.preferences.vegetarian = false;
 state.cuisine = "All";
 state.diet = "all";
@@ -112,17 +113,21 @@ state.homeFilter = "all";
 state.sort = "recommended";
 state.catalog = {
   "waffle-spot": {
-    id: "waffle-spot", name: "The Waffle Spot", city: "Naidupeta", open: true, archived: false,
+    id: "waffle-spot", name: "The Waffle Spot", city: "Naidupeta", lat: 14.201, lng: 79.901, open: true, archived: false,
     cuisines: ["Desserts"], rating: 4.6, ratingCount: 20, etaMin: 20, etaMax: 30,
     menuIndex: [{ id: "item-1", name: "Belgian Chocolate Waffle", description: "Dark chocolate", price: 149, available: true, diet: "veg" }],
   },
   "rice-house": {
-    id: "rice-house", name: "Rice House", city: "Naidupeta", open: true, archived: false,
+    id: "rice-house", name: "Rice House", city: "Naidupeta", lat: 14.202, lng: 79.902, open: true, archived: false,
     cuisines: ["Indian"], menuIndex: [{ id: "item-2", name: "Fried Rice", price: 199, available: true, diet: "veg" }],
   },
 };
 state.catalogLoaded = true;
 state.homeStatus = "success";
+state.query = "";
+state.profile.addresses = [{ id: "home", label: "Home", city: "Naidupeta" }];
+check(api.restaurantsFiltered().length === 0, "no stores are listed until the delivery address has a map pin");
+state.profile.addresses = [{ id: "home", label: "Home", city: "Naidupeta", lat: 14.2, lng: 79.9 }];
 state.query = "BELGIAN   waffle";
 let results = api.restaurantsFiltered();
 check(results.length === 1 && results[0].id === "waffle-spot", "search matches dish names without case or spacing sensitivity inside the loaded catalogue window");

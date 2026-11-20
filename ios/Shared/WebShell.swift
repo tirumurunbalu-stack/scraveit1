@@ -8,6 +8,13 @@ protocol NativeBridge: AnyObject {
     /// Runs before the page's own scripts, defining the native object.
     var shimScript: String { get }
     func handle(_ method: String, _ args: [Any], shell: WebShellViewController)
+    /// The page finished loading: push any native state it needs (for example
+    /// whether location is allowed), since earlier pushes had no page to reach.
+    func pageDidLoad(shell: WebShellViewController)
+}
+
+extension NativeBridge {
+    func pageDidLoad(shell: WebShellViewController) {}
 }
 
 /// The app's single screen: a WKWebView showing the same web screens the
@@ -77,6 +84,20 @@ final class WebShellViewController: UIViewController, WKScriptMessageHandler, WK
     override func viewDidLoad() {
         super.viewDidLoad()
         webView.load(URLRequest(url: URL(string: "\(AssetSchemeHandler.scheme)://\(AssetSchemeHandler.host)/premium.html")!))
+        // If iOS ever zooms into a text box, put the page back at full width
+        // when the keyboard closes, so nothing is left cut off at the edges.
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidHide),
+                                               name: UIResponder.keyboardDidHideNotification, object: nil)
+    }
+
+    @objc private func keyboardDidHide() {
+        guard let scroll = webView?.scrollView else { return }
+        if scroll.zoomScale != scroll.minimumZoomScale {
+            scroll.setZoomScale(scroll.minimumZoomScale, animated: true)
+        }
+        if scroll.contentOffset.x != 0 {
+            scroll.setContentOffset(CGPoint(x: 0, y: scroll.contentOffset.y), animated: true)
+        }
     }
 
     // MARK: messages from the page
@@ -145,6 +166,7 @@ final class WebShellViewController: UIViewController, WKScriptMessageHandler, WK
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        bridge.pageDidLoad(shell: self)
         #if DEBUG
         NSLog("[web] loaded %@", webView.url?.absoluteString ?? "")
         #endif

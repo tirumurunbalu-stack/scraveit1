@@ -71,7 +71,8 @@ export async function accountSetBirthDate(uid: string, input: {birthDate: string
     if (previous?.birthDate) history.push({from: previous.birthDate, to: input.birthDate, at: now});
     // Still a minor: keep the parent's decision. Turning 18+: no approval needed. Becoming a minor: ask a parent.
     const parentStatus = minor ? (previous?.minor === true ? String(previous.parentStatus ?? "none") : "none") : "not-needed";
-    tx.set(ref, {uid, birthDate: input.birthDate, minor, parentStatus, history, setAt: Number(previous?.setAt ?? now), updatedAt: now}, {merge: true});
+    tx.set(ref, {uid, birthDate: input.birthDate, birthMonthDay: input.birthDate.slice(5, 10), minor, parentStatus, history,
+      setAt: Number(previous?.setAt ?? now), updatedAt: now}, {merge: true});
     return previous;
   });
   const after = await loadAccountAge(uid);
