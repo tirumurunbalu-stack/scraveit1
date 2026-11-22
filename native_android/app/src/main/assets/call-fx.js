@@ -891,7 +891,9 @@
   function lens(canvas, video, opts) {
     const x = canvas.getContext("2d"), S = document.createElement("canvas"), sx = S.getContext("2d");
     const st = { id: "none", def: LENSES[0], scene: null, t0: 0, raf: 0, mirror: !!(opts && opts.mirror), music: null, mix: null, tracker: null, stopped: false };
-    st.tracker = personTracker(video, () => heldTurn(st.mirror));
+    // The face and person finders load only when an effect needs them, so "Normal" opens at once
+    // (founder, 21 Nov 2026: the camera froze for a moment at the start).
+    const track = () => { if (!st.tracker) st.tracker = personTracker(video, () => heldTurn(st.mirror)); return st.tracker; };
     const size = () => {
       const r = canvas.getBoundingClientRect(), d = Math.min(LOW_END ? 1.25 : 2, window.devicePixelRatio || 1), w = Math.max(2, Math.round(r.width * d)), h = Math.max(2, Math.round(r.height * d));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -924,7 +926,7 @@
       lenses: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })),
       set(id) {
         const def = LENSES.find(l => l.id === id) || LENSES[0];
-        st.id = def.id; st.def = def; st.scene = def.scene ? partyScene(def.scene) : null; st.t0 = performance.now();
+        st.id = def.id; st.def = def; if (def.scene) track(); st.scene = def.scene ? partyScene(def.scene) : null; st.t0 = performance.now();
         clearTimeout(st.musicTimer); music(!!def.music);
       },
       mirror(on) { st.mirror = !!on; },
@@ -995,5 +997,7 @@
     return { stop() { stopped = true; clearTimeout(timer); } };
   }
 
-  window.ScraveitCallFx = { REACTIONS, lowEnd: LOW_END, play, clear, watchGestures, preload() { recognizer().catch(() => { }); }, debug(fn) { debugHook = fn || null; }, status: () => Object.assign({ lowEnd: LOW_END }, status), lens, LENSES: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })) };
+  window.ScraveitCallFx = { REACTIONS, lowEnd: LOW_END, play, clear, watchGestures, preload() { recognizer().catch(() => { }); },
+    /** Starts loading the story effects' face and person finders ahead of time. */
+    preloadLens() { faceFinder().catch(() => { }); segmenter().catch(() => { }); }, debug(fn) { debugHook = fn || null; }, status: () => Object.assign({ lowEnd: LOW_END }, status), lens, LENSES: LENSES.map(l => ({ id: l.id, name: l.name, icon: l.icon })) };
 })();

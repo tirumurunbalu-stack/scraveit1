@@ -66,11 +66,16 @@ public final class SavrivoCallableClient {
             // Ads results across stores and brand ads, and training the models on demand.
             "getAdsReport", "runLearningNow",
             // Owner switch: the 7 order servers cold now, or warm 7 AM–midnight.
-            "serverWarmth"));
+            "serverWarmth",
+            // Commission change notices: preview, send, status, withdraw.
+            "adminCommissionNotice"));
     private static final Set<String> RESTAURANT_ECONOMICS = new HashSet<>(Arrays.asList(
             "saveRestaurantOffer", "getRestaurantOffers", "getRestaurantOfferPerformance",
             "dineInRespondBooking", "dineInStaff", "getRestaurantAgreement", "signRestaurantAgreement",
             "getLiveRestaurantAgreement", "signLiveRestaurantAgreement",
+            // The owner reads and accepts a commission change notice.
+            "restaurantCommissionNotice",
+            "restaurantOrderWebhook",
             "attachPackedPhoto", "saveMealPlan", "getRestaurantMealPlans",
             // Top placement: price and free days, book, cancel, and what the ads did.
             "getSponsoredListings", "bookSponsoredListing", "cancelSponsoredListing",

@@ -146,3 +146,16 @@ describe("delivery distance on the offer pay", () => {
     expect(buildRiderJobProjection(order("Assigned")).payoutBreakdown).not.toHaveProperty("feeKm");
   });
 });
+
+describe("cancellation pay on the partner's job", () => {
+  it("keeps the ₹15 a cancelled job earned, and shows the trip pay otherwise", () => {
+    const existing = {orderId: "SV-JOB", riderId: "rider-1", cancellationPayPaise: 1_500};
+    const paid = buildRiderJobProjection(order("Cancelled"), existing);
+    expect(paid).toMatchObject({status: "cancelled", payout: 15, cancellationPayPaise: 1_500,
+      payoutBreakdown: {tripPay: 0, incentives: 15, total: 15, cancellationPay: 15}});
+    const other = buildRiderJobProjection(order("Cancelled"), {...existing, riderId: "rider-2"});
+    expect(other.cancellationPayPaise).toBeUndefined();
+    expect(other.payout).toBe(39);
+    expect(buildRiderJobProjection(order("Assigned"), existing).payout).toBe(39);
+  });
+});

@@ -48,6 +48,11 @@ export function restaurantAlarmId(orderId: string): string {
   return `order:${orderId}`;
 }
 
+/**
+ * New-order and offer alerts are "time-sensitive" on iPhones so they still show and sound during
+ * Focus / Do Not Disturb (founder, 21 Nov 2026). Needs the time-sensitive entitlement in the app;
+ * older app builds simply treat it as a normal alert.
+ */
 export function restaurantOrderCollapseKey(orderId: string): string {
   return `restaurant-order-${orderId}`.slice(0, 64);
 }
@@ -91,8 +96,20 @@ export function buildRestaurantNewOrderMessage(order: RestaurantNewOrder): Token
     },
     apns: {
       headers: {"apns-priority": "10", "apns-collapse-id": collapseKey},
-      payload: {aps: {alert: {title, body}, sound: "new_order_alarm.caf", category: "NEW_ORDER"}},
+      payload: {aps: {alert: {title, body}, sound: "new_order_alarm.caf", category: "NEW_ORDER", "interruption-level": "time-sensitive"}},
     },
+  };
+}
+
+/**
+ * iPhones: a push with only content-available is a background push. Apple wants it sent with
+ * apns-push-type "background" at priority 5; priority 10 is meant for pushes that alert the user,
+ * and APNs may refuse or hold a silent push sent at 10. Android is unaffected (android block).
+ */
+function backgroundApns(collapseKey: string): NonNullable<TokenlessMulticastMessage["apns"]> {
+  return {
+    headers: {"apns-priority": "5", "apns-push-type": "background", "apns-collapse-id": collapseKey},
+    payload: {aps: {contentAvailable: true}},
   };
 }
 
@@ -108,10 +125,7 @@ export function buildStopRestaurantAlarmMessage(orderId: string, eventAt = Date.
       status: "handled",
     },
     android: {priority: "high", collapseKey, ttl: CONTROL_MESSAGE_TTL_MS},
-    apns: {
-      headers: {"apns-priority": "10", "apns-collapse-id": collapseKey},
-      payload: {aps: {contentAvailable: true}},
-    },
+    apns: backgroundApns(collapseKey),
   };
 }
 
@@ -149,7 +163,7 @@ export function buildRiderOfferMessage(
     },
     apns: {
       headers: {"apns-priority": "10", "apns-collapse-id": collapseKey},
-      payload: {aps: {alert: {title, body}, sound: "rider_offer.caf", category: "RIDER_OFFER"}},
+      payload: {aps: {alert: {title, body}, sound: "rider_offer.caf", category: "RIDER_OFFER", "interruption-level": "time-sensitive"}},
     },
   };
 }
@@ -175,9 +189,62 @@ export function buildRemoveRiderOfferMessage(
       assignedRiderId,
     },
     android: {priority: "high", collapseKey, ttl: CONTROL_MESSAGE_TTL_MS},
-    apns: {
-      headers: {"apns-priority": "10", "apns-collapse-id": collapseKey},
-      payload: {aps: {contentAvailable: true}},
-    },
+    apns: backgroundApns(collapseKey),
+  };
+}
+
+type CancelNoticeOrder = Pick<SavrivoOrder, "id" | "restaurantId" | "restaurant" | "riderId" | "selfDelivery" |
+  "cancelReason" | "cancelledByRole" | "statusBeforeTerminal" | "foodRescue" | "cancellationFee">;
+
+/**
+ * Who hears about a cancel (founder 21 Nov 2026: an admin cancel reached only the customer).
+ * The store, unless it cancelled itself or never saw the order (an unpaid online order the
+ * system dropped). The assigned delivery partner, on any cancel.
+ */
+export function cancelNoticeTargets(order: CancelNoticeOrder): {restaurant: boolean; partner: boolean} {
+  const role = order.cancelledByRole;
+  return {
+    // A Food Rescue buy never reached the store (it was paid for on the first order).
+    restaurant: role !== "staff" && !(role === "system" && order.statusBeforeTerminal === "Order placed") &&
+      !order.foodRescue,
+    partner: Boolean(String(order.riderId ?? "").trim()) && order.selfDelivery !== true,
+  };
+}
+
+/**
+ * "Order #1234 cancelled" for the store or the delivery partner. Type ORDER_STATUS: every app
+ * build already shows it on its "Order status" channel, so no app update is needed.
+ */
+export function buildOrderCancelledNotice(input: {
+  order: CancelNoticeOrder;
+  audience: "restaurant" | "partner";
+  customerCause: boolean;
+  partnerPayPaise?: number;
+  /** Cancelled while the partner carried it (domain/afterPickup.ts); rescue = it's now a Food Rescue offer. */
+  afterPickup?: {rescue: boolean};
+}): TokenlessMulticastMessage {
+  const {order} = input;
+  const title = `Order #${String(order.id).slice(-4)} cancelled`;
+  const reason = String(order.cancelReason ?? "").trim().slice(0, 80);
+  const pay = Math.max(0, Math.round(Number(input.partnerPayPaise) || 0));
+  const rupees = `₹${pay % 100 ? (pay / 100).toFixed(2) : pay / 100}`;
+  const body = input.afterPickup ? (input.audience === "restaurant" ?
+    "It was cancelled after pickup. You are paid for this order as if it was delivered." :
+    input.afterPickup.rescue ?
+      `${order.restaurant}: the customer cancelled.${pay > 0 ? ` You get ${rupees} for the full trip.` : ""} Please wait where you are for up to 15 min. A customer nearby may buy this food.` :
+      `${order.restaurant}: cancelled after pickup.${pay > 0 ? ` You get ${rupees} for the full trip.` : ""} The food is yours to keep.`) :
+    input.audience === "restaurant" ?
+      (input.customerCause ? (Number(order.cancellationFee?.percent) > 0 ?
+        // The customer accepted the 100% fee (domain/customerCancel.ts).
+        "The customer cancelled it after you accepted. You are paid for this order as if it was delivered. Please don't hand it over." :
+        "The customer cancelled it. Please don't prepare or hand it over.") :
+        `Scraveit cancelled it${reason ? `: ${reason}` : ""}. Please don't prepare or hand it over.`) :
+      pay > 0 ? `${order.restaurant}: cancelled after you reached the restaurant. You get ${rupees}.` :
+        `${order.restaurant}: don't pick it up. The order was cancelled.`;
+  return {
+    notification: {title, body},
+    data: {type: "ORDER_STATUS", orderId: order.id, status: "Cancelled", restaurantId: order.restaurantId, title, body},
+    android: {priority: "high", notification: {channelId: "savrivo_order_status", sound: "default"}},
+    apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
   };
 }

@@ -257,16 +257,16 @@ export function planClusterDelivery(
 
   const reasons: string[] = [];
   if (trips.length === 1 && legs.length > 1) {
-    reasons.push(`One rider collects all ${legs.length} restaurants; that is at most ${round(target - fastest)} min slower than separate riders.`);
+    reasons.push(`One delivery partner collects from all ${legs.length} restaurants; that is at most ${round(target - fastest)} min slower than separate delivery partners.`);
   } else if (trips.length === legs.length && legs.length > 1) {
-    reasons.push(`Restaurants are too far apart for one trip, so ${legs.length} riders go at once.`);
+    reasons.push(`Restaurants are too far apart for one trip, so ${legs.length} delivery partners go at once.`);
   } else if (legs.length > 1) {
-    reasons.push(`${trips.length} riders: restaurants close together share a rider.`);
+    reasons.push(`${trips.length} delivery partners: restaurants close together share one.`);
   }
   if (legs.some((leg) => leg.temperature === "frozen")) reasons.push("Frozen food is picked up last.");
   const held = Object.entries(kitchenStartDelayMinutes).filter(([, minutes]) => minutes >= 2);
   if (held.length) reasons.push("Faster kitchens start later so all the food arrives fresh and together.");
-  if (spread > policy.maxArrivalSpreadMinutes) reasons.push(`Riders may reach you up to ${spread} min apart.`);
+  if (spread > policy.maxArrivalSpreadMinutes) reasons.push(`Delivery partners may reach you up to ${spread} min apart.`);
 
   return {
     riders: trips.length,

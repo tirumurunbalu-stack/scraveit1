@@ -26,7 +26,8 @@ import java.util.Calendar;
 /**
  * "You left something in your cart": shown by the phone itself about 5 seconds
  * after the customer leaves the app with items in the cart (the page decides
- * whether one is due; see savrivoCartNudge in premium.js). Cancelled the
+ * whether one is due; see savrivoCartNudge in premium.js). With an empty cart,
+ * a store they just looked at gets "it's open" instead. Cancelled the
  * moment they come back, never more than one in 20 hours, and never between
  * 10 pm and 8 am.
  */
@@ -44,7 +45,8 @@ public final class CartNudge extends BroadcastReceiver {
     catch (Exception ignored) { return; }
     long delay = Math.max(3_000L, Math.min(30L * 60 * 1000, payload.optLong("delayMs", 5_000L)));
     SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    if (System.currentTimeMillis() - prefs.getLong(LAST_SHOWN, 0L) < MIN_GAP) return;
+    // Test accounts ("test": true from the page) skip the one-a-day limit so a reminder can be tried again.
+    if (!payload.optBoolean("test", false) && System.currentTimeMillis() - prefs.getLong(LAST_SHOWN, 0L) < MIN_GAP) return;
     prefs.edit().putString(PENDING, payload.toString()).apply();
     final File image = imageFile(context);
     image.delete();
@@ -72,19 +74,23 @@ public final class CartNudge extends BroadcastReceiver {
     if (raw == null || raw.length() == 0) return;
     int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
     if (hour < 8 || hour >= 22) return;
-    if (System.currentTimeMillis() - prefs.getLong(LAST_SHOWN, 0L) < MIN_GAP) return;
     if (Build.VERSION.SDK_INT >= 33
         && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
     JSONObject payload;
     try { payload = new JSONObject(raw); }
     catch (Exception ignored) { return; }
+    if (!payload.optBoolean("test", false) && System.currentTimeMillis() - prefs.getLong(LAST_SHOWN, 0L) < MIN_GAP) return;
     String title = payload.optString("title", ""), body = payload.optString("body", "");
     if (title.length() == 0 || body.length() == 0) return;
 
     CustomerMessagingService.createNotificationChannels(context);
     JSONObject event = new JSONObject();
-    try { event.put("type", "CART_REMINDER").put("route", "cart"); }
-    catch (Exception ignored) { }
+    // "STORE_NUDGE" (a store they looked at is open) opens that store; the cart reminder opens the cart.
+    String type = payload.optString("type", ""), store = payload.optString("restaurantId", "");
+    try {
+      event.put("type", type.length() > 0 ? type : "CART_REMINDER").put("route", "cart");
+      if (store.length() > 0) event.put("restaurantId", store);
+    } catch (Exception ignored) { }
     Intent launch = new Intent(context, MainActivity.class)
         .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
         .putExtra(CustomerMessagingService.EXTRA_PUSH_JSON, event.toString());

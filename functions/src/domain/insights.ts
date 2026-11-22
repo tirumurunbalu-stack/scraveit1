@@ -53,7 +53,7 @@ export interface RestaurantStats {
 
 const TOPICS: ReadonlyArray<{topic: string; words: RegExp; label: string; fix: string}> = [
   {topic: "cold", words: /\b(cold|not hot|warm|chilled)\b/i, label: "food arrived cold",
-    fix: "Pack hot food in sealed containers and only press Ready when the rider is close (the app shows when)."},
+    fix: "Pack hot food in sealed containers and only press Ready when the delivery partner is close (the app shows when)."},
   {topic: "late", words: /\b(late|delay|delayed|slow|waited|waiting|long time)\b/i, label: "food was late",
     fix: "Set your prep time to what it really takes, so the promise customers see is one you keep."},
   {topic: "portion", words: /\b(quantity|less|small|portion|tiny|not enough)\b/i, label: "small portions",
@@ -61,7 +61,7 @@ const TOPICS: ReadonlyArray<{topic: string; words: RegExp; label: string; fix: s
   {topic: "taste", words: /\b(taste|tasteless|bland|salty|salt|spicy|oily|oil|stale|bad|worst|raw|burnt)\b/i, label: "taste",
     fix: "Read these reviews with your kitchen team; the dish names in them show where to start."},
   {topic: "missing", words: /\b(missing|wrong|forgot|not received|incomplete)\b/i, label: "missing or wrong items",
-    fix: "Check every bag against the order slip before handing it to the rider."},
+    fix: "Check every bag against the order slip before handing it to the delivery partner."},
   {topic: "packing", words: /\b(spill|spilled|leak|leaked|leaking|packing|packaging|messy|broken)\b/i, label: "packaging",
     fix: "Use leak-proof containers for gravies and seal the bag."},
   {topic: "price", words: /\b(price|expensive|costly|overpriced|value)\b/i, label: "price",

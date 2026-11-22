@@ -2,6 +2,8 @@ import {enforceRiderIdentityRetention, getRiderIdentityReview, IDENTITY_CONSENT_
 import {bookTable, cancelBooking, dineInStaffAction, openTable, placeTableRound, respondToBooking, tableRequest, watchDineIn} from "./services/dineIn";
 import {attachSquadToOrder} from "./services/squads";
 import * as onboarding from "./services/restaurantOnboarding";
+import * as commissionNotices from "./services/commissionNotices";
+import * as orderWebhooks from "./services/orderWebhooks";
 import {readAdminAnalytics} from "./services/adminAnalytics";
 import {readServerWarmth, setServerWarmth} from "./services/serverWarmth";
 import {isTestCustomer, readTestAccounts, saveTestAccounts} from "./services/testAccounts";
@@ -18,6 +20,9 @@ import * as reels from "./services/reels";
 import * as clusterOrders from "./services/clusterOrders";
 import * as learning from "./services/learning";
 import * as partnerTrail from "./services/partnerTrail";
+import {payPartnerForCancel} from "./services/partnerCancelPay";
+import {listAbuseFlags, recordPartnerCustomerPair} from "./services/pairWatch";
+import {countPeakDelivery, readPeakReport, samplePeakPartners} from "./services/peakMetrics";
 import {alarmAdmins, alertAdmins, applicationAlert, privacyRequestAlert, riderApplicationAlert, supportTicketAlert, watchStuckOrders} from "./services/adminAlerts";
 import * as accountDeletion from "./services/accountDeletion";
 import * as cartReminderService from "./services/cartReminders";
@@ -148,8 +153,13 @@ import {
   signRestaurantAgreementSchema,
   liveRestaurantAgreementSchema,
   signLiveRestaurantAgreementSchema,
+  adminCommissionNoticeSchema,
+  restaurantCommissionNoticeSchema,
+  restaurantOrderWebhookSchema,
   cancelUnpaidOrderSchema,
   checkOrderPaymentSchema,
+  foodRescueCheckSchema,
+  foodRescueClaimSchema,
 } from "./schemas";
 import {
   exportPlatformDataWorkbook as buildPlatformDataExport,
@@ -232,16 +242,33 @@ import {
   notifyCustomerBroadcast,
   notifyCustomerRiderAssigned,
   notifyCustomerStatus,
+  notifyOrderCancelled,
   notifyRestaurantNewOrder,
   notifyRestaurantOrderLate,
   notifyStoreApplicant,
   stopRiderOffers,
   stopRestaurantAlarm,
 } from "./services/notifications";
+import {cancelNoticeTargets} from "./domain/notificationMessages";
+import {cancelCause} from "./domain/partnerCancelPay";
+import {cancelledAfterPickup} from "./domain/foodRescue";
+import {cancelledWithFeeBeforePickup, keptOnCancel} from "./domain/customerCancel";
+import {settleCustomerCancelFee} from "./services/customerCancelFee";
+import {settleAfterPickupCancel, type AfterPickupSettlement} from "./services/afterPickupCancel";
+import {customerCodBlocked} from "./services/customerCodBlock";
+import {
+  claimFoodRescue,
+  foodRescuesForCustomer,
+  handleFoodRescueTimer,
+  releaseFoodRescueHold,
+  startFoodRescue,
+  startFoodRescueDelivery,
+} from "./services/foodRescue";
 import {listDueNotifications, processNotification} from "./services/outbox";
 import {
   assignStoreAsRider,
   cancelUnpaidOnlineOrder,
+  cancelOrderByCustomer,
   completeStoreDeliveryFromChat,
   createAuthoritativeCodOrder,
   createAuthoritativeOrder,
@@ -501,6 +528,13 @@ export const createOrder = onCall({
   if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to place an order."));
   if (isWarmup(request.data)) return await warmUp();
   try {
+    // A Food Rescue buy (services/foodRescue.ts): the same call, so every app build can send it.
+    if ((request.data as {foodRescueId?: unknown} | null)?.foodRescueId) {
+      const rescue = parse(foodRescueClaimSchema, request.data);
+      if (!paymentGateway.configured) throw new DomainError("failed-precondition", "Online payments are not available right now.");
+      const claimed = await claimFoodRescue(request.auth.uid, rescue);
+      return {orderId: claimed.order.id, order: claimed.order, deliveryOtp: claimed.deliveryOtp, recovered: claimed.recovered};
+    }
     const input = parse(createOrderSchema, request.data);
     if (input.paymentMethod !== "cod" && !paymentGateway.configured) {
       throw new DomainError("failed-precondition", "Online payments are not available right now.");
@@ -781,13 +815,22 @@ export const getCheckoutConfiguration = onCall({
       const tester = await isTestCustomer(request.auth.uid).catch(() => false);
       return {deliveryPartners: await deliveryPartnerStatusForRestaurant(check.restaurantId, tester)};
     }
+    // Home screen: Food Rescue offers near the selected address (services/foodRescue.ts).
+    // serverNow: the app counts down from the server clock, not the phone's.
+    if (data && data.foodRescueCheck === true) {
+      const check = parse(foodRescueCheckSchema, data);
+      const foodRescues = await foodRescuesForCustomer(request.auth.uid, check.addressId);
+      return {foodRescues, serverNow: Date.now()};
+    }
     // priceLock tells the app this server takes quotedTotal on an order.
     // tester: this account is a test account (it may order from any store, even before launch).
-    const [loaded, tester] = await Promise.all([
+    // codBlocked: cash on delivery is off for this customer (an order cancelled after pickup).
+    const [loaded, tester, codBlocked] = await Promise.all([
       loadCheckoutConfiguration(paymentGateway.configured),
       isTestCustomer(request.auth.uid).catch(() => false),
+      customerCodBlocked(request.auth.uid).catch(() => false),
     ]);
-    const config = {...loaded, priceLock: true, tester};
+    const config = {...loaded, priceLock: true, tester, ...(codBlocked ? {codBlocked: true} : {})};
     if (!data || !data.restaurantId) return config;
     try {
       const input = parse(checkoutPricingPreviewSchema, data);
@@ -1466,6 +1509,22 @@ export const cancelUnpaidOrder = onCall({
   const uid = request.auth.uid;
   try {
     const input = parse(cancelUnpaidOrderSchema, request.data);
+    if (input.reason === "self") {
+      const result = await cancelOrderByCustomer(uid, input.orderId, input.acceptFee === true,
+        (orderId) => closeUnpaidPaymentAttempts(orderId, paymentGateway));
+      logger.info("CUSTOMER_CANCELLED_ORDER", {
+        orderId: result.order.id,
+        status: result.order.status,
+        feeRequired: result.feeRequired === true,
+        feePaise: result.cancellationFee?.amountPaise ?? 0,
+      });
+      return {
+        orderId: result.order.id,
+        status: result.order.status,
+        ...(result.feeRequired ? {feeRequired: true} : {}),
+        ...(result.cancellationFee ? {cancellationFee: result.cancellationFee} : {}),
+      };
+    }
     const reason = input.reason === "cod" ? "Customer switched to cash on delivery after online payment did not go through" :
       "Customer cancelled after online payment did not go through";
     const order = await cancelUnpaidOnlineOrder(uid, input.orderId, reason,
@@ -1598,10 +1657,14 @@ export const sweepCancelledOrderRefunds = onSchedule({
   memory: "256MiB",
   secrets: CASHFREE_SECRETS,
 }, async () => {
+  // Orders cancelled after pickup on the customer's side, or by the customer with the 100% fee, keep
+  // their payment (no refund, founder 22 Nov 2026) and so stay Cancelled + paid: read past them so
+  // real refunds are never crowded out.
   const snapshot = await firestoreDb.collection("orders")
-    .where("status", "==", "Cancelled").where("paymentState", "==", "paid").limit(50).get();
+    .where("status", "==", "Cancelled").where("paymentState", "==", "paid").limit(300).get();
+  const due = snapshot.docs.filter((doc) => !keptOnCancel(doc.data() as SavrivoOrder)).slice(0, 50);
   const counts: Record<string, number> = {};
-  for (const doc of snapshot.docs) {
+  for (const doc of due) {
     try {
       const result = await refundCancelledOrderPayment(doc.id, paymentGateway);
       counts[result] = (counts[result] ?? 0) + 1;
@@ -1611,7 +1674,7 @@ export const sweepCancelledOrderRefunds = onSchedule({
       logger.warn("CANCELLED_ORDER_REFUND_RETRY_LATER", {orderId: doc.id, error});
     }
   }
-  if (snapshot.size) logger.info("CANCELLED_ORDER_REFUND_SWEEP", {checked: snapshot.size, ...counts});
+  if (due.length) logger.info("CANCELLED_ORDER_REFUND_SWEEP", {checked: due.length, ...counts});
 });
 
 /** Our checkout page (opens Cashfree's hosted checkout) and the page customers return to. */
@@ -1640,6 +1703,25 @@ export const dispatchOfferTimeout = onTaskDispatched({
   const schema = z.object({orderId: z.string().min(1).max(120), attempt: z.number().int().min(0).max(100)}).strict();
   const input = parse(schema, request.data);
   await advanceDispatchOffer(input.orderId, input.attempt);
+});
+
+/** Food Rescue: nearby alerts, the 3-minute pay hold and the 15-minute window (services/foodRescue.ts). */
+export const foodRescueTimer = onTaskDispatched({
+  region: REGION,
+  secrets: CASHFREE_SECRETS, // closes an unpaid buy's payment when its hold runs out
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  retryConfig: {maxAttempts: 5, minBackoffSeconds: 10, maxBackoffSeconds: 120, maxDoublings: 3},
+  rateLimits: {maxConcurrentDispatches: 20, maxDispatchesPerSecond: 10},
+}, async (request) => {
+  const schema = z.object({
+    offerId: z.string().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/),
+    kind: z.enum(["announce", "hold", "expire"]),
+  }).strict();
+  const input = parse(schema, request.data);
+  const outcome = await handleFoodRescueTimer(input.offerId, input.kind,
+    (orderId) => closeUnpaidPaymentAttempts(orderId, paymentGateway));
+  logger.info("FOOD_RESCUE_TIMER", {...input, outcome});
 });
 
 export const dispatchClaimRecoveryTask = onTaskDispatched({
@@ -1693,6 +1775,19 @@ export const storeHoursWatch = onSchedule({
 }, async () => {
   const result = await applyStoreHours();
   if (result.opened || result.closed) logger.info("STORE_HOURS_WATCH", result);
+});
+
+/** Lunch 11:30–3 and dinner 7–11 (IST): count online delivery partners every 5 min for orders per partner-hour. */
+export const peakPartnerSampler = onSchedule({
+  schedule: "*/5 11-22 * * *",
+  timeZone: "Asia/Kolkata",
+  region: REGION,
+  maxInstances: 1,
+  timeoutSeconds: 60,
+  memory: "256MiB",
+}, async () => {
+  const result = await samplePeakPartners();
+  if (result) logger.info("PEAK_PARTNERS_SAMPLED", result);
 });
 
 /** Late kitchen orders: the store app says "Your order is getting late" even when it is closed. */
@@ -1939,6 +2034,7 @@ export const onOrderCreated = onDocumentCreated({
   const order = await scrubLegacyPublicOtp(latest ?? rawOrder);
   // Taste signal for the customer and an "order" for the city's ranking (once per order).
   await sideEffectLease(`learning-order-placed:${order.id}`, async () => {
+    if (order.foodRescue) return; // a Food Rescue buy is not a store order (no ranking, no taste signal)
     const restaurantSnapshot = await restaurantRef(firestoreDb, order.restaurantId).get();
     if (restaurantSnapshot.exists) await learning.noteOrderPlaced(order, restaurantSnapshot.data() as CatalogRestaurant);
   }).catch((error) => logger.warn("ORDER_PLACED_SIGNAL_FAILED", {orderId: order.id, error: String(error)}));
@@ -2091,6 +2187,17 @@ export const onOrderUpdated = onDocumentUpdated({
       eventStatus: rawOrder.status,
       latestStatus: latestForEvent?.status,
     });
+    // The kitchen timer moves Accepted to Preparing within seconds, so the "Order placed ->
+    // Accepted" event often arrives stale. The store's other phones must still stop ringing:
+    // on 21 Nov 2026 an order accepted on the iPhone kept the Android Restaurant app ringing.
+    // Same lease as the normal path below, so the stop is sent once.
+    if (before.status === "Order placed" && rawOrder.status !== "Order placed" &&
+        latestForEvent && latestForEvent.status !== "Order placed") {
+      await sideEffectLease(`stop-restaurant-alarm:${rawOrder.id}`, async () => {
+        logger.info("STOP_ORDER_ALARM_PUSH_REQUESTED", {orderId: rawOrder.id, status: latestForEvent.status, staleEvent: true});
+        await stopRestaurantAlarm(latestForEvent);
+      });
+    }
     return;
   }
   const order = await scrubLegacyPublicOtp(rawOrder);
@@ -2098,14 +2205,20 @@ export const onOrderUpdated = onDocumentUpdated({
   await reconcileRestaurantWorkload(order);
   await reconcileOperationalOrderProjection(order);
   // Online payment just verified: now ring the restaurant (the same lease as onOrderCreated, so it rings once).
-  if (before.paymentState !== "paid" && order.paymentState === "paid" && order.status === "Order placed" && order.clusterHold !== true) {
+  // A Food Rescue buy instead goes straight to the delivery partner who has the food.
+  if (before.paymentState !== "paid" && order.paymentState === "paid" && order.status === "Order placed" && order.foodRescue) {
+    await sideEffectLease(`food-rescue-drop:${order.id}`, async () => {
+      const outcome = await startFoodRescueDelivery(order);
+      logger.info("FOOD_RESCUE_PAID", {orderId: order.id, outcome});
+    });
+  } else if (before.paymentState !== "paid" && order.paymentState === "paid" && order.status === "Order placed" && order.clusterHold !== true) {
     await sideEffectLease(`restaurant-new-order:${order.id}`, async () => {
       logger.info("NEW_ORDER_PUSH_REQUESTED", {orderId: order.id, restaurantId: order.restaurantId, after: "payment"});
       await notifyRestaurantNewOrder(order);
     });
   }
   // Delivered or cancelled: a training row for the learned models, the Ad's credit, the group-order outcome.
-  if ((before.status !== "Delivered" && order.status === "Delivered") || (before.status !== "Cancelled" && order.status === "Cancelled")) {
+  if (!order.foodRescue && ((before.status !== "Delivered" && order.status === "Delivered") || (before.status !== "Cancelled" && order.status === "Cancelled"))) {
     await sideEffectLease(`learning-outcome:${order.id}:${order.status}`, () => learning.recordOrderOutcome(before, order))
       .catch((error) => logger.warn("LEARNING_OUTCOME_FAILED", {orderId: order.id, error: String(error)}));
   }
@@ -2150,6 +2263,9 @@ export const onOrderUpdated = onDocumentUpdated({
     toStatus: order.status,
   });
 
+  let partnerCancelPayPaise = 0;
+  let afterPickup: AfterPickupSettlement | null = null;
+  let rescueStarted = false;
   if (order.status === "Cancelled") {
     // `set(..., {merge: true})` throughout: unlike RTDB's forgiving multi-path
     // update(), Firestore's update()/batch update() throws NOT_FOUND for a
@@ -2176,11 +2292,50 @@ export const onOrderUpdated = onDocumentUpdated({
     await cancelDispatchOffers(order.id, "cancelled");
     // A cancelled order must not keep spending an offer's budget or a
     // customer's one-time use. Idempotent: the redemption record guards it.
-    await releasePromotionSpend(order.id);
+    // Not for one the customer still pays for (cancelled after pickup on their side, or with the
+    // 100% fee): it is settled as delivered.
+    const keptAsDelivered = keptOnCancel(order);
+    if (!keptAsDelivered) await releasePromotionSpend(order.id);
     await recordOrderEconomicsOutcome(order);
-    // Wallet money used on a cancelled order goes back to the customer, once.
-    await restoreWalletRedemption(order.id);
-    if (before.riderId) {
+    // Wallet money used on a cancelled order goes back to the customer, once (same exception).
+    if (!keptAsDelivered) await restoreWalletRedemption(order.id);
+    // Customer or restaurant cancelled after the delivery partner reached the restaurant: ₹15 to the partner, once.
+    partnerCancelPayPaise = (await payPartnerForCancel(order)).payPaise;
+    // Scraveit cancelled it while the partner carried it (founder 22 Nov 2026): the restaurant
+    // is paid as if delivered, the partner gets the full trip, and the customer's side decides
+    // the refund; a customer's cancel then offers the food nearby (Food Rescue).
+    if (cancelledAfterPickup(order)) {
+      afterPickup = await settleAfterPickupCancel(order);
+      if (afterPickup) partnerCancelPayPaise = afterPickup.partnerPayPaise;
+      if (afterPickup?.plan.charged) {
+        // Same lease as a delivered order, so the seller's TCS/TDS is withheld once.
+        await sideEffectLease(`tax-withholding:${order.id}`, async () => {
+          await recordDeliveredOrderTax(order);
+        });
+      }
+      if (afterPickup?.plan.cause === "customer") {
+        rescueStarted = (await startFoodRescue(order).catch((error) => {
+          logger.error("FOOD_RESCUE_START_FAILED", {orderId: order.id, error: String(error)});
+          return {started: false};
+        })).started;
+      }
+    }
+    // The customer cancelled after the restaurant accepted, before pickup, with the 100% fee
+    // (founder 22 Nov 2026): the restaurant is paid as if delivered.
+    if (cancelledWithFeeBeforePickup(order)) {
+      const settled = await settleCustomerCancelFee(order);
+      if (settled?.charged) {
+        await sideEffectLease(`tax-withholding:${order.id}`, async () => {
+          await recordDeliveredOrderTax(order);
+        });
+      }
+    }
+    // An unpaid Food Rescue buy was closed or ran out of time: the food goes back on offer.
+    if (order.foodRescue && before.status === "Order placed") {
+      await releaseFoodRescueHold(order.foodRescue.fromOrderId, order.id);
+    }
+    // Cancelled after pickup is not the partner's failure: it never counts against their rewards.
+    if (before.riderId && !afterPickup) {
       await recordRiderRewardOrderCancelledAfterAccept(
         before.riderId,
         order.id,
@@ -2286,7 +2441,7 @@ export const onOrderUpdated = onDocumentUpdated({
     ? notifyCustomerRiderAssigned(order)
     : sideEffectLease(`customer-status:${order.id}:${order.status}`, () => notifyCustomerStatus(order));
   const notifications: Promise<void>[] = [customerNotification];
-  if (before.status === "Order placed") {
+  if (before.status === "Order placed" && !order.foodRescue) {
     notifications.push(sideEffectLease(`stop-restaurant-alarm:${order.id}`, async () => {
       logger.info("STOP_ORDER_ALARM_PUSH_REQUESTED", {orderId: order.id, status: order.status});
       await stopRestaurantAlarm(order);
@@ -2299,7 +2454,31 @@ export const onOrderUpdated = onDocumentUpdated({
       await stopRiderOffers((queue?.candidates ?? []).map((candidate) => String(candidate.riderId ?? "")).filter(Boolean), order.id, order.riderId!);
     }));
   }
+  if (order.status === "Cancelled") {
+    // The store and the delivery partner hear about a cancel too, not just the customer (founder 21 Nov 2026).
+    const targets = cancelNoticeTargets(order);
+    const customerCause = cancelCause(order) === "customer";
+    const afterPickupNotice = afterPickup ? {rescue: rescueStarted} : undefined;
+    if (targets.restaurant) {
+      notifications.push(sideEffectLease(`restaurant-cancel-notice:${order.id}`, () =>
+        notifyOrderCancelled(order, "restaurant", customerCause, 0, afterPickupNotice)));
+    }
+    if (targets.partner) {
+      notifications.push(sideEffectLease(`partner-cancel-notice:${order.id}`, () =>
+        notifyOrderCancelled(order, "partner", customerCause, partnerCancelPayPaise, afterPickupNotice)));
+    }
+  }
   await Promise.all(notifications);
+  // After the pushes, so they're not delayed. Orders per partner per peak hour: a lunch/dinner delivery counts once.
+  // Same partner + same customer too often (or the partner's own phone): an admin flag, never a block.
+  if (order.status === "Delivered" && order.selfDelivery !== true) {
+    await sideEffectLease(`peak-order:${order.id}`, async () => {
+      await countPeakDelivery(order).catch((error) =>
+        logger.warn("PEAK_ORDER_COUNT_FAILED", {orderId: order.id, error: String(error)}));
+    });
+    await recordPartnerCustomerPair(order).catch((error) =>
+      logger.warn("PAIR_WATCH_FAILED", {orderId: order.id, error: String(error)}));
+  }
 });
 
 /**
@@ -2929,7 +3108,9 @@ export const onRiderIdentitySourceWritten = onDocumentWritten({
   const after = event.data?.after?.data() as Record<string, unknown> | undefined;
   if (!after) return;
   const before = (event.data?.before?.data() ?? {}) as Record<string, unknown>;
-  const keys = ["panNumber", "faceReferenceObjectPath", "faceMatchStatus", "fullName", "identityFallback", "status", "vehicleType", "dlNumber", "dlValidTill"];
+  const keys = ["panNumber", "faceReferenceObjectPath", "faceMatchStatus", "fullName", "identityFallback", "status", "vehicleType", "dlNumber", "dlValidTill",
+    // Bank account / UPI ID: one delivery partner account per payout account.
+    "payoutProfile"];
   if (keys.every((key) => JSON.stringify(before[key] ?? null) === JSON.stringify(after[key] ?? null))) return;
   await refreshRiderIdentity(event.params.riderId, awsKeys()).catch((error) => logger.warn("RIDER_IDENTITY_REFRESH_FAILED", {uid: event.params.riderId, error: String(error)}));
 });
@@ -2963,6 +3144,39 @@ export const signLiveRestaurantAgreement = onCall({region: REGION, maxInstances:
       {ip: forwarded || String(raw?.ip ?? ""), userAgent: String(raw?.headers?.["user-agent"] ?? "")});
   } catch (error) {
     logger.warn("signLiveRestaurantAgreement rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
+    throw asHttpsError(error);
+  }
+});
+
+/** The store connects its own billing software: save its web address, send a test, switch off. */
+export const restaurantOrderWebhook = economicsCallable("restaurantOrderWebhook", restaurantOrderWebhookSchema,
+  (uid, token, input) => orderWebhooks.restaurantOrderWebhook(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
+
+/** Sends each order to the store's own billing software (if connected) when it arrives and when its status changes. */
+export const orderSoftwareRelay = onDocumentWritten({
+  document: "orders/{orderId}", region: REGION, retry: false, timeoutSeconds: 30, memory: "256MiB", maxInstances: 5,
+}, async (event) => {
+  const after = event.data?.after?.data() as SavrivoOrder | undefined;
+  if (!after) return;
+  const before = (event.data?.before?.exists ? event.data.before.data() : null) as SavrivoOrder | null;
+  await orderWebhooks.relayOrderChange(before, after).catch((error) =>
+    logger.warn("ORDER_WEBHOOK_RELAY_FAILED", {orderId: after.id, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"}));
+});
+
+/** Admin: send, preview, check or withdraw a commission change notice. */
+export const adminCommissionNotice = economicsCallable("adminCommissionNotice", adminCommissionNoticeSchema,
+  (uid, token, input) => commissionNotices.adminCommissionNotice(uid, token as import("firebase-admin/auth").DecodedIdToken, input));
+
+/** The owner reads a commission change notice and accepts it; accepting records the IP and device. */
+export const restaurantCommissionNotice = onCall({region: REGION, maxInstances: 5, enforceAppCheck: true, timeoutSeconds: 60, memory: "512MiB"}, async (request) => {
+  if (!request.auth) throw asHttpsError(new DomainError("unauthenticated", "Sign in to continue."));
+  try {
+    const raw = request.rawRequest;
+    const forwarded = String(raw?.headers?.["x-forwarded-for"] ?? "").split(",")[0]?.trim() ?? "";
+    return await commissionNotices.restaurantCommissionNotice(request.auth.uid, request.auth.token, parse(restaurantCommissionNoticeSchema, request.data ?? {}),
+      {ip: forwarded || String(raw?.ip ?? ""), userAgent: String(raw?.headers?.["user-agent"] ?? "")});
+  } catch (error) {
+    logger.warn("restaurantCommissionNotice rejected", {uid: request.auth.uid, error: error instanceof Error ? error.message.slice(0, 200) : "unknown"});
     throw asHttpsError(error);
   }
 });
@@ -3186,7 +3400,11 @@ export const partnerActivity = onCall({region: REGION, enforceAppCheck: true, ti
         z.object({action: z.literal("watch"), riderId, on: z.boolean(), note: z.string().max(200).optional()}).strict(),
         z.object({action: z.literal("forget"), riderId}).strict(),
         z.object({action: z.literal("history"), riderId}).strict(),
+        z.object({action: z.literal("peak"), days: z.number().int().min(1).max(31).optional()}).strict(),
+        z.object({action: z.literal("flags")}).strict(),
       ]), request.data ?? {});
+      if (input.action === "peak") return await readPeakReport(input.days ?? 14);
+      if (input.action === "flags") return {flags: await listAbuseFlags()};
       if (input.action === "history") return await partnerTrail.partnerHistory(input.riderId);
       if (input.action === "list") return await partnerTrail.listPartners();
       if (input.action === "day") return await partnerTrail.partnerDay(input.riderId, input.date);

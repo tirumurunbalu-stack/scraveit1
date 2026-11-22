@@ -4,7 +4,9 @@ import UserNotifications
 import AVFoundation
 import AudioToolbox
 import PhotosUI
+import FirebaseCore
 import FirebaseMessaging
+import GoogleSignIn
 import AuthenticationServices
 import CryptoKit
 
@@ -23,6 +25,8 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
         "getCheckoutConfiguration": "getCheckoutConfiguration", "getCustomerWallet": "getCustomerWallet",
         "applyCustomerReferral": "applyCustomerReferral", "createPaymentIntent": "createPaymentIntent",
         "createPhonePeIntent": "createPhonePeIntent",
+        // "Confirming your payment" and the COD / cancel choices after a payment that didn't finish.
+        "checkOrderPayment": "checkOrderPayment", "cancelUnpaidOrder": "cancelUnpaidOrder",
     ]
     private static let dineInFunctions: Set<String> = [
         "dineInBookTable", "dineInCancelBooking", "dineInOpenTable", "dineInPlaceRound", "dineInTableRequest",
@@ -34,12 +38,12 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
         "accountSetBirthDate", "accountParentRequest", "accountParentRespond", "accountParentRevoke",
         "parentPayRequest", "parentPayCancel", "parentPayRespond", "chatCrave", "chatSetEatingShare", "chatTasteMatch", "chatIou", "chatUnsend",
     ]
-    /// Methods this build supports. Google sign-in and table QR scanning are
-    /// left out until they're built for iOS, so the page hides those buttons.
+    /// Methods this build supports. Table QR scanning is left out until it's
+    /// built for iOS, so the page hides that button.
     private static let asyncMethods = Array(callables.keys) + [
-        "invokeDineIn", "openExternalPayment", "getDeliveryOtp", "recoverDeliveryOtp", "deleteDeliveryOtp",
+        "invokeDineIn", "openExternalPayment", "startCashfreePayment", "getDeliveryOtp", "recoverDeliveryOtp", "deleteDeliveryOtp",
         "clearDeliveryOtps", "setStatusBarStyle", "requestCurrentLocation", "haptic", "shareText", "shareImage",
-        "notifyOrder", "registerPushToken", "unregisterPushToken", "clearPushIdentity", "signInWithApple",
+        "notifyOrder", "registerPushToken", "unregisterPushToken", "clearPushIdentity", "signInWithApple", "signInWithGoogle",
         "invokeSocial", "callPermissions", "callAudio", "pickChatPhoto", "pickProfilePhoto",
     ]
 
@@ -48,11 +52,19 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
     private var wantsLocation = false
     private var ringTimer: Timer?
     private var photoRequest: (id: String, chat: Bool)?
+    /// Set while the app itself sent the person elsewhere (a UPI app), so that never counts as leaving.
+    private var leftForOwnScreen = false
+    /// A tapped reminder that arrived before the page had loaded.
+    private var waitingNudgeOpen: [String: Any]?
 
     override init() {
         super.init()
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        NotificationCenter.default.addObserver(self, selector: #selector(appLeft),
+                                               name: UIScene.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appCameBack),
+                                               name: UIScene.willEnterForegroundNotification, object: nil)
     }
 
     var shimScript: String {
@@ -82,6 +94,108 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
     func pageDidLoad(shell: WebShellViewController) {
         self.shell = shell
         shell.evaluate("window.__scraveitNative && (window.__scraveitNative.locationReady = \(locationAllowed));")
+        settleNudge()
+        if let event = waitingNudgeOpen {
+            waitingNudgeOpen = nil
+            sendPushEvent(event)
+        }
+    }
+
+    // MARK: reminders after leaving the app (Android: CartNudge.java)
+
+    /// Leaving with food in the cart, or right after looking at a store, the page says whether a
+    /// reminder is due (window.savrivoCartNudge: hours, switches, under-18s, store open). The phone
+    /// shows it about 5 seconds later, unless the person comes back first,
+    /// and never more than one in 20 hours.
+    private static let nudgeId = "scraveit-nudge"
+    private static let nudgeShownKey = "nudge.lastShownAt", nudgePendingKey = "nudge.pendingAt"
+    private static let nudgeGap: TimeInterval = 20 * 60 * 60
+
+    @objc private func appLeft() {
+        if leftForOwnScreen { return }
+        guard let web = shell?.webView, web.url?.scheme == AssetSchemeHandler.scheme else { return }
+        var task = UIBackgroundTaskIdentifier.invalid
+        let finish = {
+            DispatchQueue.main.async {
+                if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
+            }
+        }
+        task = UIApplication.shared.beginBackgroundTask(withName: "nudge") { finish() }
+        web.evaluateJavaScript("window.savrivoCartNudge ? window.savrivoCartNudge() : ''") { value, _ in
+            guard let text = value as? String, let data = text.data(using: .utf8),
+                  let p = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let title = p["title"] as? String, let body = p["body"] as? String,
+                  !title.isEmpty, !body.isEmpty else { finish(); return }
+            // Test accounts ("test": true) skip the one-a-day limit so a reminder can be tried again.
+            let lastShown = UserDefaults.standard.double(forKey: Self.nudgeShownKey)
+            if (p["test"] as? Bool) != true && Date().timeIntervalSince1970 - lastShown < Self.nudgeGap { finish(); return }
+            let delay = min(1800, max(3, ((p["delayMs"] as? NSNumber)?.doubleValue ?? 5000) / 1000))
+            let center = UNUserNotificationCenter.current()
+            center.getNotificationSettings { settings in
+                guard [.authorized, .provisional].contains(settings.authorizationStatus) else { finish(); return }
+                Self.nudgeImage(p["image"] as? String) { attachment in
+                    let content = UNMutableNotificationContent()
+                    content.title = title
+                    content.body = body
+                    content.sound = .default
+                    var info: [String: Any] = ["type": (p["type"] as? String) ?? "CART_REMINDER", "localNudge": true]
+                    if let store = p["restaurantId"] as? String, !store.isEmpty { info["restaurantId"] = store }
+                    content.userInfo = info
+                    if let attachment { content.attachments = [attachment] }
+                    let fireAt = Date().addingTimeInterval(delay).timeIntervalSince1970
+                    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false)
+                    center.add(UNNotificationRequest(identifier: Self.nudgeId, content: content, trigger: trigger)) { error in
+                        if error == nil { UserDefaults.standard.set(fireAt, forKey: Self.nudgePendingKey) }
+                        finish()
+                    }
+                }
+            }
+        }
+    }
+
+    @objc private func appCameBack() {
+        leftForOwnScreen = false
+        settleNudge()
+    }
+
+    /// Back in the app: a reminder not shown yet is cancelled; one already shown starts the 20 hours.
+    private func settleNudge() {
+        let defaults = UserDefaults.standard
+        let pendingAt = defaults.double(forKey: Self.nudgePendingKey)
+        guard pendingAt > 0 else { return }
+        defaults.removeObject(forKey: Self.nudgePendingKey)
+        if Date().timeIntervalSince1970 >= pendingAt {
+            defaults.set(pendingAt, forKey: Self.nudgeShownKey)
+        } else {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [Self.nudgeId])
+        }
+    }
+
+    /// The dish or store photo for the reminder, fetched while the app still has a few seconds.
+    private static func nudgeImage(_ link: String?, done: @escaping (UNNotificationAttachment?) -> Void) {
+        guard let link, link.hasPrefix("https://"), let url = URL(string: link) else { done(nil); return }
+        URLSession.shared.downloadTask(with: URLRequest(url: url, timeoutInterval: 6)) { file, response, _ in
+            guard let file, (response as? HTTPURLResponse)?.statusCode == 200 else { done(nil); return }
+            let ext = (response?.mimeType ?? "").contains("png") ? "png" : "jpg"
+            let target = FileManager.default.temporaryDirectory.appendingPathComponent("nudge-\(UUID().uuidString).\(ext)")
+            do {
+                try FileManager.default.moveItem(at: file, to: target)
+                done(try UNNotificationAttachment(identifier: "photo", url: target))
+            } catch { done(nil) }
+        }.resume()
+    }
+
+    /// Tapping a reminder opens the store (or the cart), like Android.
+    func notificationOpened(_ userInfo: [AnyHashable: Any]) {
+        guard userInfo["localNudge"] as? Bool == true else { return }
+        var event: [String: Any] = ["type": (userInfo["type"] as? String) ?? "CART_REMINDER", "openedFromNotification": true]
+        if let store = userInfo["restaurantId"] as? String { event["restaurantId"] = store }
+        if shell == nil { waitingNudgeOpen = event } else { sendPushEvent(event) }
+    }
+
+    private func sendPushEvent(_ event: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: event) else { return }
+        shell?.evaluate("window.savrivoPushReceived && window.savrivoPushReceived(JSON.parse(atob('\(data.base64EncodedString())')));")
     }
 
     func handle(_ method: String, _ args: [Any], shell: WebShellViewController) {
@@ -124,6 +238,8 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
             SecureStore.removeAll(prefix: "otp.")
         case "openExternalPayment":
             openPayment(requestId: text(0), link: text(1))
+        case "startCashfreePayment":
+            startCashfreePayment(requestId: text(0), payloadJson: text(1))
         case "setStatusBarStyle":
             let dark = (args.count > 1 ? args[1] as? Bool : nil) ?? true
             DispatchQueue.main.async { shell.statusBarStyle = dark ? .darkContent : .lightContent }
@@ -150,6 +266,8 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
             unregisterPush(requestId: text(0), idToken: text(1))
         case "signInWithApple":
             DispatchQueue.main.async { self.signInWithApple() }
+        case "signInWithGoogle":
+            DispatchQueue.main.async { self.signInWithGoogle() }
         case "clearPushIdentity":
             // Signed out: drop this phone's push token so no account's
             // notifications reach it, as Android does.
@@ -356,6 +474,33 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
         shell?.evaluate("window.appleSignInFailed && window.appleSignInFailed(\(WebShellViewController.jsString(message)))")
     }
 
+    // MARK: Google sign-in (same page callbacks as Android and the Restaurant iPhone app)
+
+    private func signInWithGoogle() {
+        guard let shell, let clientID = FirebaseApp.app()?.options.clientID, !clientID.isEmpty else {
+            googleFailed("Google sign-in is not configured for this build."); return
+        }
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
+        GIDSignIn.sharedInstance.signIn(withPresenting: shell) { [weak self] result, error in
+            if let token = result?.user.idToken?.tokenString {
+                // The page keeps the Firebase session; let the next sign-in pick an account again.
+                GIDSignIn.sharedInstance.signOut()
+                self?.shell?.evaluate("window.googleIdTokenReceived && window.googleIdTokenReceived(\(WebShellViewController.jsString(token)))")
+                return
+            }
+            let cancelled = (error as NSError?)?.code == GIDSignInError.Code.canceled.rawValue
+            self?.googleFailed(cancelled ? "Google sign-in was cancelled." : "Google sign-in could not be completed. Try again.")
+        }
+    }
+
+    private func googleFailed(_ message: String) {
+        shell?.evaluate("window.googleSignInFailed && window.googleSignInFailed(\(WebShellViewController.jsString(message)))")
+    }
+
+    func open(url: URL) -> Bool {
+        GIDSignIn.sharedInstance.handle(url)
+    }
+
     private static func randomNonce(length: Int = 32) -> String {
         let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
         var bytes = [UInt8](repeating: 0, count: length)
@@ -423,6 +568,50 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
 
     // MARK: payments, sharing, notifications
 
+    private var paymentSheet: PaymentSheetController?
+
+    /// Pays a Cashfree order inside the app (Android: MainActivity.startCashfreePayment).
+    /// payload: {paymentUrl, upiAppId?}; iPhone can't list UPI apps, so Cashfree's page offers them.
+    /// The reply only says the sheet closed; the page then asks the server whether the money came in.
+    private func startCashfreePayment(requestId: String, payloadJson: String) {
+        let link = ((jsonObject(payloadJson)["paymentUrl"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+        guard link.count <= 2_048, let url = URL(string: link), url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), host == "www.scraveit.in" || host == "scraveit.in",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let order = items.first(where: { $0.name == "order_id" })?.value,
+              order.range(of: "^SVPAY_[A-F0-9]{32}$", options: .regularExpression) != nil,
+              let session = items.first(where: { $0.name == "session" })?.value,
+              session.range(of: "^session_[A-Za-z0-9_-]{10,400}$", options: .regularExpression) != nil else {
+            shell?.publish(requestId: requestId, operation: "startCashfreePayment",
+                           result: .failure(.init(code: "INVALID_ARGUMENT", message: "The payment link is invalid.")))
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let shell = self.shell else { return }
+            if self.paymentSheet != nil {
+                shell.publish(requestId: requestId, operation: "startCashfreePayment",
+                              result: .failure(.init(code: "PAYMENT_IN_PROGRESS", message: "A payment is already open.")))
+                return
+            }
+            shell.evaluate("window.__scraveitPaySheetOpen=true;")
+            self.paymentSheet = PaymentSheetController.present(url: url, over: shell,
+                onLeaveApp: { [weak self] in self?.leftForOwnScreen = true },
+                onDone: { [weak self] outcome in
+                    guard let self else { return }
+                    self.paymentSheet = nil
+                    self.shell?.evaluate("window.__scraveitPaySheetOpen=false;")
+                    if outcome == .failedToLoad {
+                        self.shell?.publish(requestId: requestId, operation: "startCashfreePayment",
+                                            result: .failure(.init(code: "PAYMENT_NOT_STARTED",
+                                                                   message: "The payment page didn't open. Check your internet and try again.")))
+                        return
+                    }
+                    self.shell?.publish(requestId: requestId, operation: "startCashfreePayment",
+                                        result: .success(["paymentOrderId": order, "finished": outcome == .finished]))
+                })
+        }
+    }
+
     private func openPayment(requestId: String, link: String) {
         guard link.count <= 8_192, let url = URL(string: link.trimmingCharacters(in: .whitespaces)),
               let scheme = url.scheme?.lowercased(), ["https", "upi", "phonepe", "paytmmp", "tez", "gpay"].contains(scheme) else {
@@ -431,6 +620,7 @@ final class CustomerBridge: NSObject, NativeBridge, CLLocationManagerDelegate,
             return
         }
         DispatchQueue.main.async { [weak self] in
+            self?.leftForOwnScreen = true
             UIApplication.shared.open(url) { opened in
                 self?.shell?.publish(requestId: requestId, operation: "openExternalPayment",
                                      result: opened ? .success(["launched": true])

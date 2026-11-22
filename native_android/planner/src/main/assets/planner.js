@@ -131,7 +131,7 @@
       '<button type="button" class="link" data-action="working" aria-expanded="' + state.working + '">How is this worked out? <span aria-hidden="true">' + (state.working ? '⌃' : '›') + '</span></button>' +
       '<section class="card working" id="working"' + (state.working ? '' : ' hidden') + '></section>' +
       '<section class="card">' +
-        '<div class="card-head"><h2>My price list</h2>' + (state.dishes.length ? '<button type="button" class="text-btn" data-action="share">Share</button>' : '') + '</div>' +
+        '<div class="card-head"><h2>My price list</h2><span id="share-slot"></span></div>' +
         '<div class="save-row"><input id="dish-name" class="plain-input" placeholder="Dish name, e.g. Chocolate Waffle" maxlength="40" autocomplete="off"><button type="button" class="btn" data-action="save-dish">Save</button></div>' +
         '<div id="dishes"></div>' +
       '</section>' +
@@ -172,6 +172,9 @@
     if (working && state.working) working.innerHTML = workingMarkup(f);
     var dishes = document.getElementById("dishes");
     if (dishes) dishes.innerHTML = dishesMarkup();
+    // Share shows as soon as the first dish is saved and goes when the last one is removed.
+    var shareSlot = document.getElementById("share-slot");
+    if (shareSlot) shareSlot.innerHTML = state.dishes.length ? '<button type="button" class="text-btn" data-action="share">Share</button>' : '';
   }
 
   /** Before GST, the GST, and what the customer pays: the same three numbers under either setting. */

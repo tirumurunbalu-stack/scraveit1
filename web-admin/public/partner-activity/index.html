@@ -68,6 +68,16 @@
     <header class="topbar"><div><h1>Delivery partner activity</h1><p>Pre-launch watching of delivery partners who agreed: online time, restaurant waits, rides, drops and idle time.</p></div></header>
     <main class="content pa">
       <section class="card card-pad">
+        <h2 style="margin:0 0 6px;font-size:16px">Peak hours: orders per delivery partner per hour</h2>
+        <p class="note">Lunch 11:30 AM&ndash;3 PM and dinner 7&ndash;11 PM. Partners online are counted every 5 minutes; orders are deliveries made in the window. Target 1.5: above it, add delivery partners; below 1, partners wait for orders and earn less.</p>
+        <div id="peak" style="margin-top:12px">Loading&hellip;</div>
+      </section>
+      <section class="card card-pad">
+        <h2 style="margin:0 0 6px;font-size:16px">Checks to look at</h2>
+        <p class="note">The same delivery partner and customer 3 times in a day or 6 times in 7 days, or a delivery to the partner&rsquo;s own phone number. Nothing is blocked: check the orders before bonuses are paid.</p>
+        <div id="flags" style="margin-top:12px">Loading&hellip;</div>
+      </section>
+      <section class="card card-pad">
         <h2 style="margin:0 0 6px;font-size:16px">Who is watched</h2>
         <p class="note">Switch someone on only after they agree in writing (for example a WhatsApp "Yes"). Recording starts within a minute while they are online; detailed positions are deleted after 60 days; daily totals and a map of each day are kept. Only approved delivery partners are listed.</p>
         <div id="partners" style="margin-top:12px">Loading&hellip;</div>
@@ -85,6 +95,6 @@
   </div>
 </div>
 <div id="toast-stack"></div>
-<script type="module" src="./activity.js?v=5"></script>
+<script type="module" src="./activity.js?v=6"></script>
 </body>
 </html>

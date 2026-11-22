@@ -16,6 +16,8 @@ export function awaitingFirstOnlinePayment(order: Pick<SavrivoOrder, "paymentMet
 
 export async function reconcileRestaurantOrderProjection(order: SavrivoOrder): Promise<boolean> {
   if (awaitingFirstOnlinePayment(order)) return false;
+  // A Food Rescue buy is the delivery partner's drop, never the store's order (domain/foodRescue.ts).
+  if (order.foodRescue) return false;
   const ref = restaurantOrderProjectionRef(firestoreDb, order.restaurantId, order.customerId, order.id);
   const applied = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {
     const snapshot = await transaction.get(ref);

@@ -47,6 +47,23 @@ export const createOrderSchema = createOrderBaseSchema.extend({
   }
 });
 
+/** A customer buys a Food Rescue offer (services/foodRescue.ts): online payment only. */
+export const foodRescueClaimSchema = z.object({
+  foodRescueId: identifier,
+  idempotencyKey: z.string().trim().min(16).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  addressId: identifier,
+  paymentMethod: z.enum(["upi", "card"]),
+  paymentProvider: paymentProviderSchema.optional(),
+  /** The total on the customer's screen at the tap. */
+  quotedTotal: z.number().finite().min(0).max(10_000_000).optional(),
+}).strict();
+
+/** Home screen: Food Rescue offers near the customer's selected address. */
+export const foodRescueCheckSchema = z.object({
+  foodRescueCheck: z.literal(true),
+  addressId: identifier,
+}).strict();
+
 /** One cart, food from two or three restaurants (services/clusterOrders.ts). */
 export const createClusterOrderSchema = z.object({
   idempotencyKey: z.string().trim().min(16).max(80).regex(/^[A-Za-z0-9_-]+$/),
@@ -73,7 +90,11 @@ export const checkOrderPaymentSchema = z.object({
 
 export const cancelUnpaidOrderSchema = z.object({
   orderId: identifier,
-  reason: z.enum(["cod", "cancel"]),
+  // "self": the customer's own Cancel order on any live order (services/orders.ts cancelOrderByCustomer).
+  // It rides on this callable because the apps' native bridge already carries it.
+  reason: z.enum(["cod", "cancel", "self"]),
+  /** "self" only: the customer saw and accepted the 100% cancellation fee. */
+  acceptFee: z.boolean().optional(),
 }).strict();
 
 // Optional cart context for getCheckoutConfiguration's fee-preview fields -
@@ -1096,6 +1117,31 @@ export const signLiveRestaurantAgreementSchema = z.object({
   typedName: z.string().trim().min(2).max(120),
   consent: z.boolean(),
   method: z.enum(["in_app", "aadhaar_esign"]).default("in_app"),
+}).strict();
+
+export const adminCommissionNoticeSchema = z.object({
+  action: z.enum(["preview", "send", "status", "withdraw"]),
+  restaurantIds: z.array(identifier).min(1).max(40).optional(),
+  restaurantId: identifier.optional(),
+  commissionBps: z.number().int().min(0).max(5_000).optional(),
+  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  note: z.string().trim().max(500).optional(),
+  noticeId: z.string().trim().min(1).max(80).optional(),
+}).strict();
+
+export const restaurantOrderWebhookSchema = z.object({
+  action: z.enum(["get", "save", "test", "off"]),
+  restaurantId: identifier,
+  url: z.string().trim().max(500).optional(),
+  newSecret: z.boolean().optional(),
+}).strict();
+
+export const restaurantCommissionNoticeSchema = z.object({
+  action: z.enum(["get", "accept"]),
+  restaurantId: identifier,
+  noticeId: z.string().trim().min(1).max(80).optional(),
+  hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  consent: z.boolean().optional(),
 }).strict();
 
 export const restaurantAgreementTermsSchema = z.object({

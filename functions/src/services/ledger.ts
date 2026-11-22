@@ -428,6 +428,64 @@ export function buildOnlineOrderDeliveryJournal(input: OnlineOrderDeliveryJourna
   });
 }
 
+export interface CustomerCancelFeeJournalInput extends OrderDeliveryAmounts {
+  orderId: string;
+  restaurantId: string;
+  /** Required when walletRedeemPaise > 0. */
+  customerId?: string;
+  occurredAt: number;
+  paymentProvider: string;
+  providerTransactionId: string;
+  reason: string;
+  attribution?: LedgerAttribution;
+}
+
+/**
+ * The customer cancelled an online order after the restaurant accepted, before pickup, with the
+ * 100% fee (domain/customerCancel.ts). The held money is released as at delivery, except that
+ * nobody made the trip: the delivery partner's share and the tip stay with Scraveit as the
+ * cancellation fee, and Scraveit's own trip top-up is never spent.
+ */
+export function buildCustomerCancelFeeJournal(input: CustomerCancelFeeJournalInput): LedgerJournal {
+  const amounts = normalizedAmounts(input);
+  const keptPaise = amounts.riderDeliveryEarningPaise + amounts.riderTipPaise - (amounts.riderTripSubsidyPaise ?? 0);
+  if (keptPaise < 0) fail("LEDGER_CANCEL_FEE_ALLOCATION_MISMATCH");
+  const noTrip: OrderDeliveryAmounts = {...amounts, riderDeliveryEarningPaise: 0, riderTipPaise: 0, riderTripSubsidyPaise: 0};
+  return createLedgerJournal({
+    eventType: "payment",
+    eventId: `order:${input.orderId}:cancelled:fee`,
+    occurredAt: input.occurredAt,
+    orderId: input.orderId,
+    actorId: "system:customer-cancel-fee",
+    metadata: {
+      paymentMethod: "online",
+      paymentProvider: input.paymentProvider,
+      providerTransactionId: input.providerTransactionId,
+      settlementType: "customer_cancel_fee",
+      reason: input.reason.slice(0, 120),
+      cancellationFeeKeptPaise: keptPaise,
+      ...allocationMetadata(noTrip),
+      ...(input.attribution ?? {}),
+    },
+    postings: [
+      {
+        accountId: `liability:customer-order-funds:${input.orderId}`,
+        side: "debit",
+        amountPaise: amounts.grossAmountPaise,
+        memo: "Release customer funds: cancelled with the 100% fee",
+      },
+      ...platformFundingDebits(noTrip, input.customerId),
+      ...allocationCredits({restaurantId: input.restaurantId, riderId: ""}, noTrip),
+      ...(keptPaise > 0 ? [{
+        accountId: "revenue:cancellation-fees",
+        side: "credit" as const,
+        amountPaise: keptPaise,
+        memo: "Delivery fee and tip kept: cancelled before pickup",
+      }] : []),
+    ],
+  });
+}
+
 /**
  * Records a verified gateway receipt exactly once. This journal only moves
  * cash into an order-scoped holding liability; restaurant/rider allocation is

@@ -21,7 +21,7 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
 /* Private order chat */
-.chat-thread{display:flex;flex-direction:column;gap:10px;min-height:260px;max-height:55vh;overflow-y:auto}
+.chat-thread{display:flex;flex-direction:column;gap:10px;min-height:260px}
 .chat-message{align-self:flex-start;max-width:82%;background:var(--raised);border:1px solid var(--border);border-radius:16px 16px 16px 5px;padding:10px 12px;display:grid;gap:4px}
 .chat-message.mine{align-self:flex-end;background:var(--brand-soft);border-color:transparent;border-radius:16px 16px 5px 16px}
 .chat-message p{overflow-wrap:anywhere}
@@ -322,9 +322,9 @@ button.open-bar{cursor:pointer}
 .ob-track strong{display:block;font-size:15.5px}
 .ob-rate{border:1px solid var(--obLine)}
 .ob-rate-n{font-size:30px;font-weight:900;color:var(--obInk)}
-.ob-agreement{max-height:46vh;overflow:auto;padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--raised);display:grid;gap:6px}
+.ob-agreement{padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--raised);display:grid;gap:6px}
 .ob-agreement h3{font-size:14.5px;font-weight:900;margin-top:6px}
-.ob-agreement p{font-size:13.5px;line-height:1.55;color:#3a4458}
+.ob-agreement p{font-size:13.5px;line-height:1.55;color:#3a4458;white-space:pre-line}
 @media (prefers-reduced-motion:reduce){.ob-bar span{transition:none}}
 .ob-screen .button.primary{background:var(--obA);border-color:var(--obA);color:#fff;box-shadow:0 10px 24px -14px var(--obShadow)}
 .ob-screen .button.primary:disabled{opacity:.6}
@@ -376,7 +376,7 @@ html{overscroll-behavior-y:none}
 .dine-count.small .dine-round{width:42px;height:42px;font-size:22px}
 .dine-round:active{transform:scale(.94)}
 .dine-chips{display:flex;flex-wrap:wrap;gap:8px}
-.dine-table-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;max-height:236px;overflow-y:auto}
+.dine-table-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
 .dine-mini{display:grid;gap:2px;text-align:left;padding:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface);font:inherit;color:var(--ink);cursor:pointer}
 .dine-mini strong{font-size:13px}.dine-mini span{font-size:12px;color:var(--muted)}
 .dine-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -491,11 +491,11 @@ html{overscroll-behavior-y:none}
 .arrange-name{flex:1;min-width:0;display:block;text-align:left;background:none;border:0;padding:4px 0;font:inherit;color:var(--ink);cursor:pointer}
 .arrange-name strong{display:block;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .arrange-name .caption{display:block}
-.arrange-moves{display:flex;gap:6px;flex:none}
-.arrange-move{width:42px;height:42px;border-radius:12px;border:1px solid var(--border);background:var(--surface);font:inherit;font-size:18px;line-height:1;color:var(--ink);display:grid;place-items:center;cursor:pointer}
-.arrange-move:active{transform:scale(.96)}
-.arrange-move:disabled{opacity:.3;cursor:default}
-.arrange-save{position:sticky;bottom:0;padding:14px 0 calc(14px + var(--safe-bottom));background:linear-gradient(transparent,var(--canvas) 35%)}
+/* Six-dot grip: rows are moved by holding and dragging. */
+.arrange-row.drag-lifted{z-index:25}
+.arrange-grip{flex:none;width:14px;height:22px;margin-right:4px;opacity:.45;background:radial-gradient(circle,var(--ink) 1.6px,transparent 2px) 0 0/7px 7px;background-position:0 1px}
+/* Fixed, not sticky: page-level sticky does not work here (html and body clip overflow-x). This page has no bottom menu. */
+.arrange-save{position:fixed;z-index:20;left:50%;transform:translateX(-50%);width:min(920px,calc(100% - 36px));bottom:0;padding:14px 0 calc(14px + var(--safe-bottom));background:linear-gradient(transparent,var(--canvas) 35%)}
 /* Ads and insights */
 .status-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;background:var(--surface-raised,#eef2f7);color:var(--muted);white-space:nowrap}
 .status-pill.success{background:var(--success-soft);color:var(--success)}.status-pill.warning{background:var(--warning-soft);color:var(--warning)}.status-pill.danger{background:var(--danger-soft);color:var(--danger)}
@@ -518,10 +518,11 @@ html{overscroll-behavior-y:none}
 [data-drag]{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 [data-drag] img{-webkit-user-drag:none}
 .drag-hint{margin:2px 2px 10px}
-.menu-cats{display:grid;gap:14px}
-.menu-cat{background:var(--canvas);border-radius:22px}
+/* minmax(0,1fr): a long category name shortens with "…" instead of widening every card past the screen edge. */
+.menu-cats{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+.menu-cat{min-width:0;background:var(--canvas);border-radius:22px}
 .menu-cat-head{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:8px 6px;background:none;border:0;font:inherit;color:var(--ink);text-align:left;cursor:pointer}
-.menu-cat-name{font-size:19px;font-weight:850;line-height:1.3;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu-cat-name{font-size:19px;font-weight:850;line-height:1.3;min-width:0;overflow-wrap:anywhere}
 .menu-cat-head .caption{flex:1;white-space:nowrap}
 .menu-cat-chev{flex:none;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--surface);border:1px solid var(--border);transition:transform .18s ease}
 .menu-cat-chev.open{transform:rotate(90deg)}
@@ -617,3 +618,115 @@ body.drag-on{overscroll-behavior:none}
 .pay-method>span{display:grid;gap:2px}
 .pay-speed,.pay-fee,.pay-eg{font-size:13px;color:var(--muted)}
 .pay-eg{color:var(--ink);font-weight:650}
+
+/* iPhone: text boxes under 16px make iOS zoom the whole page in when tapped. */
+@supports (-webkit-touch-callout: none) { input, textarea, select { font-size: 16px !important; } }
+
+/* Sign in with Apple (iPhone only): Apple's black button. */
+.apple-button{display:flex;align-items:center;justify-content:center;gap:8px;background:#000!important;color:#fff!important;border-color:#000!important;box-shadow:none}
+.apple-button .apple-logo{width:17px;height:17px;margin-top:-3px}
+/* Welcome page: app logo and name beside the language button, no empty corner. */
+.ob-brand-row{justify-content:space-between;align-items:center;gap:12px}
+.ob-brand{display:flex;align-items:center;gap:10px;min-width:0}
+.ob-brand .store-logo{width:40px;height:40px;border-radius:12px;flex:0 0 auto}
+.ob-brand .brand{font-size:20px;font-weight:850;color:var(--ink);text-transform:none;letter-spacing:-.025em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Sign-in page fits one iPhone screen (with the Apple button): no scrolling. */
+.screen.auth-fit{padding-top:calc(var(--safe-top) + 6px);padding-bottom:calc(4px + var(--safe-bottom))}
+.auth-fit .stack-lg{gap:clamp(8px,1.2vh,14px)}
+.auth-fit #login-form{gap:clamp(7px,1.1vh,12px)}
+.auth-fit .eyebrow{display:none}
+.auth-fit .display{font-size:clamp(24px,3.4vh,30px);margin-top:0!important}
+.auth-fit #login-form .divider{display:none}
+.auth-fit #login-form .caption{font-size:12px;line-height:1.35}
+.auth-fit #login-form .input{min-height:44px;height:44px}
+.auth-fit #login-form .button.full{min-height:46px}
+@media (max-height:700px){
+  .auth-fit .supporting,.auth-fit #login-form .section-title{display:none}
+  .auth-fit [data-action="switch-auth-tab"]{min-height:40px}
+  .auth-fit .store-logo{width:40px;height:40px}
+  .auth-fit .display{font-size:22px}
+  .auth-fit #login-form .input{min-height:42px;height:42px}
+  .auth-fit #login-form .button.full{min-height:44px}
+}
+/* Bill: the short order number delivery partners match the parcel by ("order ID ending 7180"). */
+.bill-order-no{text-align:center;font-weight:800;font-size:34px;line-height:1.1;margin:6px 0 4px;letter-spacing:.04em;color:#000}
+.bill-order-no small{display:block;font-size:10px;font-weight:700;letter-spacing:.2em;color:#444}
+/* Restaurant map: drag and pinch to look around; the pin moves only on the full-screen "Move pin" map. */
+.rmap{position:relative;height:220px;overflow:hidden;border-radius:14px;background:#dfe7ec;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;cursor:grab}
+.rmap.dragging{cursor:grabbing}
+.rmap-layer{position:absolute;inset:0;transform-origin:50% 50%;will-change:transform}
+.rmap-layer img{position:absolute;width:256px;height:256px;max-width:none;pointer-events:none;-webkit-user-drag:none}
+.rmap-pin{position:absolute;width:0;height:0;pointer-events:none}
+.rmap-pin .rmap-pin-svg{position:absolute;left:-17px;bottom:0;width:34px;height:44px}
+.rmap-pin.was{opacity:.45}
+.rmap-pin.was .rmap-pin-svg{transform:scale(.7);transform-origin:50% 100%}
+.rmap-pin-svg{display:block;max-width:none;filter:drop-shadow(0 4px 6px rgba(0,0,0,.3))}
+.rmap-pin-svg path{fill:var(--brand)}
+.rmap-pin-svg circle{fill:#fff}
+.rmap-btn{position:absolute;width:40px;height:40px;padding:0;border:0;border-radius:12px;background:var(--surface);color:var(--ink);display:grid;place-items:center;box-shadow:0 2px 10px rgba(16,24,40,.2);cursor:pointer}
+.rmap-btn[hidden]{display:none}
+.rmap-btn svg,.rmap-zoom svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.rmap .rmap-expand{top:10px;right:10px}
+.rmap .rmap-recenter{right:10px;bottom:10px}
+.rmap-move{position:absolute;left:10px;bottom:10px;min-height:40px;padding:0 14px 0 11px;border:0;border-radius:999px;background:var(--surface);color:var(--brand);font-weight:820;font-size:14px;display:inline-flex;align-items:center;gap:6px;box-shadow:0 2px 10px rgba(16,24,40,.2);cursor:pointer}
+.rmap-unsaved{align-items:center}
+.rmap-unsaved .text-button{min-height:36px;padding:4px 6px}
+html.rmap-open,html.rmap-open body{overflow:hidden}
+.rmap-full{position:fixed;inset:0;z-index:120;background:#dfe7ec;touch-action:none;animation:fade .18s ease}
+.rmap-full .rmap{position:absolute;inset:0;height:auto;border-radius:0}
+.rmap-full .rmap-close{top:calc(var(--safe-top) + 12px);left:14px;width:44px;height:44px;border-radius:50%}
+.rmap-hint{display:none;position:absolute;top:calc(var(--safe-top) + 14px);left:70px;right:14px;margin:0;padding:10px 12px;border-radius:12px;background:rgba(16,24,40,.88);color:#fff;font-size:13px;font-weight:700;line-height:1.35;pointer-events:none}
+.rmap-full.editing .rmap-hint{display:block}
+.rmap-center{display:none;position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}
+.rmap-full.editing .rmap-center{display:block}
+.rmap-center .rmap-pin-svg{position:absolute;left:-20px;bottom:0;width:40px;height:52px;transition:transform .15s ease}
+.rmap-center i{position:absolute;left:-5px;top:-3px;width:10px;height:6px;border-radius:50%;background:rgba(0,0,0,.35)}
+.rmap.dragging .rmap-center .rmap-pin-svg{transform:translateY(-12px)}
+.rmap-tools{position:absolute;right:14px;bottom:calc(var(--rmap-panel,170px) + 14px);display:grid;gap:10px;justify-items:end}
+.rmap-tools .rmap-btn{position:static;width:44px;height:44px}
+.rmap-zoom{display:grid;background:var(--surface);border-radius:12px;box-shadow:0 2px 10px rgba(16,24,40,.2);overflow:hidden}
+.rmap-zoom button{width:44px;height:44px;padding:0;border:0;background:transparent;color:var(--ink);display:grid;place-items:center;cursor:pointer}
+.rmap-zoom button+button{border-top:1px solid var(--border)}
+.rmap-full .rmap-locate{display:none}
+.rmap-full.editing .rmap-locate{display:grid}
+.rmap-panel{position:absolute;left:0;right:0;bottom:0;padding:18px 16px calc(16px + var(--safe-bottom));background:var(--surface);border-radius:22px 22px 0 0;box-shadow:0 -6px 24px rgba(16,24,40,.16);display:grid;gap:14px}
+.rmap-place{display:flex;gap:10px;align-items:flex-start}
+.rmap-place-ic{width:34px;height:34px;border-radius:10px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;flex:0 0 auto}
+.rmap-place strong{display:block;font-size:16px;line-height:1.3}
+.rmap-place small{display:block;color:var(--muted);font-size:13px;margin-top:2px}
+.rmap-coords{margin:0;display:flex;justify-content:space-between;gap:10px;font-size:13px;color:var(--muted)}
+.rmap-coords strong{color:var(--ink);font-size:15px}
+.rmap-actions{display:grid;grid-template-columns:1fr 1.5fr;gap:10px}
+/* While a text box has the keyboard up, the bottom menu steps aside. */
+html.kb-open .tabs,html.kb-open .bottom-nav{display:none!important}
+
+/* One owner, several restaurants: copy owner, bank and tax details (22 Nov 2026) */
+.copy-ask{align-items:center}
+.copy-ask .button{flex:0 0 auto}
+.copy-list{display:grid;gap:8px}
+.copy-row{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--surface);cursor:pointer}
+.copy-row input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--brand);flex:0 0 auto}
+.copy-row strong{display:block;font-size:15px;line-height:1.3}
+.copy-row .caption{display:block;margin-top:2px}
+.copy-src-name{display:block;font-size:16px}
+.copy-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:10px}
+.copy-actions .button{white-space:nowrap;padding-left:12px;padding-right:12px}
+
+/* One scroll per screen (founder 22 Nov 2026: lists that scrolled inside a scrolling sheet meant reaching under them
+   and pushing the sheet up to get to the button). Lists and agreement text are no longer boxes of their own; a long
+   sheet scrolls as one, and its main button stays in view at the bottom. */
+.sheet{overscroll-behavior-y:contain}
+/* A sticky box stops at the sheet's padding, so it sits that far below it to reach the bottom edge. */
+.sheet .sheet-foot{position:sticky;bottom:calc(-28px - var(--safe-bottom));z-index:3;margin-left:-18px;margin-right:-18px;padding:12px 18px calc(12px + var(--safe-bottom));background:var(--surface);box-shadow:0 -12px 16px -14px rgba(16,24,40,.45)}
+.sheet:has(.sheet-foot:last-child){padding-bottom:0}
+.sheet:has(.sheet-foot:last-child) .sheet-foot{bottom:0}
+/* While the keyboard is up, the button goes back in line so it never covers the field being typed in. */
+html.kb-open .sheet .sheet-foot{position:relative;bottom:auto;box-shadow:none}
+/* Order chat: messages scroll with the page; the typing bar stays above the menu, or above the keyboard while typing. */
+/* Fixed, not sticky: html and body both clip overflow-x, which stops page-level sticky from working. */
+.chat-composer{position:fixed;z-index:20;left:50%;transform:translateX(-50%);width:min(920px,calc(100% - 36px));margin:0;bottom:calc(86px + var(--safe-bottom));box-shadow:0 10px 30px -12px rgba(16,24,40,.35)}
+.chat-thread{margin-bottom:96px}
+/* Fills the strip between the typing bar and the menu so messages don't show through it. */
+.chat-composer::after{content:"";position:absolute;left:-18px;right:-18px;top:100%;height:12px;background:var(--canvas)}
+html.kb-open .chat-composer::after{display:none}
+html.kb-open .chat-composer{bottom:8px}

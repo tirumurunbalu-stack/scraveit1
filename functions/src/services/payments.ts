@@ -26,6 +26,8 @@ import {
 } from "./ledger";
 import type {SavrivoOrder} from "../types";
 import type {CheckoutPaymentProvider} from "../domain/financePolicy";
+import {chargedAfterPickup} from "../domain/foodRescue";
+import {chargedCancelFee} from "../domain/customerCancel";
 import type {InitiatePaymentInput} from "./serviceTypes";
 
 export interface PaymentIntent {
@@ -792,13 +794,19 @@ async function persistPaymentProjection(order: SavrivoOrder, record: CanonicalPa
   }, {merge: true});
 }
 
-export type CancelledOrderRefundResult = "refund_started" | "already_refunding" | "nothing_to_refund" | "rejected";
+export type CancelledOrderRefundResult =
+  | "refund_started" | "already_refunding" | "nothing_to_refund" | "rejected"
+  // Cancelled after pickup on the customer's side: charged as delivered, never refunded (founder 22 Nov 2026).
+  | "charged_after_pickup"
+  // Cancelled by the customer with the 100% fee before pickup (domain/customerCancel.ts).
+  | "charged_cancel_fee";
 
 /**
  * Money on a cancelled order goes back by itself: a paid order that the
  * restaurant, the customer or an admin cancelled, or a payment that landed after
  * the customer gave up on it. Always the full amount, at most once. Cashfree's
  * refund webhook then marks it refunded and posts the ledger entry.
+ * Not for an order cancelled after pickup on the customer's side (domain/foodRescue.ts).
  */
 export async function refundCancelledOrderPayment(
   orderId: string,
@@ -809,6 +817,8 @@ export async function refundCancelledOrderPayment(
   const orderSnapshot = await orderRef(database, orderId).get();
   const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order || order.status !== "Cancelled" || !eligibleOnlinePaymentMethod(order.paymentMethod)) return "nothing_to_refund";
+  if (chargedAfterPickup(order)) return "charged_after_pickup";
+  if (chargedCancelFee(order)) return "charged_cancel_fee";
   if (orderPaymentProvider(order) !== gateway.provider) return "nothing_to_refund";
   const observed = await readCanonicalPayment(order.id, database);
   if (!observed) return "nothing_to_refund";

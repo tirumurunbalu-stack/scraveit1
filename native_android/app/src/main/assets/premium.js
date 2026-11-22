@@ -169,6 +169,33 @@
 function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "₹" + (Number.isInteger(v) ? v.toLocaleString("en-IN") : v.toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2})); }
   function searchKey(value) { return String(value == null ? "" : value).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
   function searchMatches(value, query) { const haystack=searchKey(value),needle=searchKey(query);if(!needle)return true;if(haystack.includes(needle))return true;let at=0;for(let i=0;i<haystack.length&&at<needle.length;i++)if(haystack[i]===needle[at])at++;return at===needle.length; }
+  // ---- Search matching (founder 21 Nov 2026: search must be clean, like Swiggy and Zomato) ----
+  // Every typed word has to start a word of the store's name, its cuisine or one of its dishes, so
+  // "hig" finds nothing instead of every store with an h, i and g somewhere in its menu. Words of
+  // four letters or more forgive missed letters ("biryni" finds Biryani), and the store's name also
+  // forgives squashed typing ("rcehse" finds Rice House).
+  let searchMatchInfo=new Map();
+  const SEARCH_SKIP_SECTIONS={"recommended":true,"bestseller":true,"bestsellers":true,"best-seller":true,"best-sellers":true,"popular":true,"must-try":true,"new":true};
+  function searchWordList(value) { return String(value == null ? "" : value).normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean); }
+  function lettersInOrder(needle, hay, from, span) { let at=0;const end=Math.min(hay.length,from+span);for(let i=from;i<end&&at<needle.length;i++)if(hay[i]===needle[at])at++;return at===needle.length; }
+  function searchWordHit(typed, word) { return word.startsWith(typed)||(typed.length>=4&&word[0]===typed[0]&&word.length-typed.length<=3&&lettersInOrder(typed,word,0,word.length)); }
+  function searchWordsHit(typedWords, words) { return typedWords.every(typed=>words.some(word=>searchWordHit(typed,word))); }
+  /** How a store matches the search box: {score, dishes} (5 = its name starts with it, 4 = name,
+   *  3 = name typed loosely, 2 = cuisine or menu section, 1 = a dish), or null when it does not. */
+  function searchMatch(r, query) {
+    const typed=searchWordList(query);if(!typed.length)return null;
+    const items=discoveryItems(r).filter(item=>item&&item.available!==false);
+    const dishes=items.filter(item=>searchWordsHit(typed,searchWordList(item.name))).map(item=>String(item.name||"").trim()).filter(Boolean);
+    const nameWords=searchWordList(r.name);
+    if(searchWordsHit(typed,nameWords))return {score:nameWords.join(" ").startsWith(typed.join(" "))?5:4,dishes};
+    const squashed=typed.join(""),name=nameWords.join("");
+    if(squashed.length>=3){let at=0;for(const word of nameWords){if(word[0]===squashed[0]&&lettersInOrder(squashed,name,at,squashed.length*2+2))return {score:3,dishes};at+=word.length;}}
+    // Menu sections such as "Recommended" or "Menu" say nothing about the food, so they never match.
+    const kinds=[...(r.cuisines||[]),r.category,...items.map(item=>item.category)]
+      .filter(value=>{const key=keyName(value);return key&&!NON_BROWSABLE_CATEGORY_KEYS[key]&&!SEARCH_SKIP_SECTIONS[key];}).flatMap(searchWordList);
+    if(searchWordsHit(typed,kinds))return {score:2,dishes};
+    return dishes.length?{score:1,dishes}:null;
+  }
   function timeAgo(timestamp) {
     if (!timestamp) return "just now";
     const delta = Math.max(0, Date.now() - Number(timestamp));
@@ -290,15 +317,34 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(hour<15)return{title:"🍛 Your lunch is waiting",body:what+" from "+store+" is still in your cart. Order before you get hangry 😋"};
     if(hour<19)return{title:"☕ Snack break?",body:what+" from "+store+" is still in your cart. Go on, treat yourself 🤤"};
     return{title:"🌙 Dinner, sorted",body:what+" from "+store+" is still in your cart. Tap to order 🍽️"}}
+  // Like Zomato (founder 21 Nov 2026): look at a store, leave without ordering, and 5 seconds later
+  // the phone says it's open (first built with a minute; "make it quicker, Zomato comes way faster"). Same one-a-day limit, hours and switches as the cart reminder; only if the
+  // store is still open and this customer can order there, and not if they've ordered since.
+  const STORE_NUDGE_DELAY=5*1000,STORE_NUDGE_WINDOW=30*60*1000;
+  function storeNudgeCopy(r,hour){const name=String(r.name||"").slice(0,40)||"Your store",kind=storeKind(r);
+    if(kind==="dairy")return{title:"🥛 "+name+" is open",body:"Fresh milk and more, delivered. Order in a tap 🐄"};
+    if(kind==="pharmacy")return{title:"🩹 "+name+" is open",body:"Your health care items are a tap away 💙"};
+    if(kind==="grocery")return{title:"🧺 "+name+" is open",body:"Fill your basket in a tap 🛒"};
+    if(hour<11)return{title:"☀️ "+name+" is open",body:"Breakfast is a tap away. Order now 😋"};
+    if(hour<15)return{title:"🍛 "+name+" is open",body:"Your favourites for lunch are a tap away. Order now 😋"};
+    if(hour<19)return{title:"☕ "+name+" is open",body:"Snack time? Your favourites are a tap away 🤤"};
+    return{title:"🌙 "+name+" is open",body:"Dinner, sorted. Pick your favourites and order now 🍽️"}}
+  function storeNudge(prefs){const v=state.lastStoreVisit;if(!v||Date.now()-v.at>STORE_NUDGE_WINDOW||prefs.mealSuggestions===false)return"";
+    const r=restaurant(v.restaurantId);if(!r||r.open===false||r.acceptingOrders===false||!shownToMe(r)||orderBlockText(r))return"";
+    if((state.orders||[]).some(o=>Number(o.createdAt||0)>=v.at))return"";
+    const hour=new Date(Date.now()+STORE_NUDGE_DELAY).getHours();if(hour<8||hour>=22)return"";
+    const copy=storeNudgeCopy(r,hour),img=String((r.coverImages&&r.coverImages[0])||r.image||"");
+    return JSON.stringify({type:"STORE_NUDGE",restaurantId:String(r.id||v.restaurantId),title:copy.title,body:copy.body,image:/^https:\/\//.test(img)?img:"",delayMs:STORE_NUDGE_DELAY,test:isTester()})}
   window.savrivoCartNudge=function(){try{
-    if(!state.session||!state.cart.length)return"";
+    if(!state.session)return"";
     const prefs=state.profile.preferences||{};if(prefs.notifications===false||prefs.cartReminders===false)return"";
     const acct=chatState().account;if(state.minorAccount===true||(acct&&acct.minor===true))return"";
+    if(!state.cart.length)return storeNudge(prefs);
     const r=cartRestaurant(),snap=cartSnapshot();if(!r||!snap||r.open===false||r.acceptingOrders===false)return"";
     const hour=new Date(Date.now()+CART_NUDGE_DELAY).getHours();if(hour<8||hour>=22)return"";
     clearTimeout(cartSnapTimer);syncCartSnapshot();
     const copy=cartNudgeCopy(snap,hour),img=String(state.cart[0].image||"");
-    return JSON.stringify({title:copy.title,body:copy.body,image:/^https:\/\//.test(img)?img:"",delayMs:CART_NUDGE_DELAY});
+    return JSON.stringify({type:"CART_REMINDER",title:copy.title,body:copy.body,image:/^https:\/\//.test(img)?img:"",delayMs:CART_NUDGE_DELAY,test:isTester()});
   }catch(_){return""}};
   // Reminders and meal-time suggestions are sent by the server, so it needs to know the switches.
   function syncNotificationPrefs(){if(!state.session)return;const p=state.profile.preferences||{};userDoc(state.session.uid).set({preferences:{notifications:p.notifications!==false,cartReminders:p.cartReminders!==false,mealSuggestions:p.mealSuggestions!==false}},{merge:true}).catch(()=>{})}
@@ -762,8 +808,17 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // The restaurant's own order (set in its app or the partner website): categories by categoryRank, then
   // items by itemRank. Anything not arranged yet follows, A to Z. Same order in every Scraveit app.
   function menuInOrder(items){if(!Array.isArray(items))return items;const rank=v=>v===null||v===""||v===undefined||!Number.isFinite(Number(v))?Infinity:Number(v),cat=item=>(item&&item.category)||"Menu",catRank={};items.forEach(item=>{const c=cat(item),r=rank(item&&item.categoryRank);if(!(c in catRank)||r<catRank[c])catRank[c]=r});return items.map((item,i)=>({item,i})).sort((a,b)=>{const ca=cat(a.item),cb=cat(b.item);if(ca!==cb)return(catRank[ca]-catRank[cb])||ca.localeCompare(cb);return(rank(a.item&&a.item.itemRank)-rank(b.item&&b.item.itemRank))||String(a.item&&a.item.name||"").localeCompare(String(b.item&&b.item.name||""))||(a.i-b.i)}).map(x=>x.item)}
+  /** A store's offer that every dish gets as it is: a percent off with no minimum order, no cap
+   *  and no first-order rule. Its price after the offer is shown on the menu, struck the way Deals shows it. */
+  function menuOffer(r,item){if(!r||!window.ScraveitOfferMath)return null;const offers=liveOffersFor(r,true).filter(p=>p.kind==="percent"&&Number(p.percent)>0&&!promotionMinimum(p)&&!(Number(p.maxDiscountPaise)>0)&&p.firstOrderOnly!==true&&(!Array.isArray(p.itemIds)||!p.itemIds.length||(item&&p.itemIds.indexOf(item.id)>=0)));return offers.length?OM.offerScore(offers).best:null}
+  /** What a list shows for a dish: [struck full price or 0, price to show]. */
+  function dishPrices(item,r){const now=Number(item&&item.price)||0,list=Number(item&&item.listPrice)||0;if(list>now&&now>0)return[list,now];const best=menuOffer(r,item);if(best&&now>0){const save=OM.discountPaise(best,Math.round(now*100))/100;if(save>0)return[now,Math.round((now-save)*100)/100]}return[0,now]}
+  /** The full price struck through before the lower price. No percentage. */
+  function wasPrice(item,r){const p=dishPrices(item,r);return p[0]?'<s class="was-price">'+money(p[0])+'</s> ':''}
+  /** The price as a list shows it: one line, with the struck full price first when there is one. */
+  function listPriceMarkup(item,r){const p=dishPrices(item,r);return p[0]?'<span class="price-line"><s class="was-price">'+money(p[0])+'</s><strong>'+money(p[1])+'</strong></span>':'<strong>'+money(p[1])+'</strong>'}
   function shownMenu(r,items){return menuInOrder(withMarkup(r,items))}
-  function withMarkup(r,items){const bps=markupBps(r);if(bps==null||!Array.isArray(items))return items;return items.map(item=>{if(!item||typeof item!=="object")return item;const own=item.ownPrice!=null?Number(item.ownPrice):Number(item.price||0),out=Object.assign({},item,{ownPrice:own,price:markedUp(own,bps)});if(item.variants)out.variants=markChoices(item.variants,bps);if(item.addOns)out.addOns=markChoices(item.addOns,bps);return out})}
+  function withMarkup(r,items){const bps=markupBps(r);if(bps==null||!Array.isArray(items))return items;return items.map(item=>{if(!item||typeof item!=="object")return item;const own=item.ownPrice!=null?Number(item.ownPrice):Number(item.price||0),out=Object.assign({},item,{ownPrice:own,price:markedUp(own,bps)});if(item.listPrice!=null){const ownList=item.ownListPrice!=null?Number(item.ownListPrice):Number(item.listPrice);out.ownListPrice=ownList;out.listPrice=markedUp(ownList,bps)}if(item.variants)out.variants=markChoices(item.variants,bps);if(item.addOns)out.addOns=markChoices(item.addOns,bps);return out})}
 
   function normalizeRestaurant(id, record) {
     const data = Object.assign({}, record || {});
@@ -1154,6 +1209,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     ]);
     const value=index=>result[index].status==="fulfilled"?result[index].value:null;
     state.promotions=Object.keys(value(0)||{}).map(id=>Object.assign({id},value(0)[id])).filter(item=>item.active===true);
+    // A cart saved from before (or filled before offers loaded) gets the best offer now.
+    refreshAutoOffer();
     state.settings=Object.assign(state.settings,value(1)||{});
     state.localAds=Object.keys(value(2)||{}).map(id=>Object.assign({id},value(2)[id]||{}));
     state.broadcasts=Object.keys(value(3)||{}).map(id=>Object.assign({id},value(3)[id]||{}));
@@ -1291,7 +1348,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const city=catalogCity(),prefix=catalogNameKey(query);
     if(!city||!prefix||!state.session)return;
     const key=catalogCityKey(city)+"|"+prefix;
-    if(state.searchFetched[key])return;
+    // true = answered; "failed" = tried and failed, so a later search tries it again.
+    if(state.searchFetched[key]===true)return;
     state.searchFetched[key]=true;
     const sequence=++state.searchSequence;
     state.searchLoading=true;
@@ -1320,10 +1378,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       });
     }catch(error){
       // Leave it retryable rather than remembering a failure as "no matches".
-      delete state.searchFetched[key];
+      state.searchFetched[key]="failed";
     }finally{
       if(sequence===state.searchSequence)state.searchLoading=false;
-      if(state.route==="search")updateSearchResults();
+      // Paint only: starting the lookup again from here looped without pause while offline.
+      if(state.route==="search")patchSearchResults();
     }
   }
 
@@ -1815,7 +1874,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     state.loginFull = false;
     if (state.route === "dm" && route !== "dm" && typeof closeThread === "function") closeThread();
     const wasLive = liveOrderRoute();
-    if (!replace && state.route !== route) state.history.push({route:state.route,data:state.routeData});
+    // Remember how far down the page was, so Back returns to the same spot (founder 21 Nov 2026:
+    // back from a store jumped to the top of the home list).
+    if (!replace && state.route !== route) state.history.push({route:state.route,data:state.routeData,scroll:pendingScrollTarget!=null?pendingScrollTarget:currentPageScrollTop()});
+    if (route === "restaurant" && data && data.restaurantId) state.lastStoreVisit = {restaurantId:String(data.restaurantId), at:Date.now()};
     state.route = route; state.routeData = data || {};
     // Each restaurant has its own cart: opening one shows its cart and keeps the others in the dock.
     if (route === "restaurant" && data && data.restaurantId && typeof parkedCarts === "function"
@@ -1837,6 +1899,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
   }
   function goBack() {
+    // Back on the big map returns to the order screen it was opened from, not Home
+    // (founder, 21 Nov 2026: back from the big map skipped the tracking screen).
+    if (liveOrderRoute() && state.trackingMapCollapsed === false && !state.sheet) { collapseTrackingMap(); return true; }
     const wasLive = liveOrderRoute();
     // An emptied cart has nothing to review: skip its screen.
     while (!state.cart.length && state.history.length && state.history[state.history.length-1].route==="cart") state.history.pop();
@@ -1845,7 +1910,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.route = previous.route; state.routeData = previous.data || {};
       if (wasLive && !liveOrderRoute()) stopTrackingCollapseCycle();
       if (liveOrderRoute()) startTrackingCollapseCycle();
-      closeSheet(); render(); resetPageScroll(); return true;
+      closeSheet(); render({back:true, scrollTo:Number(previous.scroll)||0}); return true;
     }
     if (wasLive) stopTrackingCollapseCycle();
     if (["home","orders","offers","account"].includes(state.route)) return false;
@@ -2277,14 +2342,25 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function dockStep(rail){const n=rail.children.length;return Math.max(1,n>1?(rail.scrollWidth-rail.clientWidth)/(n-1):rail.clientWidth)}
   function setDockDot(i){state.dockIndex=i;document.querySelectorAll(".dock-dots i").forEach((d,k)=>d.classList.toggle("on",k===i))}
   function syncDock(){const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(!n)return;const i=dockIndex(n);if(Math.round(rail.scrollLeft/dockStep(rail))!==i)rail.scrollLeft=i*dockStep(rail)}
-  document.addEventListener("scroll",e=>{const rail=e.target;if(!rail||rail.id!=="dock-rail")return;const i=Math.round(rail.scrollLeft/dockStep(rail));if(i!==state.dockIndex)setDockDot(i)},true);
+  document.addEventListener("scroll",e=>{const rail=e.target;if(!rail||rail.id!=="dock-rail")return;const i=Math.round(rail.scrollLeft/dockStep(rail));if(i!==state.dockIndex)setDockDot(i);armDockSnap()},true);
+  // A swipe on the bar always ends on a whole card. On the iPhone it could stop halfway between two
+  // cards, showing half of each (founder, 21 Nov 2026), so once the finger is up and it stops, finish it.
+  let dockTouching=false,dockSnapTimer=0;
+  function armDockSnap(){clearTimeout(dockSnapTimer);dockSnapTimer=setTimeout(()=>{if(dockTouching)return;const rail=document.getElementById("dock-rail");if(!rail||!rail.children.length)return;
+    if(rail.scrollTop)rail.scrollTop=0;const step=dockStep(rail),i=Math.max(0,Math.min(rail.children.length-1,Math.round(rail.scrollLeft/step)));if(Math.abs(rail.scrollLeft-i*step)>2)dockSlideTo(rail,i*step,220)},180)}
+  // Slide like Swiggy/Zomato (founder, 21 Nov 2026: ~1 s was "moving slow", 0.3 s "super fast",
+  // then "slightly slow, not very slow"): 0.45 s, easing in and out, a card every 3 s. Snapping is off while it moves so it can't jump.
+  let dockAnim=0;
+  function dockSlideTo(rail,left,ms){cancelAnimationFrame(dockAnim);const from=rail.scrollLeft,dist=left-from;if(Math.abs(dist)<1)return;const t0=performance.now();rail.style.scrollSnapType="none";
+    const tick=now=>{if(dockTouching){rail.style.scrollSnapType="";return}const k=Math.min(1,(now-t0)/ms),e=k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;rail.scrollLeft=from+dist*e;if(k<1)dockAnim=requestAnimationFrame(tick);else rail.style.scrollSnapType=""};dockAnim=requestAnimationFrame(tick)}
   // The strip slides to its next card on its own (back to the first after the last). It waits while the
   // customer is touching it, while a sheet is open and while the app is in the background.
-  const DOCK_SLIDE_MS=4000;let dockTouchedAt=0;
-  document.addEventListener("touchstart",e=>{if(e.target&&e.target.closest&&e.target.closest(".bottom-dock"))dockTouchedAt=Date.now()},{passive:true,capture:true});
-  setInterval(()=>{const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(n<2||state.sheet||document.visibilityState!=="visible"||Date.now()-dockTouchedAt<DOCK_SLIDE_MS*2)return;
-    const isRate=k=>rail.children[k].classList.contains("rate"),from=dockIndex(n);if(isRate(from))return;let next=(from+1)%n;while(isRate(next))next=(next+1)%n;
-    if(next!==from)rail.scrollTo({left:next*dockStep(rail),behavior:"smooth"})},DOCK_SLIDE_MS);
+  const DOCK_SLIDE_MS=3000;let dockTouchedAt=0;
+  document.addEventListener("touchstart",e=>{if(e.target&&e.target.closest&&e.target.closest(".bottom-dock")){dockTouchedAt=Date.now();dockTouching=true}},{passive:true,capture:true});
+  ["touchend","touchcancel"].forEach(type=>document.addEventListener(type,()=>{if(!dockTouching)return;dockTouching=false;dockTouchedAt=Date.now();armDockSnap()},{passive:true,capture:true}));
+  // Rating cards slide too (founder, 21 Nov 2026: "not moving automatically"); a touch still holds it for 6 s.
+  setInterval(()=>{const rail=document.getElementById("dock-rail");const n=rail&&rail.children?rail.children.length:0;if(n<2||state.sheet||dockTouching||document.visibilityState!=="visible"||Date.now()-dockTouchedAt<DOCK_SLIDE_MS*2)return;
+    const next=(dockIndex(n)+1)%n;dockSlideTo(rail,next*dockStep(rail),450)},DOCK_SLIDE_MS);
 
   function dockSheet(){const carts=dockSlides().filter(x=>x.kind==="cart"),slides=carts;
     return sheetShell("Your carts",carts.length+" restaurants",''
@@ -2647,7 +2723,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const payload=event||{},type=String(payload.type||"");
     if(type==="TOKEN_REFRESH"){registerPushTokenIfAllowed().catch(()=>{});return;}
     if(type==="CALL_INCOMING"||type==="CALL_ENDED"){if(state.session&&callWatchUid)handleCallPush(payload);else pendingCallEvent=payload;return;}
+    if(type==="STORE_NUDGE"&&payload.openedFromNotification===true){openStoreNudge(String(payload.restaurantId||""),0);return;}
     if(!state.session)return;
+    // Food Rescue near you (services/foodRescue.ts): the offer shows at the top of Home.
+    if(type==="FOOD_RESCUE"){if(payload.openedFromNotification===true&&state.route!=="home")go("home");refreshFoodRescues(true);return;}
     if(type==="CART_REMINDER"&&payload.openedFromNotification===true){go(state.cart.length?"cart":"home");return;}
     if(type==="MEAL_SUGGESTION"&&payload.openedFromNotification===true){go("home");return;}
     if(type==="CHAT"&&payload.openedFromNotification===true){const route=String(payload.route||"");if(route.startsWith("dm:"))go("dm",{pairId:route.slice(3)});else if(route==="week"){go("chats");setTimeout(openWeekCard,500)}else go(route==="friends"?"friends":"chats");return;}
@@ -2662,6 +2741,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       }else if(["home","orders","order","tracking"].includes(state.route))render({preserveScroll:true});
     }
   };
+
+  function openStoreNudge(id,tries){if(!state.session||!restaurant(id)){if(tries<24){setTimeout(()=>openStoreNudge(id,tries+1),500);return}if(!state.session)return;go("home");return}
+    if(state.route==="restaurant"&&state.routeData&&state.routeData.restaurantId===id)return;go("restaurant",{restaurantId:id})}
 
   async function syncEmailVerification() {
     if (!state.session) return false;
@@ -2873,10 +2955,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   // updating nodes in place cannot drop or duplicate handlers.
   // ---------------------------------------------------------------------
   // Routes that manage part of their own DOM imperatively (the tracking map's
-  // tiles/markers/transforms, and the search screen's #search-results panel)
-  // are rebuilt wholesale exactly as before - reconciling them would fight
-  // those hand-written updates.
-  const MORPH_BLOCKED_ROUTES = {order:true, tracking:true, search:true};
+  // tiles/markers/transforms) are rebuilt wholesale exactly as before -
+  // reconciling them would fight those hand-written updates. The search screen
+  // is reconciled like the rest: rebuilding it whenever a background update
+  // landed closed the keyboard and reloaded every photo while the customer
+  // typed (founder, 21 Nov 2026).
+  const MORPH_BLOCKED_ROUTES = {order:true, tracking:true};
   const LIVE_VALUE_TAGS = {INPUT:true, TEXTAREA:true, SELECT:true};
 
   function sameNodeShape(oldNode, newNode) {
@@ -2906,6 +2990,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if (oldNode.nodeValue !== newNode.nodeValue) oldNode.nodeValue = newNode.nodeValue;
       return;
     }
+    // A part that animates itself (the search box's rolling hint) is left exactly as it is.
+    if (oldNode.hasAttribute("data-morph-own") && newNode.hasAttribute("data-morph-own")) return;
     if (LIVE_VALUE_TAGS[oldNode.tagName]) {
       // What the customer has typed/picked lives on the property, not the
       // attribute, so only follow the attribute when the render actually
@@ -2914,12 +3000,36 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       const hadValue = oldNode.getAttribute("value"), nextValue = newNode.getAttribute("value");
       const hadChecked = oldNode.hasAttribute("checked"), nextChecked = newNode.hasAttribute("checked");
       syncAttributes(oldNode, newNode);
-      if (nextValue !== null && nextValue !== hadValue) oldNode.value = nextValue;
+      // Writing the same text back would still disturb typing in progress.
+      if (nextValue !== null && nextValue !== hadValue && oldNode.value !== nextValue) oldNode.value = nextValue;
       if (nextChecked !== hadChecked) oldNode.checked = nextChecked;
     } else {
       syncAttributes(oldNode, newNode);
     }
-    morphChildren(oldNode, newNode);
+    if (newNode.hasAttribute("data-keyed")) morphKeyedChildren(oldNode, newNode);
+    else morphChildren(oldNode, newNode);
+  }
+
+  // A list marked data-keyed keeps each row's own element (matched by its
+  // data-mkey): rows that stay are moved and updated in place rather than
+  // rebuilt, so their photos never reload or flash as the list changes.
+  function morphKeyedChildren(target, source) {
+    const keyOf = node => node.nodeType === 1 ? node.getAttribute("data-mkey") : null;
+    const unused = new Map();
+    for (let node = target.firstChild; node; node = node.nextSibling) { const key = keyOf(node); if (key && !unused.has(key)) unused.set(key, node); }
+    let at = target.firstChild;
+    for (let node = source.firstChild; node;) {
+      const next = node.nextSibling, key = keyOf(node), keep = key ? unused.get(key) : null;
+      if (keep) {
+        unused.delete(key);
+        if (keep === at) at = at.nextSibling; else target.insertBefore(keep, at);
+        morphNode(keep, node);
+      } else {
+        target.insertBefore(node, at);
+      }
+      node = next;
+    }
+    while (at) { const next = at.nextSibling; target.removeChild(at); at = next; }
   }
 
   function morphChildren(target, source) {
@@ -2976,6 +3086,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     ensureCallWatch();
     ensurePartnerCheck();
     const preserving = !!(options && options.preserveScroll);
+    // Back to a screen: show it at once where the customer left it, like Swiggy and Zomato. The
+    // entrance animation kept the lower part of the page invisible for about half a second, so
+    // back from a store showed a white page (founder, 21 Nov 2026).
+    const back = !!(options && options.back);
+    const backTo = back && Number.isFinite(Number(options.scrollTo)) ? Math.max(0, Number(options.scrollTo)) : null;
     const gated = privacyGateNeeded();
     if (gated && state.sheet) state.sheet = null;
     const routeKey = gated ? "__privacy" : state.route;
@@ -2991,7 +3106,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       && !!app.firstElementChild;
     // Only meaningful when the scroller is about to be destroyed; must be read
     // before any DOM write.
-    const scrollY = (!canMorph && preserving)
+    const scrollY = backTo !== null ? backTo : (!canMorph && preserving)
       ? (pendingScrollTarget !== null ? pendingScrollTarget : currentPageScrollTop())
       : 0;
 
@@ -3001,15 +3116,35 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     lastRenderedRoute = routeKey;
     lastRenderedKind = state.homeKind || "restaurant";
 
+    // Keep what the customer is looking at in place. Two things moved it: the browser lowered the
+    // scroll position while the page was being updated, and a line added above the view (the
+    // checkout's "You saved" banner, once the price came back) pushed everything down: tapping
+    // an offer's Apply or Remove made Savings jump ~285 px (founder, 21 Nov 2026).
+    let keep = null;
+    if (canMorph && preserving) {
+      const sc = pageScroller();
+      if (sc) {
+        let anchor = null;
+        if (sc.scrollTop > 4) for (const el of app.querySelectorAll("[data-anchor]")) { const r = el.getBoundingClientRect(); if (r.bottom > 110) { anchor = {key: el.dataset.anchor, top: r.top}; break; } }
+        keep = {sc, top: sc.scrollTop, anchor};
+      }
+    }
     if (canMorph) {
       const incoming = document.createElement("div");
       incoming.innerHTML = html;
       morphChildren(app, incoming);
+      if (keep && keep.sc === pageScroller()) {
+        if (keep.sc.scrollTop !== keep.top) keep.sc.scrollTop = keep.top;
+        const el = keep.anchor && app.querySelector('[data-anchor="' + keep.anchor.key + '"]');
+        if (el) { const d = el.getBoundingClientRect().top - keep.anchor.top; if (Math.abs(d) > 0.5) keep.sc.scrollTop = keep.sc.scrollTop + d; }
+      }
     } else {
       app.innerHTML = html;
+      if (backTo !== null) { const sc = pageScroller(); if (sc) sc.scrollTop = backTo; }
     }
     app.setAttribute("aria-busy", state.loading ? "true" : "false");
-    if (entering) { enterScreen(); slideNavPill(pillFrom); }
+    // Search opens still, like Swiggy and Zomato: its box is about to take the keyboard.
+    if (entering) { if (!back && routeKey !== "search") enterScreen(); slideNavPill(pillFrom); }
     if (!appReadySent && routeKey !== "launch") { appReadySent = true; try { if (window.FeastlyNative && FeastlyNative.appReady) FeastlyNative.appReady(); } catch (_) {} }
     // trackingTileMarkup() intentionally renders no tiles (see its comment) so
     // that every tile - including the very first batch - is created the same
@@ -3033,6 +3168,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     refreshCardPhotos();
     if (typeof syncDock === "function") syncDock();
     afterHomeRender();
+    if (routeKey === "search") startSearchHints();
     renderSheet();
     syncBusy();
     try{watchSignals()}catch(_){}
@@ -3072,7 +3208,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const sky=state.route==="deals"&&!pinned?{top:"#ff9a1f",dark:true}:state.heroTheme&&((state.route==="home"&&document.querySelector(".hero2")&&!pinned)||((state.route==="welcome"||(state.route==="login"&&!state.loginFull))&&document.querySelector(".welcome2")))?state.heroTheme:null;
     if(sky){color=sky.top;darkIcons=!sky.dark;}
     // A story or a full-screen photo is black edge to edge, clock included.
-    const black=!!(state.sheet&&["friendStory","photo","compose","reelCompose","storyCam"].includes(state.sheet.type))||(state.route==="reels"&&!state.sheet);
+    const black=!!(state.sheet&&["friendStory","photo","compose","reelCompose","storyCam","storyStart"].includes(state.sheet.type))||(state.route==="reels"&&!state.sheet);
     if(black){color="#05080F";darkIcons=false;}
     // Welcome and sign-in: the sky itself runs under the clock, so the strip is see-through (a solid
     // strip showed a seam against the sky's gradient).
@@ -3552,7 +3688,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function pairRow(r,it){
     const photo=it.imageThumb||it.imageUrl||it.image,diet='<span class="diet-mark '+(it.diet==="nonveg"||it.diet==="egg"?'nonveg':'')+'" aria-label="'+(it.diet==="egg"?'Contains egg':it.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span>';
     return'<div class="pair-row">'+(photo?'<div class="usual-thumb pair-thumb"><img src="'+h(safeUrl(photo,r.imageThumb||r.image))+'" alt="" loading="lazy" decoding="async">'+diet+'</div>':'')
-      +'<div class="pair-copy"><h4>'+(photo?'':diet)+'<span>'+h(it.name)+'</span></h4><strong>'+money(it.price)+'</strong></div>'+pairAddControl(r,it)+'</div>';
+      +'<div class="pair-copy"><h4>'+(photo?'':diet)+'<span>'+h(it.name)+'</span></h4>'+listPriceMarkup(it,r)+'</div>'+pairAddControl(r,it)+'</div>';
   }
   function pairStrip(r,title,items,note){return'<div class="pair-strip"><span class="pair-title">'+h(title||"Goes well with")+'</span>'+(note?'<span class="caption">'+h(note)+'</span>':'')+items.map(it=>pairRow(r,it)).join("")+'</div>'}
   /** Under a dish on the menu, once it is in the cart: the pairings the store chose for that dish. */
@@ -3567,7 +3703,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       const d=(r.menu||[]).find(i=>i.id===with_);return pairStrip(r,x.p.title,items,d?"Goes with your "+d.name:"");
     }).filter(Boolean).slice(0,2).join("");
   }
-  function restaurantOffersStrip(r){const offers=liveOffersFor(r,true).filter(p=>p.code),gifts=liveFreebies(r);if(!offers.length&&!gifts.length)return"";const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||"").toUpperCase();return'<section class="offer-strip" aria-label="Offers">'+gifts.slice(0,3).map(f=>'<div class="offer-tile gift"><span class="offer-tile-icon" aria-hidden="true">🎁</span><div class="grow"><strong>'+h(f.title)+'</strong><span class="caption">'+h(freebieLine(r,f))+'</span></div></div>').join("")+offers.slice(0,4).map(p=>{const code=String(p.code).toUpperCase(),on=applied===code;return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">'+h(promotionSponsor(p))+(p.firstOrderOnly?' · first order':'')+'</span></div><button class="offer-apply'+(on?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(on?'✓ '+h(code):'Apply '+h(code))+'</button></div>'}).join("")+'</section>'}
+  /** Checkout: the other offers this exact cart can use, best saving first, to tap. */
+  function checkoutOfferTiles(){const r=cartRestaurant();if(!r||!state.cart.length)return"";const sub=cartSubtotal(),now=Date.now(),on=eligibleCoupon(),applied=on?String(on.code||"").toUpperCase():"";const offers=(state.promotions||[]).filter(p=>p.code&&String(p.code).toUpperCase()!==applied&&promotionEligible(p,r.id,sub,now)).map(p=>({p,save:promotionDiscount(p,promotionBase(p,sub))})).filter(x=>x.save>0).sort((a,b)=>b.save-a.save).slice(0,3);if(!offers.length)return"";return'<div class="offer-strip checkout-offers" aria-label="Offers for this order">'+offers.map(({p,save})=>{const code=String(p.code).toUpperCase();return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">Save '+money(save)+' · '+h(promotionSponsor(p))+'</span></div><button class="offer-apply" data-action="pick-offer" data-code="'+h(code)+'">Apply '+h(code)+'</button></div>'}).join("")+'</div>'}
+  function restaurantOffersStrip(r){const offers=liveOffersFor(r,true).filter(p=>p.code),gifts=liveFreebies(r);if(!offers.length&&!gifts.length)return"";// With an empty cart, the offer the menu prices already include is shown as applied: it applies by itself
+    // when the first dish goes in (founder, 21 Nov 2026: prices were cut but the card still said "Apply").
+    const auto=!state.cart.length&&!(state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id)?menuOffer(r,null):null;
+    const applied=String(state.coupon&&state.coupon.code||state.pendingCoupon&&state.pendingCoupon.restaurantId===r.id&&state.pendingCoupon.code||auto&&auto.code||"").toUpperCase();return'<section class="offer-strip" aria-label="Offers">'+gifts.slice(0,3).map(f=>'<div class="offer-tile gift"><span class="offer-tile-icon" aria-hidden="true">🎁</span><div class="grow"><strong>'+h(f.title)+'</strong><span class="caption">'+h(freebieLine(r,f))+'</span></div></div>').join("")+offers.slice(0,4).map(p=>{const code=String(p.code).toUpperCase(),on=applied===code;return'<div class="offer-tile"><span class="offer-tile-icon" aria-hidden="true">%</span><div class="grow"><strong>'+h(OM.offerLabel(p))+'</strong><span class="caption">'+h(promotionSponsor(p))+(p.firstOrderOnly?' · first order':'')+'</span></div><button class="offer-apply'+(on?' on':'')+'" data-action="apply-offer-code" data-code="'+h(code)+'" data-restaurant-id="'+h(r.id)+'">'+(on?'✓ Applied':'Apply '+h(code))+'</button></div>'}).join("")+'</section>'}
   function restaurantOfferLabel(r){
     const offers=liveOffersFor(r,true);
     if(offers.length){const best=OM.offerScore(offers).best;if(best)return OM.offerLabel(best)}
@@ -3576,17 +3717,24 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const gift=liveFreebies(r)[0];if(gift)return"Free "+gift.freeItem;
     return restaurantHasOffer(r)?"Offer":"";
   }
-  function restaurantsFiltered() {
+  function restaurantsFiltered(options) {
+    // The rolling search hint asks without the typed words, so a search never narrows its dishes.
+    const ignoreQuery=!!(options&&options.ignoreQuery);
     // While searching, the server's city-wide name matches join the pages
     // already on the device. Every filter below still applies to them, so a
     // restaurant found this way is still only shown if it is deliverable.
-    const source=state.route==="search"&&searchKey(state.query)&&Object.keys(state.searchCatalog).length
+    const source=!ignoreQuery&&state.route==="search"&&searchKey(state.query)&&Object.keys(state.searchCatalog).length
       ? Object.assign({},state.catalog,state.searchCatalog)
       : state.catalog;
     const ads=sponsoredNow();
     let list=Object.values(Object.assign({},state.sponsoredStores,source)).filter(r=>r.archived!==true&&shownToMe(r)&&(state.catalog[r.id]||state.searchCatalog[r.id]||ads.has(r.id)));
+    // Only the search screen narrows by what was typed there. Home and its lists never do: after a
+    // search, going back left Home showing only the last search's stores (found 21 Nov 2026).
+    const q=state.route==="search"&&!ignoreQuery?state.query:"";
+    const typed=!!searchKey(q);
 
-    if(state.cuisine!=="All")
+    // The category chips sit above the full list only; a typed search looks through every category.
+    if(state.cuisine!=="All"&&!typed)
       list=list.filter(r=>(r.cuisines||[]).some(c=>keyName(c)===keyName(state.cuisine))||keyName(r.category)===keyName(state.cuisine)||discoveryItems(r).some(i=>keyName(i.category)===keyName(state.cuisine)));
 
     if(state.profile.preferences.vegetarian||state.diet==="veg")
@@ -3596,9 +3744,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(state.homeFilter==="offers")list=list.filter(restaurantHasOffer);
     if(state.homeFilter==="pureveg")list=list.filter(isPureVegRestaurant);
 
-    const q=state.query;
-    if(searchKey(q))
-      list=list.filter(r=>searchMatches([r.name,(r.cuisines||[]).join(" "),...discoveryItems(r).map(i=>i.name+" "+(i.description||""))].join(" "),q));
+    if(typed){
+      searchMatchInfo=new Map();
+      list=list.filter(r=>{const match=searchMatch(r,q);if(match)searchMatchInfo.set(r.id,match);return !!match;});
+    }
 
     const address=currentAddress();
     const pinned=!!(address
@@ -3671,6 +3820,10 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         ||distanceValue(a)-distanceValue(b)
         ||Number(a.etaMin||99)-Number(b.etaMin||99)
       );
+      // A typed search puts the best match first (name, then category, then a dish), open stores
+      // ahead of closed ones; the order above breaks ties.
+      if(typed)list.sort((a,b)=>openValue(a)-openValue(b)
+        ||((searchMatchInfo.get(b.id)||{}).score||0)-((searchMatchInfo.get(a.id)||{}).score||0));
     }
 
     return list;
@@ -3685,7 +3838,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return'<div class="photo-track" data-rid="'+h(r.id)+'">'+photos.map((url,i)=>'<img src="'+h(safeUrl(i===0?(r.imageThumb||thumbs[0]||url):(thumbs[i]||url),"restaurant-placeholder.svg"))+'" alt="'+h(r.name)+' photo '+(i+1)+'" loading="lazy" decoding="async"'+fallback+'>').join("")+'</div>'
       +'<div class="photo-dots" aria-hidden="true">'+photos.map((_,i)=>'<span'+(i===cur?' class="on"':'')+'><b></b></span>').join("")+'</div>';
   }
-  function restaurantCard(r,horizontal){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · "),km=restaurantDistanceKm(r),kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";return'<article class="restaurant-card rc2'+(openingSoon(r)?' is-soon':r.open?'':' is-closed')+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button>'+(openingSoon(r)?'<span class="rc2-eta soon">Opening soon</span>':r.open?'':'<span class="rc2-eta">Closed</span>')+'</div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+h(ratingText):'New')+'</span></div><p class="rc2-meta">'+(sponsoredNow().has(r.id)?'<span class="rc2-ad" title="Sponsored: this store paid to be shown first">Ad</span>':'')+icon("clock","small")+'<span>'+storeTimeText(r,'mins')+'</span>'+(kmText?'<i></i><span>'+h(kmText)+'</span>':'')+'</p>'+(cuisines||isPureVegRestaurant(r)?'<p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+'</p>':'')+'</div></article>'}
+  function restaurantCard(r,horizontal,keyed){const liked=(state.profile.favourites||[]).includes(r.id),fee=deliveryFeeForRestaurant(r,0),rating=ratingForRestaurant(r),ratingText=rating.value?rating.value.toFixed(1):"New",offer=restaurantOfferLabel(r),cuisines=(r.cuisines||[]).slice(0,2).join(" · "),km=restaurantDistanceKm(r),kmText=Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";return'<article class="restaurant-card rc2'+(openingSoon(r)?' is-soon':r.open?'':' is-closed')+'"'+(keyed?' data-mkey="'+h(r.id)+'"':'')+' data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'" tabindex="0" role="button" aria-label="Open '+h(r.name)+'"><div class="rc2-media">'+cardPhotosMarkup(r)+(offer?'<span class="rc2-offer">'+h(offer)+'</span>':'')+(isBestOfferHere(r)?'<span class="rc2-best">Best offer in '+h(offerAreaName())+'</span>':'')+'<button class="heart-button '+(liked?'liked':'')+'" data-action="toggle-favourite" data-restaurant-id="'+h(r.id)+'" aria-label="'+(liked?'Remove from':'Add to')+' favourites">'+icon("heart")+'</button>'+(openingSoon(r)?'<span class="rc2-eta soon">Opening soon</span>':r.open?'':'<span class="rc2-eta">Closed</span>')+'</div><div class="rc2-copy"><div class="rc2-title"><h3 class="card-title restaurant-name">'+h(r.name)+'</h3><span class="rc2-rating'+(rating.value?'':' new')+'">'+(rating.value?'★ '+h(ratingText):'New')+'</span></div><p class="rc2-meta">'+(sponsoredNow().has(r.id)?'<span class="rc2-ad" title="Sponsored: this store paid to be shown first">Ad</span>':'')+icon("clock","small")+'<span>'+storeTimeText(r,'mins')+'</span>'+(kmText?'<i></i><span>'+h(kmText)+'</span>':'')+'</p>'+(cuisines||isPureVegRestaurant(r)?'<p class="supporting rc2-sub">'+(isPureVegRestaurant(r)?'<span class="pure-veg-badge">Pure veg</span> ':'')+h(cuisines)+'</p>':'')+'</div></article>'}
   // ===== Campaign banner: the top of home becomes an animated ad =====
   // Only for a real campaign: an ad the admin published with a discount in its
   // title ("Items at 50% OFF"), or else the best offer that is live right now.
@@ -3987,12 +4140,16 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(theme.deco)html+='<span class="sky-deco">'+h(theme.deco)+'</span>';
     return'<div class="hero2-sky" aria-hidden="true">'+html+'</div>';
   }
+  // Dishes for the rolling "Search ‘…’" hint: from the open tab's kind of store only, and only veg
+  // dishes in veg mode (22 Nov 2026: Home said "Search ‘Chicken biryani’" with VEG switched on).
   function searchHints(){
-    if(state.searchHintsCache&&Date.now()-state.searchHintsCache.at<60000)return state.searchHintsCache.list;
+    const kind=GOODS_TABS.includes(state.homeKind)?state.homeKind:"restaurant",veg=state.profile.preferences.vegetarian===true||state.diet==="veg",key=kind+"|"+(veg?"veg":"all")+"|"+state.cuisine;
+    if(state.searchHintsCache&&state.searchHintsCache.key===key&&Date.now()-state.searchHintsCache.at<60000)return state.searchHintsCache.list;
     const seen=new Set(),list=[];
-    restaurantsFiltered().forEach(r=>discoveryItems(r).forEach(item=>{const n=String(item.name||"").trim();if(item.available!==false&&(item.popular||list.length<6)&&n.length>3&&n.length<26&&!seen.has(n.toLowerCase())){seen.add(n.toLowerCase());list.push(n);}}));
-    const out=(list.length?list:["chicken biryani","masala dosa","filter coffee","paneer butter masala","chocolate waffle"]).slice(0,12);
-    state.searchHintsCache={at:Date.now(),list:out};return out;
+    restaurantsFiltered({ignoreQuery:true}).forEach(r=>{if(storeKind(r)!==kind)return;discoveryItems(r).forEach(item=>{const n=String(item.name||"").trim();if(item.available!==false&&(!veg||item.diet==="veg")&&(item.popular||list.length<6)&&n.length>3&&n.length<26&&!seen.has(n.toLowerCase())){seen.add(n.toLowerCase());list.push(n);}});});
+    const fallback=kind!=="restaurant"?["what you need"]:veg?["masala dosa","filter coffee","paneer butter masala","chocolate waffle"]:["chicken biryani","masala dosa","filter coffee","paneer butter masala","chocolate waffle"];
+    const out=(list.length?list:fallback).slice(0,12);
+    state.searchHintsCache={at:Date.now(),key,list:out,real:list.length>0};return out;
   }
   let heroHintTimer=null,heroHintIndex=0;
   function startHeroHints(){
@@ -4014,7 +4171,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const topRow='<div class="hero2-top"><button class="hh2-loc" data-action="open-address-picker" aria-label="Change delivery location"><span class="hh2-pin">'+icon("pin")+'</span><span class="hh2-copy"><strong>'+h(title)+'<span class="hh2-caret">'+icon("chevron","small")+'</span></strong><small>'+h(sub)+'</small></span></button>'
       // Chats, offers and orders live in Your people and Account, so the top stays clean.
       +'<div class="hh2-actions"><button class="hh2-avatar" data-action="go" data-route="account" aria-label="Open account">'+myAvatarFace()+'</button></div></div>';
-    const searchRow='<div class="hero2-search-row"><button class="hero2-search" data-action="go" data-route="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'+vegModeToggle()+'</div>';
+    const searchRow='<div class="hero2-search-row"><button class="hero2-search" data-action="go" data-route="search" data-focus="search">'+icon("search")+'<span id="hero-search-hint">Search ‘'+h(hints[0])+'’</span></button>'+vegModeToggle()+'</div>';
     // A campaign takes the whole top: location, then search, then the animated ad.
     if(campaign){state.heroTheme={top:"#ff9a1f",dark:true};state.heroThemeKind="campaign";
       return '<header class="hero2 dark campaign" style="--sky-top:#ff9a1f;--sky-bottom:#c3141a"><span class="camp-rays" aria-hidden="true"></span>'+topRow+searchRow+campaignStage(campaign)+'</header>';}
@@ -4029,7 +4186,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function vegModeToggle(){const on=state.profile.preferences.vegetarian===true;return'<button class="veg-mode'+(on?' on':'')+'" data-action="toggle-preference" data-key="vegetarian" role="switch" aria-checked="'+on+'" aria-label="Veg mode"><span class="veg-mode-label">VEG</span><span class="veg-mode-track"><i></i></span></button>'}
   // Once the hero's search scrolls away, a slim copy of it stays pinned at the top.
-  function homeStickyBar(){return'<div class="sticky-bar home-sticky" data-anchor=".hero2-search"><button class="sticky-search" data-action="go" data-route="search">'+icon("search")+'<span>Search dishes or restaurants</span></button>'+vegModeToggle()+'</div>'}
+  function homeStickyBar(){return'<div class="sticky-bar home-sticky" data-anchor=".hero2-search"><button class="sticky-search" data-action="go" data-route="search" data-focus="search">'+icon("search")+'<span>Search dishes or restaurants</span></button>'+vegModeToggle()+'</div>'}
   function mascotTap(){
     const mascot=todaysMascot();haptic(15);
     if(window.HeroRider)HeroRider.hop();
@@ -4351,7 +4508,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(prefersCalm())return;
     const mascot=todaysMascot(),el=document.createElement("div");el.className="placed-moment";el.setAttribute("role","status");
     const img=mascot&&window.HeroRider&&HeroRider.snapshot?HeroRider.snapshot(mascot.id,320,320,false,"wave"):null;
-    el.innerHTML=(img?'<img src="'+img.toDataURL("image/png")+'" alt="">':'')+'<strong>Order placed!</strong><span>'+h((order&&order.restaurant?order.restaurant:"The restaurant")+" is getting started.")+'</span>';
+    el.innerHTML=(img?'<img src="'+img.toDataURL("image/png")+'" alt="">':'')+'<strong>Order placed!</strong><span>'+h(order&&order.foodRescue?"Your delivery partner is bringing it now.":(order&&order.restaurant?order.restaurant:"The restaurant")+" is getting started.")+'</span>';
     document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("show"));confetti({count:150,y:window.innerHeight*0.3});
     const close=()=>{el.classList.remove("show");setTimeout(()=>el.remove(),400);};el.addEventListener("click",close);setTimeout(close,2600);
   }
@@ -5010,7 +5167,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +(x.caption?'<p class="feed-caption"><strong>'+h(mine?"You":String(name).split(" ")[0])+'</strong> '+h(x.caption)+'</p>':'')+'</article>'}
   // Sharing: pick a photo, then choose story or post and add a caption.
   async function feedCompose(kind,gallery){if(chatGate()){go("chats");return}
-    if(kind!=="post"&&!gallery&&storyCamAvailable()){openStoryCam();return}
+    if(kind!=="post"&&!gallery&&storyCamAvailable()){openStoryStart();return}
     if(!nativeAvailable("pickChatPhoto")){toast("Update Scraveit to share photos.","danger");return}
     let res;try{res=await nativeInvoke("pickChatPhoto",{},{timeoutMs:180000})}catch(e){if(!/CANCELLED|No photo/i.test(String(e&&e.message||"")))toast("Not shared. "+chatError(e),"danger");return}
     const d=res&&(res.image?res:res.data&&res.data.image?res.data:res.result)||{},img=String(d.image||""),w=Math.round(Number(d.w)||0),hh=Math.round(Number(d.h)||0);
@@ -5430,11 +5587,26 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     finally{postVideoLoading.delete(id);if(state.sheet&&state.sheet.type==="friendStory")renderSheet()}}
 
   // ---- the story camera: live lenses; tap for a photo, hold for a video (up to 15 seconds) ----
-  const cam={stream:null,video:null,lens:null,facing:"user",lensId:"party",rec:null,chunks:[],recAt:0,recTimer:0,poster:null,hold:0,opening:false};
+  const cam={stream:null,video:null,lens:null,facing:"user",lensId:"none",fromStart:false,flipping:false,rec:null,chunks:[],recAt:0,recTimer:0,poster:null,hold:0,opening:false};
   function storyCamAvailable(){return!!(window.ScraveitCallFx&&ScraveitCallFx.lens&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&HTMLCanvasElement.prototype.captureStream)}
   async function camPerms(){if(!nativeAvailable("callPermissions"))return true;
     try{const p=await nativeInvoke("callPermissions",{video:true},{timeoutMs:60000});if(!p||p.video!==true){toast("Allow the camera for stories (Settings › Apps › Scraveit › Permissions).","warning");return false}return true}catch(_){return false}}
-  async function openStoryCam(reel){if(chatGate()){go("chats");return}if(cam.opening)return;cam.opening=true;cam.reel=reel===true;
+  // "Add to story" page: the camera, a photo from the gallery, or an effect to start the camera with
+  // (founder, 21 Nov 2026: Add story went straight into the camera). The effects' face and person
+  // finders start loading while this page is open, so the camera itself opens at once.
+  const SS_CAMERA='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l1.7-2.4h6.6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.2" r="3.6"/></svg>';
+  const SS_GALLERY='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.7"/><path d="M21 15.5l-5-4.6-8.6 8.6"/></svg>';
+  const SC_FLIP='<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l1.7-2.4h6.6L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><path d="M8.9 13.6a3.2 3.2 0 0 1 5.6-2.3"/><path d="M14.9 9.7v1.9H13"/><path d="M15.1 12.8a3.2 3.2 0 0 1-5.6 2.3"/><path d="M9.1 16.7v-1.9H11"/></svg>';
+  function openStoryStart(){if(chatGate()){go("chats");return}setSheet({type:"storyStart"});
+    setTimeout(()=>{if(state.sheet&&state.sheet.type==="storyStart"&&window.ScraveitCallFx&&ScraveitCallFx.preloadLens)ScraveitCallFx.preloadLens()},450)}
+  function storyStartSheet(){const lenses=((window.ScraveitCallFx&&ScraveitCallFx.LENSES)||[]).filter(l=>l.id!=="none");
+    return'<div class="ss-view" role="dialog" aria-modal="true" aria-label="Add to story">'
+      +'<header class="ss-top"><button type="button" class="sc-btn" data-action="ss-close" aria-label="Close">×</button><strong>Add to story</strong><span class="ss-gap" aria-hidden="true"></span></header>'
+      +'<div class="ss-body"><div class="ss-tiles"><button type="button" class="ss-tile" data-action="ss-camera">'+SS_CAMERA+'<strong>Camera</strong><small>Photo or video</small></button>'
+      +'<button type="button" class="ss-tile" data-action="ss-gallery">'+SS_GALLERY+'<strong>Gallery</strong><small>Choose a photo</small></button></div>'
+      +(lenses.length?'<p class="ss-label">Effects</p><div class="ss-effects">'+lenses.map(l=>'<button type="button" class="ss-effect" data-action="ss-effect" data-id="'+h(l.id)+'"><span aria-hidden="true">'+l.icon+'</span><small>'+h(l.name)+'</small></button>').join("")+'</div>':'')
+      +'</div></div>'}
+  async function openStoryCam(reel,lensId,fromStart){if(chatGate()){go("chats");return}if(cam.opening)return;cam.opening=true;cam.reel=reel===true;cam.lensId=lensId||"none";cam.fromStart=fromStart===true;
     try{if(!await camPerms())return;setSheet({type:"storyCam"});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));await camStart()}finally{cam.opening=false}}
   function camStopStream(){if(cam.stream){cam.stream.getTracks().forEach(t=>t.stop());cam.stream=null}}
   function camClose(){clearInterval(cam.recTimer);clearTimeout(cam.hold);if(cam.rec){try{cam.rec.onstop=null;cam.rec.stop()}catch(_){}cam.rec=null}
@@ -5447,6 +5619,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     camMount()}
   /** (Re)attach the live picture to the camera screen; safe to call after any re-render. */
   function camMount(){const view=document.querySelector(".sc-view");if(!view||!cam.stream)return;const cv=view.querySelector(".sc-stage");
+    if(cv&&!cv.dataset.flip){cv.dataset.flip="1";let last=0;cv.addEventListener("pointerup",()=>{const now=Date.now();if(now-last<320){last=0;camFlip()}else last=now})}
     if(cam.lens&&cam.lens.canvas===cv)return;if(cam.lens)cam.lens.stop();cam.lens=ScraveitCallFx.lens(cv,cam.video,{mirror:cam.facing==="user"});cam.lens.canvas=cv;cam.lens.set(cam.lensId);
     view.querySelectorAll(".sc-lens").forEach(b=>{const on=b.dataset.id===cam.lensId;b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));if(on)b.scrollIntoView({block:"nearest",inline:"center"})});
     const name=view.querySelector(".sc-lens-name"),l=(ScraveitCallFx.LENSES||[]).find(x=>x.id===cam.lensId);if(name)name.textContent=l?l.name:"";
@@ -5456,7 +5629,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       sh.addEventListener("pointerup",up);sh.addEventListener("pointercancel",()=>{if(cam.reel)return;if(cam.rec)camStopRec();clearTimeout(cam.hold);cam.hold=0});sh.addEventListener("contextmenu",e=>e.preventDefault())}}
   function camSheet(){const lenses=(window.ScraveitCallFx&&ScraveitCallFx.LENSES)||[];
     return'<div class="sc-view" role="dialog" aria-modal="true" aria-label="Story camera"><canvas class="sc-stage" aria-hidden="true"></canvas>'
-      +'<div class="sc-top"><button type="button" class="sc-btn" data-action="sc-close" aria-label="Close">×</button><span class="sc-rec" aria-live="polite"></span><button type="button" class="sc-btn" data-action="sc-flip" aria-label="Switch camera">⟲</button></div>'
+      +'<div class="sc-top"><button type="button" class="sc-btn" data-action="sc-close" aria-label="Close">×</button><span class="sc-rec" aria-live="polite"></span><button type="button" class="sc-btn" data-action="sc-flip" aria-label="Switch camera">'+SC_FLIP+'</button></div>'
       +'<div class="sc-bottom"><p class="sc-lens-name"></p><div class="sc-lenses" role="group" aria-label="Effects">'+lenses.map(l=>'<button type="button" class="sc-lens" data-action="sc-lens" data-id="'+h(l.id)+'" aria-label="'+h(l.name)+'"><span>'+l.icon+'</span></button>').join("")+'</div>'
       +'<div class="sc-controls"><button type="button" class="sc-side" data-action="sc-gallery" aria-label="Choose from gallery">🖼️</button><button type="button" class="sc-shutter" aria-label="Tap for a photo, hold for a video"><svg viewBox="0 0 100 100" aria-hidden="true"><circle class="sc-ring" cx="50" cy="50" r="45"/><circle class="sc-prog" cx="50" cy="50" r="45"/></svg><span></span></button><span class="sc-side sc-hint">'+(cam.reel?'Tap to start<br>and stop':'Hold for<br>video')+'</span></div></div></div>'}
   function camSetLens(id){cam.lensId=id;haptic(8);if(cam.lens)cam.lens.set(id);const view=document.querySelector(".sc-view");if(!view)return;
@@ -5488,7 +5661,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(document.visibilityState!=="visible"){if(cam.rec){camStopRec();return}if(cam.lens){cam.lens.stop();cam.lens=null}camStopStream();return}
     if(cam.rec)return;
     const t=cam.stream&&cam.stream.getVideoTracks()[0];if(!t||t.readyState==="ended"||t.muted){if(cam.lens){cam.lens.stop();cam.lens=null}camStart()}});
-  async function camFlip(){cam.facing=cam.facing==="user"?"environment":"user";haptic(8);if(cam.lens){cam.lens.stop();cam.lens=null}await camStart()}
+  async function camFlip(){if(cam.flipping||cam.rec)return;cam.flipping=true;try{cam.facing=cam.facing==="user"?"environment":"user";haptic(8);if(cam.lens){cam.lens.stop();cam.lens=null}await camStart()}finally{cam.flipping=false}}
 
   // ---- sharing a video story ----
   function audienceRow(d){const close=d.to==="close";
@@ -5663,7 +5836,11 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="feed-compose"){feedCompose(control.dataset.kind||"story");return true}
     if(action.startsWith("se-"))return seClick(action,control);
     // The story camera and video sharing.
-    if(action==="sc-close"){camClose();closeSheet();return true}
+    if(action==="ss-close"){closeSheet();return true}
+    if(action==="ss-camera"){openStoryCam(false,"none",true);return true}
+    if(action==="ss-effect"){openStoryCam(false,String(control.dataset.id||"none"),true);return true}
+    if(action==="ss-gallery"){closeSheet();feedCompose("story",true);return true}
+    if(action==="sc-close"){const back=cam.fromStart&&!cam.reel;camClose();if(back)openStoryStart();else closeSheet();return true}
     if(action==="sc-flip"){camFlip();return true}
     if(action==="sc-lens"){camSetLens(String(control.dataset.id||"none"));return true}
     if(action==="sc-gallery"){const reel=cam.reel;camClose();closeSheet();if(reel){cam.reel=false;reelPickGallery()}else feedCompose("story",true);return true}
@@ -6548,7 +6725,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const name=nameOf(p,otherOf(p)).split(" ")[0],el=document.createElement("div");el.className="crave-match";el.setAttribute("role","dialog");el.setAttribute("aria-label","Craving match");
     el.innerHTML='<div class="cm-plates" aria-hidden="true"><span class="cm-plate left">'+info[1]+'</span><span class="cm-plate right">'+info[1]+'</span></div><p class="cm-kicker">IT’S A</p><h2 class="cm-title">Craving match</h2><p class="cm-sub">You and '+h(name)+' both want <strong>'+h(info[2].toLowerCase())+'</strong> right now.</p><div class="cm-actions"><button class="button primary full" data-cm="find">Find '+h(info[2].toLowerCase())+' near you</button><button class="button tonal full" data-cm="chat">Message '+h(name)+'</button><button class="text-button" data-cm="close">Later</button></div>';
     document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add("in"));try{navigator.vibrate&&navigator.vibrate([30,60,30,60,120])}catch(_){}setTimeout(()=>{try{confetti({count:110,y:window.innerHeight*0.35})}catch(_){}},420);
-    el.addEventListener("click",e=>{const b=e.target.closest("[data-cm]");if(!b)return;const k=b.dataset.cm;el.remove();if(k==="find"){state.query=info[2];go("search")}else if(k==="chat")go("dm",{pairId:p.id})})}
+    el.addEventListener("click",e=>{const b=e.target.closest("[data-cm]");if(!b)return;const k=b.dataset.cm;el.remove();if(k==="find"){state.query=info[2];state.searchBrowse=false;go("search")}else if(k==="chat")go("dm",{pairId:p.id})})}
   // Eating now: a ring on a friend's photo for 30 minutes after their food arrives.
   function eatingOf(p){const e=p&&p.eating&&p.eating[otherOf(p)];return e&&Number(e.until||0)>Date.now()?e:null}
   function eatingBanner(p){const e=eatingOf(p);if(!e)return"";const name=nameOf(p,otherOf(p)).split(" ")[0];
@@ -6926,6 +7103,216 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const cooking=(t.rounds||[]).filter(r=>r.status!=="served").length;
     return'<button class="active-table" data-action="go" data-route="table"><span aria-hidden="true">🍽️</span><span class="grow"><strong>'+h(d.tableLabel)+' · '+h(d.restaurantName)+'</strong><span>'+(d.status==="bill"?'Bill asked':cooking?cooking+(cooking===1?' round':' rounds')+' on the way':'You’re at the table')+'</span></span><span class="wheel-spin-pill">Open</span></button>';
   }
+  // ---- Food Rescue (founder 22 Nov 2026, like Zomato's) ----
+  // When Scraveit cancels an order after the delivery partner picked it up (the customer's side),
+  // customers within 3 km see it here for up to 15 minutes: half the food price + the normal
+  // delivery fee, online payment only. The partner who has the food brings it straight over
+  // (functions/src/services/foodRescue.ts). Tapping Pay keeps it for this customer for 3 minutes.
+  const RESCUE_CHECK_MS=60*1000,RESCUE_HOLD_MS=3*60*1000,RESCUE_GONE_TEXT="Someone else took this food, or its time ran out.";
+  const CASH_OFF_TEXT="Cash on delivery is off for your account because a cash order was cancelled after the restaurant accepted it.";
+  function rescueState(){return state.foodRescue||(state.foodRescue={list:[],at:0,pending:false,offset:0,addressId:"",buying:false,choice:null});}
+  /** The server's clock, so every phone counts down to the same second. */
+  function rescueNow(){return Date.now()+Number(rescueState().offset||0);}
+  function rescueClock(ms){const s=Math.max(0,Math.ceil(ms/1000));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
+  function normalizeRescue(raw){
+    if(!raw||typeof raw!=="object")return null;
+    const id=String(raw.id||"");if(!/^[A-Za-z0-9_.:-]{1,160}$/.test(id))return null;
+    const items=(Array.isArray(raw.items)?raw.items:[]).map(i=>({name:String(i&&i.name||"").slice(0,80),quantity:Math.max(1,Math.floor(Number(i&&i.quantity)||1)),veg:!!(i&&i.veg===true)})).filter(i=>i.name).slice(0,20);
+    const food=Number(raw.pricePaise)/100,menu=Number(raw.menuPaise)/100,fee=Number(raw.deliveryFee),total=Number(raw.total),ends=Number(raw.expiresAt);
+    if(!items.length||![food,fee,total,ends].every(Number.isFinite))return null;
+    return{id,restaurantName:String(raw.restaurantName||"").slice(0,80),items,vegOnly:raw.vegOnly===true,food,menu:Number.isFinite(menu)&&menu>food?menu:0,fee,total,ends,
+      km:Math.max(0,Number(raw.distanceKm)||0),mine:raw.heldByYou===true,etaMin:Math.max(0,Math.round(Number(raw.etaMin)||0)),etaMax:Math.max(0,Math.round(Number(raw.etaMax)||0))};
+  }
+  function liveRescues(){const fr=rescueState(),address=currentAddress(),now=rescueNow();if(!address||fr.addressId!==address.id)return[];return fr.list.filter(r=>r.ends>now);}
+  function rescueById(id){return liveRescues().find(r=>r.id===id)||null;}
+  /** Asks the server for Food Rescue near the selected address: at most once a minute unless forced. Quiet on failure. */
+  async function refreshFoodRescues(force){
+    const fr=rescueState(),address=currentAddress();
+    if(!state.session||!address||!address.id||!coordinatePoint(address)||!state.online||fr.pending||!nativeAvailable("getCheckoutConfiguration"))return;
+    if(fr.addressId!==address.id){fr.list=[];fr.addressId=address.id;}
+    else if(!force&&Date.now()-fr.at<RESCUE_CHECK_MS)return;
+    const asked=address.id,before=JSON.stringify(fr.list);
+    fr.pending=true;fr.at=Date.now();
+    try{
+      await ensureSession();
+      const sentAt=Date.now(),res=await nativeInvoke("getCheckoutConfiguration",{foodRescueCheck:true,addressId:asked},{idToken:state.session.idToken,timeoutMs:10000});
+      if(fr.addressId!==asked)return;
+      if(Number.isFinite(Number(res&&res.serverNow)))fr.offset=Number(res.serverNow)-Math.round((sentAt+Date.now())/2);
+      fr.list=(Array.isArray(res&&res.foodRescues)?res.foodRescues:[]).map(normalizeRescue).filter(Boolean);
+    }catch(_){/* the home screen works without it; the next visit asks again */}
+    finally{fr.pending=false;}
+    if(JSON.stringify(fr.list)===before)return;
+    if(state.route==="home")render({preserveScroll:true});
+    else if(state.sheet&&state.sheet.type==="foodRescue")renderSheet();
+  }
+  function rescueDishLine(r){const first=r.items[0],more=r.items.length-1;return(first.quantity>1?first.quantity+" × ":"")+first.name+(more>0?" + "+more+" more":"");}
+  function rescueCardMarkup(r){
+    const left=r.ends-rescueNow();
+    return '<button type="button" class="rescue-card" data-action="open-food-rescue" data-rescue-id="'+h(r.id)+'">'
+      +'<span class="rescue-top"><span class="rescue-tag">'+icon("heart","small")+'<span>Food Rescue</span></span>'
+      +'<span class="rescue-time">'+icon("clock","small")+'<b data-rescue-ends="'+h(String(r.ends))+'">'+rescueClock(left)+'</b><span>left</span></span></span>'
+      +'<span class="rescue-dish"><span class="diet-mark'+(r.vegOnly?'':' nonveg')+'" aria-label="'+(r.vegOnly?'Vegetarian':'Non-vegetarian')+'"></span><strong>'+h(rescueDishLine(r))+'</strong></span>'
+      +'<span class="rescue-from"><span>'+h(r.restaurantName)+'</span><i></i><span>'+h(distanceLabel(r.km))+'</span>'+(r.etaMax?'<i></i><span>'+r.etaMin+'–'+r.etaMax+' min</span>':'')+'</span>'
+      +'<span class="rescue-buy"><span class="rescue-price"><b>'+money(r.food)+'</b>'+(r.menu?'<s>'+money(r.menu)+'</s>':'')+'<small>+ '+money(r.fee)+' <span>delivery</span></small></span>'
+      +'<span class="rescue-get">'+(r.mine?'Finish paying':'Get it')+'</span></span>'
+      +'<span class="rescue-why">'+(r.mine?'Kept for you':'Cancelled after pickup, so it\'s half price. Ready now.')+'</span>'
+      +'</button>';
+  }
+  function foodRescueCard(){
+    if(!state.session)return"";
+    const fr=rescueState(),address=currentAddress();
+    if(address&&address.id&&!fr.pending&&(fr.addressId!==address.id||Date.now()-fr.at>=RESCUE_CHECK_MS))setTimeout(()=>refreshFoodRescues(false),0);
+    const list=liveRescues();
+    if(!list.length)return"";
+    setTimeout(ensureRescueTicker,0);
+    return '<section class="rescue-shelf" aria-label="Food Rescue">'+list.map(rescueCardMarkup).join("")+'</section>';
+  }
+  // One clock for every countdown on screen (cards, the buy sheet, "Payment not completed").
+  let rescueTicker=0;
+  function ensureRescueTicker(){if(!rescueTicker)rescueTicker=setInterval(tickRescues,1000);}
+  function tickRescues(){
+    const marks=document.querySelectorAll("[data-rescue-ends]");
+    if(!marks.length){clearInterval(rescueTicker);rescueTicker=0;return;}
+    const now=rescueNow();let ended=false;
+    marks.forEach(el=>{const left=Number(el.dataset.rescueEnds)-now,text=rescueClock(left);if(left<=0)ended=true;if(el.textContent!==text)el.textContent=text;});
+    if(!ended)return;
+    const fr=rescueState();fr.list=fr.list.filter(r=>r.ends>now);
+    if(state.sheet&&(state.sheet.type==="foodRescue"||state.sheet.type==="payFallback"))renderSheet();
+    if(state.route==="home")render({preserveScroll:true});
+  }
+  function openFoodRescue(id){
+    const r=rescueById(id);
+    if(!r){toast(RESCUE_GONE_TEXT,"info");refreshFoodRescues(true);return;}
+    rescueState().choice=null;
+    setSheet({type:"foodRescue",rescueId:id});ensureRescueTicker();
+  }
+  /** The online ways to pay, as the cart's "Pay using" offers them; never cash. */
+  function rescuePayChoices(){
+    const upiOn=paymentMethodEnabled("upi"),cardOn=paymentMethodEnabled("card");
+    const cashfreeInApp=nativeAvailable("startCashfreePayment")&&nativeAvailable("getUpiApps")&&paymentMethodProvider("upi")==="cashfree";
+    if(cashfreeInApp)loadUpiApps();
+    const apps=cashfreeInApp&&upiOn&&Array.isArray(state.upiApps)?state.upiApps:[],out=apps.map(a=>({method:"upi",upiApp:a.appId,title:a.name,img:a.icon}));
+    if(cashfreeInApp){if(cardOn||upiOn)out.push({method:cardOn?"card":"upi",upiApp:"",title:cardOn?"Card / netbanking":"Other UPI"});}
+    else{if(upiOn)out.push({method:"upi",upiApp:"",title:"UPI"});if(cardOn)out.push({method:"card",upiApp:"",title:"Card"});}
+    return out;
+  }
+  function rescuePick(choices){
+    const fr=rescueState(),same=(c,w)=>!!w&&c.method===w.method&&c.upiApp===w.upiApp;
+    return choices.find(c=>same(c,fr.choice))||choices.find(c=>same(c,{method:state.checkout.payment,upiApp:String(state.checkout.upiApp||"")}))||choices[0]||null;
+  }
+  function rescueChoiceChip(c,pick){
+    const on=!!pick&&c.method===pick.method&&c.upiApp===pick.upiApp;
+    return '<button type="button" class="rescue-pay-chip'+(on?' on':'')+'" data-action="rescue-pay-choice" data-value="'+h(c.method)+'" data-upi-app="'+h(c.upiApp)+'" aria-pressed="'+on+'">'
+      +(c.img?'<img alt="" src="data:image/png;base64,'+c.img+'">':icon("card","small"))+'<span>'+h(c.title)+'</span></button>';
+  }
+  function foodRescueSheet(sheet){
+    const r=rescueById(sheet.rescueId),fr=rescueState();
+    if(!r)return sheetShell("Food Rescue","",'<div class="stack"><p class="supporting">'+h(RESCUE_GONE_TEXT)+'</p><button class="button primary full" data-action="close-sheet">OK</button></div>');
+    const address=currentAddress(),choices=rescuePayChoices(),pick=rescuePick(choices),left=r.ends-rescueNow();
+    const label=address?(address.id==="current-location"?"Current location":(address.label||address.area||"This address")):"";
+    return sheetShell("Food Rescue","Someone cancelled this order after pickup. A delivery partner near you has it, ready to bring it to you.",
+      '<div class="stack rescue-sheet">'
+      +'<div class="rescue-timer">'+icon("clock","small")+'<span>'+(r.mine?'Pay within':'Available for')+'</span><b data-rescue-ends="'+h(String(r.ends))+'">'+rescueClock(left)+'</b></div>'
+      +'<section class="rescue-box"><div class="rescue-from"><strong>'+h(r.restaurantName)+'</strong><i></i><span>'+h(distanceLabel(r.km))+'</span><span>away</span>'+(r.etaMax?'<i></i><span>Arrives in</span><span>'+r.etaMin+'–'+r.etaMax+' min</span>':'')+'</div>'
+      +'<ul class="rescue-items">'+r.items.map(i=>'<li><span class="diet-mark'+(i.veg?'':' nonveg')+'" aria-label="'+(i.veg?'Vegetarian':'Non-vegetarian')+'"></span><span class="grow">'+h(i.name)+'</span><span>× '+i.quantity+'</span></li>').join("")+'</ul></section>'
+      +'<section class="rescue-box stack"><div class="price-row"><span>Food at half price</span><span>'+(r.menu?'<s class="bill-was">'+money(r.menu)+'</s> ':'')+money(r.food)+'</span></div>'
+      +'<div class="price-row"><span>Delivery fee</span><span>'+money(r.fee)+'</span></div>'
+      +'<div class="price-row total"><span>Total</span><span>'+money(r.total)+'</span></div></section>'
+      +(address?'<div class="rescue-to">'+icon(addressLabelIcon(address),"small")+'<span class="grow"><strong>'+h(label)+'</strong><span>'+h(address.address||address.details||"")+'</span></span></div>':'')
+      +(choices.length?'<div class="rescue-pay" role="group" aria-label="Pay using">'+choices.map(c=>rescueChoiceChip(c,pick)).join("")+'</div>'
+        :'<div class="notice warning">'+icon("warning","small")+'<span>Online payment isn\'t available right now, and Food Rescue is online payment only.</span></div>')
+      +'<p class="caption">Online payment only. Once you tap Pay, the food is kept for you for 3 minutes.</p>'
+      +'<div class="sheet-submit rescue-submit"><button class="button primary full" data-action="buy-food-rescue" data-rescue-id="'+h(r.id)+'"'+(choices.length&&!fr.buying?'':' disabled')+'>'+(fr.buying?'<span class="spinner"></span>':'')+'<span>Pay</span> '+money(r.total)+'</button></div>'
+      +'</div>');
+  }
+  async function buyFoodRescue(id){
+    if(paymentInFlight){paymentInFlight.now();return;}
+    const fr=rescueState(),r=rescueById(id),address=currentAddress();
+    if(fr.buying)return;
+    if(!r){closeSheet();toast(RESCUE_GONE_TEXT,"info");refreshFoodRescues(true);return;}
+    if(!state.online){toast("You're offline. Connect to the internet to pay.","danger");return;}
+    if(!addressReadyForCheckout(address))return;
+    const pick=rescuePick(rescuePayChoices());
+    if(!pick){toast("Online payment isn't available right now.","danger");return;}
+    fr.buying=true;renderSheet();
+    // A new request key on every tap: a tap the server already took comes back as the same order
+    // (the offer is held for this customer), and a cancelled try never blocks the next one.
+    const key=("rescue_"+Date.now().toString(36)+"_"+uid("").replace(/[^A-Za-z0-9_-]/g,"")).slice(0,80);
+    let result=null;
+    try{
+      await ensureSession();
+      result=await nativeInvoke("createOrder",{foodRescueId:id,idempotencyKey:key,addressId:address.id,paymentMethod:pick.method,paymentProvider:paymentMethodProvider(pick.method),quotedTotal:r.total},{idToken:state.session.idToken,timeoutMs:38000});
+      if(!result||!result.order||!result.orderId||result.order.id!==result.orderId)throw new Error("INVALID_SERVER_RESPONSE");
+    }catch(error){
+      fr.buying=false;
+      const said=String(error&&error.userMessage||"");
+      if(/delivery fee changed/i.test(said)){toast(said,"warning");await refreshFoodRescues(true);renderSheet();return;}
+      if(said===RESCUE_GONE_TEXT){fr.list=fr.list.filter(x=>x.id!==id);closeSheet();toast(said,"info");render({preserveScroll:true});return;}
+      renderSheet();toast(friendlyError(error),"danger");return;
+    }
+    fr.buying=false;
+    const order=result.order,holdEnds=r.mine?r.ends:rescueNow()+RESCUE_HOLD_MS;
+    const checkout={deliveryOtp:String(result.deliveryOtp||""),rescue:true,rescueId:id,holdEnds:holdEnds,upiApp:pick.method==="upi"?pick.upiApp:""};
+    if(state.sheet&&state.sheet.type==="foodRescue"){state.sheet=null;renderSheet();}
+    if(order.status==="Cancelled"){toast(RESCUE_GONE_TEXT,"info");refreshFoodRescues(true);return;}
+    if(order.paymentState==="paid"){finishRescuePlacement(order,checkout,true);return;}
+    if(await startOnlinePayment(order,checkout))finishRescuePlacement(order,checkout,false);
+  }
+  function finishRescuePlacement(order,checkout,recovered){
+    // Leaves the cart alone: the customer may still be ordering from a restaurant.
+    const orderId=String(order.id),saved=Object.assign({},order);
+    state.orders=[saved].concat(state.orders.filter(x=>x.id!==orderId));persistOrders();
+    if(checkout&&checkout.deliveryOtp)state.deliveryOtps[orderId]=checkout.deliveryOtp;
+    const fr=rescueState();if(checkout&&checkout.rescueId)fr.list=fr.list.filter(x=>x.id!==checkout.rescueId);
+    state.selectedOrderId=orderId;
+    toast(recovered?"Your Food Rescue order was restored.":"Food Rescue order placed.","success");
+    state.history=[];if(state.route!=="home"){state.route="home";state.routeData={};}
+    go("order",{orderId:orderId});
+    if(!recovered)orderPlacedMoment(saved);
+  }
+  /** A payment that finished from the waiting or "not completed" screens. */
+  function finishPaidOrder(order,checkout,recovered){
+    if(checkout&&checkout.rescue){finishRescuePlacement(order,checkout,recovered);return;}
+    if(checkout)finishOrderPlacement(order,String(order.id),checkout.deliveryOtp||"",recovered);
+  }
+  function rescuePayment(sheet){return!!(sheet&&((sheet.checkout&&sheet.checkout.rescue)||(sheet.order&&sheet.order.foodRescue)));}
+  /** The buyer's Food Rescue order: what it is and why it's cheap. */
+  function rescueOrderNotice(order){
+    const fr=order&&order.foodRescue;if(!fr||order.status==="Cancelled")return"";
+    const saved=Math.max(0,Math.round(Number(fr.menuPaise)-Number(fr.foodPaise))/100);
+    return '<div class="notice success rescue-note">'+icon("heart","small")+'<div><strong><span>Food Rescue</span>'+(saved>0?' · <span>You saved</span> '+money(saved):'')+'</strong><div class="caption">This food was cancelled after pickup. The delivery partner already has it and brings it straight to you.</div></div></div>';
+  }
+  // Cancelled by Scraveit after the delivery partner had the food (domain/afterPickup.ts on the server).
+  const AFTER_PICKUP_STATUSES=["Handed to rider","Out for delivery","Near you","Arrived"],AFTER_PICKUP_CUSTOMER_REASONS=["customer cancelled after pickup","customer not reachable at door"];
+  function afterPickupFacts(order){
+    if(!order||order.status!=="Cancelled"||!AFTER_PICKUP_STATUSES.includes(String(order.statusBeforeTerminal||"")))return null;
+    const reason=String(order.cancelReason||"").trim().toLowerCase(),byScraveit=order.cancelledByRole==="ops_admin"||order.cancelledByRole==="owner",byCustomer=order.cancelledByRole==="customer";
+    if(!byScraveit&&!byCustomer)return null;
+    const customerSide=byCustomer||AFTER_PICKUP_CUSTOMER_REASONS.includes(reason),online=isOnlinePaymentMethod(order.paymentMethod);
+    return{customerSide,online,charged:customerSide&&online&&order.paymentState==="paid",blockCod:customerSide&&!online,refunded:order.paymentState==="refunded"};
+  }
+  function afterPickupNotice(order){
+    const f=afterPickupFacts(order);if(!f)return"";
+    const copy=f.charged?"The delivery partner already had your food, so this order is not refunded."
+      :f.blockCod?"The delivery partner already had your food. Cash on delivery is now off for your account, so please pay online next time."
+      :f.customerSide?"The delivery partner already had your food."
+      :!f.online?"Sorry, something went wrong with the delivery. You don't need to pay anything."
+      :f.refunded?"Sorry, something went wrong with the delivery. Your money has been refunded."
+      :"Sorry, something went wrong with the delivery. Your money will be refunded.";
+    return '<div class="notice '+(f.customerSide?'warning':'info')+'">'+icon(f.customerSide?"warning":"info","small")+'<div><strong>'+(f.customerSide?'Cancelled after pickup':'Cancelled: delivery problem')+'</strong><div class="caption">'+h(copy)+'</div></div></div>';
+  }
+  // The customer's own cancel (founder 22 Nov 2026): free until the restaurant accepts; after that the
+  // food is being made, so a 100% cancellation fee applies (no refund; a cash order turns cash on delivery
+  // off). The server decides from the order's status when the tap lands (cancelUnpaidOrder, reason "self").
+  const SELF_CANCEL_STATUSES=["Order placed","Accepted","Preparing","Ready for pickup","Assigned"].concat(AFTER_PICKUP_STATUSES);
+  function canSelfCancel(order){return!!order&&SELF_CANCEL_STATUSES.includes(order.status)&&!isGuestOrder(order)}
+  function cancelFeeApplies(order){return!!order&&order.status!=="Order placed"&&SELF_CANCEL_STATUSES.includes(order.status)}
+  function cancelFeeNotice(order){
+    if(!order||order.status!=="Cancelled"||!order.cancellationFee||AFTER_PICKUP_STATUSES.includes(String(order.statusBeforeTerminal||"")))return"";
+    const online=isOnlinePaymentMethod(order.paymentMethod);
+    return '<div class="notice warning">'+icon("warning","small")+'<div><strong>100% cancellation fee</strong><div class="caption">'+h(online?"You cancelled after the restaurant started preparing your food, so this order is not refunded.":"You cancelled after the restaurant started preparing your food. Cash on delivery is now off for your account, so please pay online next time.")+'</div></div></div>';
+  }
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&state.route==="home"&&Date.now()-rescueState().at>15000)refreshFoodRescues(true)});
   function restaurantDineCard(r){
     if(openingSoon(r)||!shownToMe(r))return"";
     const settings=dineSettings(r);if(!settings)return"";
@@ -6978,7 +7365,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       +(address&&address.needsLocationPin?'<div class="notice warning">'+icon("pin","small")+'<div><strong>Put this address on the map</strong><div class="caption">Browsing works now. The rider needs the pin before you order.</div></div><button class="text-button" data-action="address-complete">Set pin</button></div>':'')
       +homeModeSwitch()
       +(homeMode()==="dinein"?dineInHome():''
-      +foodStoryStrip()+activeTableCard()+eatOutShelf()
+      +foodRescueCard()+foodStoryStrip()+activeTableCard()+eatOutShelf()
       +'<div class="home-promo">'+adRailMarkup("home-ad-track")+'</div>'
       +'<div class="play-row">'+wheelCard()+squadHomeCard()+mealPlanHomeCard()+'</div>'
       +moodSection()
@@ -7014,29 +7401,134 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     state.recentSearches=normalizedRecentSearches([label,...(state.recentSearches||[])]);persistRecentSearches();return true;
   }
   function clearRecentSearches(){state.recentSearches=[];persistRecentSearches();}
+  // ---- Search screen (founder 21 Nov 2026: "heavily glitches after typing any letter, make it
+  // clean and simple", with Zomato and Swiggy as the reference) ----
+  // One bar at the top (back, box, clear) that never moves. Nothing typed: recent searches, then
+  // every store here with the category chips and filters (the "See all" buttons open this page).
+  // Typing: one compact row per store, updated in place as each letter arrives.
   function recentSearchMarkup(){
     if(searchKey(state.query)||(state.recentSearches||[]).length===0)return"";
-    return '<section class="stack"><div class="cluster between"><h2 class="section-title">Recent searches</h2><button class="text-button" data-action="clear-search-history">Clear</button></div><div class="chip-row">'+state.recentSearches.map(value=>'<button class="chip" data-action="recent-search" data-value="'+h(value)+'">'+icon("search","small")+' '+h(value)+'</button>').join("")+'</div></section>';
+    return '<section id="sr-recent" class="sr-section"><div class="sr-head"><h2 class="sr-title">Recent searches</h2><button class="text-button sr-link" data-action="clear-search-history">Clear</button></div><div class="sr-chips">'+state.recentSearches.map((value,i)=>'<button class="chip sr-chip" data-action="recent-search" data-value="'+h(value)+'" style="--i:'+i+'">'+icon("clock","small")+'<span>'+h(value)+'</span></button>').join("")+'</div></section>';
+  }
+  // The filter sheet's choices (and a store menu's veg chip, which shares them) narrow search too.
+  function searchFiltersOn(){return state.sort!=="recommended"||state.diet!=="all"||state.homeFilter!=="all";}
+  function distanceLabel(km){return Number.isFinite(km)?(km<1?Math.max(50,Math.round(km*1000/50)*50)+" m":(Math.round(km*10)/10)+" km"):"";}
+  /** A typed-search row: small photo, name, rating, time and distance, then the dishes that matched. */
+  function searchRowMarkup(r){
+    const match=searchMatchInfo.get(r.id)||{dishes:[]},found=match.dishes||[],rating=ratingForRestaurant(r),km=distanceLabel(restaurantDistanceKm(r)),offer=restaurantOfferLabel(r),closed=openingSoon(r)||!r.open;
+    const shown=found.slice(0,2),line=shown.length?shown.join(" · ")+(found.length>shown.length?" +"+(found.length-shown.length):""):(r.cuisines||[]).slice(0,2).join(" · ");
+    return '<button type="button" class="sr-row'+(closed?' is-closed':'')+'" data-mkey="'+h(r.id)+'" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">'
+      +'<img class="sr-thumb" src="'+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\'restaurant-placeholder.svg\'">'
+      +'<span class="sr-copy"><strong class="sr-name">'+h(r.name)+'</strong>'
+      +'<span class="sr-meta">'+(sponsoredNow().has(r.id)?'<span class="sr-ad rc2-ad">Ad</span>':'')+(rating.value?'<b class="sr-star">★ '+h(rating.value.toFixed(1))+'</b>':'<b>New</b>')+'<i></i><span>'+storeTimeText(r,'mins')+'</span>'+(km?'<i></i><span>'+h(km)+'</span>':'')+'</span>'
+      +(line?'<span class="sr-line">'+h(line)+'</span>':'')
+      +(offer&&!closed?'<span class="sr-offer">'+h(offer)+'</span>':'')
+      +'</span></button>';
+  }
+  // A term the city-wide lookup has not answered yet: "No results" now could be wrong for exactly
+  // the stores that lookup exists to find, so grey rows hold the place instead.
+  function searchLookupPending(){
+    if(state.searchLoading)return true;
+    const city=catalogCity(),prefix=catalogNameKey(state.query);
+    return !!(city&&prefix&&state.session&&state.searchFetched[catalogCityKey(city)+"|"+prefix]===undefined);
+  }
+  function searchTypedMarkup(results){
+    const filters=searchFiltersOn()?'<div id="sr-filters" class="sr-filters"><span>Filters are on</span><button class="text-button sr-link" data-action="clear-search-filters">Clear filters</button></div>':'';
+    if(results.length)return filters+'<div id="sr-list" class="sr-list" data-keyed>'+results.map(searchRowMarkup).join("")+'</div>';
+    if(searchLookupPending())return '<div id="sr-wait" class="sr-list sr-wait" role="status" aria-label="Searching">'+'<div class="sr-row sr-ghost"><span class="sr-thumb"></span><span class="sr-copy"><span></span><span></span></span></div>'.repeat(3)+'</div>';
+    return '<div id="sr-none" class="sr-none" role="status"><strong>No results for <span translate="no">“'+h(String(state.query).trim())+'”</span></strong><p>Try another dish or restaurant name.</p>'
+      +(searchFiltersOn()?'<button class="text-button sr-link" data-action="clear-search-filters">Clear filters</button>':'')+'</div>';
+  }
+  function searchBrowseMarkup(results){
+    const name=results.length&&results.some(r=>storeKind(r)!=="restaurant")?"All stores":"All restaurants";
+    const head='<div class="sr-head"><h2 class="sr-title">'+name+'</h2><button class="sr-filter'+(searchFiltersOn()?' on':'')+'" data-action="open-filters">'+icon("filter","small")+'<span>Filters</span></button></div>';
+    let body;
+    if(results.length)body='<div class="restaurant-list two-column" data-keyed>'+results.map(r=>restaurantCard(r,false,true)).join("")+'</div>';
+    else if(state.cuisine!=="All"||state.diet!=="all"||state.homeFilter!=="all")body=emptyState("search","No restaurants match these filters","Change a category or filter to see more results.","open-filters","Change filters");
+    else body=emptyState("search","No restaurants are available","Retry the live catalogue or choose another saved address.","refresh","Retry");
+    return '<section id="sr-all" class="sr-section">'+head+categoryChipsHtml()+body+'</section>';
+  }
+  // Opened from the search bar with nothing typed (founder 22 Nov 2026: "restaurant tiles are
+  // everywhere already, no need of them while searching"): recent searches, then the popular
+  // cuisines as words to search. The "See all" buttons still open the full list (searchBrowse).
+  // Round picture tiles like Swiggy's and Zomato's popular cuisines, popping in one after another
+  // (founder 22 Nov 2026: "make that page lively"). There are no photos per cuisine, so each gets
+  // a food emoji on its own soft colour.
+  const CUISINE_EMOJI=[["ice cream","🍦"],["icecream","🍦"],["kulfi","🍦"],["milkshake","🥤"],["shake","🥤"],["juice","🧃"],["mocktail","🍹"],["coffee","☕"],["chai","☕"],["tea","☕"],["beverage","🥤"],["drink","🥤"],
+    ["dessert","🍨"],["waffle","🧇"],["pancake","🥞"],["cake","🍰"],["bakery","🥐"],["bake","🥐"],["pastr","🥐"],["sweet","🍬"],["chocolate","🍫"],["donut","🍩"],["doughnut","🍩"],
+    ["biryani","🍛"],["pulao","🍛"],["mandi","🍛"],["pizza","🍕"],["burger","🍔"],["sandwich","🥪"],["wrap","🌯"],["roll","🌯"],["shawarma","🌯"],["momo","🥟"],["dumpling","🥟"],["noodle","🍜"],["chinese","🥢"],["asian","🥢"],["pasta","🍝"],["italian","🍝"],
+    ["fries","🍟"],["fast food","🍟"],["snack","🍿"],["chaat","🥙"],["dosa","🫓"],["south indian","🫓"],["tiffin","🫓"],["idli","🍚"],["breakfast","🍳"],["meal","🍱"],["thali","🍱"],["andhra","🌶️"],["chettinad","🌶️"],["north indian","🍲"],["punjabi","🍲"],["curr","🍛"],
+    ["paneer","🧀"],["chicken","🍗"],["kebab","🍢"],["tandoor","🍢"],["grill","🍢"],["bbq","🍢"],["barbecue","🍢"],["fish","🐟"],["seafood","🦐"],["prawn","🦐"],["mutton","🍖"],["egg","🥚"],["salad","🥗"],["healthy","🥗"],
+    ["fruit","🍎"],["vegetable","🥦"],["veggie","🥦"],["milk","🥛"],["dairy","🥛"],["curd","🥛"],["cheese","🧀"],["butter","🧈"],["bread","🍞"],["rice","🍚"],["atta","🌾"],["flour","🌾"],["dal","🫘"],["pulse","🫘"],["oil","🫒"],["masala","🌶️"],["spice","🌶️"],
+    ["medicine","💊"],["tablet","💊"],["pharma","💊"],["health","💊"],["baby","🍼"],["personal care","🧴"],["skin","🧴"],["clean","🧽"],["household","🧽"]];
+  /** The first matching picture not already on another tile, so two tiles rarely look the same. */
+  function cuisineEmoji(label,used){
+    const words=String(label||"").toLowerCase(),hits=CUISINE_EMOJI.filter(([w])=>new RegExp("(^|[^a-z])"+w).test(words)).map(x=>x[1]);
+    const fallback=state.homeKind==="pharmacy"?"💊":state.homeKind==="dairy"?"🥛":state.homeKind==="grocery"?"🛒":"🍽️";
+    const pick=hits.find(e=>!used||!used.has(e))||hits[0]||fallback;
+    if(used)used.add(pick);
+    return pick;
+  }
+  function searchIdleMarkup(){
+    const words=browsableCategories().slice(0,8),used=new Set();
+    if(words.length<2)return"";
+    return '<section id="sr-popular" class="sr-section"><div class="sr-head"><h2 class="sr-title">'+(GOODS_TABS.includes(state.homeKind)?"Popular categories":"Popular cuisines")+'</h2></div>'
+      +'<div class="sr-tiles">'+words.map((c,i)=>'<button class="sr-tile t'+(i%5)+'" data-action="recent-search" data-value="'+h(c.label)+'" style="--i:'+i+'"><span class="sr-tile-art" aria-hidden="true"><i>'+cuisineEmoji(c.label,used)+'</i></span><span class="sr-tile-name">'+h(c.label)+'</span></button>').join("")+'</div></section>';
   }
   function searchResultMarkup() {
     if(!state.catalogLoaded)return loadingRow("Loading restaurants for this address…");
     if(state.homeStatus==="errorWithoutCache"&&!Object.keys(state.catalog).length)return emptyState("warning","Search could not be loaded","Check your connection and retry the live catalogue.","refresh","Retry");
     if(needsLocationFirst())return locationFirstMarkup();
+    const typed=!!searchKey(state.query);
+    if(!typed&&!state.searchBrowse)return searchIdleMarkup();
     const results=restaurantsFiltered();
-    if(results.length)return '<div class="restaurant-list two-column">'+results.map(r=>restaurantCard(r,false)).join("")+'</div>';
-    // Saying "nothing matched" before the city-wide lookup has answered would
-    // be wrong for exactly the restaurants this lookup exists to find.
-    if(state.searchLoading)return loadingRow("Searching restaurants near you…");
-    if(searchKey(state.query))return emptyState("search","Nothing matched","Try another dish, cuisine or spelling.","clear-search","Clear search");
-    if(state.cuisine!=="All"||state.diet!=="all"||state.homeFilter!=="all")return emptyState("search","No restaurants match these filters","Change a category or filter to see more results.","open-filters","Change filters");
-    return emptyState("search","No restaurants are available","Retry the live catalogue or choose another saved address.","refresh","Retry");
+    return typed?searchTypedMarkup(results):searchBrowseMarkup(results);
   }
   function searchContentMarkup(){return recentSearchMarkup()+searchResultMarkup();}
+  function searchPlaceholder(){
+    const text=GOODS_TABS.includes(state.homeKind)?"Search for items or stores":"Search for dishes or restaurants";
+    return window.ScraveitLanguage&&ScraveitLanguage.t?ScraveitLanguage.t(text):text;
+  }
+  // The empty box rolls through dishes from the stores here, the same words as Home's box
+  // ("Search ‘Waffle’"), each one sliding up out as the next slides in, like Zomato and Blinkit.
+  // It starts on the word Home was showing, pauses once a letter is typed and comes back when
+  // the box is cleared (founder 22 Nov 2026). Only real dishes: otherwise the plain hint stays.
+  function searchHintWords(){const list=searchHints();return state.searchHintsCache&&state.searchHintsCache.real?list:[];}
+  function searchHintMarkup(){
+    const words=searchHintWords();if(!words.length)return"";
+    return '<span class="search-hint" aria-hidden="true" data-morph-own><span class="sh-pre">Search</span><span class="sh-roll" translate="no"><span class="sh-word">‘'+h(words[heroHintIndex%words.length])+'’</span></span></span>';
+  }
+  let searchHintTimer=null;
+  function rollSearchHint(){
+    const roll=document.querySelector(".search-screen .sh-roll"),input=document.getElementById("search-input");
+    if(!roll||!input)return false;
+    if(input.value||document.hidden)return true;
+    const words=searchHintWords();if(words.length<2)return true;
+    heroHintIndex=(heroHintIndex+1)%words.length;
+    const text="‘"+words[heroHintIndex]+"’",old=roll.querySelector(".sh-word:not(.leaving)");
+    roll.querySelectorAll(".sh-word.leaving").forEach(n=>n.remove());
+    if(!old||calmMotion()){if(old)old.textContent=text;return true;}
+    const next=document.createElement("span");next.className="sh-word";next.textContent=text;
+    old.classList.add("leaving");roll.appendChild(next);
+    const ease="cubic-bezier(.22,.9,.3,1)";
+    old.animate([{transform:"none",opacity:1},{transform:"translateY(-100%)",opacity:0}],{duration:420,easing:ease,fill:"forwards"}).onfinish=()=>old.remove();
+    next.animate([{transform:"translateY(100%)",opacity:0},{transform:"none",opacity:1}],{duration:420,easing:ease});
+    return true;
+  }
+  function startSearchHints(){
+    if(searchHintTimer||!document.querySelector(".search-screen .sh-roll"))return;
+    searchHintTimer=setInterval(()=>{if(state.route!=="search"||!rollSearchHint()){clearInterval(searchHintTimer);searchHintTimer=null;}},2600);
+  }
   function screenSearch() {
-    return '<main class="screen"><div class="screen-content page-stack">'+topbar("Find your next meal","Search live menus, cuisines and restaurants.",'<button class="icon-button" data-action="open-filters" aria-label="Open filters">'+icon("filter")+'</button>')+networkBanner()
-      +'<div class="input-wrap"><span class="input-icon">'+icon("search")+'</span><input id="search-input" class="input with-icon with-action" value="'+h(state.query)+'" placeholder="Try waffles, desserts or ice cream" autocomplete="off" enterkeyhint="search" aria-label="Search"><button class="icon-button flat input-action" data-action="clear-search" aria-label="Clear search">'+icon("close")+'</button></div>'
-      +categoryChipsHtml()
-      +'<div id="search-results" class="stack-lg">'+searchContentMarkup()+'</div></div>'+nav()+'</main>';
+    const hint=searchHintMarkup();
+    return '<main class="screen search-screen no-nav"><div class="screen-content">'
+      +'<header class="search-head"><button class="search-back" data-action="back" aria-label="Go back">'+icon("back")+'</button>'
+      +'<div class="search-field'+(state.query?' has-text':'')+'">'+icon("search","small")
+      // placeholder=" " keeps :placeholder-shown working, which hides the rolling hint the moment a letter goes in.
+      +'<span class="search-box"><input id="search-input" value="'+h(state.query)+'" placeholder="'+(hint?" ":h(searchPlaceholder()))+'" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="'+h(searchPlaceholder())+'">'+hint+'</span>'
+      +'<button class="search-clear" data-action="clear-search" aria-label="Clear search">'+icon("close","small")+'</button></div></header>'
+      +networkBanner()
+      +'<div id="search-results" class="search-body">'+searchContentMarkup()+'</div></div></main>';
   }
 
   function menuItemsFiltered(r,everyCategory) {
@@ -7075,7 +7567,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       return '<section class="menu-cat'+(open?' open':'')+'" data-cat="'+h(category)+'">'+(showAll?'<div class="menu-cat-head static"><h2 class="section-title">'+h(category)+'</h2><span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></div>':'<button type="button" class="menu-cat-head" data-action="menu-cat-toggle" data-restaurant-id="'+h(r.id)+'" data-value="'+h(category)+'" aria-expanded="'+open+'"><span class="grow"><span class="section-title">'+h(category)+'</span> <span class="supporting">'+count+' item'+(count===1?'':'s')+'</span></span><span class="menu-cat-chev" aria-hidden="true"></span></button>')
       +(open?'<div class="menu-list">'+grouped[category].map(item=>{
       const inCart=state.cart.filter(x=>x.restaurantId===r.id&&x.itemId===item.id).reduce((n,x)=>n+x.quantity,0);
-      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3><strong>'+money(item.price)+'</strong> '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+dishFreebieTags(r,item)+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,item,inCart)+'</div>'+dishPairingsMarkup(r,item,inCart)+'</article>';
+      return '<article class="menu-item"><div class="menu-copy"><span class="diet-mark '+(item.diet==="nonveg"||item.diet==="egg"?'nonveg':'')+'" aria-label="'+(item.diet==="egg"?'Contains egg (non-vegetarian)':item.diet==="nonveg"?'Non-vegetarian':'Vegetarian')+'"></span><h3 class="card-title">'+h(item.name)+'</h3>'+listPriceMarkup(item,r)+' '+packPriceMarkup(item)+'<p class="supporting">'+h(item.description||"")+'</p>'+kcalMarkup(item)+(item.diet==="egg"?'<span class="caption">Contains egg</span>':'')+(item.popular?'<span class="caption success-text">Popular choice</span>':'')+dishFreebieTags(r,item)+(item.available===false?'<span class="caption danger-text">Unavailable right now</span>':'')+'</div><div class="menu-media"><img data-action="open-item" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" src="'+h(safeUrl(item.imageThumb||item.imageUrl||item.image,r.imageThumb||r.image))+'" alt="'+h(item.name)+'" loading="lazy" decoding="async" onerror="this.onerror=null;this.src=\''+h(safeUrl(r.imageThumb||r.image,"restaurant-placeholder.svg"))+'\'">'+menuAddControl(r,item,inCart)+'</div>'+dishPairingsMarkup(r,item,inCart)+'</article>';
     }).join("")+'</div>':'')+'</section>'}).join("") || emptyState("search","No items in this filter","Try another menu category or dietary filter.","clear-menu-filter","Show full menu");
   }
   /** "Your usuals": dishes this customer had delivered from this store, newest first, each with the
@@ -7487,6 +7979,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       defaultMethod:["cod","upi","card"].includes(String(value.defaultMethod||""))?String(value.defaultMethod):"cod",
       onlineGatewayConfigured:value.onlineGatewayConfigured===true,
       tester:value.tester===true,
+      // Cash on delivery is off for this customer: an order of theirs was cancelled after pickup.
+      codBlocked:value.codBlocked===true,
       methods:{
         cod:method("cod"),
         upi:method("upi",String(methods.upi&&methods.upi.provider)==="cashfree"?"cashfree":"phonepe"),
@@ -7506,7 +8000,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
   function paymentMethodEnabled(value){
     const config=checkoutConfig(),method=checkoutMethodConfig(value);
-    if(value==="cod")return method?method.available!==false:true;
+    if(value==="cod")return config&&config.codBlocked?false:method?method.available!==false:true;
     if(!onlinePaymentReady())return false;
     return !!(method&&method.available===true);
   }
@@ -7540,6 +8034,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function inAppCardCheckout(){return nativeAvailable("startCashfreePayment")&&paymentMethodProvider("card")==="cashfree"}
   function paymentMethodCopy(value){
     const config=checkoutConfig(),method=checkoutMethodConfig(value);
+    if(value==="cod"&&config&&config.codBlocked)return CASH_OFF_TEXT;
     if(value==="cod")return method&&method.enabled===false?"Cash on delivery is disabled right now.":"Pay the rider at delivery.";
     if(!method)return value==="upi"?"UPI checkout settings are loading.":"Card checkout settings are loading.";
     if(method&&method.enabled!==true)return value==="upi"?"UPI payment is currently disabled by Scraveit.":"Card payment is currently disabled by Scraveit.";
@@ -7553,7 +8048,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return action+" · est. "+money(orderTotal());
   }
   function paymentOption(id,title,copy,enabled) {
-    return '<button class="settings-row" data-action="select-payment" data-value="'+h(id)+'" '+(enabled?'':'disabled')+'><span class="settings-icon">'+icon(id==="cod"?"receipt":"card")+'</span><span class="grow"><strong>'+h(title)+'</strong><span class="supporting">'+h(copy)+'</span></span><span class="'+(state.checkout.payment===id?'status-pill success':'caption')+'">'+(state.checkout.payment===id?'Selected':enabled?'Choose':'Connect gateway')+'</span></button>';
+    return '<button class="settings-row" data-action="select-payment" data-value="'+h(id)+'" '+(enabled?'':'disabled')+'><span class="settings-icon">'+icon(id==="cod"?"receipt":"card")+'</span><span class="grow"><strong>'+h(title)+'</strong><span class="supporting">'+h(copy)+'</span></span><span class="'+(state.checkout.payment===id?'status-pill success':'caption')+'">'+(state.checkout.payment===id?'Selected':enabled?'Choose':id==="cod"?'Off':'Connect gateway')+'</span></button>';
   }
   /** "Total bill · you saved · incl. taxes" - the whole breakdown opens from the bottom. */
   function billSummaryRow(){
@@ -7575,7 +8070,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return '<button class="settings-row" data-action="select-payment" data-value="upi" data-upi-app="'+h(app.appId)+'"><span class="settings-icon upi-app-icon">'+(app.icon?'<img alt="" src="data:image/png;base64,'+app.icon+'">':icon("card"))+'</span><span class="grow"><strong>'+h(app.name)+'</strong><span class="supporting">Opens '+h(app.name)+' to pay</span></span><span class="'+(on?'status-pill success':'caption')+'">'+(on?'Selected':'Choose')+'</span></button>';
   }
   function paySheet(){
-    const cashfreeInApp=nativeAvailable("startCashfreePayment")&&paymentMethodProvider("upi")==="cashfree";
+    // The per-app UPI list needs the phone to name its UPI apps (Android). iPhone shows UPI and
+    // Card / netbanking, both paid on Cashfree's page inside the app.
+    const cashfreeInApp=nativeAvailable("startCashfreePayment")&&nativeAvailable("getUpiApps")&&paymentMethodProvider("upi")==="cashfree";
     if(cashfreeInApp)loadUpiApps();
     const upiOn=paymentMethodEnabled("upi"),cardOn=paymentMethodEnabled("card"),apps=Array.isArray(state.upiApps)?state.upiApps:[];
     if(!cashfreeInApp||!upiOn&&!cardOn)return sheetShell("Pay using","Only verified payment methods can be selected.",'<section class="card settings-list">'+["cod","upi","card"].map(id=>paymentOption(id,paymentMethodTitle(id),paymentMethodCopy(id),paymentMethodEnabled(id))).join("")+'</section>');
@@ -7584,7 +8081,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return sheetShell("Pay using","Secured by Cashfree Payments.",
       (upiRows?'<h3 class="section-title">UPI</h3><section class="card settings-list">'+upiRows+'</section>':'')
       +'<h3 class="section-title">More ways to pay</h3><section class="card settings-list">'+other+'</section>'
-      +(paymentMethodEnabled("cod")?'<h3 class="section-title">Pay on delivery</h3><section class="card settings-list">'+paymentOption("cod","Cash on delivery","Pay the rider in cash or by scanning their QR",true)+'</section>':''));
+      +(paymentMethodEnabled("cod")?'<h3 class="section-title">Pay on delivery</h3><section class="card settings-list">'+paymentOption("cod","Cash on delivery","Pay the rider in cash or by scanning their QR",true)+'</section>':'')
+      +(checkoutConfig()&&checkoutConfig().codBlocked?'<p class="caption">'+h(CASH_OFF_TEXT)+'</p>':''));
   }
   /** Same names the server gives its time-of-day fees (domain/riderIncentiveEligibility.ts). */
   function timeOfDayFeeName(at){const hr=Number.isFinite(Number(at))&&Number(at)>0?new Date(Number(at)).getHours():12;return hr>=21||hr<4?"Late-night fee":hr<7?"Early-morning fee":"Surge fee"}
@@ -7619,16 +8117,17 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     reconcileCheckoutPaymentSelection();
     const paymentAvailable=paymentMethodEnabled(state.checkout.payment),paymentWarning=!enabledCheckoutMethods().length?'<div class="notice warning">'+icon("warning","small")+'<span>No checkout payment method is available right now. Please try again in a moment.</span></div>':"";
     const soon=openingSoon(r),canPlace=!(soon||!address||!state.online||state.loading||held||!state.cart.length||!paymentAvailable||payOpen(myPayAsk()));
+    refreshAutoOffer();
     keepCartPriced();
     // Place order shows a total only when it is the server's final one (see priceState).
     const ps=priceState(),ctaBody=soon?'<span>Opening soon</span>':ps==="ready"?'<span class="pay-cta-total"><strong>'+money(orderTotal())+'</strong><small>TOTAL</small></span><span>Place order</span>':ps==="failed"?'<span>Get price</span>':'<span>Place order</span>';
     return '<main class="screen has-floating-cart has-pay-dock"><div class="screen-content page-stack">'+topbar(r.name,soon?'Opening soon':storeEtaText(r,state.cart)+' min to '+(address?(address.label||address.area||"you"):"you"))+networkBanner()+openingSoonBanner(r)+partnerBusyBanner(r)
       +(serverCheckout()&&discount()>0?'<div class="saved-banner">You saved '+money(discount())+' on this order</div>':'')
-      +'<section class="card stack-lg">'+state.cart.map(cartItemMarkup).join("")+cartFreebiesMarkup()+cartPairingsMarkup()+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section>'
+      +'<section class="card stack-lg" data-anchor="cart-items">'+state.cart.map(cartItemMarkup).join("")+cartFreebiesMarkup()+cartPairingsMarkup()+'<button class="text-button" data-action="open-restaurant" data-restaurant-id="'+h(r.id)+'">+ Add more from '+h(r.name)+'</button></section>'
       +togetherCard()
       +adRailMarkup("checkout-ad-track")
-      +'<section class="card stack"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section>'
-      +'<section class="card checkout-card">'
+      +'<section class="card stack" data-anchor="savings"><h2 class="section-title">Savings</h2>'+(eligibleCoupon()?'<div class="applied-offer"><div class="grow"><strong>'+h(state.coupon.code)+' · you save '+money(discount())+'</strong><div class="caption">'+(state.couponAuto?'Best available offer, applied for you':'Offer applied')+'</div></div><button class="text-button" data-action="remove-coupon">Remove</button></div>':'')+checkoutOfferTiles()+'<div class="coupon-row"><input id="coupon-input" class="input" placeholder="Enter offer code" value="'+h(state.coupon&&state.coupon.code||"")+'"><button class="button secondary" data-action="apply-coupon">Apply</button></div><p class="caption">Only live, eligible Scraveit promotions can be applied.</p></section>'
+      +'<section class="card checkout-card" data-anchor="checkout">'
         +'<div class="checkout-line"><span class="settings-icon">'+icon("clock")+'</span><div class="grow"><strong>'+(state.checkout.deliveryMode==="scheduled"?'Scheduled delivery':'Delivery in '+h(storeEtaText(r,state.cart))+' min')+'</strong><button class="text-button inline" data-action="delivery-mode" data-value="scheduled">Want this later? Schedule it</button></div></div>'
         +'<div class="checkout-divider"></div>'
         +'<button type="button" class="checkout-line" data-action="'+(address&&(addressNeedsDoor(address)||!coordinatePoint(address))?'address-complete':'open-address-picker')+'">'+addressSummary(address)+icon("chevron","small")+'</button>'
@@ -7687,7 +8186,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function onlinePaymentNotice(order){
     if(!order||!isOnlinePaymentMethod(order.paymentMethod)||order.paymentState==="paid"||order.paymentState==="refunded")return"";
     const retry=order.paymentState==="failed";
-    const statusCopy=retry?"The previous payment attempt did not complete.":"Pay this order securely before the restaurant can accept it.";
+    const statusCopy=order.foodRescue?"Pay now to get this food. If you don't pay within 3 minutes, it goes to someone else.":retry?"The previous payment attempt did not complete.":"Pay this order securely before the restaurant can accept it.";
     return '<section class="card stack"><div class="notice '+(retry?'warning':'info')+'">'+icon(retry?"warning":"shield","small")+'<div><strong>'+(retry?'Retry payment':'Payment pending')+'</strong><div class="caption">'+h(statusCopy)+'</div></div></div><button class="button primary full" data-action="pay-order" data-order-id="'+h(order.id)+'">'+(retry?'Retry payment':'Complete payment')+'</button></section>';
   }
   /** Only used when there is no hero to float the controls over (a
@@ -7714,7 +8213,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return String(arrived&&arrived.proof||"").indexOf("campus:")===0}
   function orderLiveModule(order,live,canTrack){
     const collapsed=!!state.trackingMapCollapsed;
-    const headline=batchHeadline(order)||(campusGateWait(order)?"Your partner is waiting near the gate. Call them to meet.":null)||({
+    const headline=batchHeadline(order)||(campusGateWait(order)?"Your partner is waiting near the gate. Call them to meet.":null)
+      ||(order.foodRescue&&order.status==="Order placed"?(order.paymentState==="paid"?"Paid. Your delivery partner is starting now.":"Pay to get this food."):null)||({
       "Order placed":"Order received. Sending it to the kitchen.",
       "Accepted":"The kitchen has your order.",
       "Preparing":"Your meal is being freshly prepared.",
@@ -7784,17 +8284,17 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const foodSum=(order.squadMembers||[]).reduce((a,m)=>a+Number(m.subtotal||0),0)||1;
     const squadNote=order.squadCode?'<section class="squad-order-note"><span aria-hidden="true">👥</span><div class="grow"><strong>'+(guest?'Squad order by '+h(host?host.name:"your friend"):'Your squad order')+'</strong><span>'+(guest?'You’re following along live'+(me?' · your share about '+money(Number(order.total||0)*Number(me.subtotal||0)/foodSum):''):(order.squadMembers||[]).length+' people are following this order')+'</span></div></section>':'';
     return '<main class="screen"><div class="screen-content page-stack order-screen">'+(canTrack?'':orderTopbar(order))+networkBanner()
-      +orderLiveModule(order,live,canTrack)+squadNote
+      +orderLiveModule(order,live,canTrack)+squadNote+rescueOrderNotice(order)+afterPickupNotice(order)+cancelFeeNotice(order)
       +(!guest&&orderContactRow(order,'rider')?'<section class="card contact-card">'+orderContactRow(order,'rider')+'</section>':'')
       +(showDeliveryOtp&&!guest?'<section class="card stack" aria-label="Delivery verification code"><div><p class="eyebrow">Delivery OTP</p><h2 class="section-title">'+(campusGateWait(order)?'Share only when you get your order.':'Share only at your doorstep.')+'</h2><p class="supporting">Give this code to your assigned Scraveit Partner only after you receive the complete order.</p></div>'+(deliveryOtp?'<div style="font-size:36px;line-height:1;font-weight:850;letter-spacing:.24em;color:var(--primary);padding:10px 0" aria-label="Delivery code '+h(deliveryOtp.split("").join(" "))+'">'+h(deliveryOtp)+'</div>':'<div class="notice warning">'+icon("warning","small")+'<span>This code is available only on the device that placed the order. Use in-app support if you changed devices.</span></div>')+'</section>':'')
       +'<section class="card stack" id="order-journey-card"><div><h2 class="section-title">Order journey</h2><p class="supporting">Restaurant and delivery partner events are shown as they happen.</p></div>'+statusTimeline(order)+'</section>'
       +packedPhotoCard(order)
       +onlinePaymentNotice(order)
       +(canTrack&&!state.trackingMapCollapsed?trackingAdCarouselMarkup():'')
-      +'<section class="card stack order-items-card">'+orderContactRow(order,'restaurant')+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?(order.paymentState==="paid"?'Paid by UPI':'UPI · payment pending'):order.paymentMethod==="card"?(order.paymentState==="paid"?'Paid by card':'Card · payment pending'):order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
+      +'<section class="card stack order-items-card">'+(order.foodRescue?'':orderContactRow(order,'restaurant'))+'<div class="cluster between"><h2 class="section-title">Items</h2><strong>'+money(order.total)+'</strong></div>'+orderItemsSummary(order)+'<button type="button" class="bill-row" data-action="open-order-bill" data-order-id="'+h(order.id)+'"><span class="settings-icon">'+icon("receipt")+'</span><span class="grow"><strong>Total bill '+money(order.total)+'</strong><span class="caption">'+h(order.paymentMethod==="cod"||order.paymentMethod==="Cash on delivery"?'Cash on delivery':order.paymentMethod==="upi"?(order.paymentState==="paid"?'Paid by UPI':'UPI · payment pending'):order.paymentMethod==="card"?(order.paymentState==="paid"?'Paid by card':'Card · payment pending'):order.paymentMethod||"Payment")+' · view bill</span></span>'+icon("chevron","small")+'</button></section>'
       +'<section class="card stack"><h2 class="section-title">Delivery details</h2>'+addressSummary(order.address||{})+(order.instructions?'<div class="notice info">'+icon("info","small")+'<span>'+h(order.instructions)+'</span></div>':'')+'</section>'+submittedReviewMarkup
       +(order.status!=="Cancelled"?adminContactMarkup():'')
-      +(guest?'':'<div class="cluster wrap">'+(order.status==="Delivered"?'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>'+reviewAction:'')+(["Order placed","Accepted"].includes(order.status)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Request cancellation</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>')
+      +(guest?'':'<div class="cluster wrap">'+(order.status==="Delivered"?(order.foodRescue?'':'<button class="button secondary grow" data-action="reorder" data-order-id="'+h(order.id)+'">'+icon("refresh")+' Reorder</button>')+reviewAction:'')+(canSelfCancel(order)?'<button class="button danger grow" data-action="cancel-order" data-order-id="'+h(order.id)+'">Cancel order</button>':'')+'<button class="button tonal grow" data-action="support-order" data-order-id="'+h(order.id)+'">'+icon("help")+' Get help</button></div>')
       +'</div>'+nav()+'</main>';
   }
 
@@ -9575,7 +10075,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   function itemSheet(sheet) {
     const r=restaurant(sheet.restaurantId),item=menuItem(sheet.restaurantId,sheet.itemId);if(!r||!item)return"";
     const variants=Array.isArray(item.variants)?item.variants:[];const addons=Array.isArray(item.addOns)?item.addOns:[];
-    return sheetShell(item.name,item.description||"Customise this item before adding it.",'<form id="item-form" class="form-grid" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'"><img src="'+h(safeUrl(item.image,r.image))+'" alt="'+h(item.name)+'" style="width:100%;height:190px;object-fit:cover;border-radius:18px"><div class="cluster between"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'"></span><span><strong class="section-title">'+money(item.price)+'</strong> '+packPriceMarkup(item)+'</span></div>'+packLabelMarkup(item)
+    return sheetShell(item.name,item.description||"Customise this item before adding it.",'<form id="item-form" class="form-grid" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'"><img src="'+h(safeUrl(item.image,r.image))+'" alt="'+h(item.name)+'" style="width:100%;height:190px;object-fit:cover;border-radius:18px"><div class="cluster between"><span class="diet-mark '+(item.diet==="nonveg"?'nonveg':'')+'"></span><span>'+wasPrice(item,r)+'<strong class="section-title">'+money(dishPrices(item,r)[1])+'</strong> '+packPriceMarkup(item)+'</span></div>'+packLabelMarkup(item)
       +(variants.length?'<fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">'+h(item.variantTitle||"Choose a size")+'</legend>'+variants.map((v,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="radio" name="variant" value="'+i+'" '+(i===0?'checked':'')+' required><span class="grow"><strong>'+h(v.name)+'</strong></span><span>'+(!v.price?'Included':'+'+money(v.price))+'</span></label>').join("")+'</fieldset>':'')
       +(addons.length?'<fieldset class="stack" style="border:0;padding:0;margin:0"><legend class="card-title">Add extras</legend>'+addons.map((a,i)=>'<label class="settings-row" style="border:1px solid var(--border);border-radius:14px"><input type="checkbox" name="addon" value="'+i+'"><span class="grow"><strong>'+h(a.name)+'</strong></span><span>'+(!a.price?'No charge':'+'+money(a.price))+'</span></label>').join("")+'</fieldset>':'')
       +'<div class="field"><label for="item-note">'+(storeKind(r)==="restaurant"?"Kitchen note":"Note for the store")+' (optional)</label><textarea class="textarea" id="item-note" name="note" maxlength="140" placeholder="Allergy note or preparation request"></textarea><p class="caption">Allergy requests cannot guarantee an allergen-free kitchen.</p></div><button class="button primary full sheet-submit" type="submit">Add to cart · '+money(item.price)+'</button>'+(chatState().profile&&chatState().pairs.some(x=>x.status==="accepted")?'<button class="button tonal full" type="button" data-action="share-dish" data-restaurant-id="'+h(r.id)+'" data-item-id="'+h(item.id)+'" data-title="'+h(item.name)+'">'+icon("chat","small")+' Send to a friend</button>':'')+'</form>');
@@ -9662,12 +10162,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       await ensureSession();
       await nativeInvoke("cancelUnpaidOrder",{orderId:String(wait.order.id),reason:"cancel"},{idToken:state.session.idToken,timeoutMs:30000});
       if(state.checkout.unpaidOrderId===String(wait.order.id)){state.checkout.unpaidOrderId="";state.checkout.pendingIdempotencyKey="";persistCheckout();}
-      toast("Payment stopped. Your cart is still here.","success");
+      if(rescuePayment(wait)){toast("Payment stopped.","success");setTimeout(()=>refreshFoodRescues(true),2500);}
+      else toast("Payment stopped. Your cart is still here.","success");
     }catch(error){
       const code=String(error&&error.message||"");
       if(/ALREADY[_-]EXISTS/i.test(code)){
         toast(error.userMessage||"Your payment was received.","success");
-        if(wait.checkout)finishOrderPlacement(wait.order,String(wait.order.id),wait.checkout.deliveryOtp||"",false);
+        finishPaidOrder(wait.order,wait.checkout,false);
         return;
       }
       // Usually a UPI payment the bank is still settling.
@@ -9679,12 +10180,22 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     setSheet({type:"payFallback",order:order,checkout:checkout||null,reason:String(reason||""),busy:false});
   }
   function payFallbackSheet(sheet){
+    if(rescuePayment(sheet))return rescueFallbackSheet(sheet);
     const cod=paymentMethodEnabled("cod"),busy=sheet.busy?" disabled":"";
     return sheetShell("Payment not completed",sheet.reason+" The restaurant hasn't got this order yet.",
       '<div class="stack">'
       +(cod?'<button class="button primary full" data-action="pay-fallback-cod"'+busy+'>'+icon("wallet")+' Place it as Cash on delivery</button>':'')
       +'<button class="button '+(cod?'secondary':'primary')+' full" data-action="pay-fallback-retry"'+busy+'>'+icon("refresh")+' Try paying again</button>'
       +'<button class="button tonal full" data-action="pay-fallback-cancel"'+busy+'>Cancel this order</button></div>');
+  }
+  // Food Rescue is online only: no cash choice, and the food is kept for this customer for 3 minutes.
+  function rescueFallbackSheet(sheet){
+    const busy=sheet.busy?" disabled":"",ends=Number(sheet.checkout&&sheet.checkout.holdEnds||0),left=ends-rescueNow();
+    if(ends&&left<=0)return sheetShell("Payment not completed","",'<div class="stack"><p class="supporting">Your 3 minutes are up, so this food went back to others nearby.</p><button class="button primary full" data-action="pay-fallback-cancel"'+busy+'>OK</button></div>');
+    return sheetShell("Payment not completed",sheet.reason,'<div class="stack">'
+      +(ends?'<div class="rescue-timer">'+icon("clock","small")+'<span>Kept for you for</span><b data-rescue-ends="'+h(String(ends))+'">'+rescueClock(left)+'</b></div>':'')
+      +'<button class="button primary full" data-action="pay-fallback-retry"'+busy+'>'+icon("refresh")+' Try paying again</button>'
+      +'<button class="button tonal full" data-action="pay-fallback-cancel"'+busy+'>Cancel</button></div>');
   }
   // Cancels the unpaid order on the server (which first makes sure no payment can still land).
   async function abandonUnpaidOrder(sheet,reason){
@@ -9706,7 +10217,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(/ALREADY[_-]EXISTS/i.test(code)){
         // The money did arrive: this is a paid order after all.
         closeSheet();toast(error.userMessage||"Your payment was received.","success");
-        if(sheet.checkout)finishOrderPlacement(sheet.order,String(sheet.order.id),sheet.checkout.deliveryOtp||"",false);
+        finishPaidOrder(sheet.order,sheet.checkout,false);
         return false;
       }
       renderSheet();toast(friendlyError(error),"danger");return false;
@@ -9716,8 +10227,12 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     const sheet=state.sheet;if(!sheet||sheet.type!=="payFallback"||sheet.busy)return;
     if(action==="retry"){
       closeSheet();
-      if(await startOnlinePayment(sheet.order,sheet.checkout)&&sheet.checkout)finishOrderPlacement(sheet.order,String(sheet.order.id),sheet.checkout.deliveryOtp||"",false);
+      if(await startOnlinePayment(sheet.order,sheet.checkout))finishPaidOrder(sheet.order,sheet.checkout,false);
       return;
+    }
+    if(rescuePayment(sheet)){
+      if(!await abandonUnpaidOrder(sheet,"cancel"))return;
+      closeSheet();toast("Order cancelled.","success");setTimeout(()=>refreshFoodRescues(true),2500);render({preserveScroll:true});return;
     }
     if(!await abandonUnpaidOrder(sheet,action==="cod"?"cod":"cancel"))return;
     closeSheet();
@@ -9732,7 +10247,21 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     toast("Cash on delivery is selected. Tap Place order.","success");
   }
   function cancelSheet(sheet) {
-    return sheetShell("Request cancellation","The restaurant must review this request. It is not shown as cancelled until the server confirms it.",'<form id="cancel-form" class="form-grid" data-order-id="'+h(sheet.orderId)+'"><div class="field"><label for="cancel-reason">Reason</label><select id="cancel-reason" name="reason" class="select"><option>Ordered by mistake</option><option>Wrong delivery address</option><option>Need to change items</option><option>Delivery is taking too long</option><option>Other</option></select></div><button class="button danger full" type="submit">Submit cancellation request</button><button class="button tonal full" type="button" data-action="close-sheet">Keep my order</button></form>');
+    const order=(state.orders||[]).find(o=>o.id===sheet.orderId);
+    if(!order||!canSelfCancel(order)){
+      const done=order&&order.status==="Delivered"?"This order is already delivered.":order&&order.status==="Cancelled"?"This order is already cancelled.":"This order can't be cancelled now.";
+      return sheetShell("Cancel order","",'<div class="form-grid"><p class="supporting">'+h(done)+'</p><button class="button tonal full" type="button" data-action="close-sheet">OK</button></div>');
+    }
+    const fee=!!sheet.feeNow||cancelFeeApplies(order),online=isOnlinePaymentMethod(order.paymentMethod),paid=online&&order.paymentState==="paid",busy=!!sheet.busy;
+    const why=AFTER_PICKUP_STATUSES.includes(order.status)?"The delivery partner already has your food.":fee?"Your food is already being prepared.":"The restaurant hasn't accepted your order yet.";
+    const body=fee
+      ?'<div class="notice warning">'+icon("warning","small")+'<div><strong>A 100% cancellation fee applies</strong><div class="caption">'+h(online?"You won't get a refund for this order.":"As this is a cash order, cash on delivery will be turned off for your account. You'll need to pay online for future orders.")+'</div></div></div>'
+        +(online?'<section class="bill-card stack"><div class="price-row"><span>Cancellation fee (100%)</span><span>'+money(order.total)+'</span></div><div class="price-row total"><span>Refund</span><span>'+money(0)+'</span></div></section>':'')
+      :'<div class="notice info">'+icon("info","small")+'<div><strong>Cancelling is free</strong><div class="caption">'+h(paid?"Your full payment will be refunded to your original payment method.":online?"You haven't been charged.":"You won't pay anything.")+'</div></div></div>'
+        +(paid?'<section class="bill-card stack"><div class="price-row"><strong>Refund</strong><strong>'+money(order.total)+'</strong></div></section>':'');
+    return sheetShell("Cancel order?",why,'<div class="form-grid">'+body
+      +'<button class="button danger full" type="button" data-action="confirm-cancel-order" data-order-id="'+h(order.id)+'"'+(busy?' disabled aria-busy="true"':'')+'>'+(busy?'Cancelling…':'Confirm cancellation')+'</button>'
+      +'<button class="button tonal full" type="button" data-action="close-sheet"'+(busy?' disabled':'')+'>Keep my order</button></div>');
   }
   function deletionSheet() {
     return sheetShell("Withdraw consent and delete account","We stop using your data and erase your account. You'll be signed out.",'<form id="deletion-form" class="form-grid"><div class="notice danger">'+icon("warning","small")+'<span>You lose your saved addresses, favourites, friends, chats, stories, order history and any unused cashback. Bills that tax law makes us keep are kept with your contact details removed.</span></div><label class="field"><span>Type DELETE to confirm</span><input class="input" name="confirmation" autocomplete="off" required></label><button class="button danger full" type="submit">Delete my account</button></form>');
@@ -9768,6 +10297,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="cancel")html=cancelSheet(sheet);
     else if(sheet.type==="payFallback")html=payFallbackSheet(sheet);
     else if(sheet.type==="payWait")html=payWaitSheet(sheet);
+    else if(sheet.type==="foodRescue")html=foodRescueSheet(sheet);
     else if(sheet.type==="deletion")html=deletionSheet();
     else if(sheet.type==="signout")html=signoutSheet();
     else if(sheet.type==="payment")html=paymentInfoSheet();
@@ -9797,6 +10327,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(sheet.type==="compose")html=composeSheet();
     else if(sheet.type==="friendStory")html=storySheet(sheet);
     else if(sheet.type==="storyCam")html=camSheet();
+    else if(sheet.type==="storyStart")html=storyStartSheet();
     else if(sheet.type==="videoCompose")html=videoComposeSheet();
     else if(sheet.type==="reelSource")html=reelSourceSheet();
     else if(sheet.type==="reelCompose")html=reelComposeSheet();
@@ -9883,7 +10414,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     return new Promise((resolve,reject)=>{
       let settled=false,timer=0;
       const done=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);document.removeEventListener("visibilitychange",onVisibility);paymentInFlight=null;fn(value);};
-      const back=()=>{clearTimeout(timer);timer=setTimeout(()=>done(resolve,"back"),2500);};
+      // iPhone: while the in-app payment sheet is still up (say, after copying a bank OTP), the
+      // customer is still paying; the sheet itself reports when it closes (PaymentSheet.swift).
+      const back=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(!window.__scraveitPaySheetOpen)done(resolve,"back");},2500);};
       // Hidden again (still in the UPI app, or a flicker while it opened): keep waiting for Cashfree.
       const onVisibility=()=>{if(document.visibilityState==="visible")back();else clearTimeout(timer);};
       paymentInFlight={back:back,now:()=>done(resolve,"back")};
@@ -9918,7 +10451,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       if(nativeAvailable("startCashfreePayment")&&String(intent.provider||"")==="cashfree"){
         state.loading=false;render({preserveScroll:true});
         // UPI with a chosen app opens that app directly; otherwise Cashfree's in-app checkout (cards, netbanking, any UPI).
-        const upiApp=order.paymentMethod==="upi"?String(state.checkout.upiApp||""):"";
+        // A Food Rescue buy carries its own choice; the cart's stays as it was.
+        const ownChoice=!!(checkout&&typeof checkout.upiApp==="string");
+        const upiApp=order.paymentMethod==="upi"?String(ownChoice?checkout.upiApp:state.checkout.upiApp||""):"";
         try{
           await cashfreeOutcome(nativeInvoke("startCashfreePayment",{paymentUrl:redirectUrl,...(upiApp?{upiAppId:upiApp}:{})},{timeoutMs:20*60*1000}));
           state.loading=false;
@@ -9926,7 +10461,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
         }catch(error){
           const code=String(error&&error.message||"");
           // The chosen UPI app can't pay on this phone: "Try paying again" opens Cashfree's own page (cards, netbanking, UPI ID).
-          if(code==="UPI_APP_NOT_READY"){state.checkout.upiApp="";persistCheckout();}
+          if(code==="UPI_APP_NOT_READY"){if(ownChoice)checkout.upiApp="";else{state.checkout.upiApp="";persistCheckout();}}
           // Live Cashfree only runs in apps installed from the Play Store; payment stays in the app, never a webpage.
           payFallback(order,checkout,code==="UNTRUSTED_INSTALLER"?"Online payment works only in the Play Store version of Scraveit."
             :/CANCEL|DROP/i.test(code)?"You cancelled the payment.":(error&&error.userMessage||"The payment didn't go through."),code);
@@ -10004,6 +10539,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }catch(error){
       if(priceChangedError(error)){await showChangedPrice(error);return;}
       if(openingSoonError(error)){state.settings.openingSoon=true;toast(OPENING_SOON_TEXT,"info");return;}
+      if(/^Cash on delivery is off for your account/.test(String(error&&error.userMessage||""))){if(state.checkoutConfig)state.checkoutConfig.codBlocked=true;reconcileCheckoutPaymentSelection();toast(error.userMessage,"warning");return;}
       const partnersSaid=partnersBusyText(error);
       if(partnersSaid){notePartnersBusy(r&&r.id,partnersSaid);toast(partnersSaid,"warning");return;}
       toast("Order was not placed. "+friendlyError(error)+" Retrying uses the same protected request and will not duplicate an order.","danger");
@@ -10161,10 +10697,32 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   }
 
   function updateSearchResults() {
-    const node=document.getElementById("search-results");if(node)node.innerHTML=searchContentMarkup();
-    // Re-entrant by design: this returns immediately once the term has been
-    // looked up, and its own re-render is what lands the results.
+    // The city-wide lookup starts first, so a term it has not answered yet shows grey placeholder
+    // rows instead of "No results" flipping to results a moment later.
     searchCityCatalog(state.query);
+    patchSearchResults();
+  }
+  /** Brings the search results up to date in place. The bar, the box (and so the keyboard) and
+   *  every row that stays are never rebuilt (founder 21 Nov 2026: search glitched after each letter). */
+  function patchSearchResults() {
+    const field=document.querySelector(".search-field");
+    if(field&&field.classList)field.classList.toggle("has-text",!!state.query);
+    const node=document.getElementById("search-results");if(!node)return;
+    const incoming=document.createElement("div");incoming.innerHTML=searchContentMarkup();
+    morphChildren(node,incoming);
+    if(!searchKey(state.query))refreshCardPhotos();
+  }
+  // Each letter repaints the rows straight away (several letters within one frame paint once);
+  // only the city-wide lookup waits for a pause in typing.
+  let searchPaintQueued=false;
+  function queueSearchPaint() {
+    if(searchPaintQueued)return;searchPaintQueued=true;
+    requestAnimationFrame(()=>{searchPaintQueued=false;if(state.route==="search")patchSearchResults();});
+  }
+  function focusSearchField() {
+    const input=document.getElementById("search-input");if(!input)return;
+    try{input.focus({preventScroll:true})}catch(_){input.focus()}
+    const end=input.value.length;try{input.setSelectionRange(end,end)}catch(_){}
   }
   function scheduleSearchUpdate() {
     clearTimeout(state.searchDebounceTimer);
@@ -10204,6 +10762,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="spin-wheel"){spinWheel();return;}
     if(action==="home-mood"){const v=control.dataset.value||"";state.homeMood=activeMood()===v?"off":v;haptic(8);render({preserveScroll:true});return;}
     if(action==="open-food-story"){setSheet({type:"story"});return;}
+    if(action==="open-food-rescue"){openFoodRescue(String(control.dataset.rescueId||""));return;}
+    if(action==="rescue-pay-choice"){rescueState().choice={method:String(control.dataset.value||""),upiApp:String(control.dataset.upiApp||"")};haptic(8);renderSheet();return;}
+    if(action==="buy-food-rescue"){buyFoodRescue(String(control.dataset.rescueId||""));return;}
     if(action==="open-wrapped"){openWrapped();return;}
     if(action==="share-wrapped"){shareWrapped();return;}
     if(action==="start-squad"){startSquad(control.dataset.restaurantId);return;}
@@ -10231,7 +10792,13 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="open-pay-sheet"){setSheet({type:"pay"});return;}
     if(action==="open-order-bill"){setSheet({type:"orderBill",orderId:control.dataset.orderId||""});return;}if(action==="open-packed-photo"){const img=control.querySelector("img");if(img)showPhotoViewer(img.src,img.alt);return;}
     if(action==="home-kind"){const nextKind=control.dataset.value||"restaurant";if(nextKind!==(state.homeKind||"restaurant"))state.cuisine="All";state.homeKind=nextKind;if(state.route!=="home")go("home");else{render();window.scrollTo(0,0);}return;}
-    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;go(control.dataset.route,data);return;}
+    if(action==="go"){const data={};if(control.dataset.orderId)data.orderId=control.dataset.orderId;
+      // Opening search afresh starts with an empty box (Back from a store still returns to the results).
+      if(control.dataset.route==="search"&&state.route!=="search"){clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";state.searchBrowse=control.dataset.focus!=="search";}
+      go(control.dataset.route,data);
+      // The search bar opens search ready to type: the keyboard comes up at once.
+      if(control.dataset.focus==="search")focusSearchField();
+      return;}
     if(action==="open-ad"){const ad=(state.localAds||[]).find(x=>x.id===control.dataset.adId);if(ad)pushSignal({t:"brandClick",adId:String(ad.id).slice(0,128)});if(ad&&ad.restaurantId){go("restaurant",{restaurantId:ad.restaurantId});}else if(ad&&ad.deepLink==="offers")go("offers");else go("search");return;}
     if(action==="capsule-dismiss"){slideCapsuleAway(control.closest(".home-capsule"),1);return;}
     if(action==="quick-rate"){go("review",{orderId:control.dataset.orderId,rating:Number(control.dataset.rating)||0});return;}
@@ -10295,6 +10862,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="clear-search"){clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query="";const input=document.getElementById("search-input");if(input){input.value="";input.focus();}updateSearchResults();return;}
     if(action==="recent-search"){applyRecentSearch(control.dataset.value);return;}
     if(action==="clear-search-history"){clearRecentSearches();updateSearchResults();return;}
+    if(action==="clear-search-filters"){state.sort="recommended";state.diet="all";state.homeFilter="all";patchSearchResults();return;}
     if(action==="open-filters"){setSheet({type:"filters"});return;}
     if(action==="home-filter"){const value=control.dataset.value||"all";state.homeFilter=state.homeFilter===value?"all":value;render({preserveScroll:true});return;}
     if(action==="toggle-rating-view"){state.ratingView=state.ratingView==="overall"?"mine":"overall";saveJSON("savrivo.customer.ratingView",state.ratingView);render({preserveScroll:true});return;}
@@ -10326,7 +10894,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="clear-unavailable-cart"){state.cart=[];state.coupon=null;state.tip=0;persistCart();toast("Unavailable cart removed.","success");go("home");return;}
     if(action==="cart-quantity"){updateCart(control.dataset.key,Number(control.dataset.delta||0));return;}
     if(action==="apply-offer-code"){const code=control.dataset.code,rid=control.dataset.restaurantId;state.pendingCoupon={code,restaurantId:rid};if(state.cart.length&&state.cart[0].restaurantId===rid)refreshAutoOffer();toast(code+" will be applied in your cart.","success");render({preserveScroll:true});return;}
-    if(action==="offers-sort"){state.sort="offers";state.homeFilter="offers";go("search");return;}
+    if(action==="offers-sort"){state.sort="offers";state.homeFilter="offers";state.searchBrowse=true;go("search");return;}
     if(action==="apply-coupon"){
       const code=String((document.getElementById("coupon-input")||{}).value||"").trim().toUpperCase();const promo=state.promotions.find(p=>String(p.code||"").toUpperCase()===code&&p.active===true);
       if(!promo){state.coupon=null;toast("That code is not an active Scraveit offer.","danger");render({preserveScroll:true});return;}
@@ -10339,6 +10907,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
       state.coupon=promo;state.couponAuto=false;state.couponDismissedFor="";
       toast("Offer applied.","success");render({preserveScroll:true});refreshDynamicPricing().then(()=>render({preserveScroll:true})).catch(()=>{});return;
     }
+    if(action==="pick-offer"){const code=String(control.dataset.code||"").toUpperCase(),promo=(state.promotions||[]).find(p=>String(p.code||"").toUpperCase()===code);if(!promo||!state.cart.length||!promotionEligible(promo,state.cart[0].restaurantId,cartSubtotal(),Date.now())){toast("That offer is not available on this order.","danger");return;}state.coupon=promo;state.couponAuto=false;state.couponDismissedFor="";toast("Offer applied.","success");render({preserveScroll:true});refreshDynamicPricing().then(()=>render({preserveScroll:true})).catch(()=>{});return;}
     if(action==="load-more-restaurants"){loadMoreRestaurants();return;}
     if(action==="remove-coupon"){
       state.couponDismissedFor=state.cart.length?state.cart[0].restaurantId:"";
@@ -10377,6 +10946,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     if(action==="review-order"){go("review",{orderId:control.dataset.orderId});return;}
     if(action==="support-order"){go("support",{orderId:control.dataset.orderId});return;}
     if(action==="cancel-order"){setSheet({type:"cancel",orderId:control.dataset.orderId});return;}
+    if(action==="confirm-cancel-order"){confirmSelfCancel(control.dataset.orderId);return;}
     if(action==="about-you"){setSheet({type:"aboutYou"});return;}
     if(action==="about-you-skip"){try{localStorage.setItem(ABOUT_SKIP_KEY+state.session.uid,String(Date.now()))}catch(_){}state.aboutYouPending=false;go("home",{},true);return;}
     if(action==="about-you-remove"){removeAboutYou();return;}
@@ -10433,7 +11003,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     let drag=null;
     sheetRegion.addEventListener("touchstart",event=>{
       const sheet=event.target.closest&&event.target.closest(".sheet");if(!sheet||event.touches.length!==1)return;
-      if(event.target.closest("input,textarea,select,.wheel-wrap,.mood-picks,.chip-row"))return;
+      // A drag on the address map moves the map, never the page around it.
+      if(event.target.closest("input,textarea,select,.wheel-wrap,.mood-picks,.chip-row,.addr-map"))return;
       const top=sheet.getBoundingClientRect().top,y=event.touches[0].clientY;
       if(sheet.scrollTop>0&&y-top>56)return;
       drag={sheet,startY:y,startT:Date.now(),dy:0,active:false};
@@ -10506,7 +11077,7 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   document.addEventListener("pointercancel",trackingMapPointerUp);
 
   app.addEventListener("input",function(event){
-    if(event.target.id==="search-input"){state.query=event.target.value;scheduleSearchUpdate();}
+    if(event.target.id==="search-input"){state.query=event.target.value;queueSearchPaint();scheduleSearchUpdate();}
     if(event.target.id==="checkout-instructions")state.checkout.instructions=event.target.value;
   });
   app.addEventListener("change",function(event){
@@ -10521,7 +11092,8 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
   });
   app.addEventListener("keydown",function(event){
     if(event.target.id==="search-input"&&event.key==="Enter"){
-      event.preventDefault();clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query=event.target.value;recordRecentSearch(state.query);updateSearchResults();return;
+      // The keyboard's search key keeps the term and closes the keyboard, like Swiggy and Zomato.
+      event.preventDefault();clearTimeout(state.searchDebounceTimer);state.searchDebounceTimer=null;state.query=event.target.value;recordRecentSearch(state.query);updateSearchResults();event.target.blur();return;
     }
     if((event.key==="Enter"||event.key===" ")&&event.target.matches('[role="button"][data-action]')){event.preventDefault();event.target.click();}
   });
@@ -10635,11 +11207,29 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     pendingReviews[order.id]=review;state.reviews[order.id]=review;persistReviews();toast("Thank you for helping Scraveit improve.","success");go("home",{},true);
     saveReview(order.id,review,String(state.session.uid||""));
   }
-  async function submitCancellation(form) {
-    const orderId=form.dataset.orderId,id=uid("cancel_"),requestData={id:id,type:"cancellation",orderId:orderId,reason:form.elements["reason"].value,status:"requested",createdAt:Date.now(),uid:state.session.uid,customerId:state.session.uid};
-    try{await supportDoc(id).set(requestData);closeSheet();toast("Cancellation request sent for restaurant review.","success");}
-    catch(error){toast("Cancellation request could not be sent. "+friendlyError(error),"danger");}
+  async function confirmSelfCancel(orderId){
+    const sheet=state.sheet;if(!sheet||sheet.type!=="cancel"||sheet.busy)return;
+    const order=(state.orders||[]).find(o=>o.id===orderId);if(!order)return;
+    sheet.busy=true;renderSheet();
+    try{
+      await ensureSession();
+      // The apps' native bridge already carries this callable, so no app-shell change is needed.
+      const result=await nativeInvoke("cancelUnpaidOrder",{orderId:String(orderId),reason:"self",acceptFee:!!sheet.feeNow||cancelFeeApplies(order)},{idToken:state.session.idToken,timeoutMs:30000});
+      if(result&&result.feeRequired){
+        // The restaurant accepted while this was open: show the fee before anything is cancelled.
+        if(state.sheet===sheet){sheet.busy=false;sheet.feeNow=true;renderSheet();}
+        toast("The restaurant has just accepted your order, so a 100% cancellation fee now applies.","warning");return;
+      }
+      state.orders=state.orders.map(o=>o.id===orderId?Object.assign({},o,{status:"Cancelled",statusBeforeTerminal:o.status,cancelledByRole:"customer"},result&&result.cancellationFee?{cancellationFee:result.cancellationFee}:{}):o);persistOrders();
+      if(state.sheet===sheet)closeSheet();
+      toast("Order cancelled","success");
+      if(state.route==="order")render({preserveScroll:true});
+    }catch(error){
+      if(state.sheet===sheet){sheet.busy=false;renderSheet();}
+      toast(error&&error.userMessage?String(error.userMessage):"Couldn't cancel. "+friendlyError(error),"danger");
+    }
   }
+
   async function submitDeletion(form) {
     if(String(new FormData(form).get("confirmation")||"").trim().toUpperCase()!=="DELETE"){toast("Type DELETE exactly to confirm.","danger");return;}
     const id=uid("privacy_"),record={id:id,type:"account_deletion",uid:state.session.uid,email:state.profile.email||state.session.email,status:"requested",createdAt:Date.now()};
@@ -10666,7 +11256,6 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     else if(form.id==="assistant-form")submitAssistant(form);
     else if(form.id==="chat-form")sendOrderChat(form);
     else if(form.id==="review-form")submitReview(form);
-    else if(form.id==="cancel-form")submitCancellation(form);
     else if(form.id==="deletion-form")submitDeletion(form);
   });
 
@@ -10683,6 +11272,9 @@ function money(value) { const v=Math.round(Number(value || 0)*100)/100; return "
     }
     function revealFocusedField(target){
       if(!target||!target.matches||!target.matches('input,textarea,select,[contenteditable="true"]'))return;
+      // The search box sits in a bar pinned to the top: always in view, and scrolling to it made
+      // the page jump as the keyboard came up.
+      if(target.id==="search-input")return;
       const reveal=()=>{
         try{target.scrollIntoView({block:"center",inline:"nearest",behavior:"auto"})}
         catch(_){try{target.scrollIntoView(false)}catch(__){}}

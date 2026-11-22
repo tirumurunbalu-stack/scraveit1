@@ -28,7 +28,6 @@
     ],
     "redirects": [
       {"source": "/index.html", "destination": "/", "type": 301},
-      {"source": "/app", "destination": "https://play.google.com/store/apps/details?id=com.feastly.app", "type": 302},
       {"source": "/delivery/:code", "destination": "https://play.google.com/store/apps/details?id=com.feastly.rider&referrer=ref%3D:code", "type": 302},
       {"source": "/delivery", "destination": "https://play.google.com/store/apps/details?id=com.feastly.rider", "type": 302},
       {"source": "/restaurant", "destination": "https://play.google.com/store/apps/details?id=com.feastly.restaurant", "type": 302}

@@ -7,7 +7,9 @@ export function restaurantWorkloadRef(database: FirestoreLike, restaurantId: str
   return database.collection("private").doc("restaurantWorkload").collection("byRestaurant").doc(restaurantId);
 }
 
-export async function reconcileRestaurantWorkload(order: SavrivoOrder): Promise<RestaurantWorkload> {
+export async function reconcileRestaurantWorkload(order: SavrivoOrder): Promise<RestaurantWorkload | null> {
+  // A Food Rescue buy never adds to the store's kitchen load (domain/foodRescue.ts).
+  if (order.foodRescue) return null;
   const now = Date.now();
   const ref = restaurantWorkloadRef(firestoreDb, order.restaurantId);
   const workload = await firestoreDb.runTransaction(async (transaction: TransactionLike) => {

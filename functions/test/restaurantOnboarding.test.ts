@@ -76,7 +76,15 @@ describe("partner agreement", () => {
     expect(text).toContain("commission of 18% of the item total after the Restaurant's own offers");
     expect(text).toContain("fixed for 12 months");
     expect(text).toContain("11224999000123");
-    expect(text).toContain("not registered for GST");
+    // Scraveit pays food GST under s.9(5), so a restaurant's own GST registration is not part of the tax details.
+    expect(text).not.toContain("not registered for GST.");
+    expect(text).toContain("The Restaurant's PAN is ABCPK1234D. Scraveit deducts");
+    expect(text).toContain("If the menu prices include GST, customers pay the menu price and the GST is taken out of the item total");
+    expect(text).toContain("the GST is added to the customer's bill at checkout");
+    const withGstin = renderAgreement({platform: {name: "Scraveit", address: "Naidupeta", email: "a@b.c", phone: "1"},
+      restaurantName: "The Waffle Spot", legalName: "", ownerName: "Ravi Kumar", address: "Naidupeta", fssaiNumber: "11224999000123",
+      pan: "AAPFU0939F", gstin: "27AAPFU0939F1ZV", commissionBps: 1_800, termMonths: 12, date: "2026-10-05"}).map((s) => s.body).join(" ");
+    expect(withGstin).not.toContain("GSTIN");
   });
 
   it("shows the 30% standard rate until Scraveit sets the agreed one", async () => {
@@ -98,7 +106,7 @@ describe("partner agreement", () => {
     await expect(onboarding.signRestaurantAgreement("owner1", owner, {appId: "owner1", hash: view.hash, typedName: "ravi  kumar", consent: true, method: "aadhaar_esign"}, meta, db, bucket)).rejects.toThrow(/not switched on/);
     await onboarding.signRestaurantAgreement("owner1", owner, {appId: "owner1", hash: view.hash, typedName: "ravi  kumar", consent: true, method: "in_app"}, meta, db, bucket);
     const [path, pdf] = [...files.entries()][0]!;
-    expect(path).toMatch(/^private\/restaurant-agreements\/owner1\/partner-v1-/);
+    expect(path).toMatch(/^private\/restaurant-agreements\/owner1\/partner-v4-/);
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
     const app = (await db.collection("restaurantApplications").doc("owner1").get()).data() as Record<string, any>;
     expect(app.agreement).toMatchObject({status: "signed", commissionBps: 1_800, method: "in_app"});

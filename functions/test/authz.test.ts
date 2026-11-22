@@ -105,4 +105,17 @@ describe("restaurant order transition authorization", () => {
       "Out for delivery",
     )).resolves.toBe("rider");
   });
+
+  it("saves an admin cancelling their own test order in the admin app as the admin", async () => {
+    const own = {...order, customerId: "founder"} as SavrivoOrder;
+    const admin = tokenFor("founder", {savrivoRole: "owner"});
+    await expect(authorizeTransition("founder", admin, own, "Cancelled", {cancelReason: "Duplicate order"})).resolves.toBe("owner");
+    await expect(authorizeTransition("founder", tokenFor("founder", {savrivoRole: "ops_admin"}), own, "Cancelled", {cancelReason: "Item unavailable"}))
+      .resolves.toBe("ops_admin");
+    // Without an admin-app reason it is their own customer cancel.
+    await expect(authorizeTransition("founder", admin, own, "Cancelled", {cancelReason: "Changed my mind"})).resolves.toBe("customer");
+    await expect(authorizeTransition("founder", admin, own, "Cancelled")).resolves.toBe("customer");
+    // A plain customer stays the customer even with an admin reason.
+    await expect(authorizeTransition("founder", tokenFor("founder"), own, "Cancelled", {cancelReason: "Duplicate order"})).resolves.toBe("customer");
+  });
 });

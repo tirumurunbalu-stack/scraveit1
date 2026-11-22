@@ -126,6 +126,9 @@ function lineOf(journal: LedgerJournal, account: string): Line | null {
   const meta = record(journal.metadata), kind = String(meta.adjustmentKind ?? "");
   let lineKind: PayoutLineKind = "other", tdsPaise = 0, tcsPaise = 0;
   if ((journal.eventType === "cod_delivery" || journal.eventType === "payment") && credit > 0) lineKind = "order";
+  // Cancelled after pickup, or a cash order the customer cancelled with the 100% fee: Scraveit pays
+  // the order as if delivered (services/afterPickupCancel.ts, services/customerCancelFee.ts).
+  else if ((meta.settlementType === "cancel_after_pickup" || meta.settlementType === "customer_cancel_fee") && credit > 0) lineKind = "order";
   else if (journal.eventType === "tax_withholding" || journal.eventType === "tax_withholding_reversal") {
     // The seller's TDS has its own account; the rest of what came off (or back) is GST TCS.
     const tdsAccount = "liability:income-tax-tds-payable";
@@ -141,7 +144,9 @@ function lineOf(journal: LedgerJournal, account: string): Line | null {
   return {
     journalId: journal.journalId, at: journal.occurredAt, kind: lineKind, orderId: journal.orderId ?? "", movementPaise,
     tdsPaise, tcsPaise,
-    paymentMethod: journal.eventType === "cod_delivery" ? "cod" : meta.paymentMethod === "online" ? "online" : "",
+    paymentMethod: journal.eventType === "cod_delivery" ? "cod" : meta.paymentMethod === "online" ? "online" :
+      (meta.settlementType === "cancel_after_pickup" || meta.settlementType === "customer_cancel_fee") &&
+        meta.paymentMethod === "cod" ? "cod" : "",
     reason: text(meta.reason) || (lineKind === "other" ? text(memo) : ""),
     reference: text(meta.bookingId ?? meta.claimId ?? meta.invoiceNo ?? "", 120),
     settledBy: [], settledPaise: 0,

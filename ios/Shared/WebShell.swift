@@ -1,5 +1,6 @@
 import UIKit
 import WebKit
+import UserNotifications
 
 /// What each app adds on top of the shared shell: the JavaScript object the
 /// web screens talk to (window.FeastlyNative on Android) and the native work
@@ -11,10 +12,22 @@ protocol NativeBridge: AnyObject {
     /// The page finished loading: push any native state it needs (for example
     /// whether location is allowed), since earlier pushes had no page to reach.
     func pageDidLoad(shell: WebShellViewController)
+    /// A notification arrived while the app is open: how to show it.
+    func presentationOptions(for notification: UNNotification) -> UNNotificationPresentationOptions
+    /// A push reached the app (open, or a background push in the background).
+    func notificationReceived(_ userInfo: [AnyHashable: Any])
+    /// The person tapped a notification.
+    func notificationOpened(_ userInfo: [AnyHashable: Any])
+    /// A link opened the app (sign-in redirects). True when the bridge used it.
+    func open(url: URL) -> Bool
 }
 
 extension NativeBridge {
     func pageDidLoad(shell: WebShellViewController) {}
+    func presentationOptions(for notification: UNNotification) -> UNNotificationPresentationOptions { [.banner, .sound] }
+    func notificationReceived(_ userInfo: [AnyHashable: Any]) {}
+    func notificationOpened(_ userInfo: [AnyHashable: Any]) {}
+    func open(url: URL) -> Bool { false }
 }
 
 /// The app's single screen: a WKWebView showing the same web screens the
@@ -97,6 +110,12 @@ final class WebShellViewController: UIViewController, WKScriptMessageHandler, WK
         }
         if scroll.contentOffset.x != 0 {
             scroll.setContentOffset(CGPoint(x: 0, y: scroll.contentOffset.y), animated: true)
+        }
+        // Signing in changes the page while the keyboard is up; when the keyboard
+        // closes, the shorter new page was left pushed up past its end.
+        let maxY = max(0, scroll.contentSize.height - scroll.bounds.height)
+        if scroll.contentOffset.y > maxY + 1 {
+            scroll.setContentOffset(CGPoint(x: 0, y: maxY), animated: false)
         }
     }
 

@@ -25,6 +25,7 @@ import {
   validGstEnrolment,
   validUpi,
   type GoodsGstMode,
+  type AgreementOutlet,
   type AgreementParty,
   type AgreementSection,
 } from "../domain/restaurantOnboarding";
@@ -73,7 +74,7 @@ export async function loadAgreementParty(database: FirestoreLike = firestoreDb):
 }
 
 /** What the application says, in the shape the agreement needs. */
-function agreementSections(app: Rec, party: AgreementParty): {sections: AgreementSection[]; hash: string} {
+function agreementSections(app: Rec, party: AgreementParty, outlets?: AgreementOutlet[]): {sections: AgreementSection[]; hash: string} {
   const terms = rec(app.terms);
   const location = rec(app.location);
   const sections = renderAgreement({
@@ -92,6 +93,7 @@ function agreementSections(app: Rec, party: AgreementParty): {sections: Agreemen
     commissionBps: Number(terms.commissionBps ?? STANDARD_COMMISSION_BPS),
     termMonths: Number(terms.termMonths ?? 12),
     date: istDate(Number(terms.setAt ?? app.submittedAt ?? Date.now())),
+    outlets,
   });
   return {sections, hash: agreementHash(sections)};
 }
@@ -237,7 +239,7 @@ export async function buildAgreementPdf(
   for (const section of sections) {
     y -= 6;
     paragraph(section.heading, 11.5, bold, 4);
-    paragraph(section.body, 10, font, 3.5);
+    for (const line of section.body.split("\n")) paragraph(line, 10, font, 3.5);
   }
   y -= 14;
   newPageIfNeeded(40 + certificate.length * 16);
@@ -527,6 +529,10 @@ export interface LiveAgreementDetails {
 
 export interface LiveAgreementView extends AgreementView {
   restaurantId: string;
+  /** Every outlet this one agreement covers (this store first); one entry = just this store. */
+  outlets: Array<{restaurantId: string; name: string}>;
+  /** The owner's other unsigned outlets that need their own agreement, and why. */
+  separate: Array<{restaurantId: string; name: string; reason: string}>;
   storeType: string;
   issues: string[];
   /** Which details Scraveit already holds, so the app only asks for the rest. */
@@ -602,6 +608,91 @@ async function liveAgreementRecord(database: FirestoreLike, restaurantId: string
 
 const liveRecordId = (restaurantId: string) => `live_${restaurantId}`;
 
+type LiveBuilt = Awaited<ReturnType<typeof liveAgreementRecord>>;
+interface OutletGroup {
+  members: Array<{restaurantId: string; built: LiveBuilt; member: Rec}>;
+  separate: Array<{restaurantId: string; name: string; reason: string}>;
+}
+
+function outletOf(built: LiveBuilt): AgreementOutlet {
+  const location = rec(built.app.location);
+  return {
+    name: str(built.app.restaurantName, 120),
+    address: [str(location.address, 300), str(location.city, 80)].filter(Boolean).join(", "),
+    fssaiNumber: str(rec(built.app.fssai).number, 14),
+    drugLicenceNumber: str(rec(built.app.drugLicence).number, 60),
+  };
+}
+
+const MAX_GROUP_OUTLETS = 40;
+
+/**
+ * One owner, many outlets: the owner's other unsigned outlets that can share
+ * this agreement — same business (PAN), same store type, same commission and
+ * fixed period, and nothing missing. The rest sign their own, and the app says why.
+ */
+async function ownerOutletGroup(
+  database: FirestoreLike, uid: string, mainId: string, main: LiveBuilt, mainMember: Rec, now: number,
+): Promise<OutletGroup> {
+  const group: OutletGroup = {members: [{restaurantId: mainId, built: main, member: mainMember}], separate: []};
+  if (!uid) return group;
+  const linked = await database.collection("userRestaurants").doc(uid).get();
+  const ids = Object.entries(rec(linked.exists ? linked.data() : null))
+    .filter(([id, on]) => on === true && id !== mainId).map(([id]) => id).slice(0, MAX_GROUP_OUTLETS);
+  if (!ids.length) return group;
+  const pan = str(rec(main.app.pan).number, 10).toUpperCase();
+  const ownerName = str(main.app.ownerName, 120);
+  const fill: LiveAgreementDetails = {ownerName, pan, gstin: str(main.app.gstin, 15),
+    gstMode: (str(main.app.gstMode) || undefined) as LiveAgreementDetails["gstMode"], gstEnrolment: str(main.app.gstEnrolment, 20)};
+  const termMonths = Number(rec(main.app.terms).termMonths);
+  const rows = await Promise.all(ids.map(async (id) => {
+    const [memberSnap, recordSnap] = await Promise.all([
+      restaurantMemberRef(database, id, uid).get(),
+      database.collection(AGREEMENT_RECORDS).doc(liveRecordId(id)).get(),
+    ]);
+    const member = rec(memberSnap.exists ? memberSnap.data() : null);
+    if (member.active === false || str(member.role) !== "restaurant_owner") return null;
+    if (recordSnap.exists && rec(recordSnap.data()).status === "signed") return null;
+    let built: LiveBuilt;
+    try {
+      built = await liveAgreementRecord(database, id, member, fill, now);
+    } catch {
+      return null;
+    }
+    if (built.restaurant.archived === true || Number(built.restaurant.agreementSignedAt ?? 0) > 0) return null;
+    const name = str(built.app.restaurantName, 120) || id;
+    const reasons: string[] = [];
+    if (built.storeType !== main.storeType) reasons.push("a different kind of store");
+    if (built.commission.commissionBps !== main.commission.commissionBps) {
+      reasons.push(`a different commission (${Number((built.commission.commissionBps / 100).toFixed(2))}%)`);
+    }
+    if (Number(rec(built.app.terms).termMonths) !== termMonths) reasons.push("a different fixed period");
+    if (built.held.pan && built.held.pan !== pan) reasons.push("a different PAN");
+    if (built.held.ownerName && normalizePersonName(built.held.ownerName) !== normalizePersonName(ownerName)) reasons.push("a different owner name");
+    if (main.storeType !== "restaurant" && (str(built.app.gstin) !== str(main.app.gstin) || goodsGstMode(built.app) !== goodsGstMode(main.app))) {
+      reasons.push("different GST details");
+    }
+    if (built.issues.length) reasons.push(`missing ${built.issues.join(", ")}`);
+    return {id, name, built, member, reasons};
+  }));
+  for (const row of rows) {
+    if (!row) continue;
+    if (row.reasons.length) group.separate.push({restaurantId: row.id, name: row.name, reason: row.reasons.join("; ")});
+    else group.members.push({restaurantId: row.id, built: row.built, member: row.member});
+  }
+  const byName = (a: {name: string}, b: {name: string}) => a.name.localeCompare(b.name);
+  const [first, ...rest] = group.members;
+  rest.sort((a, b) => byName({name: str(a.built.app.restaurantName)}, {name: str(b.built.app.restaurantName)}));
+  group.members = [first!, ...rest];
+  group.separate.sort(byName);
+  return group;
+}
+
+function groupSections(group: OutletGroup, party: AgreementParty) {
+  const outlets = group.members.length > 1 ? group.members.map((m) => outletOf(m.built)) : undefined;
+  return agreementSections(group.members[0]!.built.app, party, outlets);
+}
+
 export async function getLiveRestaurantAgreement(
   uid: string,
   token: DecodedIdToken,
@@ -617,8 +708,13 @@ export async function getLiveRestaurantAgreement(
   ]);
   const signed = rec(signedSnap.exists ? signedSnap.data() : null);
   const isSigned = signed.status === "signed";
+  // An admin looking has no outlets of their own; only the owner's view groups them.
+  const group: OutletGroup = isSigned || !str(member.role) ?
+    {members: [{restaurantId: input.restaurantId, built, member}], separate: []} :
+    await ownerOutletGroup(database, uid, input.restaurantId, built, member, now);
   const view = isSigned ? {sections: (Array.isArray(signed.sections) ? signed.sections : []) as AgreementSection[], hash: str(signed.hash, 64)} :
-    party ? agreementSections(built.app, party) : {sections: [], hash: ""};
+    party ? groupSections(group, party) : {sections: [], hash: ""};
+  const signedOutlets = (Array.isArray(signed.outlets) ? signed.outlets : []).map((o) => ({restaurantId: str(rec(o).restaurantId), name: str(rec(o).name)}));
   return {
     version: isSigned ? str(signed.version) : AGREEMENT_VERSION,
     status: isSigned ? "signed" : "ready",
@@ -634,6 +730,9 @@ export async function getLiveRestaurantAgreement(
     esignAvailable: Boolean(ESIGN_PROVIDER),
     partiesReady: Boolean(party),
     restaurantId: input.restaurantId,
+    outlets: isSigned ? (signedOutlets.length ? signedOutlets : [{restaurantId: input.restaurantId, name: str(built.app.restaurantName)}]) :
+      group.members.map((m) => ({restaurantId: m.restaurantId, name: str(m.built.app.restaurantName)})),
+    separate: group.separate,
     storeType: built.storeType,
     issues: isSigned ? [] : built.issues,
     known: {ownerName: Boolean(built.held.ownerName), pan: Boolean(built.held.pan), fssaiNumber: Boolean(built.held.fssaiNumber),
@@ -650,7 +749,7 @@ export async function signLiveRestaurantAgreement(
   database: FirestoreLike = firestoreDb,
   bucket = () => storage.bucket(),
   now = Date.now(),
-): Promise<{signed: true; signedAt: number}> {
+): Promise<{signed: true; signedAt: number; outlets: number}> {
   const member = await liveOwner(uid, token, input.restaurantId, database, true);
   if (input.method === "aadhaar_esign" && !ESIGN_PROVIDER) {
     throw new DomainError("failed-precondition", "Aadhaar eSign is not switched on yet. You can accept the agreement in the app for now.");
@@ -664,56 +763,67 @@ export async function signLiveRestaurantAgreement(
   if (built.issues.length) throw new DomainError("failed-precondition", `Add these first: ${built.issues.join(", ")}.`);
   const party = await loadAgreementParty(database);
   if (!party) throw new DomainError("failed-precondition", "Scraveit's business details aren't set up yet. Please try again later.");
-  const {sections, hash} = agreementSections(built.app, party);
+  const group = await ownerOutletGroup(database, uid, input.restaurantId, built, member, now);
+  const {sections, hash} = groupSections(group, party);
   if (hash !== input.hash) throw new DomainError("aborted", "The agreement changed while you were reading it. Please read it again.");
   const ownerName = str(built.app.ownerName);
   if (normalizePersonName(input.typedName) !== normalizePersonName(ownerName)) {
     throw new DomainError("invalid-argument", `Type your full name exactly as shown in the agreement: ${ownerName}.`);
   }
   const commissionBps = built.commission.commissionBps, termMonths = Number(rec(built.app.terms).termMonths);
+  const outlets = group.members.map((m) => ({restaurantId: m.restaurantId, name: str(m.built.app.restaurantName)}));
   const certificate: Array<[string, string]> = [
     ["Signed by", `${ownerName} (typed name: ${str(input.typedName, 120)})`],
     ["Account", `${str(token.email) || uid} (signed in with ${token.firebase?.sign_in_provider ?? "email"})`],
     ["Signed at", `${new Date(now + 5.5 * 3600_000).toISOString().replace("T", " ").slice(0, 19)} IST`],
     ["Method", input.method === "aadhaar_esign" ? "Aadhaar eSign" : "Accepted in the Scraveit store app"],
+    ["Signer's declaration", `Ticked: they are ${ownerName}, or authorised in writing by the business to sign for it`],
     ["IP address", meta.ip || "unknown"],
     ["Device", meta.userAgent.slice(0, 120) || "unknown"],
     ["Agreement version", AGREEMENT_VERSION],
+    ...(outlets.length > 1 ? [["Outlets covered", String(outlets.length)] as [string, string]] : []),
     ["Document fingerprint (SHA-256)", hash],
   ];
-  const pdf = await buildAgreementPdf(`Scraveit Partner Agreement: ${str(built.app.restaurantName)}`, sections, certificate);
+  const title = outlets.length > 1 ? `Scraveit Partner Agreement: ${str(built.app.legalName) || ownerName} (${outlets.length} outlets)` :
+    `Scraveit Partner Agreement: ${str(built.app.restaurantName)}`;
+  const pdf = await buildAgreementPdf(title, sections, certificate);
   const pdfPath = `private/restaurant-agreements/live-${input.restaurantId}/${AGREEMENT_VERSION}-${hash.slice(0, 12)}.pdf`;
   await bucket().file(pdfPath).save(Buffer.from(pdf), {contentType: "application/pdf", resumable: false});
   const agreement = {
     status: "signed", version: AGREEMENT_VERSION, hash, method: input.method, typedName: str(input.typedName, 120),
     commissionBps, termMonths, signedAt: now, ip: meta.ip.slice(0, 64), userAgent: meta.userAgent.slice(0, 200), pdfPath,
+    signedFrom: input.restaurantId, outlets,
   };
   const batch = database.batch();
-  batch.set(recordRef, {restaurantId: input.restaurantId, uid, restaurantName: str(built.app.restaurantName), sections, ...agreement});
-  // The signed rate is what the store is charged for the term: pin it unless a dated plan sets it.
-  const listing: Rec = {agreementVersion: AGREEMENT_VERSION, agreementSignedAt: now, agreementHash: hash, commissionTermMonths: termMonths, updatedAt: now};
-  if (built.commission.source === "default") listing.commissionBps = commissionBps;
-  if (!built.held.fssaiNumber && str(rec(built.app.fssai).number)) {
-    listing.fssaiNumber = str(rec(built.app.fssai).number);
-    listing.fssaiKind = assessFssai(listing.fssaiNumber).kind;
+  for (const {restaurantId, built: outlet} of group.members) {
+    batch.set(database.collection(AGREEMENT_RECORDS).doc(liveRecordId(restaurantId)),
+      {restaurantId, uid, restaurantName: str(outlet.app.restaurantName), sections, ...agreement});
+    // The signed rate is what the store is charged for the term: pin it unless a dated plan sets it.
+    const listing: Rec = {agreementVersion: AGREEMENT_VERSION, agreementSignedAt: now, agreementHash: hash, commissionTermMonths: termMonths, updatedAt: now};
+    if (outlet.commission.source === "default") listing.commissionBps = commissionBps;
+    if (!outlet.held.fssaiNumber && str(rec(outlet.app.fssai).number)) {
+      listing.fssaiNumber = str(rec(outlet.app.fssai).number);
+      listing.fssaiKind = assessFssai(listing.fssaiNumber).kind;
+    }
+    if (outlet.storeType === "pharmacy" && !outlet.held.drugLicenceNumber) listing.drugLicenceNumber = str(rec(outlet.app.drugLicence).number);
+    if (sellsGoods(outlet.app) && !outlet.held.gstin) {
+      listing.gstMode = goodsGstMode(outlet.app);
+      if (listing.gstMode === "enrolment") listing.gstEnrolment = str(outlet.app.gstEnrolment);
+    }
+    batch.set(restaurantRef(database, restaurantId), listing, {merge: true});
+    const payout: Rec = {};
+    if (!outlet.held.pan) payout.panNumber = str(rec(outlet.app.pan).number);
+    if (!outlet.held.gstin && outlet.app.gstin) payout.gstin = str(outlet.app.gstin);
+    if (Object.keys(payout).length) {
+      batch.set(database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).doc(restaurantId), {...payout, updatedAt: now}, {merge: true});
+    }
+    if (!outlet.held.ownerName) batch.set(restaurantMemberRef(database, restaurantId, uid), {name: ownerName}, {merge: true});
+    batch.set(database.collection("audit").doc(`agreement_live_${restaurantId}_${now}`), {
+      action: "restaurant_agreement.sign_live", target: restaurantId, actorId: uid, commissionBps, version: AGREEMENT_VERSION, at: now,
+      ...(outlets.length > 1 ? {signedFrom: input.restaurantId, outletCount: outlets.length} : {}),
+    });
   }
-  if (built.storeType === "pharmacy" && !built.held.drugLicenceNumber) listing.drugLicenceNumber = str(rec(built.app.drugLicence).number);
-  if (sellsGoods(built.app) && !built.held.gstin) {
-    listing.gstMode = goodsGstMode(built.app);
-    if (listing.gstMode === "enrolment") listing.gstEnrolment = str(built.app.gstEnrolment);
-  }
-  batch.set(restaurantRef(database, input.restaurantId), listing, {merge: true});
-  const payout: Rec = {};
-  if (!built.held.pan) payout.panNumber = str(rec(built.app.pan).number);
-  if (!built.held.gstin && built.app.gstin) payout.gstin = str(built.app.gstin);
-  if (Object.keys(payout).length) {
-    batch.set(database.collection(RESTAURANT_PAYOUT_PROFILES_COLLECTION).doc(input.restaurantId), {...payout, updatedAt: now}, {merge: true});
-  }
-  if (!built.held.ownerName) batch.set(restaurantMemberRef(database, input.restaurantId, uid), {name: ownerName}, {merge: true});
-  batch.set(database.collection("audit").doc(`agreement_live_${input.restaurantId}_${now}`), {
-    action: "restaurant_agreement.sign_live", target: input.restaurantId, actorId: uid, commissionBps, version: AGREEMENT_VERSION, at: now,
-  });
   await batch.commit();
-  logger.info("LIVE_RESTAURANT_AGREEMENT_SIGNED", {restaurantId: input.restaurantId, method: input.method, commissionBps});
-  return {signed: true, signedAt: now};
+  logger.info("LIVE_RESTAURANT_AGREEMENT_SIGNED", {restaurantId: input.restaurantId, method: input.method, commissionBps, outlets: outlets.length});
+  return {signed: true, signedAt: now, outlets: outlets.length};
 }

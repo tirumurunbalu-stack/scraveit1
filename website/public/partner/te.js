@@ -629,7 +629,10 @@
   [new RegExp("^Copied from (.+)\\.$"), "$1 నుంచి కాపీ చేశాం."],
   [new RegExp("^Packed products need: (.+)\\. A photo of the label fills most of them\\.$"), "ప్యాక్ వస్తువులకు కావాలి: $1. లేబుల్ ఫోటో తీస్తే చాలావరకు నిండుతాయి."],
   [new RegExp("^Photo added\\. We read your (.+): please check it\\.$"), "ఫోటో జోడించాం. మీ $1 చదివాం: ఒకసారి సరిచూడండి."],
-  [new RegExp("^Open until (.+)$"), "$1 వరకు తెరిచి ఉంటుంది"]
+  [new RegExp("^Open until (.+)$"), "$1 వరకు తెరిచి ఉంటుంది"],
+  [new RegExp("^Copy to (\\d+) outlets?$"), "$1 అవుట్‌లెట్లకు కాపీ చేయండి"],
+  [new RegExp("^Details copied to (\\d+) outlets?\\.$"), "$1 అవుట్‌లెట్లకు వివరాలు కాపీ చేశాం."],
+  [new RegExp("^Same owner as (.+)\\?$"), "$1 యజమాని మీరేనా?"]
   ];
   var lang = "en";
   try { lang = localStorage.getItem(LANG_KEY) === "te" ? "te" : "en"; } catch (_) { lang = "en"; }

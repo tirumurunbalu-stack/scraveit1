@@ -7,6 +7,7 @@ import {
   ROOT,
 } from "../config";
 import {haversineKm, roundMoney} from "../domain/order";
+import {foodRescueHolderIds} from "./foodRescueHolds";
 import {fallbackPrepMinutes, partTemperature, statedPrepMinutes} from "../domain/clusterPlan";
 import {
   DEFAULT_BATCH_POLICY,
@@ -249,7 +250,15 @@ async function candidatesFor(
     presences = objectMap<Presence>(fallbackSnapshot.val());
   }
   // Test orders (test customer, or a test store) go only to test delivery partners, and real orders never to them.
-  const [testStore, testPartners] = await Promise.all([isTestStore(order.restaurantId), testDeliveryPartnerUids()]);
+  const [testStore, testPartners, rescueHolders] = await Promise.all([
+    isTestStore(order.restaurantId),
+    testDeliveryPartnerUids(),
+    // Waiting with Food Rescue food (services/foodRescue.ts): no new orders until it ends.
+    foodRescueHolderIds().catch((error) => {
+      logger.warn("FOOD_RESCUE_HOLDERS_READ_FAILED", {orderId: order.id, error: String(error)});
+      return new Set<string>();
+    }),
+  ]);
   const testSide = testStore || order.testOrder === true;
   const eligibilityByRider: Record<string, RiderDispatchEligibilityProjection> = {};
   const now = Date.now();
@@ -264,6 +273,7 @@ async function candidatesFor(
     const lng = Number(presence?.lng);
     if (testPartners.has(riderId) !== testSide) { rejected.test++; return []; }
     if (presence?.online !== true) { rejected.offline++; return []; }
+    if (rescueHolders.has(riderId)) { rejected.busy++; return []; }
     // An Online rider stays Online until they toggle off, even when their phone has stopped
     // reporting. They rank after every live rider, at their last known position.
     const signalAgeMs = now - Number(presence.updatedAt ?? 0);
@@ -1037,7 +1047,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
   const cachedQueue = queueSnapshot.exists ? queueSnapshot.data() as QueueWithOfferData : null;
   const policy = policyForQueue(cachedQueue);
   if (wallet?.codBlocked === true || wallet?.orderBlocked === true) {
-    throw new DomainError("failed-precondition", "Resolve the rider account hold before accepting another order.");
+    throw new DomainError("failed-precondition", "Resolve the account hold before accepting another order.");
   }
   // A rider we rang as a backup answers from a closed app: their signal is old by design.
   const offeredAsBackup = cachedQueue?.candidates?.some((candidate) =>
@@ -1049,7 +1059,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
     throw new DomainError("failed-precondition", "Go online with current location before accepting an order.");
   }
   if (!Number.isFinite(Number(presence.lat)) || !Number.isFinite(Number(presence.lng))) {
-    throw new DomainError("failed-precondition", "A current rider location is required to accept this order.");
+    throw new DomainError("failed-precondition", "Your current location is required to accept this order.");
   }
   if (!isEarlyDispatchWorkloadEligible(jobs) && !bundleClaimAllowed(cachedQueue, uid, jobs)) {
     throw new DomainError("failed-precondition", "Finish the current delivery before accepting another order.");
@@ -1189,7 +1199,7 @@ export async function claimDispatchOffer(uid: string, orderId: string): Promise<
       );
     }
     await releaseQueueClaim(queueRef, uid);
-    throw new DomainError("aborted", "Another rider secured this order.");
+    throw new DomainError("aborted", "This order is no longer available. Another delivery partner secured it.");
   }
   const finalOrder = stripPrivateOrderFields(order as SavrivoOrder);
   // Persist an explicit post-order-commit phase before repairing projections.

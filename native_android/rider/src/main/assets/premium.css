@@ -378,3 +378,125 @@ html{overscroll-behavior-y:none}
 .pay-method>span{display:grid;gap:2px}
 .pay-speed,.pay-fee,.pay-eg{font-size:13px;color:var(--muted)}
 .pay-eg{color:var(--text,inherit);font-weight:650}
+
+/* Sign in with Apple (iPhone only): Apple's black button. */
+.apple-button{display:flex;align-items:center;justify-content:center;gap:8px;background:#000!important;color:#fff!important;border-color:#000!important;box-shadow:none}
+.apple-button .apple-logo{width:17px;height:17px;margin-top:-3px}
+/* iPhone zooms the whole page into any text box under 16px; keep boxes at 16px there (Android unaffected). */
+@supports (-webkit-touch-callout: none) { input, textarea, select { font-size: 16px !important; } }
+/* Create partner account: the title bar stays put while the form scrolls under it. */
+html:has(.signup-page),body:has(.signup-page){overflow-x:clip;overflow-y:visible}
+.signup-page .topbar{position:sticky;top:0;z-index:20;margin:calc(-18px - var(--safe-top)) calc(50% - 50vw) 0;padding:calc(var(--safe-top) + 10px) max(18px,calc(50vw - 50%)) 12px;background:var(--canvas);box-shadow:0 1px 0 var(--border)}
+/* Sign-in fits one iPhone screen with the Apple button: no scrolling. */
+.login-fit #login-form .divider{display:none}
+.login-fit .display{font-size:clamp(24px,3.3vh,30px)}
+/* ---- The five tab pages (Home, Shifts, Incentives, Money, Profile): calm, compact, made for one iPhone screen. ---- */
+.tab-root .screen{padding:calc(var(--safe-top) + 8px) 16px calc(78px + var(--safe-bottom))}
+.tab-root .page{gap:12px}
+.tab-root .stack{gap:10px}
+.tab-root .card{padding:14px 16px;border-radius:18px}
+.tab-root .title{font-size:23px;line-height:1.15}
+.tab-root .section-title{font-size:17px;line-height:1.25}
+.tab-root .card-title{font-size:16px}
+.tab-root .supporting{font-size:13px;line-height:1.4}
+.tab-root .icon-button,.tab-root .back-button{width:40px;height:40px;min-width:40px;min-height:40px;border-radius:13px}
+.tab-root .icon-button .icon,.tab-root .back-button .icon{width:20px;height:20px}
+.tab-root .icon-button.flat{width:34px;height:34px;min-width:34px;min-height:34px}
+.tab-root .chip{min-height:34px;padding:0 13px;font-size:13.5px}
+.tab-root .toolbar{gap:8px;padding:0 1px 2px}
+.tab-root .button{min-height:46px;padding:10px 16px;font-size:15px}
+.tab-root .field{gap:5px}
+.tab-root .field label{font-size:13px}
+.tab-root .input{min-height:46px;height:46px;padding:10px 14px}
+.tab-root .notice{padding:10px 12px;gap:9px;font-size:13px;line-height:1.4}
+.tab-root .status{padding:5px 9px;font-size:11.5px}
+/* Tab bar: slimmer. */
+.tabs{min-height:calc(62px + var(--safe-bottom));padding:6px 8px var(--safe-bottom)}
+.nav-button{min-height:50px;gap:2px;border-radius:13px;font-size:11px}
+.nav-button .icon{width:22px;height:22px}
+/* Title bar: no back arrow on a tab page (the tab bar is the way around); one-line subtitle. */
+.tab-root .topbar{min-height:0;gap:10px}
+.tab-root .topbar .back-button{display:none}
+.tab-root .topbar .supporting{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+/* Home */
+.tab-root .jobs-home{padding-top:calc(var(--safe-top) + 8px)}
+.jobs-home .home-head .icon-button{width:40px;height:40px;min-width:40px;min-height:40px}
+.jobs-home .online-bar{padding:10px 14px;border-radius:18px}
+.jobs-home .online-bar strong{font-size:16px}
+.jobs-home .online-bar .grow span{font-size:12.5px}
+.jobs-home .today-card{gap:8px;padding:12px 14px;border-radius:18px}
+.jobs-home .today-total{font-size:28px}
+.jobs-home .today-strip{padding:6px 10px}
+.jobs-home .empty{min-height:0;padding:14px 12px 4px}
+.jobs-home .empty-icon{width:52px;height:52px;border-radius:17px;margin-bottom:10px}
+.jobs-home .empty-icon .icon{width:24px;height:24px}
+.jobs-home .empty .section-title{font-size:16px}
+/* Shifts */
+.tab-root .shift-days{gap:6px}
+.tab-root .shift-day{padding:3px 2px 6px}
+.tab-root .shift-day small{font-size:12px}
+.tab-root .shift-day strong{font-size:19px;line-height:1.15}
+.tab-root .shift-earn{font-size:9.5px;padding:2px 6px}
+.tab-root .shift-earn.blank{height:14px;padding:0}
+.tab-root .next-goal{padding:10px 14px;font-size:14px;border-radius:14px}
+.tab-root .shift-intro{font-size:12.5px;line-height:1.4;margin:0}
+.tab-root .shift-group{border-radius:16px}
+.tab-root .shift-group h2{padding:10px 14px;font-size:15px}
+.tab-root .shift-slot{padding:9px 14px;min-height:46px}
+.tab-root .shift-slot strong{font-size:15px}
+.tab-root .shift-box{width:22px;height:22px}
+/* Incentives + Money */
+.tab-root .accordion{border-radius:16px}
+.tab-root .accordion-header{padding:11px 14px}
+.tab-root .accordion-body{padding:12px 12px 14px;gap:10px}
+.tab-root .metric-grid{gap:8px}
+.tab-root .metric{min-height:0;gap:4px;padding:12px 14px}
+.tab-root .metric strong{font-size:22px}
+.tab-root .today-card{gap:8px;padding:12px 16px;border-radius:18px}
+.tab-root .today-total{font-size:30px}
+.tab-root .money-row{padding:11px 16px;border-radius:18px}
+.tab-root .money-row strong{font-size:21px}
+.tab-root .display{font-size:28px}
+/* Profile */
+.tab-root .profile-head{gap:12px}
+.tab-root .avatar.large{width:52px;height:52px;font-size:19px}
+.tab-root .referral-headline{font-size:22px;margin:0}
+.tab-root .price-row{font-size:14px}
+.tab-root .invite-form{padding-top:12px}
+.tab-root .invite-form .cluster .button{white-space:nowrap;padding:10px 12px;font-size:14px}
+.tab-root .profile-list{padding:2px 14px}
+.tab-root .profile-row{padding:9px 2px;font-size:15px}
+.tab-root .profile-icon{width:34px;height:34px;border-radius:11px}
+.tab-root .profile-value{font-size:13px}
+/* Incentives week: a dot under a day that has offers (green when done, saffron for a special offer). */
+.day-dot{display:block;width:6px;height:6px;border-radius:50%;background:var(--brand)}
+.day-dot.done{background:var(--success)}
+.day-dot.special{background:var(--saffron)}
+.chip.active .day-dot{background:#fff}
+/* Shifts: a past slot keeps one row ("Over" beside the time), so every row is the same height. */
+.tab-root .shift-slot:disabled .grow{display:flex;align-items:baseline;gap:8px}
+.tab-root .input.with-icon{padding-left:44px}
+.jobs-home .zone-entry span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tab-root .status{white-space:nowrap;flex:none}
+/* Payouts: one bank card; account number and IFSC share a row. */
+.payout-form{gap:14px}
+.payout-form label .caption{font-weight:500;margin-left:4px}
+/* IFSC is always 11 characters: its box is just wide enough; the account number takes the rest
+   (16 digits fit on a 393 px iPhone). Narrower phones put them one under the other, so long
+   account numbers are never hidden while typing. */
+.payout-row{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px}
+.payout-row .input{padding-left:10px;padding-right:10px;letter-spacing:-.2px}
+@media (max-width:389px){.payout-row{grid-template-columns:minmax(0,1fr)}}
+#payout-ifsc,#payout-pan{text-transform:uppercase}
+/* Payout method: one short line each (name · speed, fee on the right). */
+.pay-method{align-items:center;padding:12px 14px}
+.pay-method input{margin-top:0}
+.pay-method>.pay-line{display:flex;align-items:baseline;gap:8px;flex:1;min-width:0;white-space:nowrap}
+.pay-method>.pay-fee{margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--text,inherit);font-weight:600}
+/* Which fee for which payout amount. */
+.pay-fees{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-top:4px}
+.pay-fees th{font-size:12px;font-weight:600;color:var(--muted);text-align:right;padding:0 0 6px}
+.pay-fees td{text-align:right;font-weight:650;padding:7px 0;border-top:1px solid var(--border)}
+.pay-fees th:first-child,.pay-fees td:first-child{text-align:left}
+.pay-fees td:first-child{font-weight:500;color:var(--muted)}
+.pay-fees th+th,.pay-fees td+td{width:24%}

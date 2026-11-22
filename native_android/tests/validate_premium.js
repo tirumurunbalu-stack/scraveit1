@@ -285,8 +285,8 @@ test("Operations apps use authenticated native Firebase messaging and callable b
   const riderJs = read(path.join(nativeRoot, "rider", "src", "main", "assets", "premium.js"));
   check(adminJs.includes("Rider rewards & incentives"), "Admin rewards control center must remain present");
   check(adminJs.includes('id="rider-reward-campaign-form"'), "Admin rider reward campaign editor form is missing");
-  check(riderJs.includes("Authoritative rider earnings and COD visibility"), "Rider rewards overview screen must remain present");
-  check(riderJs.includes("function screenEarningOffers") && riderJs.includes('top("Incentives","Login slots, targets and bonuses")'), "Rider extra earning offers screen must remain present");
+  check(riderJs.includes('top("Earnings","Your earnings and cash on delivery")'), "Rider rewards overview screen must remain present");
+  check(riderJs.includes("function screenEarningOffers") && riderJs.includes('top("Incentives","Login slots, targets and bonuses"'), "Rider extra earning offers screen must remain present");
   check(riderJs.includes("OFFER CONDITIONS"), "Rider extra offers must keep the conditions section visible");
   check(riderJs.includes('rewardOfferSummaryTile("Your trips count",tripsValue'), "Rider extra offers must show rider progress against offer targets");
   check(riderJs.includes("Earn upto "), "Rider extra offers must render milestone reward headlines");

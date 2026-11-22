@@ -627,6 +627,8 @@ export interface CityEconomicsSummary {
     growthSubsidyPaise: number;
     riderMilestoneBonusPaise: number;
     guaranteeTopUpPaise: number;
+    /** ₹15 to the partner when the customer cancels after the partner reached the restaurant. */
+    riderCancelPayPaise: number;
     riderReferralPaise: number;
     cashbackPaise: number;
     customerReferralPaise: number;
@@ -707,7 +709,7 @@ export function summarizeCityEconomics(input: {
   const costs = {
     riderTripPayPaise: 0, riderPerOrderIncentivePaise: 0, paymentCostPaise: 0, refundReservePaise: 0,
     supportAndOtherPaise: 0, platformDiscountPaise: 0, growthSubsidyPaise: 0,
-    riderMilestoneBonusPaise: 0, guaranteeTopUpPaise: 0, riderReferralPaise: 0,
+    riderMilestoneBonusPaise: 0, guaranteeTopUpPaise: 0, riderCancelPayPaise: 0, riderReferralPaise: 0,
     cashbackPaise: 0, customerReferralPaise: 0, walletBreakagePaise: 0,
   };
   let restaurantFundedDiscountPaise = 0;
@@ -798,6 +800,13 @@ export function summarizeCityEconomics(input: {
       }
       continue;
     }
+    if (journal.eventType === "rider_incentive" && journal.metadata.settlementType === "cancellation_pay") {
+      // Like refunds: belongs to this city when its order does.
+      if ((journal.orderId && zoneOfOrder.has(journal.orderId)) || !input.cityKey) {
+        costs.riderCancelPayPaise += Math.max(0, riderEarningsCredit(journal));
+      }
+      continue;
+    }
     let amount = 0;
     let bucket: keyof typeof costs | null = null;
     if (journal.eventType === "rider_incentive") {
@@ -838,7 +847,7 @@ export function summarizeCityEconomics(input: {
       }
     });
   }
-  const periodLevelCosts = costs.riderMilestoneBonusPaise + costs.guaranteeTopUpPaise + costs.riderReferralPaise +
+  const periodLevelCosts = costs.riderMilestoneBonusPaise + costs.guaranteeTopUpPaise + costs.riderCancelPayPaise + costs.riderReferralPaise +
     costs.cashbackPaise + costs.customerReferralPaise - costs.walletBreakagePaise;
   const netContributionPaise = operatingContributionPaise - periodLevelCosts;
   const netCashImpactPaise = netContributionPaise - costs.growthSubsidyPaise;
@@ -1054,7 +1063,7 @@ export async function breakEvenForAdmin(
       per(summary.revenue.platformFeePaise + summary.revenue.deliveryFeePaise + summary.revenue.surchargePaise) : 3_200,
     riderCostPerOrderPaise: summary.orders.delivered ?
       per(summary.costs.riderTripPayPaise + summary.costs.riderPerOrderIncentivePaise + summary.costs.riderMilestoneBonusPaise +
-        summary.costs.guaranteeTopUpPaise) : 3_400,
+        summary.costs.guaranteeTopUpPaise + summary.costs.riderCancelPayPaise) : 3_400,
     promoCostPerOrderPaise: summary.orders.delivered ?
       per(summary.costs.platformDiscountPaise + summary.costs.cashbackPaise + summary.costs.customerReferralPaise) : 0,
     paymentCostBps: policy.paymentGatewayCostBps,

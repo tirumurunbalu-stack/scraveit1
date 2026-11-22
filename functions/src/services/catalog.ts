@@ -138,6 +138,50 @@ export function usesRoadDistance(settings: UnknownRecord): boolean {
   return settings.deliveryDistanceMode === "road";
 }
 
+/**
+ * A Food Rescue drop's delivery fee (domain/foodRescue.ts): the same price list as a normal
+ * order (slabs or base + per km, road km when switched on, the ride back from a far drop),
+ * measured from where the delivery partner waits with the food. The partner gets all of it.
+ */
+export async function rescueDeliveryFee(
+  from: {id: string; lat: number; lng: number; city?: string},
+  address: Address,
+): Promise<{deliveryFee: number; distanceKm: number; roadKm: number | null}> {
+  const [settingsSnapshot, control] = await Promise.all([
+    firestoreDb.collection("settings").doc("customer").get(),
+    loadEconomicsControl(),
+  ]);
+  const pricing = resolveCustomerPricing(
+    control.customerPricing,
+    economicsScopeKey(from.city || address.city || ""),
+    economicsScopeKey(address.area || address.label),
+  );
+  const settings = applyCustomerPricingOverride(
+    (settingsSnapshot.exists ? settingsSnapshot.data() : {}) as UnknownRecord,
+    pricing.override,
+  );
+  const distanceKm = haversineKm(from, address);
+  let deliveryFee = 0;
+  const slab = records<{maxKm: number; fee: number}>(settings.deliverySlabs)
+    .filter((entry) => Number.isFinite(Number(entry.maxKm)) && Number.isFinite(Number(entry.fee)))
+    .sort((a, b) => Number(a.maxKm) - Number(b.maxKm))
+    .find((entry) => distanceKm <= Number(entry.maxKm));
+  if (slab) deliveryFee = Number(slab.fee);
+  const road = usesRoadDistance(settings) ? await roadDistanceKm(from, address, distanceKm) : null;
+  const perKmFee = distanceDeliveryFee(settings, road ? road.km : distanceKm);
+  if (perKmFee !== null) deliveryFee = perKmFee;
+  const returnPolicy = returnTripPolicy(settings);
+  const roadFactor = road && distanceKm > 0.05 ? road.km / distanceKm : 1;
+  const returnTrip = returnPolicy.perKm > 0 ?
+    returnTripFee(address, await loadStorePoints().catch(() => [] as StorePoint[]), returnPolicy, roadFactor) :
+    {km: 0, fee: 0};
+  return {
+    deliveryFee: Math.round((Math.max(0, deliveryFee) + returnTrip.fee) * 100) / 100,
+    distanceKm: roundMoney(distanceKm),
+    roadKm: road ? road.km : null,
+  };
+}
+
 // Store locations for return-trip pay, read at most every 10 minutes per server copy.
 let storePointsCache: {at: number; points: StorePoint[]} | null = null;
 async function loadStorePoints(): Promise<StorePoint[]> {

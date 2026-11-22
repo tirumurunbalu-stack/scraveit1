@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Get the SCRAVEIT app</title>
+  <meta name="description" content="Download the SCRAVEIT food delivery app for iPhone or Android.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#f9f7f2">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script>
+    // scraveit.in/app (pamphlet QR, reels, shares): iPhone and iPad go to the
+    // App Store, Android to Google Play, anything else sees both buttons.
+    // Add ?stay to see this page on a phone without being sent on.
+    (function () {
+      var APP_STORE = "https://apps.apple.com/in/app/scraveit-food-grocery-dairy/id6837140618";
+      var PLAY = "https://play.google.com/store/apps/details?id=com.feastly.app";
+      function storeFor(ua, platform, touchPoints) {
+        ua = String(ua || "");
+        // iPadOS reports itself as a Mac; a Mac with touch is an iPad.
+        if (/iPhone|iPad|iPod/i.test(ua) || (platform === "MacIntel" && touchPoints > 1)) return APP_STORE;
+        if (/Android/i.test(ua)) return PLAY;
+        return "";
+      }
+      window.scraveitStoreFor = storeFor;
+      if (/[?&]stay\b/.test(location.search)) return;
+      var target = storeFor(navigator.userAgent, navigator.platform, navigator.maxTouchPoints || 0);
+      if (target) {
+        document.documentElement.className = "leaving";
+        location.replace(target);
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@500;800&display=swap" rel="stylesheet">
+  <style>
+    :root{--paper:#f9f7f2;--ink:#391e32;--muted:#786e72;--peach:#ffb793;--line:#ded8d4}
+    *{box-sizing:border-box}
+    html.leaving body{visibility:hidden}
+    body{margin:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;background:var(--paper);color:var(--ink);font:16px/1.6 'DM Sans',Arial,sans-serif;-webkit-font-smoothing:antialiased;padding:32px 16px}
+    main{width:100%;max-width:420px;text-align:center}
+    .wordmark{font-family:Manrope,Arial,sans-serif;font-size:34px;letter-spacing:-2px;font-weight:800;color:inherit;text-decoration:none}
+    .wordmark span{font-size:28px;color:#d85d3c}
+    h1{font-family:Manrope,Arial,sans-serif;font-weight:500;letter-spacing:-.04em;line-height:1.1;font-size:34px;margin:28px 0 10px}
+    p{color:var(--muted);margin:0 0 28px}
+    .stores{display:grid;gap:12px}
+    .store{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px;border-radius:999px;text-decoration:none;font-weight:600;font-size:15px;border:1px solid var(--ink)}
+    .store small{display:block;font-weight:400;font-size:12px;opacity:.75;text-align:left}
+    .store b{display:block;font-weight:600;text-align:left}
+    .store span{font-size:20px;line-height:1}
+    .apple{background:var(--ink);color:var(--paper)}
+    .play{color:var(--ink);background:transparent}
+    .store:focus-visible{outline:3px solid #db6339;outline-offset:4px}
+    footer{margin-top:36px;font-size:12px;color:var(--muted)}
+    footer a{color:inherit}
+  </style>
+</head>
+<body>
+  <main>
+    <a class="wordmark" href="/" aria-label="SCRAVEIT home">scraveit<span aria-hidden="true">*</span></a>
+    <h1>Get the app</h1>
+    <p>Order food from your favourite restaurants in Nellore.</p>
+    <div class="stores">
+      <a class="store apple" href="https://apps.apple.com/in/app/scraveit-food-grocery-dairy/id6837140618">
+        <span><small>For iPhone and iPad</small><b>App Store</b></span><span aria-hidden="true">↗</span>
+      </a>
+      <a class="store play" href="https://play.google.com/store/apps/details?id=com.feastly.app">
+        <span><small>For Android</small><b>Google Play</b></span><span aria-hidden="true">↗</span>
+      </a>
+    </div>
+    <footer>SCRAVEIT PRIVATE LIMITED · <a href="/">scraveit.in</a></footer>
+  </main>
+</body>
+</html>

@@ -201,7 +201,7 @@ export async function markRiderArrivedRestaurant(
 ): Promise<MarkRiderArrivedRestaurantResult> {
   const riderId = text(riderIdValue).slice(0, 128);
   const orderId = text(orderIdValue).slice(0, 128);
-  if (!riderId || !orderId) throw new DomainError("invalid-argument", "Rider and order are required.");
+  if (!riderId || !orderId) throw new DomainError("invalid-argument", "Delivery partner and order are required.");
 
   const jobSnapshot = await riderJobRef(firestoreDb, riderId, orderId).get();
   const job = jobSnapshot.exists ? jobSnapshot.data() as Record<string, unknown> : null;
@@ -213,9 +213,9 @@ export async function markRiderArrivedRestaurant(
   ]);
   const order = orderSnapshot.exists ? orderSnapshot.data() as SavrivoOrder : null;
   if (!order || order.id !== orderId) throw new DomainError("not-found", "Assigned delivery was not found.");
-  if (order.riderId !== riderId) throw new DomainError("permission-denied", "This delivery is assigned to another rider.");
+  if (order.riderId !== riderId) throw new DomainError("permission-denied", "This delivery is assigned to another delivery partner.");
   if (text((riderSnapshot.exists ? riderSnapshot.data() as Record<string, unknown> : null)?.status).toLowerCase() !== "approved") {
-    throw new DomainError("permission-denied", "Your rider account is not approved for delivery actions.");
+    throw new DomainError("permission-denied", "Your delivery partner account is not approved for delivery actions.");
   }
 
   const arrivalRef = riderArrivalRef(firestoreDb, orderId);
@@ -293,7 +293,7 @@ export async function markRiderArrivedRestaurant(
     ).toLowerCase();
     if (!latestJob || text(latestJob.customerId) !== customerId || latestJob.status !== "active" ||
       !latestOrder || latestOrder.id !== orderId || latestOrder.riderId !== riderId || riderStatus !== "approved") {
-      throw new DomainError("permission-denied", "This rider is not eligible to record arrival for the delivery.");
+      throw new DomainError("permission-denied", "This delivery partner is not eligible to record arrival for the delivery.");
     }
     const decision = verifyRiderRestaurantArrival(
       latestOrder,

@@ -31,7 +31,7 @@ export async function attachPackedPhoto(uid: string, token: DecodedIdToken, inpu
   const role = await authorizeTransition(uid, token, order, "Ready for pickup");
   if (role === "customer" || role === "rider") throw new DomainError("permission-denied", "Only the restaurant can add the packet photo.");
   if (!BEFORE_HANDOVER.includes(String(order.status))) {
-    throw new DomainError("failed-precondition", "The packet photo is taken before the order goes to the rider.");
+    throw new DomainError("failed-precondition", "The packet photo is taken before the order goes to the delivery partner.");
   }
   if (!packedPhotoPathOk(input.path, String(order.restaurantId), uid, input.orderId)) {
     throw new DomainError("invalid-argument", "That photo can't be used for this order.");

@@ -38,7 +38,7 @@ for (const forbidden of [
 }
 
 check(rider.includes("function validateRiderRewardsDashboard"), "Rider must validate the authoritative rewards dashboard contract.");
-check(rider.includes("Authoritative rider earnings"), "Rider earnings screen must clearly describe authoritative backend-backed data.");
+check(rider.includes('top("Earnings","Your earnings and cash on delivery")') && rider.includes("Recent earning activity"), "Rider earnings screens must keep their Earnings and Ledger history headers (wording: delivery partner, not rider).");
 check(rider.includes("Reconciliation required"), "Rider payouts must fail closed when ledger history cannot prove a safe amount.");
 check(/All offer amounts[^<]*come from the secure Scraveit backend/.test(rider), "Rider offers must disclose backend authority over incentive values.");
 check(rider.includes("No payout entries yet"), "Rider payouts screen must handle empty authoritative history safely.");

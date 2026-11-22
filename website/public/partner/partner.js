@@ -127,6 +127,7 @@
       '<p class="small">Staff: use the staff ID and password from your outlet owner. <a href="/grievance">Help</a></p><p class="small" style="margin:0">New outlet? <button type="button" class="linklike" style="color:var(--brand)" data-act="signup">Create an account and register</button></p><p class="small" style="margin:0"><button type="button" class="linklike" style="color:var(--brand)" data-act="lang" translate="no">' + (window.ScraveitLanguage && ScraveitLanguage.get() === "te" ? "English" : "తెలుగు") + '</button></p></form></div>';
   }
   document.addEventListener("submit", async (e) => {
+    if (e.target.id === "cp-form") { e.preventDefault(); cpCopy(e.target); return; }
     if (e.target.id === "signin") {
       e.preventDefault();
       // A staff ID ("ravi4821") is the sign-in the owner made for that person: <id>@staff.scraveit.in.
@@ -164,7 +165,7 @@
         if (member && member.active === true && r && r.exists) outlets[rid] = {id: rid, doc: r.data(), member};
       }));
     } catch (e) { toast(friendly(e), true); }
-    state.outlets = outlets; state.loadingOutlets = false;
+    state.outlets = outlets; state.loadingOutlets = false; CP.profiles = null;
     let saved = ""; try { saved = localStorage.getItem("scraveit.partner.rid") || ""; } catch (_) { /* private mode */ }
     state.rid = outlets[saved] ? saved : Object.keys(outlets)[0] || "";
     startLive(); render();
@@ -703,11 +704,9 @@
     if (!open) return '<div class="row between bank-summary"><span class="small">' + summary + '</span><button type="button" class="btn small" data-act="bank-edit">Edit bank details</button></div>';
     const f = (name, label, value, extra) => '<div class="field"><label for="bk-' + name + '">' + label + '</label><input class="input" id="bk-' + name + '" name="' + name + '" value="' + h(value || "") + '"' + (extra || "") + "></div>";
     return '<form id="bank-form" class="bank-form"><h3 style="margin:0">Bank details</h3><p class="small muted" style="margin:0">Payouts go to this bank account every week. UPI payouts: available soon.</p><div class="bank-grid">' +
-      f("holder", "Account holder name", p.bankAccountHolderName || p.beneficiaryName || (outlet() && outlet().doc && outlet().doc.name) || "", ' autocomplete="off"') +
-      f("bankName", "Bank name", p.bankName, ' placeholder="HDFC Bank"') +
+      // Only what the bank transfer uses: account number and IFSC. The name on the transfer is the outlet's.
       f("account", "Account number", acct, ' inputmode="numeric" autocomplete="off"') +
-      f("account2", "Account number again", acct, ' inputmode="numeric" autocomplete="off"') +
-      f("ifsc", "IFSC", p.bankIfsc, ' placeholder="HDFC0001234" autocapitalize="characters" autocomplete="off"') +
+      f("ifsc", "IFSC", p.bankIfsc, ' placeholder="HDFC0001234" autocapitalize="characters" autocomplete="off" maxlength="11"') +
       (payoutFeeTable().upiAvailable === true ? f("upi", "UPI ID (optional)", p.upiId, ' placeholder="restaurant@okhdfcbank" autocapitalize="none" autocomplete="off"') : '<input type="hidden" name="upi" value="' + h(p.upiId || "") + '">') +
       '</div><div class="row" style="gap:8px"><button class="btn primary"' + (F.bankSaving ? " disabled" : "") + ">" + (F.bankSaving ? "Saving…" : "Save details") + "</button>" +
       (hasBank || hasUpi ? '<button type="button" class="btn" data-act="bank-cancel">Cancel</button>' : "") + "</div></form>";
@@ -715,26 +714,126 @@
   async function saveBank(form) {
     const F = state.fin; if (!isOwner() || F.bankSaving) return;
     const v = (n) => String(form.elements[n].value || "").trim();
-    const holder = v("holder"), bankName = v("bankName"), account = v("account").replace(/\s+/g, ""), account2 = v("account2").replace(/\s+/g, ""), ifsc = v("ifsc").toUpperCase(), upi = v("upi");
+    const account = v("account").replace(/\s+/g, ""), ifsc = v("ifsc").toUpperCase(), upi = v("upi");
     if (!account && (!upi || payoutFeeTable().upiAvailable !== true)) return toast("Add your bank account.", true);
     if (account || ifsc) {
       if (!/^[0-9]{6,20}$/.test(account)) return toast("Enter a valid bank account number (6–20 digits).", true);
-      if (account !== account2) return toast("The two account numbers don't match.", true);
       if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) return toast("Enter a valid IFSC, like HDFC0001234.", true);
-      if (!/^[A-Za-z][A-Za-z .]{1,99}$/.test(holder)) return toast("Enter the account holder name as on the bank account.", true);
     }
     if (upi && !/^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,64}$/.test(upi)) return toast("Enter a valid UPI ID, like name@okhdfcbank.", true);
     const old = F.profile || {}, hasBank = !!account, method = old.preferredMethod;
     const preferredMethod = !hasBank ? "upi" : method === "upi" && (!upi || payoutFeeTable().upiAvailable !== true) ? "neft" : ["neft", "imps", "upi"].includes(method) ? method : "neft";
-    const changes = {restaurantId: state.rid, bankAccountHolderName: holder, bankAccountNumber: account, bankIfsc: ifsc, bankName, upiId: upi, preferredMethod,
+    const changes = {restaurantId: state.rid, bankAccountNumber: account, bankIfsc: ifsc, upiId: upi, preferredMethod,
       verificationStatus: preferredMethod === "upi" ? "upi_ready" : "bank_ready", updatedAt: Date.now(), updatedBy: state.user.uid};
+    // A saved holder name stays; a new profile takes the outlet's name (payouts fall back to it anyway).
+    const outletName = (outlet() && outlet().doc && outlet().doc.name) || "";
+    if (!String(old.bankAccountHolderName || "").trim() && outletName) changes.bankAccountHolderName = outletName;
     F.bankSaving = true; render();
     try {
       await db.collection("restaurantPayoutProfiles").doc(state.rid).set(changes, {merge: true});
       F.profile = Object.assign({}, old, changes); F.bankEdit = false;
-      toast("Bank details saved. Weekly payouts go here.");
+      toast("Bank details saved. Weekly payouts go here."); setTimeout(cpAfterSave, 600);
     } catch (e) { toast(friendly(e), true); }
     F.bankSaving = false; render();
+  }
+  // ---------- one owner, several outlets: copy owner, bank and tax details (22 Nov 2026) ----------
+  // Founder: an owner with many outlets has the same owner, bank and legal details for all of them;
+  // only the menu and photos differ. Fill them once, then copy. Each outlet keeps its name, menu,
+  // photos, hours and phone. Rules let an owner read and write the payout profile of every outlet they own;
+  // each copied profile is stamped copiedFrom {restaurantId, at, by}.
+  const CP = {profiles: null, loading: null, busy: false, asked: ""};
+  const CP_KEYS = ["legalBusinessName", "beneficiaryName", "bankAccountHolderName", "bankAccountNumber", "bankIfsc", "bankName", "branchName", "accountType", "preferredMethod", "upiId", "contactPhone", "contactEmail", "panNumber", "gstin", "verificationStatus"];
+  const ownedOutlets = () => Object.values(state.outlets || {}).filter((o) => o.member && o.member.active === true && o.member.role === "restaurant_owner");
+  const cpPan = (p) => String((p && (p.panNumber || (p.taxProfile || {}).pan)) || "").trim();
+  const cpHas = (p) => !!(p && (String(p.bankAccountNumber || "").trim() || cpPan(p)));
+  const cpFull = (p) => !!(p && String(p.bankAccountNumber || "").trim() && cpPan(p));
+  function cpLoad() {
+    if (CP.profiles) return Promise.resolve(CP.profiles);
+    if (CP.loading) return CP.loading;
+    const list = ownedOutlets(), out = {};
+    CP.loading = Promise.all(list.map((o) => db.collection("restaurantPayoutProfiles").doc(o.id).get().then((x) => { out[o.id] = x.exists ? x.data() : null; }, () => { out[o.id] = null; })))
+      .then(() => { CP.profiles = out; CP.loading = null; render(); return out; });
+    return CP.loading;
+  }
+  function cpSummary(p) {
+    const acct = String(p.bankAccountNumber || ""), t = p.taxProfile || {}, reg = {regular: "GST registered", composition: "GST composition", unregistered_eco: "No GST, e-commerce enrolled", unregistered: "No GST"}[t.registrationType] || (p.gstin ? "GST registered" : "");
+    return [p.legalBusinessName || p.bankAccountHolderName, acct ? "Bank ••••" + acct.slice(-4) + (p.bankIfsc ? " · " + p.bankIfsc : "") : "No bank account", cpPan(p) ? "PAN ••••" + cpPan(p).slice(-4) : "No PAN", reg].filter(Boolean).join(" · ");
+  }
+  // The question on an outlet that is missing them while another of the owner's outlets has them.
+  function cpAskHtml() {
+    if (!isOwner() || ownedOutlets().length < 2) return "";
+    if (!CP.profiles) { cpLoad(); return ""; }
+    if (cpFull(CP.profiles[state.rid])) return "";
+    const src = ownedOutlets().filter((o) => o.id !== state.rid && cpHas(CP.profiles[o.id])).sort((a, b) => Number(cpFull(CP.profiles[b.id])) - Number(cpFull(CP.profiles[a.id])))[0];
+    if (!src) return "";
+    return '<div class="notice info cp-ask"><span class="grow"><strong>Same owner as ' + h(src.doc.name) + "?</strong> Copy its owner, bank and PAN details here. Your menu and photos stay as they are.</span>" +
+      '<button type="button" class="btn small primary" data-act="cp-open" data-id="' + h(src.id) + '">Copy details</button></div>';
+  }
+  function cpModal(from, preIds, afterSave) {
+    const P = CP.profiles || {}, list = ownedOutlets(), sources = list.filter((o) => cpHas(P[o.id]));
+    if (!sources.length) return toast("Add the bank details to one outlet first.", true);
+    const src = sources.find((o) => o.id === from) || sources.find((o) => o.id === state.rid) || sources[0];
+    const targets = list.filter((o) => o.id !== src.id).sort((a, b) => String(a.doc.name || "").localeCompare(String(b.doc.name || "")));
+    const pre = new Set(preIds && preIds.length ? preIds : targets.filter((o) => !cpFull(P[o.id])).map((o) => o.id));
+    const rows = targets.map((o) => { const p = P[o.id], acct = String((p && p.bankAccountNumber) || "");
+      return '<label class="ol-check"><input type="checkbox" name="to" value="' + h(o.id) + '"' + (pre.has(o.id) ? " checked" : "") + "><span><strong>" + h(o.doc.name || o.id) + '</strong><span class="small muted">' +
+        (cpFull(p) ? "Has bank ••••" + h(acct.slice(-4)) + " and PAN: they will be replaced" : cpHas(p) ? "Some details missing" : "No bank or PAN yet") + "</span></span></label>"; }).join("");
+    const r = src.doc || {}, addr = [r.address, r.area, r.city].filter(Boolean).reduce((a, x) => a.toLowerCase().includes(String(x).toLowerCase()) ? a : a ? a + ", " + x : String(x), "");
+    modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="cp-form"><header><h2>' + (afterSave ? "Use these details for your other outlets?" : "Same details for your outlets") + '</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
+      '<p class="small muted" style="margin:0">Your outlets have the same owner, bank account and PAN. Fill them once and copy them here. Each outlet keeps its own name, menu, photos, hours and phone.</p>' +
+      '<div class="field"><label for="cp-from">Copy from</label>' + (sources.length > 1 ? '<select class="input" id="cp-from" name="from" data-input="cp-from">' + sources.map((o) => '<option value="' + h(o.id) + '"' + (o.id === src.id ? " selected" : "") + ">" + h(o.doc.name || o.id) + "</option>").join("") + "</select>"
+        : '<input type="hidden" name="from" value="' + h(src.id) + '"><strong>' + h(r.name || src.id) + "</strong>") + '<span class="small muted">' + h(cpSummary(P[src.id] || {})) + "</span></div>" +
+      '<div class="field"><div class="row between"><label>Copy to</label>' + (targets.length > 2 ? '<button type="button" class="linklike" data-act="cp-all">Select all</button>' : "") + '</div><div class="cp-list">' + rows + "</div></div>" +
+      (wmPoint(r.lat, r.lng) ? '<label class="ol-check"><input type="checkbox" name="place"><span><strong>Also copy the address and map pin</strong><span class="small muted">' + h(addr || "Same kitchen") + ". Only for outlets in the same kitchen.</span></span></label>" : "") +
+      '<div class="row"><button class="btn grow" type="button" data-act="close-modal">' + (afterSave ? "Not now" : "Cancel") + '</button><button class="btn primary grow" type="submit" id="cp-go">Copy details</button></div></form></div>';
+    cpCount();
+  }
+  function cpCount() {
+    const f = document.getElementById("cp-form"), b = document.getElementById("cp-go"); if (!f || !b || CP.busy) return;
+    const n = f.querySelectorAll('input[name="to"]:checked').length; b.disabled = !n; b.textContent = n ? "Copy to " + n + (n === 1 ? " outlet" : " outlets") : "Pick an outlet";
+  }
+  async function cpCopy(form) {
+    if (CP.busy) return;
+    const owned = new Map(ownedOutlets().map((o) => [o.id, o])), from = String(form.elements.namedItem("from").value || ""), place = !!(form.elements.namedItem("place") || {}).checked;
+    const ids = [...form.querySelectorAll('input[name="to"]:checked')].map((x) => x.value).filter((id) => id !== from && owned.has(id));
+    if (!owned.has(from) || !ids.length) return toast("Pick at least one outlet.", true);
+    CP.busy = true; const b = document.getElementById("cp-go"); if (b) { b.disabled = true; b.textContent = "Copying…"; }
+    let done = 0;
+    try {
+      const snap = await db.collection("restaurantPayoutProfiles").doc(from).get(), src = snap.exists ? snap.data() : null;
+      if (!cpHas(src)) throw new Error("That outlet has no bank or PAN details to copy.");
+      const r = owned.get(from).doc || {}, pin = wmPoint(r.lat, r.lng), now = Date.now(), by = state.user.uid;
+      for (const id of ids) {
+        const cur = (CP.profiles && CP.profiles[id]) || {}, changes = {restaurantId: id, copiedFrom: {restaurantId: from, at: now, by}, updatedAt: now, updatedBy: by};
+        // Only what the source has: an empty field there never wipes one here.
+        CP_KEYS.forEach((k) => { const v = src[k]; if (v != null && String(v).trim() !== "") changes[k] = v; });
+        if (src.taxProfile && typeof src.taxProfile === "object") changes.taxProfile = Object.assign({}, src.taxProfile, {invoicePrefix: String((cur.taxProfile || {}).invoicePrefix || ""), updatedAt: now});
+        await db.collection("restaurantPayoutProfiles").doc(id).set(changes, {merge: true});
+        if (CP.profiles) CP.profiles[id] = Object.assign({}, cur, changes);
+        if (place && pin) {
+          const loc = {lat: pin.lat, lng: pin.lng, updatedAt: now, updatedBy: state.user.email || by};
+          ["address", "area", "city", "pincode"].forEach((k) => { if (r[k] != null && String(r[k]).trim() !== "") loc[k] = r[k]; });
+          await db.collection("restaurants").doc(id).update(loc); Object.assign(owned.get(id).doc, loc);
+        }
+        done++;
+      }
+      if (ids.includes(state.rid) && state.fin.profile !== undefined) state.fin.profile = Object.assign({}, state.fin.profile || {}, CP.profiles ? CP.profiles[state.rid] : {});
+      CP.busy = false; closeModal(); toast("Details copied to " + done + (done === 1 ? " outlet." : " outlets."));
+    } catch (e) {
+      CP.busy = false; toast((done ? "Copied to " + done + ", then stopped. " : "") + friendly(e), true); cpCount();
+    }
+    render();
+  }
+  // After this outlet's bank or tax details are saved: offer them to the owner's outlets that don't have them.
+  function cpAfterSave() {
+    if (!isOwner() || ownedOutlets().length < 2) return;
+    const rid = state.rid, mine = state.fin.profile;
+    cpLoad().then((P) => {
+      P[rid] = Object.assign({}, P[rid] || {}, mine || {});
+      const missing = ownedOutlets().filter((o) => o.id !== rid && !cpFull(P[o.id])).map((o) => o.id);
+      if (state.rid === rid && missing.length && cpHas(P[rid]) && !modalRoot.innerHTML) cpModal(rid, missing, true);
+      else render();
+    });
   }
   async function savePayMethod(method) {
     const F = state.fin, p = F.profile;
@@ -757,7 +856,7 @@
     return '<div class="kpis">' + kpiBox("This week so far", inr(W[0].net), W[0].orders.length + " delivered orders · after commission" + (F.stmt ? " and TDS" : "")) +
       kpiBox("Balance due to you", balance, !WEB_CHECK ? "From Scraveit's ledger" : !s ? "Couldn't load" : !s.complete ? "Being checked by Scraveit finance" : auto && auto.enabled && auto.scheduleLabel ? "Paid every " + h(auto.scheduleLabel.replace(/\s*\(Asia\/Kolkata\)$/, "")) : "Paid weekly") +
       kpiBox("Last payout", last ? inr(last.amount) : "—", last ? h(fullDay(last.at)) + (last.utr ? " · UTR " + h(last.utr) : "") : WEB_CHECK ? "No payouts yet" : "From Scraveit's ledger") +
-      kpiBox("Paid to", acct.label ? h(acct.label) : "Not set", acct.label ? h(acct.sub) : '<span style="color:var(--bad)">Add your bank account below, or payouts are held</span>') + "</div>" + payMethodCard() +
+      kpiBox("Paid to", acct.label ? h(acct.label) : "Not set", acct.label ? h(acct.sub) : '<span style="color:var(--bad)">Add your bank account below, or payouts are held</span>') + "</div>" + cpAskHtml() + payMethodCard() +
       '<div class="split fin"><div class="card" style="padding:0;overflow:auto"><div class="row between" style="padding:14px 16px"><h2 style="margin:0">Weekly payouts</h2><span class="small muted">Monday to Sunday · pick a week</span></div>' +
       '<table class="table"><thead><tr><th>Week</th><th class="num">Orders</th><th class="num">Item total</th><th class="num">Commission + GST</th><th class="num">TDS + TCS</th><th class="num">Your payout</th><th>Status</th></tr></thead><tbody>' +
       W.map((w) => '<tr class="clickable' + (w === sel ? " sel" : "") + '" data-act="fin-week" data-id="' + w.start + '"><td class="nowrap">' + h(dayLabel(w.start)) + " – " + h(dayLabel(w.end - DAY)) + '</td><td class="num">' + w.orders.length +
@@ -1380,7 +1479,7 @@
     const changes = {restaurantId: state.rid, legalBusinessName: v("legal"), panNumber: pan, gstin, taxProfile, updatedAt: now, updatedBy: state.user.uid};
     try {
       await db.collection("restaurantPayoutProfiles").doc(state.rid).set(changes, {merge: true});
-      state.fin.profile = Object.assign({}, old, changes); state.fin.tax = {}; closeModal(); toast("Tax details saved."); render();
+      state.fin.profile = Object.assign({}, old, changes); state.fin.tax = {}; closeModal(); toast("Tax details saved."); render(); setTimeout(cpAfterSave, 600);
     } catch (e) { toast(friendly(e), true); }
   }
   function pageTaxes() {
@@ -2274,7 +2373,7 @@
     const cover = (coverList(r)[0] || {}).url || "";
     const rows = [["Address", [r.address, r.area, r.city].filter(Boolean).join(", ")], ["Phone", r.phone || r.contactPhone], ["Cuisines", cuisines], ["Hours", r.opensAt || r.opensUntil ? (r.opensAt || "—") + " to " + (r.opensUntil || "—") : ""], ["FSSAI", r.fssaiNumber], ["Rating", r.rating ? Number(r.rating).toFixed(1) + " ★ (" + Number(r.ratingCount || 0) + " ratings)" : "New"], ["Outlet ID", o.id], ["Your role", ROLE_NAME[o.member.role] || "Staff"],
       ["You can use", isManager() ? "" : FEATURES.filter((f) => can(f[0])).map((f) => f[1]).join(", ") || "Outlet info only"]];
-    return '<div class="card" style="padding:0;overflow:hidden">' + (cover ? '<img src="' + h(cover) + '" alt="" style="width:100%;height:200px;object-fit:cover;display:block">' : "") +
+    return cpAskHtml() + '<div class="card" style="padding:0;overflow:hidden">' + (cover ? '<img src="' + h(cover) + '" alt="" style="width:100%;height:200px;object-fit:cover;display:block">' : "") +
       '<div style="padding:16px"><div class="row between"><div><h2 style="font-size:22px;margin:0">' + h(r.name) + '</h2><div class="muted">' + h(cuisines) + "</div></div>" +
       '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Accepting orders" : "Not accepting orders") + "</button></div>" +
       '<table class="table" style="margin-top:12px"><tbody>' + rows.filter((x) => x[1]).map((x) => '<tr><td class="muted" style="width:160px">' + h(x[0]) + "</td><td>" + h(x[1]) + "</td></tr>").join("") + "</tbody></table>" +
@@ -2290,6 +2389,22 @@
     } catch (e) { toast(friendly(e), true); }
   }
 
+  // One switch for every outlet this account may open or close (same as the app's "Open all / Close all").
+  const availabilityOutletIds = () => Object.keys(state.outlets || {}).filter((rid) => {
+    const m = (state.outlets[rid] || {}).member || {};
+    return m.active === true && (m.role === "restaurant_owner" || m.role === "restaurant_manager" || !!(m.permissions && m.permissions.availability === true));
+  });
+  async function setAllOutlets(open) {
+    const ids = availabilityOutletIds(); if (ids.length < 2) return;
+    if (!open && !confirm("Close all " + ids.length + " outlets? Customers see all of them as closed until you open them again.")) return;
+    const patch = {open, offlineUntil: null, offlineReason: open ? "" : "Paused from the partner dashboard", updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid};
+    const res = await Promise.allSettled(ids.map((rid) => db.collection("restaurants").doc(rid).update(patch)));
+    res.forEach((r, i) => { if (r.status === "fulfilled" && state.outlets[ids[i]]) state.outlets[ids[i]].doc.open = open; });
+    const failed = res.filter((r) => r.status === "rejected").length;
+    toast(failed ? (ids.length - failed) + " of " + ids.length + " outlets changed. Try again for the rest." : open ? "All " + ids.length + " outlets are accepting orders." : "All " + ids.length + " outlets are closed.", failed > 0);
+    render();
+  }
+
   // ---------- outlet details: edit (same fields as the Restaurant app's Restaurant screen) ----------
   // Founder 17 Nov 2026: everything in the app should be on the website too.
   const MAX_COVERS = 10;
@@ -2302,21 +2417,139 @@
   }
   const worldPx = (lat, lng, z) => { const sc = 256 * Math.pow(2, z), sn = Math.sin(lat * Math.PI / 180); return {x: (lng + 180) / 360 * sc, y: (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * sc}; };
   const pxLatLng = (x, y, z) => { const sc = 256 * Math.pow(2, z), n = Math.PI - 2 * Math.PI * y / sc; return {lat: 180 / Math.PI * Math.atan(Math.sinh(n)), lng: x / sc * 360 - 180}; };
-  function olMapHtml() {
-    const d = OL.draft, lat = Number.isFinite(d.lat) ? d.lat : 14.9077, lng = Number.isFinite(d.lng) ? d.lng : 79.8946, z = OL.zoom;
-    const box = document.getElementById("ol-map"), w = box ? box.clientWidth || 520 : 520, ht = 260, wp = worldPx(lat, lng, z), left = wp.x - w / 2, top = wp.y - ht / 2, n = Math.pow(2, z);
-    let tiles = "";
-    for (let tx = Math.floor(left / 256); tx <= Math.floor((left + w) / 256); tx++) for (let ty = Math.floor(top / 256); ty <= Math.floor((top + ht) / 256); ty++) {
-      const wrap = ((tx % n) + n) % n;
-      tiles += '<img src="https://savrivo-app.web.app/maptile/day/' + z + "/" + wrap + "/" + ty + '" alt="" draggable="false" style="position:absolute;left:' + (tx * 256 - left) + "px;top:" + (ty * 256 - top) + 'px;width:256px;height:256px">';
+  // ---------- the outlet map, the same as the Restaurant app (22 Nov 2026) ----------
+  // Drag, pinch (or Ctrl + scroll) and double-click look around; the pin moves only after "Move pin" on the
+  // full-screen map, and in Edit outlet details it is kept only when the form is saved.
+  const WM_PIN = '<svg class="wm-pin-svg" viewBox="0 0 40 52" aria-hidden="true"><path d="M20 51s17-17.6 17-31A17 17 0 0 0 3 20c0 13.4 17 31 17 31Z"/><circle cx="20" cy="20" r="6.5"/></svg>';
+  const WM_IC = {expand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></svg>', target: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>', minus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>', close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    locate: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 3 10.5l7.5 2.5L13 21z"/></svg>', pin: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-6.6 7-12a7 7 0 0 0-14 0c0 5.4 7 12 7 12Z"/><circle cx="12" cy="9" r="2.5"/></svg>'};
+  const WM_HOME = {lat: 14.9077, lng: 79.8946};
+  const wmPoint = (lat, lng) => { if (lat === "" || lat == null || lng === "" || lng == null) return null; lat = Number(lat); lng = Number(lng); return Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng) ? {lat, lng} : null; };
+  const wmSame = (a, b) => (!a && !b) || !!(a && b && Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lng - b.lng) < 1e-7);
+  // Tiles cover the box plus one tile each side, so a drag never shows an empty edge.
+  function wmTiles(c, z, w, hh, pin, was) {
+    const wp = worldPx(c.lat, c.lng, z), max = Math.pow(2, z), mx = w / 2 + 256, my = hh / 2 + 256;
+    const x0 = Math.floor((wp.x - mx) / 256), x1 = Math.floor((wp.x + mx) / 256), y0 = Math.max(0, Math.floor((wp.y - my) / 256)), y1 = Math.min(max - 1, Math.floor((wp.y + my) / 256));
+    let t = "";
+    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+      const wrap = ((tx % max) + max) % max;
+      t += '<img src="https://savrivo-app.web.app/maptile/day/' + z + "/" + wrap + "/" + ty + '" data-osm="https://tile.openstreetmap.org/' + z + "/" + wrap + "/" + ty + '.png" alt="" draggable="false" style="left:calc(50% + ' + (tx * 256 - wp.x).toFixed(1) + "px);top:calc(50% + " + (ty * 256 - wp.y).toFixed(1) + 'px)">';
     }
-    return tiles + '<div class="ol-pin">📍</div>';
+    if (pin) { const pp = worldPx(pin.lat, pin.lng, z); t += '<div class="wm-pin' + (was ? " was" : "") + '" style="left:calc(50% + ' + (pp.x - wp.x).toFixed(1) + "px);top:calc(50% + " + (pp.y - wp.y).toFixed(1) + 'px)">' + WM_PIN + "</div>"; }
+    return t;
   }
+  // A tile our server can't give comes from OpenStreetMap instead.
+  document.addEventListener("error", (e) => { const t = e.target; if (t && t.tagName === "IMG" && t.dataset && t.dataset.osm && t.src !== t.dataset.osm) t.src = t.dataset.osm; }, true);
+  function wmGet(root) { return {c: {lat: Number(root.dataset.clat), lng: Number(root.dataset.clng)}, z: Number(root.dataset.zoom) || 16, pin: wmPoint(root.dataset.plat, root.dataset.plng), edit: root.dataset.mode === "edit"}; }
+  function wmDraw(root) {
+    const m = wmGet(root), layer = root.querySelector(".wm-layer"); if (!layer) return;
+    layer.style.transform = ""; layer.innerHTML = wmTiles(m.c, m.z, root.clientWidth || 520, root.clientHeight || 260, m.pin, m.edit);
+    const scope = root.closest(".wm-full") || root, back = scope.querySelector(".wm-recenter");
+    if (back) { let off = false; if (m.pin) { const p = worldPx(m.c.lat, m.c.lng, m.z), q = worldPx(m.pin.lat, m.pin.lng, m.z); off = Math.hypot(p.x - q.x, p.y - q.y) > 24; } back.hidden = !off; }
+    const coords = scope.querySelector("#wm-coords"); if (coords && m.edit) coords.textContent = m.c.lat.toFixed(6) + ", " + m.c.lng.toFixed(6);
+  }
+  function wmSet(root, c, z) { root.dataset.clat = c.lat; root.dataset.clng = c.lng; root.dataset.zoom = Math.max(4, Math.min(19, Math.round(z))); wmDraw(root); if (root.id === "ol-map") OL.zoom = Number(root.dataset.zoom); }
+  // The small map in Edit outlet details and in registration. OL.draft is the pin the form will save; OL.saved the one it had.
   function olDrawMap() {
     const box = document.getElementById("ol-map"); if (!box) return;
-    box.innerHTML = olMapHtml();
-    const c = document.getElementById("ol-coords"); if (c) c.textContent = Number.isFinite(OL.draft.lat) ? OL.draft.lat.toFixed(6) + ", " + OL.draft.lng.toFixed(6) : "No pin yet";
+    const pin = wmPoint(OL.draft && OL.draft.lat, OL.draft && OL.draft.lng), c = pin || WM_HOME;
+    box.className = "wm"; box.removeAttribute("data-act"); box.dataset.mode = "view"; box.dataset.clat = c.lat; box.dataset.clng = c.lng; box.dataset.zoom = OL.zoom;
+    box.dataset.plat = pin ? pin.lat : ""; box.dataset.plng = pin ? pin.lng : "";
+    box.setAttribute("role", "application"); box.setAttribute("aria-label", "Map of your outlet. Drag to look around.");
+    box.innerHTML = '<div class="wm-layer"></div><button type="button" class="wm-btn wm-expand" data-act="wm-expand" aria-label="Full screen map" title="Full screen">' + WM_IC.expand + "</button>" +
+      '<button type="button" class="wm-btn wm-recenter" data-act="wm-recenter" aria-label="Back to the pin" title="Back to the pin" hidden>' + WM_IC.target + "</button>" +
+      '<button type="button" class="wm-move" data-act="wm-move">' + WM_IC.pin + "<span>" + (pin ? "Move pin" : "Set pin") + "</span></button>";
+    wmDraw(box);
+    const cap = document.getElementById("ol-map-cap"); if (cap) cap.textContent = pin ? "Delivery partners come to this pin. Click Move pin to change it." : "No pin yet. Click Set pin and put it on your entrance.";
+    const co = document.getElementById("ol-coords"); if (co) co.textContent = pin ? pin.lat.toFixed(6) + ", " + pin.lng.toFixed(6) : "";
+    const u = document.getElementById("ol-unsaved");
+    if (u) u.innerHTML = OL.ctx === "outlet" && !wmSame(pin, OL.saved) ? '<div class="notice warn wm-unsaved"><span class="grow">Pin moved, not saved yet. Click Save outlet details to keep it.</span><button type="button" class="linklike" data-act="wm-undo">Undo</button></div>' : "";
   }
+  let wmOpen = false;
+  const wmFullRoot = () => wmOpen ? document.getElementById("wm-full-map") : null;
+  function wmClose() { if (!wmOpen) return; wmOpen = false; const w = document.getElementById("wm-full"); if (w) w.remove(); document.documentElement.classList.remove("wm-open"); if (wmG && !wmG.root.isConnected) { wmG = null; wmPointers.clear(); } }
+  function wmOpenFull(mode) {
+    wmClose();
+    const inline = document.getElementById("ol-map"), src = inline && inline.dataset.clat ? wmGet(inline) : {c: WM_HOME, z: OL.zoom, pin: null}, edit = mode === "edit";
+    const c = edit ? (src.pin || src.c) : src.c, z = Math.min(19, edit ? Math.max(17, src.z) : src.z + 1);
+    const wrap = document.createElement("div"); wrap.id = "wm-full"; wrap.className = "wm-full"; wrap.setAttribute("role", "dialog"); wrap.setAttribute("aria-modal", "true"); wrap.setAttribute("aria-label", "Outlet location");
+    wrap.innerHTML = '<div id="wm-full-map" class="wm" data-mode="' + (edit ? "edit" : "view") + '" data-clat="' + c.lat + '" data-clng="' + c.lng + '" data-zoom="' + z + '" data-plat="' + (src.pin ? src.pin.lat : "") + '" data-plng="' + (src.pin ? src.pin.lng : "") + '" role="application" aria-label="Map. Drag to look around."><div class="wm-layer"></div><div class="wm-center" aria-hidden="true">' + WM_PIN + "<i></i></div></div>" +
+      '<button type="button" class="wm-btn wm-close" data-act="wm-close" aria-label="Close map" title="Close">' + WM_IC.close + "</button>" +
+      '<p class="wm-hint">Drag the map to put the pin on your outlet’s entrance.</p>' +
+      '<div class="wm-tools"><div class="wm-zoom"><button type="button" data-act="wm-zoom" data-id="1" aria-label="Zoom in" title="Zoom in">' + WM_IC.plus + '</button><button type="button" data-act="wm-zoom" data-id="-1" aria-label="Zoom out" title="Zoom out">' + WM_IC.minus + "</button></div>" +
+      '<button type="button" class="wm-btn wm-recenter" data-act="wm-recenter" aria-label="Back to the pin" title="Back to the pin" hidden>' + WM_IC.target + "</button>" +
+      '<button type="button" class="wm-btn wm-locate" data-act="wm-locate" aria-label="Use this device\'s location" title="Use this device\'s location">' + WM_IC.locate + "</button></div>" +
+      '<div class="wm-panel"></div>';
+    document.body.appendChild(wrap); wmOpen = true; document.documentElement.classList.add("wm-open"); wmPanel(); wmDraw(wmFullRoot());
+  }
+  function wmPanel() {
+    const wrap = wmOpen && document.getElementById("wm-full"), root = wmFullRoot(); if (!wrap || !root) return;
+    const m = wmGet(root), panel = wrap.querySelector(".wm-panel"), reg = OL.ctx === "reg";
+    const name = reg ? String(regDraft().restaurantName || "") : String((outlet() && outlet().doc.name) || "");
+    const addrBox = document.getElementById(reg ? "rg-location.address" : "ol-address"), addr = String(addrBox ? addrBox.value : "").trim();
+    wrap.classList.toggle("editing", m.edit);
+    panel.innerHTML = m.edit
+      ? '<p class="wm-coords"><strong>Pin here</strong><span id="wm-coords">' + m.c.lat.toFixed(6) + ", " + m.c.lng.toFixed(6) + '</span></p><div class="wm-actions"><button type="button" class="btn" data-act="wm-close">Cancel</button><button type="button" class="btn primary" data-act="wm-confirm">Confirm pin</button></div>'
+      : '<div class="wm-place"><span class="wm-place-ic">' + WM_IC.pin + '</span><span class="grow"><strong>' + h(name || "Your outlet") + "</strong><small>" + h(m.pin ? (addr || m.pin.lat.toFixed(6) + ", " + m.pin.lng.toFixed(6)) : "No pin yet") + '</small></span></div><button type="button" class="btn primary block" data-act="wm-edit">' + (m.pin ? "Move pin" : "Set pin") + "</button>";
+    wrap.style.setProperty("--wm-panel", panel.offsetHeight + "px");
+  }
+  function wmStartEdit() { const root = wmFullRoot(); if (!root) return; const m = wmGet(root); root.dataset.mode = "edit"; wmPanel(); wmSet(root, m.pin || m.c, Math.max(17, m.z)); }
+  function wmConfirm() { const root = wmFullRoot(); if (!root) return; const m = wmGet(root); wmClose(); OL.draft = {lat: m.c.lat, lng: m.c.lng}; OL.zoom = Math.max(4, Math.min(19, m.z)); olDrawMap(); }
+  function wmLocate() {
+    if (!navigator.geolocation) return toast("This browser can't share its location. Drag the map instead.", true);
+    navigator.geolocation.getCurrentPosition((p) => {
+      const root = wmFullRoot(); if (!root || root.dataset.mode !== "edit") return;
+      wmSet(root, {lat: p.coords.latitude, lng: p.coords.longitude}, Math.max(17, wmGet(root).z)); toast("Found you. Check the pin, then click Confirm pin.");
+    }, () => toast("Location not allowed. Drag the map instead.", true), {enableHighAccuracy: true, timeout: 15000});
+  }
+  const wmTarget = (el) => el.closest(".wm-full") ? wmFullRoot() : document.getElementById("ol-map");
+  // Gestures: one finger or the mouse drags, two fingers zoom, a double click zooms in. On the full-screen
+  // "Move pin" map a single click also puts the pin where you clicked.
+  const wmPointers = new Map(); let wmG = null, wmLastTap = null;
+  document.addEventListener("pointerdown", (e) => {
+    const root = e.target.closest && e.target.closest(".wm"); if (!root || e.target.closest("button") || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (wmG && wmG.root !== root) return;
+    wmPointers.set(e.pointerId, {x: e.clientX, y: e.clientY}); try { root.setPointerCapture(e.pointerId); } catch (_) { /* old browser */ }
+    if (wmPointers.size === 1) wmG = {root, x: e.clientX, y: e.clientY, dx: 0, dy: 0, moved: false, scale: 1, pinch: 0};
+    else if (wmPointers.size === 2 && wmG) { const [p, q] = [...wmPointers.values()]; wmG.pinch = Math.hypot(p.x - q.x, p.y - q.y) || 1; wmG.moved = true; }
+  });
+  document.addEventListener("pointermove", (e) => {
+    const g = wmG; if (!g || !wmPointers.has(e.pointerId)) return;
+    wmPointers.set(e.pointerId, {x: e.clientX, y: e.clientY}); const layer = g.root.querySelector(".wm-layer"); if (!layer) return;
+    if (wmPointers.size >= 2 && g.pinch) { const [p, q] = [...wmPointers.values()]; g.scale = Math.max(0.25, Math.min(4, Math.hypot(p.x - q.x, p.y - q.y) / g.pinch)); }
+    else if (wmPointers.size === 1 && !g.pinch) { g.dx = e.clientX - g.x; g.dy = e.clientY - g.y; if (Math.abs(g.dx) + Math.abs(g.dy) > 6) g.moved = true; }
+    if (g.moved) { layer.style.transform = "translate(" + g.dx + "px," + g.dy + "px) scale(" + g.scale + ")"; g.root.classList.add("dragging"); }
+  });
+  function wmEnd(e) {
+    if (!wmPointers.has(e.pointerId)) return; wmPointers.delete(e.pointerId); if (wmPointers.size || !wmG) return;
+    const g = wmG, root = g.root; wmG = null; root.classList.remove("dragging"); if (!root.isConnected) return;
+    const m = wmGet(root), wp = worldPx(m.c.lat, m.c.lng, m.z);
+    if (g.moved) { wmLastTap = null; wmSet(root, pxLatLng(wp.x - g.dx / g.scale, wp.y - g.dy / g.scale, m.z), m.z + (g.scale !== 1 ? Math.round(Math.log2(g.scale)) : 0)); return; }
+    if (e.type !== "pointerup") { wmDraw(root); return; }
+    const r = root.getBoundingClientRect(), tx = wp.x + (e.clientX - r.left - r.width / 2), ty = wp.y + (e.clientY - r.top - r.height / 2), now = Date.now();
+    if (m.edit) { wmSet(root, pxLatLng(tx, ty, m.z), m.z); return; }
+    if (wmLastTap && wmLastTap.root === root && now - wmLastTap.at < 320 && Math.hypot(e.clientX - wmLastTap.x, e.clientY - wmLastTap.y) < 30) { wmLastTap = null; wmSet(root, pxLatLng((wp.x + tx) / 2, (wp.y + ty) / 2, m.z), m.z + 1); return; }
+    wmLastTap = {root, at: now, x: e.clientX, y: e.clientY};
+  }
+  document.addEventListener("pointerup", wmEnd); document.addEventListener("pointercancel", wmEnd);
+  // Scroll zooms the full-screen map. On the small map inside a form, plain scrolling still scrolls the
+  // page: zoom there with Ctrl + scroll (a trackpad pinch sends that).
+  let wmWheel = {acc: 0, at: 0};
+  document.addEventListener("wheel", (e) => {
+    const root = e.target.closest && e.target.closest(".wm"); if (!root) return;
+    if (!root.closest(".wm-full") && !e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const now = Date.now(); if (now - wmWheel.at > 250) wmWheel.acc = 0; wmWheel.at = now; wmWheel.acc += e.deltaY;
+    if (Math.abs(wmWheel.acc) < 40) return;
+    const step = wmWheel.acc < 0 ? 1 : -1; wmWheel.acc = 0;
+    const m = wmGet(root), z2 = Math.max(4, Math.min(19, m.z + step)); if (z2 === m.z) return;
+    if (m.edit) { wmSet(root, m.c, z2); return; }
+    // Zoom around the pointer, like any map.
+    const r = root.getBoundingClientRect(), ox = e.clientX - r.left - r.width / 2, oy = e.clientY - r.top - r.height / 2, wp = worldPx(m.c.lat, m.c.lng, m.z), f = Math.pow(2, z2 - m.z);
+    wmSet(root, pxLatLng((wp.x + ox) * f - ox, (wp.y + oy) * f - oy, z2), z2);
+  }, {passive: false});
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && wmOpen) { e.preventDefault(); e.stopPropagation(); wmClose(); } }, true);
   function olCoversHtml() {
     return OL.covers.map((x, i) => '<figure class="ol-cover' + (i === 0 ? " first" : "") + '"><img src="' + h(x.thumbUrl || x.url) + '" alt="Cover photo ' + (i + 1) + '">' + (i === 0 ? '<span class="ol-first">First</span>' : "") +
       '<div class="ol-tools">' + (i > 0 ? '<button type="button" class="btn small" data-act="ol-cover-first" data-id="' + i + '">Make first</button>' : "") + '<button type="button" class="btn small danger" data-act="ol-cover-remove" data-id="' + i + '">Remove</button></div></figure>').join("") +
@@ -2326,19 +2559,20 @@
   function outletEditModal() {
     const o = outlet(); if (!o || !can("profile")) return;
     const r = o.doc;
-    OL.draft = {lat: Number(r.lat), lng: Number(r.lng)}; OL.covers = coverList(r); OL.zoom = 16; OL.uploading = false; OL.saving = false;
+    OL.draft = {lat: Number(r.lat), lng: Number(r.lng)}; OL.saved = wmPoint(r.lat, r.lng); OL.ctx = "outlet"; OL.covers = coverList(r); OL.zoom = 16; OL.uploading = false; OL.saving = false;
     const f = (name, label, value, extra) => '<div class="field"><label for="ol-' + name + '">' + label + '</label><input class="input" id="ol-' + name + '" name="' + name + '" value="' + h(value == null ? "" : value) + '"' + (extra || "") + "></div>";
     const chk = (name, on, title, copy) => '<label class="ol-check"><input type="checkbox" name="' + name + '"' + (on ? " checked" : "") + '><span><strong>' + title + '</strong><span class="small muted">' + copy + "</span></span></label>";
     modalRoot.innerHTML = '<div class="modal-back"><form class="modal wide" id="outlet-form"><header><h2>Edit outlet details</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
-      '<div class="field"><label>Outlet</label><input class="input" value="' + h(r.name || "") + '" disabled></div>' +
+      // The owner can rename the outlet; staff see the name locked.
+      '<div class="field"><label for="ol-name">Outlet</label>' + (isOwner() ? '<input class="input" id="ol-name" name="name" value="' + h(r.name || "") + '" maxlength="60" autocomplete="off" required>' : '<input class="input" value="' + h(r.name || "") + '" disabled>') + "</div>" +
       '<div class="field"><label for="ol-description">Description</label><textarea class="input" id="ol-description" name="description" rows="3" maxlength="1000">' + h(r.description || "") + "</textarea></div>" +
       '<div class="ol-grid">' + f("cuisines", "Cuisines (comma separated)", (r.cuisines || []).join ? (r.cuisines || []).join(", ") : r.cuisines) + f("category", "Category", r.category || r.type, ' placeholder="Biryani, Cafe, Fast food"') +
       f("city", "City", r.city) + f("etaMin", "Minimum ETA (min)", r.etaMin || 25, ' type="number" min="5" max="240"') + f("etaMax", "Maximum ETA (min)", r.etaMax || 35, ' type="number" min="5" max="360"') + "<span></span>" +
       f("opensAt", "Opens at", r.opensAt, ' placeholder="11:00 AM"') + f("opensUntil", "Open until", r.opensUntil, ' placeholder="11:00 PM"') + "</div>" +
       '<p class="small muted" style="margin:0">The outlet opens and closes itself at these times. You can still switch it by hand; that holds until the next opening or closing time. Leave either empty to switch only by hand.</p>' +
       '<h3 style="margin:6px 0 0">Location</h3><div class="field"><label for="ol-address">Address</label><textarea class="input" id="ol-address" name="address" rows="2">' + h(r.address || "") + "</textarea></div>" +
-      '<div class="row between"><span class="small muted">Click the map to move the pin to your kitchen door.</span><span class="row" style="gap:6px"><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button><button type="button" class="btn small" data-act="ol-zoom" data-id="-1">−</button><button type="button" class="btn small" data-act="ol-zoom" data-id="1">+</button></span></div>' +
-      '<div id="ol-map" class="ol-map" data-act="ol-map"></div><p class="small muted" id="ol-coords" style="margin:0"></p>' +
+      '<div class="row between" style="gap:8px;flex-wrap:wrap"><span class="small muted" id="ol-map-cap"></span><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button></div>' +
+      '<div id="ol-map" class="wm"></div><p class="small muted" id="ol-coords" style="margin:0"></p><div id="ol-unsaved"></div>' +
       '<h3 style="margin:6px 0 0">Kitchen capacity</h3>' + f("maxConcurrentOrders", "Maximum orders at a time", r.maxConcurrentOrders || 20, ' type="number" min="1" max="500"') +
       chk("autoAcceptOrders", r.autoAcceptOrders === true, "Accept new orders automatically", "While the outlet is online and below the limit above.") +
       chk("autoPauseWhenBusy", r.autoPauseWhenBusy === true, "Pause for 30 minutes when the limit is reached", "New orders stop until the kitchen catches up.") +
@@ -2369,6 +2603,12 @@
       opensAt: v("opensAt"), opensUntil: v("opensUntil"), address: v("address"), pureVeg: form.elements.pureVeg.checked, maxConcurrentOrders: Math.min(500, num("maxConcurrentOrders", 20)),
       autoAcceptOrders: form.elements.autoAcceptOrders.checked, autoPauseWhenBusy: form.elements.autoPauseWhenBusy.checked, updatedAt: Date.now(), updatedBy: state.user.email || state.user.uid};
     if (Number.isFinite(OL.draft.lat) && Number.isFinite(OL.draft.lng)) { changes.lat = OL.draft.lat; changes.lng = OL.draft.lng; }
+    const nameBox = form.elements.namedItem("name");
+    if (nameBox && isOwner()) {
+      const name = String(nameBox.value || "").replace(/\s+/g, " ").trim();
+      if (name.length < 2) return toast("Enter the outlet name.", true);
+      if (name !== String(o.doc.name || "")) changes.name = name;
+    }
     const covers = OL.covers.map((x) => ({url: x.url, thumbUrl: x.thumbUrl || x.url}));
     changes.coverImages = covers; changes.imageUrl = covers[0] ? covers[0].url : ""; changes.imageThumbUrl = covers[0] ? covers[0].thumbUrl : "";
     OL.saving = true; const btn = document.getElementById("ol-save"); if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
@@ -2455,7 +2695,8 @@
     if (!ag.partiesReady) { box.innerHTML = '<div class="notice warn">The agreement isn\'t ready yet. Please check again later.</div>'; return; }
     const title = '<p class="small muted" style="margin:0">' + ag.commissionBps / 100 + "% commission · " + ag.termMonths + " months</p>";
     const body = '<div class="ag-text">' + (ag.sections || []).map((x) => "<h3>" + h(x.heading) + "</h3><p>" + h(x.body) + "</p>").join("") + "</div>";
-    if (ag.status === "signed") { box.innerHTML = title + body + '<div class="notice info">✓ Signed by ' + h(ag.signedBy) + " on " + h(when(ag.signedAt)) + ". Scraveit keeps the signed copy with the time, account and device it was signed from.</div>"; return; }
+    const outlets = agOutletsHtml(ag);
+    if (ag.status === "signed") { box.innerHTML = title + outlets + body + '<div class="notice info">✓ Signed by ' + h(ag.signedBy) + " on " + h(when(ag.signedAt)) + ". Scraveit keeps the signed copy with the time, account and device it was signed from.</div>"; return; }
     const owner = isOwner(), d = AG.details || {}, k = ag.known || {}, goods = ["grocery", "dairy", "pharmacy"].includes(ag.storeType), asks = [];
     const fld = (id, label, val, extra, note) => '<div class="field"><label for="' + id + '">' + label + '</label><input class="input" id="' + id + '" value="' + h(val || "") + '" autocomplete="off" spellcheck="false"' + (extra || "") + ">" + (note ? '<span class="small muted">' + note + "</span>" : "") + "</div>";
     if (!k.ownerName) asks.push(fld("la-owner", "Owner's full name (as on PAN)", d.ownerName));
@@ -2471,9 +2712,20 @@
     const form = asks.length ? '<div class="card ag-ask"><h3 style="margin:0">Your details for the agreement</h3><p class="small muted" style="margin:0">Only what Scraveit doesn\'t have yet. It goes into the agreement and your payout records.</p>' + asks.join("") + missing +
       '<button class="btn" data-act="ag-details"' + (AG.loading || !owner ? " disabled" : "") + ">" + (AG.loading ? "Updating…" : "Put these in my agreement") + "</button></div>" : missing;
     const sign = issues.length ? "" : !owner ? '<div class="notice info">Only the outlet owner can sign the agreement.</div>' :
-      '<div class="ag-sign"><div class="field"><label for="la-sign-name">Type your full name to sign</label><input class="input" id="la-sign-name" autocomplete="name"></div><label class="ol-check"><input type="checkbox" id="la-sign-consent"><span><strong>I have read this agreement and I agree to it</strong></span></label>' +
+      '<div class="ag-sign"><div class="field"><label for="la-sign-name">Type your full name to sign</label><input class="input" id="la-sign-name" autocomplete="name"></div><label class="ol-check"><input type="checkbox" id="la-sign-consent"><span><strong>I have read this agreement and I agree to it' + ((ag.outlets || []).length > 1 ? " for all " + ag.outlets.length + " outlets" : "") + '</strong><span class="small muted" style="display:block">I am the owner named in it, or the business has authorised me in writing to sign.</span></span></label>' +
       '<button class="btn primary" data-act="ag-sign"' + (AG.signing ? " disabled" : "") + ">" + (AG.signing ? "Signing…" : "Accept and sign") + '</button><p class="small muted" style="margin:0">Your name, account, time and device are recorded with the agreement. It is a valid electronic agreement under the IT Act, 2000 (s.10A).</p></div>';
-    box.innerHTML = title + form + body + sign;
+    const keep = {};
+    box.querySelectorAll("input[id]").forEach((el) => { keep[el.id] = el.type === "checkbox" ? el.checked : el.value; });
+    box.innerHTML = title + outlets + form + body + sign;
+    // A failed sign or a details update redraws this: keep what the owner typed and ticked.
+    Object.keys(keep).forEach((id) => { const el = document.getElementById(id); if (!el) return; if (el.type === "checkbox") el.checked = !!keep[id]; else if (!el.value) el.value = keep[id]; });
+  }
+  // One owner, many outlets: which outlets this one agreement covers, and which sign their own (and why).
+  function agOutletsHtml(ag) {
+    const list = ag.outlets || [], sep = ag.status === "signed" ? [] : (ag.separate || []);
+    if (list.length < 2 && !sep.length) return "";
+    return (list.length > 1 ? '<div class="notice info"><strong>' + (ag.status === "signed" ? "Covers " : "One agreement for ") + list.length + " outlets</strong><br>" + list.map((o) => h(o.name)).join(", ") + "</div>" : "") +
+      (sep.length ? '<div class="notice warn"><strong>' + (sep.length === 1 ? "This outlet signs its own agreement" : "These outlets sign their own agreements") + "</strong><br>" + sep.map((o) => h(o.name) + ": " + h(o.reason)).join("<br>") + "</div>" : "");
   }
   async function signAgreement() {
     const ag = AG.view; if (!ag || AG.signing || !isOwner()) return;
@@ -2483,10 +2735,67 @@
     if (name.length < 2) return toast("Type your full name to sign.", true);
     AG.signing = true; drawAgreement();
     try {
-      await call("signLiveRestaurantAgreement", {restaurantId: state.rid, details: AG.details, hash: ag.hash, typedName: name, consent: true, method: "in_app"});
-      AG.view = null; toast("Agreement signed. Thank you!"); AG.signing = false; loadAgreement(); return;
+      const res = await call("signLiveRestaurantAgreement", {restaurantId: state.rid, details: AG.details, hash: ag.hash, typedName: name, consent: true, method: "in_app"});
+      AG.view = null; toast(Number(res && res.outlets) > 1 ? "Agreement signed for " + res.outlets + " outlets. Thank you!" : "Agreement signed. Thank you!"); AG.signing = false; loadAgreement(); return;
     } catch (e) { toast(friendly(e), true); }
     AG.signing = false; drawAgreement();
+  }
+  // Commission change notice: Scraveit proposes a new rate; the owner reads it and clicks Accept.
+  // The listing only says a notice exists (id, status, date); the rates come from the server.
+  const CN = {rid: "", view: null, loading: false, accepting: false, error: ""};
+  const cnDate = (t) => new Date(Number(t) || 0).toLocaleDateString("en-IN", {day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata"});
+  const cnPct = (b) => Number((Number(b) / 100).toFixed(2)) + "%";
+  function cnLive() {
+    const n = ((outlet() || {}).doc || {}).commissionNotice || {}, at = Number(n.effectiveAt || 0);
+    if (!isOwner() || !n.id) return null;
+    if (n.status === "pending" && at > Date.now()) return n;
+    if (n.status === "applied" && at > Date.now() - 7 * 864e5) return n;
+    return null;
+  }
+  function cnBannerHtml() {
+    const n = cnLive(); if (!n) return "";
+    return n.status === "pending" ?
+      '<div class="notice warn cp-ask"><span class="grow"><strong>Commission change: please read and accept.</strong> Accept before ' + h(cnDate(n.effectiveAt)) + '.</span><button type="button" class="btn small primary" data-act="cn-open">Read and accept</button></div>' :
+      '<div class="notice info cp-ask"><span class="grow"><strong>Your commission is going down</strong> from ' + h(cnDate(n.effectiveAt)) + '.</span><button type="button" class="btn small" data-act="cn-open">Read</button></div>';
+  }
+  async function cnLoad() {
+    if (CN.loading) return; CN.loading = true; CN.error = ""; drawCn();
+    try { const res = await call("restaurantCommissionNotice", {action: "get", restaurantId: state.rid}); CN.view = (res && res.notice) || null; if (!CN.view) CN.error = "This notice is no longer available."; }
+    catch (e) { CN.error = friendly(e); }
+    CN.loading = false; drawCn();
+  }
+  function cnModal() {
+    Object.assign(CN, {rid: state.rid, view: null, error: ""});
+    modalRoot.innerHTML = '<div class="modal-back"><div class="modal wide"><header><h2>Commission change</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header><div id="cn-body"></div></div></div>';
+    cnLoad();
+  }
+  function drawCn() {
+    const box = document.getElementById("cn-body"); if (!box) return;
+    const v = CN.view;
+    if (!v) { box.innerHTML = CN.error ? '<div class="notice warn">' + h(CN.error) + '</div><button class="btn" data-act="cn-reload">Try again</button>' : '<div class="spinner"></div>'; return; }
+    const from = [...new Set((v.outlets || []).map((o) => o.fromBps))], many = (v.outlets || []).length > 1;
+    const title = '<p class="small muted" style="margin:0">' + (from.length === 1 ? cnPct(from[0]) + " → " : "") + cnPct(v.toBps) + " from " + h(cnDate(v.effectiveAt)) + "</p>";
+    const body = '<div class="ag-text">' + (v.sections || []).map((x) => "<h3>" + h(x.heading) + "</h3><p>" + h(x.body) + "</p>").join("") + "</div>";
+    const foot = v.status === "pending" ?
+      '<div class="ag-sign"><label class="ol-check"><input type="checkbox" id="cn-consent"><span><strong>I accept the new commission of ' + cnPct(v.toBps) + " from " + h(cnDate(v.effectiveAt)) + (many ? " for all " + v.outlets.length + " outlets" : "") + '</strong><span class="small muted" style="display:block">I own ' + (many ? "these outlets" : "this outlet") + ", or I am authorised in writing to accept for " + (many ? "them" : "it") + ".</span></span></label>" +
+        '<button class="btn primary" data-act="cn-accept"' + (CN.accepting ? " disabled" : "") + ">" + (CN.accepting ? "Accepting…" : "Accept") + "</button></div>" :
+      v.status === "accepted" ? '<div class="notice info">✓ Accepted. The new rate starts on ' + h(cnDate(v.effectiveAt)) + ".</div>" :
+      v.status === "applied" ? '<button class="btn primary" data-act="close-modal">OK</button>' :
+      v.status === "lapsed" ? '<div class="notice warn">The date in this notice has passed. Please contact Scraveit.</div>' :
+      '<div class="notice info">Scraveit withdrew this notice. Your commission stays the same.</div>';
+    const tick = !!(document.getElementById("cn-consent") || {}).checked;
+    box.innerHTML = title + body + foot;
+    const c = document.getElementById("cn-consent"); if (c && tick) c.checked = true;
+  }
+  async function cnAccept() {
+    const v = CN.view; if (!v || CN.accepting || !isOwner()) return;
+    if (!(document.getElementById("cn-consent") || {}).checked) return toast("Tick the box to accept the new rate.", true);
+    CN.accepting = true; drawCn();
+    try {
+      const res = await call("restaurantCommissionNotice", {action: "accept", restaurantId: state.rid, noticeId: v.noticeId, hash: v.hash, consent: true});
+      CN.view = (res && res.notice) || v; toast("Accepted. Thank you!");
+    } catch (e) { toast(friendly(e), true); }
+    CN.accepting = false; drawCn();
   }
   function deletionModal() {
     modalRoot.innerHTML = '<div class="modal-back"><form class="modal" id="deletion-form"><header><h2>Delete your account</h2><button class="x" type="button" data-act="close-modal" aria-label="Close">×</button></header>' +
@@ -2951,7 +3260,7 @@
     regPullMap();
     const a = regDraft(), t = regT(), out = [], need = (ok, msg) => { if (!ok) out.push(msg); };
     if (step === "basics" || !step) { need(String(a.restaurantName || "").trim().length >= 2, "Add your " + t.noun + " name"); need(String(a.ownerName || "").trim().length >= 2, "Add the owner's full name"); need(OBC.phone(a.phone), "Add a 10-digit phone number"); need(a.cuisines.length > 0, "Pick at least one " + (t.packaged ? "category" : "cuisine")); }
-    if (step === "location" || !step) { need(Number.isFinite(regNum(a.location.lat)), "Click the map to set your pin"); need(String(a.location.address || "").trim().length >= 6, "Add the street address"); need(String(a.location.city || "").trim(), "Add the town or city"); need(!a.location.pincode || /^\d{6}$/.test(a.location.pincode), "PIN code should be 6 digits"); need((a.hours.days || []).length > 0, "Pick the days you're open"); }
+    if (step === "location" || !step) { need(Number.isFinite(regNum(a.location.lat)), "Set your pin on the map"); need(String(a.location.address || "").trim().length >= 6, "Add the street address"); need(String(a.location.city || "").trim(), "Add the town or city"); need(!a.location.pincode || /^\d{6}$/.test(a.location.pincode), "PIN code should be 6 digits"); need((a.hours.days || []).length > 0, "Pick the days you're open"); }
     if (step === "documents" || !step) {
       if (t.pharmacy) { need(OBC.drugLicence(a.drugLicence.number), "Add your drug licence number"); need(a.drugLicence.photoPath, "Add a photo of the drug licence"); need(!a.fssai.number || OBC.fssai(a.fssai.number), "FSSAI number should be 14 digits"); need(a.noPrescriptionOnly, "Confirm you'll list only items that need no prescription"); }
       else { need(OBC.fssai(a.fssai.number), "FSSAI number should be 14 digits"); need(a.fssai.photoPath, "Add a photo of the FSSAI certificate"); }
@@ -3052,8 +3361,8 @@
     if (step === "location") {
       const hrs = regHours(t);
       return '<h2>Where are you?</h2><p class="muted">Delivery partners come here to pick up orders.</p>' +
-        '<div class="row between"><span class="small muted">Click the map to move the pin to your shop door.</span><span class="row" style="gap:6px"><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button><button type="button" class="btn small" data-act="ol-zoom" data-id="-1">−</button><button type="button" class="btn small" data-act="ol-zoom" data-id="1">+</button></span></div>' +
-        '<div id="ol-map" class="ol-map" data-act="ol-map"></div><p class="small muted" id="ol-coords" style="margin:0"></p>' +
+        '<div class="row between" style="gap:8px;flex-wrap:wrap"><span class="small muted" id="ol-map-cap"></span><button type="button" class="btn small" data-act="ol-detect">📍 Use this device\'s location</button></div>' +
+        '<div id="ol-map" class="wm"></div><p class="small muted" id="ol-coords" style="margin:0"></p>' +
         regField("location.address", "Street address", {ph: "Shop number, street, landmark", max: 200}) +
         '<div class="ol-grid">' + regField("location.area", "Area", {ph: "e.g. Gandhi Nagar", max: 60}) + regField("location.city", "Town or city", {ph: "Naidupeta", max: 60}) + regField("location.pincode", "PIN code", {mode: "numeric", digits: 1, max: 6, ph: "524126"}) + "</div>" +
         '<div class="field"><label>Opening hours</label><div class="reg-chips">' + hrs.map((x) => '<button type="button" class="reg-chip' + (a.hours.preset === x[0] ? " on" : "") + '" data-act="rg-hours" data-value="' + x[0] + '">' + h(x[1]) + "</button>").join("") + "</div></div>" +
@@ -3205,7 +3514,8 @@
   // After the screen is drawn: put the map in.
   function regAfterDraw() {
     if (!REG.type || REG_STEPS[REG.step][0] !== "location" || !document.getElementById("ol-map")) return;
-    if (!REG.mapSynced) { const l = regDraft().location; OL.draft = {lat: regNum(l.lat), lng: regNum(l.lng)}; OL.zoom = 16; REG.mapSynced = true; }
+    if (!REG.mapSynced) { const l = regDraft().location; OL.draft = {lat: regNum(l.lat), lng: regNum(l.lng)}; OL.saved = wmPoint(l.lat, l.lng); OL.zoom = 16; REG.mapSynced = true; }
+    OL.ctx = "reg";
     olDrawMap();
   }
   function regClick(act, el) {
@@ -3295,9 +3605,10 @@
       '<div class="spacer"></div><div class="who">' + h(staffIdOf(state.user.email) ? (o.member.name || "Staff") + " · " + staffIdOf(state.user.email) : state.user.email || "") + '</div><button class="nav-item" data-act="signout">' + svg("out") + "<span>Sign out</span></button></aside>" +
       '<div class="main"><header class="topbar"><h1>' + h(title) + "</h1>" +
       (ids.length > 1 ? '<select class="input outlet-select" data-input="outlet" aria-label="Outlet">' + ids.map((id) => '<option value="' + h(id) + '"' + (id === state.rid ? " selected" : "") + ">" + h(state.outlets[id].doc.name || id) + "</option>").join("") + "</select>" : '<strong>' + h(o.doc.name) + "</strong>") +
+      (availabilityOutletIds().length > 1 ? '<button class="btn small" data-act="all-open" title="Open every outlet">Open all</button><button class="btn small" data-act="all-close" title="Close every outlet">Close all</button>' : "") +
       '<button class="btn small lang-btn" data-act="lang" translate="no" title="Language · భాష">' + (window.ScraveitLanguage && ScraveitLanguage.get() === "te" ? "English" : "తెలుగు") + "</button>" +
       '<button class="status-toggle' + (open ? " on" : "") + '" data-act="toggle-open" title="Accepting orders"' + (can("availability") ? "" : " disabled") + "><i></i>" + (open ? "Online" : "Offline") + "</button></header>" +
-      '<main class="content">' + (WEB_CHECK ? "" : '<div class="notice warn">You can see everything here. Accepting and updating orders from the website switches on soon; until then, use the Scraveit Restaurant app for order actions.</div>') + pageOrProblem(body) + "</main></div></div>";
+      '<main class="content">' + (WEB_CHECK ? "" : '<div class="notice warn">You can see everything here. Accepting and updating orders from the website switches on soon; until then, use the Scraveit Restaurant app for order actions.</div>') + cnBannerHtml() + pageOrProblem(body) + "</main></div></div>";
     window.scrollTo(0, scroll);
   }
 
@@ -3345,15 +3656,27 @@
     if (act === "price-check") { priceCheckModal(); return; }
     if (act === "agreement") { agreementModal(); return; }
     if (act === "ag-reload") { loadAgreement(); return; }
+    if (act === "cn-open") { cnModal(); return; }
+    if (act === "all-open") { setAllOutlets(true); return; }
+    if (act === "all-close") { setAllOutlets(false); return; }
+    if (act === "cn-reload") { cnLoad(); return; }
+    if (act === "cn-accept") { cnAccept(); return; }
     if (act === "ag-details") { loadAgreement(Object.assign({}, AG.details, agFields())); return; }
     if (act === "ag-sign") { signAgreement(); return; }
     if (act === "delete-account") { deletionModal(); return; }
     if (act === "chat") { openChat(id, el.dataset.channel); return; }
-    if (act === "ol-zoom") { OL.zoom = Math.max(4, Math.min(19, OL.zoom + Number(id))); olDrawMap(); return; }
-    if (act === "ol-map") { const box = document.getElementById("ol-map"), rect = box.getBoundingClientRect(), lat = Number.isFinite(OL.draft.lat) ? OL.draft.lat : 14.9077, lng = Number.isFinite(OL.draft.lng) ? OL.draft.lng : 79.8946, wp = worldPx(lat, lng, OL.zoom);
-      OL.draft = pxLatLng(wp.x + e.clientX - rect.left - rect.width / 2, wp.y + e.clientY - rect.top - rect.height / 2, OL.zoom); olDrawMap(); return; }
-    if (act === "ol-detect") { if (!navigator.geolocation) return toast("This browser can't share its location. Click the map instead.", true);
-      navigator.geolocation.getCurrentPosition((p) => { OL.draft = {lat: p.coords.latitude, lng: p.coords.longitude}; olDrawMap(); toast("Pin moved to this device's location. Check it is your kitchen."); }, () => toast("Location not allowed. Click the map instead.", true), {enableHighAccuracy: true, timeout: 15000}); return; }
+    if (act === "cp-open") { cpLoad().then(() => cpModal(id)); return; }
+    if (act === "cp-all") { const f = document.getElementById("cp-form"); if (f) f.querySelectorAll('input[name="to"]').forEach((x) => { x.checked = true; }); cpCount(); return; }
+    if (act === "wm-expand") { wmOpenFull("view"); return; }
+    if (act === "wm-move") { wmOpenFull("edit"); return; }
+    if (act === "wm-edit") { wmStartEdit(); return; }
+    if (act === "wm-close") { wmClose(); return; }
+    if (act === "wm-confirm") { wmConfirm(); return; }
+    if (act === "wm-locate") { wmLocate(); return; }
+    if (act === "wm-undo") { OL.draft = OL.saved ? {lat: OL.saved.lat, lng: OL.saved.lng} : {lat: NaN, lng: NaN}; olDrawMap(); return; }
+    if (act === "wm-zoom") { const root = wmFullRoot(); if (root) { const m = wmGet(root); wmSet(root, m.c, m.z + Number(id)); } return; }
+    if (act === "wm-recenter") { const root = wmTarget(el); if (root) { const m = wmGet(root); if (m.pin) wmSet(root, m.pin, m.z); } return; }
+    if (act === "ol-detect") { wmOpenFull("edit"); wmLocate(); return; }
     if (act === "ol-cover-first") { const i = Number(id); OL.covers.unshift(OL.covers.splice(i, 1)[0]); olDrawCovers(); return; }
     if (act === "ol-cover-remove") { OL.covers.splice(Number(id), 1); olDrawCovers(); return; }
     if (act === "bank-edit") { state.fin.bankEdit = true; render(); return; }
@@ -3427,10 +3750,12 @@
   });
   document.addEventListener("change", (e) => {
     const ds = e.target.dataset || {};
+    if (e.target.name === "to" && e.target.closest("#cp-form")) { cpCount(); return; }
     if (ds.obCheck) { regDraft()[ds.obCheck] = !!e.target.checked; if (ds.obCheck === "hasGst") { regPullMap(); render(); } return; }
     if (ds.obPhoto) { regUpload(ds.obPhoto, e.target.files && e.target.files[0]); e.target.value = ""; return; }
     const k = ds.input; if (!k) return;
     if (k === "outlet") selectOutlet(e.target.value);
+    if (k === "cp-from") { const f = document.getElementById("cp-form"), keep = f ? [...f.querySelectorAll('input[name="to"]:checked')].map((x) => x.value) : []; cpModal(e.target.value, keep.filter((x) => x !== e.target.value), /Use these/.test((f && f.querySelector("h2") || {}).textContent || "")); }
     if (k === "hist-status") { state.history.status = e.target.value; render(); }
     if (k === "hist-all") { state.history.all = e.target.checked; state.history.list = null; render(); }
     if (k === "rep-all") { state.reports.all = e.target.checked; state.reports.data = null; render(); }

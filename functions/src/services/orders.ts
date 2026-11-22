@@ -57,7 +57,7 @@ import {isMarkupCart, markupCutPaise, markupFees, menuPricingOf, withoutCustomer
 import {planWalletRedemption, reserveWalletRedemption} from "./wallet";
 import {reconcileRestaurantWorkload} from "./workload";
 import {reconcileRestaurantOrderProjection} from "./orderProjection";
-import {persistCodOrderDeliveryLedger} from "./ledger";
+import {orderDeliveryAmounts, persistCodOrderDeliveryLedger, type OrderDeliveryAmounts} from "./ledger";
 import {resolveDeliverySettlementOptions} from "./deliverySettlement";
 import {persistOnlineOrderDeliveryLedger} from "./onlineDeliveryLedger";
 import {loadFinancePolicy} from "./platformConfig";
@@ -66,8 +66,13 @@ import {requireVerifiedRiderRestaurantArrival} from "./riderRestaurantArrival";
 import {mediaFile} from "./mediaBucket";
 import {adClickBefore, learnedEtaFor, writeAdConversion} from "./learning";
 import {kitchenPrepMinutes} from "../domain/kitchenLate";
+import {isAfterPickupCancelReason, isAfterPickupStatus} from "../domain/afterPickup";
+import {chargedAfterPickup} from "../domain/foodRescue";
+import {customerCancelFee, customerCancelFeeApplies, customerCancelReason} from "../domain/customerCancel";
+import {CUSTOMER_COD_BLOCKED_MESSAGE, customerCodBlocked} from "./customerCodBlock";
+import {persistFoodRescueDeliveryLedger} from "./onlineDeliveryLedger";
 
-function eventKey(now: number, actorId: string): string {
+export function eventKey(now: number, actorId: string): string {
   return `e_${now}_${actorId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30)}`;
 }
 
@@ -121,6 +126,29 @@ function paymentSelectionError(error: unknown): DomainError | null {
   return null;
 }
 
+/** UPI or card for an order that is never paid in cash (a Food Rescue buy, domain/foodRescue.ts). */
+export async function onlinePaymentFor(
+  paymentMethod: "upi" | "card",
+  paymentProvider: string | undefined,
+  at = Date.now(),
+): Promise<{paymentMethod: "upi" | "card"; paymentState: SavrivoOrder["paymentState"]; paymentProvider?: string}> {
+  const financePolicy = await loadFinancePolicy(at);
+  let payment: Pick<SavrivoOrder, "paymentMethod" | "paymentState" | "paymentProvider">;
+  try {
+    payment = paymentDetailsFromCreateInput({paymentMethod, paymentProvider} as CreateOrderInput, financePolicy);
+  } catch (error) {
+    throw paymentSelectionError(error) ?? error;
+  }
+  if (!isOnlinePaymentMethod(payment.paymentMethod)) {
+    throw new DomainError("failed-precondition", "Online payment is not available right now.");
+  }
+  return {
+    paymentMethod: payment.paymentMethod,
+    paymentState: payment.paymentState,
+    ...(payment.paymentProvider ? {paymentProvider: payment.paymentProvider} : {}),
+  };
+}
+
 export function requiresVerifiedOnlinePaymentBeforeProgress(
   order: Pick<SavrivoOrder, "paymentMethod" | "paymentState">,
   toStatus: OrderStatus,
@@ -140,7 +168,11 @@ interface PrivateOtpRecord {
   migratedFromLegacy?: boolean;
 }
 
-async function reserveDeliveryOtp(customerId: string, orderId: string): Promise<PrivateOtpRecord> {
+export async function reserveDeliveryOtp(customerId: string, orderId: string): Promise<{otp?: string}> {
+  return reservePrivateDeliveryOtp(customerId, orderId);
+}
+
+async function reservePrivateDeliveryOtp(customerId: string, orderId: string): Promise<PrivateOtpRecord> {
   const ref = deliveryOtpRef(firestoreDb, orderId);
   const now = Date.now();
   const otp = String(randomInt(1000, 10_000));
@@ -327,6 +359,7 @@ interface CommitTransitionOptions {
   proof?: string;
   detail?: string;
   expectedRiderId?: string;
+  cancellationFee?: SavrivoOrder["cancellationFee"];
 }
 
 async function commitAuthoritativeTransition(options: CommitTransitionOptions): Promise<SavrivoOrder> {
@@ -354,6 +387,7 @@ async function commitAuthoritativeTransition(options: CommitTransitionOptions): 
       now,
       ...(options.reason ? {reason: options.reason} : {}),
       ...(options.expectedRiderId ? {expectedRiderId: options.expectedRiderId} : {}),
+      ...(options.cancellationFee ? {cancellationFee: options.cancellationFee} : {}),
     });
     if (!candidate) throw new DomainError("aborted", "Order changed; refresh and try again.");
     const stripped = stripPrivateOrderFields(candidate);
@@ -375,6 +409,11 @@ async function commitAuthoritativeTransition(options: CommitTransitionOptions): 
   ]);
   await reconcileRestaurantWorkload(order);
   return order;
+}
+
+/** A server-side cancel (e.g. a Food Rescue buy whose offer ended before the payment landed). */
+export async function cancelOrderAsSystem(before: SavrivoOrder, actorId: string, reason: string, detail: string): Promise<SavrivoOrder> {
+  return commitAuthoritativeTransition({before, toStatus: "Cancelled", actorId, actorRole: "system", reason, detail});
 }
 
 async function promoteReadyOrderToAssigned(before: SavrivoOrder): Promise<SavrivoOrder> {
@@ -548,6 +587,10 @@ export async function createAuthoritativeOrder(uid: string, input: CreateOrderIn
     payment = paymentDetailsFromCreateInput(input, financePolicy);
   } catch (error) {
     throw paymentSelectionError(error) ?? error;
+  }
+  // Their cash order was cancelled after pickup on their side: online payment only (founder 22 Nov 2026).
+  if (payment.paymentMethod === "cod" && await customerCodBlocked(uid)) {
+    throw new DomainError("failed-precondition", CUSTOMER_COD_BLOCKED_MESSAGE);
   }
   // Who pays for the discount, and how much Scraveit can safely fund, is
   // decided once here - the same plan the checkout preview showed.
@@ -874,7 +917,7 @@ export async function transitionOrder(
   // restaurant has nothing to tap. Without a photo the old staff handover runs.
   const riderPickup = input.toStatus === "Handed to rider" && input.pickupPhotoPath !== undefined;
   const actorRole = riderPickup ? await authorizeRiderPickup(uid, before) :
-    await authorizeTransition(uid, token, before, input.toStatus);
+    await authorizeTransition(uid, token, before, input.toStatus, {cancelReason: input.reason});
   if (before.status === input.toStatus) {
     // Network retries and two restaurant devices may repeat the same decision.
     // Returning the committed server state is safe; writing another history
@@ -900,8 +943,17 @@ export async function transitionOrder(
   if (!pickupBeforeReady && !canTransition(before.status, input.toStatus, actorRole)) {
     throw new DomainError("failed-precondition", `Cannot change ${before.status} to ${input.toStatus}.`);
   }
+  // After the restaurant accepts, a customer's cancel carries the 100% fee they must see and accept
+  // first, so it only goes through cancelOrderByCustomer (the app's Cancel order).
+  if (input.toStatus === "Cancelled" && actorRole === "customer" && customerCancelFeeApplies(before.status)) {
+    throw new DomainError("failed-precondition", "Cancel from your order page to see the cancellation fee first.");
+  }
   if (input.toStatus === "Cancelled" && !input.reason) {
     throw new DomainError("invalid-argument", "A cancellation reason is required.");
+  }
+  // The food is with the delivery partner: one of the admin app's three after-pickup reasons decides the money.
+  if (input.toStatus === "Cancelled" && isAfterPickupStatus(before.status) && !isAfterPickupCancelReason(input.reason)) {
+    throw new DomainError("invalid-argument", "Choose why this order is cancelled after pickup.");
   }
   if (input.toStatus === "Handed to rider" && !isStoreDelivery(before)) {
     // The UI projection is advisory. Only the durable proof written by the
@@ -1001,6 +1053,58 @@ export async function cancelUnpaidOnlineOrder(
 }
 
 /**
+ * The customer's own Cancel order (founder 22 Nov 2026; domain/customerCancel.ts). Free before the
+ * restaurant accepts (a paid order is refunded by the usual trigger); after that only with the
+ * 100% fee the customer was shown and accepted. The fee follows the order's status when the cancel
+ * is written: if the order moved on since the customer's screen was drawn, it is read again once,
+ * and if a fee now applies that they didn't accept, nothing is cancelled and they are shown it.
+ */
+export async function cancelOrderByCustomer(
+  uid: string,
+  orderId: string,
+  acceptFee: boolean,
+  closePayments: (orderId: string) => Promise<void>,
+): Promise<{order: SavrivoOrder; feeRequired?: true; cancellationFee?: NonNullable<SavrivoOrder["cancellationFee"]>}> {
+  for (let attempt = 0; ; attempt++) {
+    const snapshot = await orderRef(firestoreDb, orderId).get();
+    const before = snapshot.exists ? snapshot.data() as SavrivoOrder : null;
+    if (!before || before.customerId !== uid) throw new DomainError("not-found", "Order not found.");
+    if (before.status === "Cancelled") {
+      return {order: stripPrivateOrderFields(before), ...(before.cancellationFee ? {cancellationFee: before.cancellationFee} : {})};
+    }
+    if (before.status === "Delivered") throw new DomainError("failed-precondition", "This order is already delivered.");
+    // Never paid online: closing the payment is the whole cancel, as when a payment doesn't go through.
+    if (before.status === "Order placed" && requiresVerifiedOnlinePaymentBeforeProgress(before, "Accepted")) {
+      try {
+        return {order: await cancelUnpaidOnlineOrder(uid, orderId, "Customer cancelled before paying", closePayments)};
+      } catch (error) {
+        // The payment landed meanwhile: cancel it as the paid order it now is (free, refunded).
+        if (error instanceof DomainError && error.code === "already-exists" && attempt === 0) continue;
+        throw error;
+      }
+    }
+    const fee = customerCancelFee(before, Date.now());
+    if (fee && !acceptFee) return {order: stripPrivateOrderFields(before), feeRequired: true};
+    try {
+      const order = await commitAuthoritativeTransition({
+        before,
+        toStatus: "Cancelled",
+        actorId: uid,
+        actorRole: "customer",
+        reason: customerCancelReason(before.status, Boolean(fee)),
+        detail: fee ? "customer accepted the 100% cancellation fee" : "free cancel before the restaurant accepted",
+        ...(fee ? {cancellationFee: fee} : {}),
+      });
+      return {order, ...(fee ? {cancellationFee: fee} : {})};
+    } catch (error) {
+      // Accepted or picked up between the read and the write: decide again with the new status, once.
+      if (error instanceof DomainError && error.code === "aborted" && attempt === 0) continue;
+      throw error;
+    }
+  }
+}
+
+/**
  * A campus stops delivery partners at the gate, and the customer is often
  * already standing there. Waiting 3 minutes (domain/campus.ts) would hold up
  * a handover that is ready now. So for a campus order the partner's swipe
@@ -1075,6 +1179,16 @@ async function resolveRestaurantCommissionBps(order: SavrivoOrder, financePolicy
     financePolicy.restaurantCommissionBps);
 }
 
+/** What delivering this order pays out (restaurant, the partner's final trip pay, tip): for a cancel after pickup. */
+export async function asIfDeliveredAmounts(order: SavrivoOrder): Promise<OrderDeliveryAmounts> {
+  const financePolicy = await loadFinancePolicy();
+  const [commissionBps, options] = await Promise.all([
+    resolveRestaurantCommissionBps(order, financePolicy),
+    resolveDeliverySettlementOptions(order),
+  ]);
+  return orderDeliveryAmounts(order, commissionBps, {finalTripPayPaise: options.finalTripPayPaise});
+}
+
 export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
   if (order.paymentMethod !== "cod" || order.status !== "Delivered" || !order.riderId) return;
   const financePolicy = await loadFinancePolicy();
@@ -1113,7 +1227,14 @@ export async function recordCodLedger(order: SavrivoOrder): Promise<void> {
  * provenance.
  */
 export async function recordOnlinePaymentLedger(order: SavrivoOrder): Promise<void> {
-  if (order.paymentMethod === "cod" || order.status !== "Delivered" || !order.riderId) return;
+  if (order.paymentMethod === "cod" || !order.riderId) return;
+  // Food Rescue: the partner's trip pay, and the food money is Scraveit's (no restaurant payout).
+  if (order.foodRescue) {
+    if (order.status === "Delivered" || chargedAfterPickup(order)) await persistFoodRescueDeliveryLedger(order);
+    return;
+  }
+  // Cancelled after pickup on the customer's side: no refund, settled exactly as if delivered.
+  if (order.status !== "Delivered" && !chargedAfterPickup(order)) return;
   const financePolicy = await loadFinancePolicy();
   const commissionBps = await resolveRestaurantCommissionBps(order, financePolicy);
   await persistOnlineOrderDeliveryLedger(order, commissionBps, undefined, await resolveDeliverySettlementOptions(order));

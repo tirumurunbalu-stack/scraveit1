@@ -19,6 +19,8 @@ import {
 } from "./lifecycle";
 import {beforeFoodGstPaise, markedUpPrice, type MarkupCart} from "./markupPricing";
 import {freebieLines} from "./freebies";
+import {cancelCause} from "./partnerCancelPay";
+import {isAfterPickupStatus} from "./afterPickup";
 
 export const TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   "Order placed": ["Accepted", "Cancelled"],
@@ -26,10 +28,12 @@ export const TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> 
   "Preparing": ["Ready for pickup", "Cancelled"],
   "Ready for pickup": ["Assigned", "Cancelled"],
   "Assigned": ["Handed to rider", "Cancelled"],
-  "Handed to rider": ["Out for delivery"],
-  "Out for delivery": ["Near you", "Arrived"],
-  "Near you": ["Arrived"],
-  "Arrived": ["Delivered"],
+  // After pickup only Scraveit's admin (with an after-pickup reason, orders.ts) or the customer
+  // themselves, with the 100% cancellation fee (canTransition), may cancel.
+  "Handed to rider": ["Out for delivery", "Cancelled"],
+  "Out for delivery": ["Near you", "Arrived", "Cancelled"],
+  "Near you": ["Arrived", "Cancelled"],
+  "Arrived": ["Delivered", "Cancelled"],
   "Delivered": [],
   "Cancelled": [],
 };
@@ -49,7 +53,12 @@ const ROLE_TARGETS: Readonly<Record<ActorRole, readonly OrderStatus[]>> = {
 };
 
 export function canTransition(from: OrderStatus, to: OrderStatus, role: ActorRole): boolean {
-  return TRANSITIONS[from].includes(to) && ROLE_TARGETS[role].includes(to);
+  if (!TRANSITIONS[from].includes(to) || !ROLE_TARGETS[role].includes(to)) return false;
+  // The food is with the delivery partner: the restaurant and automatic cancels can't cancel any
+  // more. Scraveit's admin can, and so can the customer, with the 100% cancellation fee they
+  // accepted in the app (founder 22 Nov 2026; services/orders.ts cancelOrderByCustomer).
+  if (to === "Cancelled" && isAfterPickupStatus(from)) return role === "owner" || role === "ops_admin" || role === "customer";
+  return true;
 }
 
 export interface OrderTransitionMutation {
@@ -60,6 +69,22 @@ export interface OrderTransitionMutation {
   now: number;
   reason?: string;
   expectedRiderId?: string;
+  /** The customer's accepted 100% cancellation fee, stamped on the cancelled order. */
+  cancellationFee?: SavrivoOrder["cancellationFee"];
+}
+
+/**
+ * Who a cancel is counted against in reports. "owner" is Scraveit's own admin
+ * (the restaurant's people cancel as "staff"), so an admin cancel follows the
+ * reason picked: before 21 Nov 2026 every admin cancel, even "Customer
+ * cancellation approved", was counted as the restaurant rejecting the order.
+ */
+export function cancellationKindFor(
+  role: ActorRole,
+  reason?: string,
+): "customer_cancelled" | "restaurant_rejected" | "system_cancelled" {
+  const cause = cancelCause({cancelledByRole: role, cancelReason: reason});
+  return cause === "customer" ? "customer_cancelled" : cause === "restaurant" ? "restaurant_rejected" : "system_cancelled";
 }
 
 /**
@@ -86,9 +111,8 @@ export function buildOrderTransitionCandidate(
   const terminalMetadata = mutation.toStatus === "Cancelled" ? {
     statusBeforeTerminal: source.status,
     cancelledByRole: mutation.actorRole,
-    cancellationKind: mutation.actorRole === "customer" ? "customer_cancelled" as const :
-      mutation.actorRole === "staff" || mutation.actorRole === "owner" ? "restaurant_rejected" as const :
-        "system_cancelled" as const,
+    cancellationKind: cancellationKindFor(mutation.actorRole, mutation.reason),
+    ...(mutation.cancellationFee ? {cancellationFee: mutation.cancellationFee} : {}),
   } : {};
   const candidate: SavrivoOrder = {
     ...source,

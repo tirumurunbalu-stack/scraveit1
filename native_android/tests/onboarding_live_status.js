@@ -29,7 +29,9 @@ async function restaurantSide() {
   const cut = cutter(read("restaurant"), "restaurant");
   const code = cut("  // A forced load starts again", "  function agreementSheet2(")
     + cut("  async function checkApprovalStatus(", "  function openGoogleSignIn(")
-    + cut("  window.SavrivoNativePushBatch=", "\n");
+    + cut("  window.SavrivoNativePushBatch=", "\n")
+    // 22 Nov 2026: the push handler also checks for a new order at another outlet of the same owner.
+    + cut("  function noteOrderElsewhere(", "\n");
   const UID = "ownerPizzaaaaaaa", APP = "restaurantApplications/" + UID;
   store.set(APP, {uid: UID, status: "submitted", restaurantName: "Pizza and burgers"});
   const toasts = [];

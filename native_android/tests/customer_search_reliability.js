@@ -66,7 +66,7 @@ const marker = "bootstrap();";
 const index = original.lastIndexOf(marker);
 if (index < 0) throw new Error("Customer bootstrap marker was not found");
 const instrumented = original.slice(0, index)
-  + "globalThis.__CUSTOMER_SEARCH={state,searchHistoryKey,normalizedRecentSearches,recordRecentSearch,clearRecentSearches,recentSearchMarkup,searchResultMarkup,searchContentMarkup,scheduleSearchUpdate,restaurantsFiltered,searchMatches};"
+  + "globalThis.__CUSTOMER_SEARCH={state,searchHistoryKey,normalizedRecentSearches,recordRecentSearch,clearRecentSearches,recentSearchMarkup,searchResultMarkup,searchContentMarkup,scheduleSearchUpdate,restaurantsFiltered,searchMatches,catalogCity,catalogCityKey,catalogNameKey};"
   + original.slice(index + marker.length);
 const context = makeContext();
 vm.runInContext(instrumented, context, { filename: customerFile, timeout: 3000 });
@@ -128,6 +128,8 @@ state.query = "";
 state.profile.addresses = [{ id: "home", label: "Home", city: "Naidupeta" }];
 check(api.restaurantsFiltered().length === 0, "no stores are listed until the delivery address has a map pin");
 state.profile.addresses = [{ id: "home", label: "Home", city: "Naidupeta", lat: 14.2, lng: 79.9 }];
+// Typed text only narrows the list on the search screen (21 Nov 2026: Home kept the last search).
+state.route = "search";
 state.query = "BELGIAN   waffle";
 let results = api.restaurantsFiltered();
 check(results.length === 1 && results[0].id === "waffle-spot", "search matches dish names without case or spacing sensitivity inside the loaded catalogue window");
@@ -145,7 +147,10 @@ check(api.searchResultMarkup().includes("Search could not be loaded") && api.sea
 state.homeStatus = "success";
 state.catalog = { "rice-house": { id: "rice-house", name: "Rice House", open: true, cuisines: ["Indian"], menuIndex: [] } };
 state.query = "definitely absent";
-check(api.searchResultMarkup().includes("Nothing matched") && api.searchResultMarkup().includes('data-action="clear-search"'), "search renders an actionable empty-result state for an unmatched term");
+// The city-wide lookup has answered with nothing (the app records [] or "failed"), so no grey "searching" rows.
+if (api.catalogCity()) state.searchFetched[api.catalogCityKey(api.catalogCity()) + "|" + api.catalogNameKey(state.query)] = [];
+// 21 Nov 2026 redesign: plain "No results for …" line; clearing is the × in the search box.
+check(api.searchResultMarkup().includes("No results for") && api.searchResultMarkup().includes("definitely absent") && api.searchResultMarkup().includes("Try another dish"), "search renders a clear empty-result state for an unmatched term");
 
 check(!String(api.scheduleSearchUpdate).includes("fetch("), "typing in search never starts a network query");
 process.stdout.write("Customer search reliability assertions passed.\n");

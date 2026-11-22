@@ -263,11 +263,17 @@ export interface SavrivoOrder {
   statusBeforeTerminal?: OrderStatus;
   cancelledByRole?: ActorRole;
   cancellationKind?: "restaurant_rejected" | "customer_cancelled" | "system_cancelled" | "delivery_failed";
+  /** The fee the customer saw and accepted when cancelling after the restaurant accepted (domain/customerCancel.ts). */
+  cancellationFee?: {percent: number; amountPaise: number; acceptedAt: number};
   /** Settlement terms frozen at checkout. Settlement reads these, never
    *  today's configuration, so later rule changes cannot alter them. The full
    *  snapshot (Scraveit's margin and reserves) is in `orderEconomics/{id}`. */
   economics?: OrderSettlementTerms;
   appliedOffer?: AppliedOfferSnapshot;
+  /** Food Rescue (domain/foodRescue.ts): food from an order cancelled after pickup, sold at half
+   *  price to a nearby customer and delivered by the partner who has it. No restaurant steps,
+   *  no restaurant payout: the food money is Scraveit's (revenue:food-rescue). */
+  foodRescue?: {fromOrderId: string; offerExpiresAt: number; menuPaise: number; foodPaise: number};
 }
 
 export interface AuthzDecision {

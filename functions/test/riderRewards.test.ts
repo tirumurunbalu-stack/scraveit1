@@ -752,3 +752,48 @@ describe("optimistic-concurrency check does not false-abort on a fresh transacti
     }, database, () => now + 1_000)).rejects.toThrow("Reward campaign changed; refresh and retry.");
   });
 });
+
+describe("rush pay follows the customer's bill (founder 21 Nov 2026)", () => {
+  const IST = (time: string) => new Date(`2026-11-21T${time}:00+05:30`).getTime();
+  async function rushDatabase(now: number, customerFeePaise = 1_000) {
+    const database = new MemoryRiderRewardsDatabase();
+    seedApprovedRider(database, riderId);
+    seedCoverage(database, riderId);
+    seedWallet(database, riderId, 0);
+    await upsertRiderRewardCampaign("owner-1", ownerToken, {
+      operationId: `rush-${customerFeePaise}`,
+      campaignId: "lunch-rush",
+      campaign: {...sampleCampaign(now), title: "Lunch rush", rewardAmountPaise: 1_000,
+        timeSlots: [{label: "11:30 AM – 3 PM", startMinute: 690, endMinute: 900}]},
+    }, database, () => now);
+    const path = "private/riderRewards/campaigns/lunch-rush";
+    database.seed(path, {...(database.read(path) as Record<string, unknown>), customerFeePaise});
+    return database;
+  }
+  const order = (id: string, deliveredAt: number, billedCampaigns: string[]) => ({
+    ...deliveredOrder(id, deliveredAt),
+    economics: {cityKey: "nellore", zoneKey: "magunta-layout", policyScopes: ["global", ...billedCampaigns.map((c) => `rider_campaign:${c}`)]},
+  } as unknown as SavrivoOrder);
+  const rushJournals = (database: MemoryRiderRewardsDatabase) => Object.values(allJournals(database))
+    .filter((journal) => journal.eventType === "rider_incentive" && journal.metadata.campaignId === "lunch-rush");
+
+  it("pays the ₹10 the customer paid even when the order is delivered after 3 PM", async () => {
+    const database = await rushDatabase(IST("14:50"));
+    await evaluateRiderRewardsForDeliveredOrder(order("o-late", IST("15:20"), ["lunch-rush"]), database, () => IST("15:20"));
+    expect(rushJournals(database)).toHaveLength(1);
+    expect(rushJournals(database)[0]!.creditTotalPaise).toBe(1_000);
+  });
+  it("pays nothing when the customer wasn't charged, even when delivered at lunch", async () => {
+    const database = await rushDatabase(IST("11:00"));
+    await evaluateRiderRewardsForDeliveredOrder(order("o-early", IST("12:18"), []), database, () => IST("12:18"));
+    expect(rushJournals(database)).toHaveLength(0);
+  });
+  it("still pays a Scraveit-paid bonus (no customer fee) by delivery time", async () => {
+    const database = await rushDatabase(IST("11:00"), 0);
+    await evaluateRiderRewardsForDeliveredOrder(order("o-bonus", IST("12:18"), []), database, () => IST("12:18"));
+    expect(rushJournals(database)).toHaveLength(1);
+    const other = await rushDatabase(IST("11:00"), 0);
+    await evaluateRiderRewardsForDeliveredOrder(order("o-bonus-late", IST("15:20"), ["lunch-rush"]), other, () => IST("15:20"));
+    expect(rushJournals(other)).toHaveLength(0);
+  });
+});

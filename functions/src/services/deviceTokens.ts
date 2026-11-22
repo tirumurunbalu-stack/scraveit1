@@ -74,7 +74,7 @@ async function authorizeDeviceApp(
   const riderSnapshot = await riderRef(firestoreDb, uid).get();
   const rider = (riderSnapshot.exists ? riderSnapshot.data() : null) as {status?: string} | null;
   if (rider && ["submitted", "under_review", "approved", "rejected", "suspended"].includes(String(rider.status))) return;
-  throw new DomainError("permission-denied", "Rider notification registration requires a partner profile.");
+  throw new DomainError("permission-denied", "Delivery partner notifications need a partner profile.");
 }
 
 export async function registerDeviceToken(

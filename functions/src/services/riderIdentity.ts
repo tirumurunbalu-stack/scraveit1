@@ -8,6 +8,7 @@ import {deleteMediaEverywhere, mediaFile} from "./mediaBucket";
 import {aadhaarHolderKey, ageOn, assessPan, normalizeName, panKey, parseSecureQr, SecureQrError, uidaiSigner} from "../domain/aadhaarSecureQr";
 import {DomainError} from "../errors";
 import {faceSimilarity} from "./faceVerification";
+import {alertAdmins} from "./adminAlerts";
 
 /**
  * Rider identity, the low-cost and lawful way:
@@ -48,6 +49,8 @@ const riders = () => firestoreDb.collection("riders");
 const identityDoc = (uid: string) => firestoreDb.collection("private").doc("riderIdentity").collection("riders").doc(uid);
 const aadhaarHolderDoc = (key: string) => firestoreDb.collection("private").doc("riderIdentity").collection("aadhaarHolders").doc(key);
 const panHolderDoc = (key: string) => firestoreDb.collection("private").doc("riderIdentity").collection("panHolders").doc(key);
+const licenceHolderDoc = (key: string) => firestoreDb.collection("private").doc("riderIdentity").collection("licenceHolders").doc(key);
+const bankHolderDoc = (key: string) => firestoreDb.collection("private").doc("riderIdentity").collection("bankHolders").doc(key);
 const attemptsDoc = (uid: string, day: string) => firestoreDb.collection("private").doc("riderIdentity").collection("attempts").doc(`${uid}_${day}`);
 const aadhaarPhotoPath = (uid: string) => `private/rider-identity/${uid}/aadhaar-photo.jpg`;
 
@@ -115,6 +118,10 @@ export interface RiderIdentitySummary {
   pan: {formatOk: boolean; individual: boolean; nameInitialMatch: boolean | null; duplicateOf: string;
     registry: {result: PanRegistryResult; checkedAt: number} | null} | null;
   duplicateAadhaarOf: string;
+  /** Another delivery partner account already uses this driving licence. */
+  duplicateLicenceOf: string;
+  /** Another delivery partner account already gets paid to this bank account or UPI ID. */
+  duplicateBankOf: string;
   /** Needed for every motor vehicle (Motor Vehicles Act 1988, s.3); a bicycle needs none. */
   licence: {required: boolean; number: string; formatOk: boolean; validTill: string; expired: boolean};
   reasons: string[];
@@ -130,6 +137,29 @@ function licenceOf(rider: Record<string, unknown>, now: number): RiderIdentitySu
   const today = new Date(now + 5.5 * 3600_000).toISOString().slice(0, 10);
   return {required: String(rider.vehicleType || "") !== "Bicycle", number, formatOk: DRIVING_LICENCE_PATTERN.test(number),
     validTill, expired: Boolean(validTill) && validTill < today};
+}
+
+/** One delivery partner account per driving licence: a hash of the number, never the number itself. */
+export function licenceHolderKey(number: string): string {
+  return createHash("sha256").update(`dl:v1|${number}`).digest("hex");
+}
+
+/**
+ * One delivery partner account per bank account and per UPI ID. Keys are
+ * hashes (IFSC + account number, or the UPI ID); `checkedFor` fingerprints
+ * both so a changed bank account is checked again.
+ */
+export function payoutAccountKeys(payoutProfile: unknown): {bankKey: string; upiKey: string; checkedFor: string} {
+  const profile = payoutProfile && typeof payoutProfile === "object" ? payoutProfile as Record<string, unknown> : {};
+  const ifsc = String(profile.bankIfsc ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const account = String(profile.bankAccountNumber ?? "").replace(/[^0-9]/g, "");
+  const upi = String(profile.upiId ?? "").trim().toLowerCase();
+  const bankKey = /^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc) && /^[0-9]{6,20}$/.test(account) ?
+    createHash("sha256").update(`bank:v1|${ifsc}|${account}`).digest("hex") : "";
+  const upiKey = /^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,64}$/.test(upi) ?
+    createHash("sha256").update(`upi:v1|${upi}`).digest("hex") : "";
+  const checkedFor = bankKey || upiKey ? createHash("sha256").update(`payout:v1|${bankKey}|${upiKey}`).digest("hex") : "";
+  return {bankKey, upiKey, checkedFor};
 }
 
 function shortDate(iso: string): string {
@@ -177,6 +207,14 @@ export function summarizeIdentity(rider: Record<string, unknown>, identity: Reco
     }
   }
   const licence = licenceOf(rider, now);
+  // A duplicate counts only for the licence / bank account that was checked; a changed one is checked again.
+  const duplicateLicenceOf = licence.number && identity?.licenceCheckedFor === licence.number ?
+    String(identity?.licenceDuplicateOf || "") : "";
+  const payoutKeys = payoutAccountKeys(rider.payoutProfile);
+  const duplicateBankOf = payoutKeys.checkedFor && identity?.payoutCheckedFor === payoutKeys.checkedFor ?
+    String(identity?.bankDuplicateOf || "") : "";
+  if (duplicateLicenceOf) reasons.push("This driving licence is already used by another delivery partner account");
+  if (duplicateBankOf) reasons.push("This bank account or UPI ID is already used by another delivery partner account");
   if (licence.required) {
     if (!licence.number) reasons.push("Driving licence not given");
     else {
@@ -192,7 +230,7 @@ export function summarizeIdentity(rider: Record<string, unknown>, identity: Reco
       gender: String(aadhaar.gender), birthYear: Number(String(aadhaar.dob).slice(0, 4)), district: String((aadhaar.address as Record<string, string>)?.district || ""),
       state: String((aadhaar.address as Record<string, string>)?.state || ""), keyId: String(aadhaar.keyId), issuedAt: Number(aadhaar.issuedAt) || 0,
       verifiedAt: Number(aadhaar.verifiedAt) || 0} : null,
-    face, pan, duplicateAadhaarOf, licence, reasons, updatedAt: now,
+    face, pan, duplicateAadhaarOf, duplicateLicenceOf, duplicateBankOf, licence, reasons, updatedAt: now,
   };
 }
 
@@ -208,9 +246,8 @@ async function compareFaceIfReady(uid: string, rider: Record<string, unknown>, i
   return {...identity, ...update};
 }
 
-async function claimPan(uid: string, panNumber: string): Promise<string> {
-  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panNumber)) return "";
-  const ref = panHolderDoc(panKey(panNumber));
+/** First account to claim a holder key keeps it; returns the other account's uid if it's taken. */
+async function claimHolder(ref: ReturnType<typeof panHolderDoc>, uid: string): Promise<string> {
   return firestoreDb.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(ref);
     const holder = snapshot.exists ? String((snapshot.data() as Record<string, unknown>).uid || "") : "";
@@ -218,6 +255,11 @@ async function claimPan(uid: string, panNumber: string): Promise<string> {
     if (!holder) transaction.set(ref, {uid, at: Date.now()});
     return "";
   });
+}
+
+async function claimPan(uid: string, panNumber: string): Promise<string> {
+  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panNumber)) return "";
+  return claimHolder(panHolderDoc(panKey(panNumber)), uid);
 }
 
 /** Re-derive the rider's identity summary (called after any source change). */
@@ -233,6 +275,26 @@ export async function refreshRiderIdentity(uid: string, aws: {id: string; secret
     const update = {panCheckedFor: panNumber, panDuplicateOf: duplicateOf};
     await identityDoc(uid).set(update, {merge: true});
     identity = {...(identity ?? {}), ...update};
+  }
+  const licence = licenceOf(rider, now);
+  if (licence.number && licence.formatOk && identity?.licenceCheckedFor !== licence.number) {
+    const duplicateOf = await claimHolder(licenceHolderDoc(licenceHolderKey(licence.number)), uid);
+    const update = {licenceCheckedFor: licence.number, licenceDuplicateOf: duplicateOf};
+    await identityDoc(uid).set(update, {merge: true});
+    identity = {...(identity ?? {}), ...update};
+    if (duplicateOf) await alertAdmins(`dup-licence:${uid}:${duplicateOf}`, "Same driving licence on 2 partner accounts",
+      "A delivery partner account uses a driving licence already on another account. Check both before paying.", `rider:${uid}`);
+  }
+  const payoutKeys = payoutAccountKeys(rider.payoutProfile);
+  if (payoutKeys.checkedFor && identity?.payoutCheckedFor !== payoutKeys.checkedFor) {
+    const bankOf = payoutKeys.bankKey ? await claimHolder(bankHolderDoc(payoutKeys.bankKey), uid) : "";
+    const upiOf = payoutKeys.upiKey ? await claimHolder(bankHolderDoc(payoutKeys.upiKey), uid) : "";
+    const duplicateOf = bankOf || upiOf;
+    const update = {payoutCheckedFor: payoutKeys.checkedFor, bankDuplicateOf: duplicateOf};
+    await identityDoc(uid).set(update, {merge: true});
+    identity = {...(identity ?? {}), ...update};
+    if (duplicateOf) await alertAdmins(`dup-bank:${uid}:${duplicateOf}`, "Same bank account on 2 partner accounts",
+      "A delivery partner account uses a bank account or UPI ID already on another account. Check both before paying.", `rider:${uid}`);
   }
   const summary = summarizeIdentity(rider, identity, now);
   const previous = JSON.stringify({...(rider.identity as object || {}), updatedAt: 0});

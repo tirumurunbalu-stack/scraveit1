@@ -51,6 +51,35 @@ async function forget(riderId) {
   if (selected === riderId) { loadDay(); loadHistory(); }
 }
 
+// ----- peak hours: orders per partner per hour (target 1.5) -----
+const SLOT = {lunch: "Lunch", dinner: "Dinner"};
+const ADVICE = {add_partners: ["Add partners", "k-idle"], on_target: ["On target", "k-drop"], partners_waiting: ["Partners waiting", "k-stop"], no_data: ["No data yet", "k-stop"]};
+const shortDate = (date) => new Date(date + "T00:00:00").toLocaleDateString("en-IN", {day: "numeric", month: "short"});
+async function loadPeak() {
+  const box = document.getElementById("peak");
+  try {
+    const r = await callFunction("partnerActivity", {action: "peak", days: 14});
+    const advice = (s) => { const a = ADVICE[s.advice] || ADVICE.no_data; return '<span class="' + a[1] + '">' + a[0] + "</span>"; };
+    const row = (label, s) => "<tr><td>" + h(label) + "</td><td>" + SLOT[s.slot] + "</td><td>" + s.orders + "</td><td>" + s.averageOnline + "</td><td>" + s.partnerHours +
+      "</td><td><strong>" + (s.ordersPerPartnerHour == null ? "—" : s.ordersPerPartnerHour.toFixed(2)) + "</strong></td><td>" + advice(s) + "</td></tr>";
+    const days = (r.days || []).filter((d) => d.slots.some((s) => s.samples || s.orders));
+    const rows = (r.week || []).map((s) => row("Last 7 days", s)).concat(days.flatMap((d) => d.slots.map((s) => row(shortDate(d.date), s))));
+    box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Day</th><th>Window</th><th>Orders</th><th>Online (avg)</th><th>Partner-hours</th><th>Orders per partner-hour</th><th></th></tr></thead><tbody>' +
+      rows.join("") + "</tbody></table></div>" + (days.length ? "" : '<p class="note" style="margin-top:8px">Counting starts at the next lunch or dinner.</p>');
+  } catch (error) { box.textContent = error.message; }
+}
+async function loadFlags() {
+  const box = document.getElementById("flags");
+  try {
+    const {flags} = await callFunction("partnerActivity", {action: "flags"});
+    if (!flags || !flags.length) { box.innerHTML = '<p class="note">Nothing to check.</p>'; return; }
+    box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>When</th><th>Delivery partner</th><th>Customer</th><th>What</th><th>Orders</th></tr></thead><tbody>' +
+      flags.map((f) => "<tr><td>" + h(new Date(f.at).toLocaleString("en-IN", {day: "numeric", month: "short", hour: "numeric", minute: "2-digit"})) + "</td><td>" + h(f.riderName || f.riderId) +
+        "</td><td>" + h(f.customerName || f.customerId) + "</td><td>" + (f.kind === "own_phone" ? "Delivered to their own phone number" : h(f.dayCount + " today · " + f.weekCount + " in 7 days")) +
+        '</td><td class="note">' + h((f.orderIds || []).join(", ")) + "</td></tr>").join("") + "</tbody></table></div>";
+  } catch (error) { box.textContent = error.message; }
+}
+
 // ----- past days: one saved line per day, kept with no time limit -----
 async function loadHistory() {
   const box = document.getElementById("history"); if (!box || !selected) return;
@@ -155,6 +184,8 @@ if (session) {
     document.getElementById("day-card").scrollIntoView({behavior: "smooth"});
   });
   loadPartners();
+  loadPeak();
+  loadFlags();
   // Today's view follows the partner: refresh once a minute (the recorder also saves once a minute).
   setInterval(() => { if (selected && document.getElementById("day-date").value === todayIst() && !document.hidden) loadDay(); }, 60000);
 }

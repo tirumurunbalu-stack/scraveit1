@@ -65,8 +65,8 @@ describe("a live store's partner agreement", () => {
     await expect(onboarding.signLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details, hash: view.hash, typedName: "Ravi", consent: true, method: "in_app"}, meta, db, bucket, NOW))
       .rejects.toThrow(/full name/);
     await expect(onboarding.signLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details, hash: view.hash, typedName: "ravi  kumar", consent: true, method: "in_app"}, meta, db, bucket, NOW))
-      .resolves.toEqual({signed: true, signedAt: NOW});
-    expect([...files.keys()][0]).toMatch(/^private\/restaurant-agreements\/live-waffle\/partner-v1-2026-10-[0-9a-f]{12}\.pdf$/);
+      .resolves.toEqual({signed: true, signedAt: NOW, outlets: 1});
+    expect([...files.keys()][0]).toMatch(/^private\/restaurant-agreements\/live-waffle\/partner-v4-2026-11-[0-9a-f]{12}\.pdf$/);
     expect(db.read("restaurants/waffle")).toMatchObject({agreementSignedAt: NOW, agreementHash: view.hash, commissionBps: view.commissionBps, commissionTermMonths: 12});
     expect(db.read("restaurantPayoutProfiles/waffle")).toMatchObject({panNumber: "ABCPK1234D", legalBusinessName: "Ravi Foods"});
     expect(db.read("restaurantMembers/waffle_owner1")).toMatchObject({name: "Ravi Kumar", role: "restaurant_owner"});
@@ -103,5 +103,65 @@ describe("a live store's partner agreement", () => {
     const base = {ownerName: "Ravi Kumar", pan: "ABCPK1234D"};
     expect((await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: base}, db, NOW)).issues).toEqual(["GST enrolment number (or a GSTIN)"]);
     expect((await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {...base, gstMode: "exempt_only"}}, db, NOW)).issues).toEqual([]);
+  });
+
+  it("one agreement covers the owner's other outlets with the same PAN and rate; the rest sign their own", async () => {
+    const db = await liveStore();
+    db.seed("restaurantMembers/waffle_owner1", {active: true, role: "restaurant_owner", restaurantId: "waffle", name: "Ravi Kumar"});
+    db.seed("restaurantPayoutProfiles/waffle", {legalBusinessName: "Ravi Foods", panNumber: "ABCPK1234D"});
+    const outlet = (id: string, name: string, extra: Record<string, unknown> = {}, payout: Record<string, unknown> = {}) => {
+      db.seed(`restaurants/${id}`, {name, address: `${name} Street`, city: "Nellore", storeType: "restaurant", fssaiNumber: "21224999000456", ...extra});
+      db.seed(`restaurantMembers/${id}_owner1`, {active: true, role: "restaurant_owner", restaurantId: id, name: "Ravi Kumar"});
+      db.seed(`restaurantPayoutProfiles/${id}`, {legalBusinessName: "Ravi Foods", ...payout});
+    };
+    outlet("crepe", "Crepe Corner");                                  // no PAN yet: takes the main one
+    outlet("dosa", "Dosa Den", {}, {panNumber: "ABCPK1234D"});
+    outlet("pricey", "Pricey Place", {commissionBps: 2000});           // different rate: signs separately
+    outlet("other", "Other Firm", {}, {panNumber: "ZZZPZ9999Z"});      // different business
+    outlet("nofssai", "No Licence Yet", {fssaiNumber: ""});
+    outlet("staffonly", "Not Mine");
+    db.seed("restaurantMembers/staffonly_owner1", {active: true, role: "restaurant_staff", restaurantId: "staffonly"});
+    outlet("done", "Already Signed", {agreementSignedAt: 1});
+    db.seed("userRestaurants/owner1", {waffle: true, crepe: true, dosa: true, pricey: true, other: true, nofssai: true, staffonly: true, done: true, gone: false});
+    const view = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {}}, db, NOW);
+    expect(view.outlets.map((o) => o.restaurantId)).toEqual(["waffle", "crepe", "dosa"]);
+    expect(view.separate.map((o) => [o.restaurantId, o.reason])).toEqual([
+      ["nofssai", "missing FSSAI number"], ["other", "a different PAN"], ["pricey", "a different commission (20%)"]]);
+    expect(view.sections[0]?.body).toContain("Ravi Foods, which runs the 3 outlets listed in Schedule 1");
+    const schedule = view.sections.at(-1)!;
+    expect(schedule.heading).toMatch(/^Schedule 1/);
+    expect(schedule.body).toContain("1. The Waffle Spot, 12 Gandhi Road, Naidupeta, FSSAI licence 11224999000123.");
+    expect(schedule.body).toContain("2. Crepe Corner, Crepe Corner Street, Nellore, FSSAI registration 21224999000456.");
+    expect(view.sections.find((s) => s.heading.startsWith("6."))?.body).toMatch(/^Each outlet of the Restaurant holds/);
+
+    const {files, bucket} = fakeBucket();
+    const res = await onboarding.signLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {}, hash: view.hash, typedName: "Ravi Kumar", consent: true, method: "in_app"}, meta, db, bucket, NOW);
+    expect(res).toEqual({signed: true, signedAt: NOW, outlets: 3});
+    expect(files.size).toBe(1);
+    for (const id of ["waffle", "crepe", "dosa"]) {
+      expect(db.read(`restaurants/${id}`)).toMatchObject({agreementSignedAt: NOW, agreementHash: view.hash});
+      expect(db.read(`restaurantAgreements/live_${id}`)).toMatchObject({status: "signed", restaurantId: id, hash: view.hash, signedFrom: "waffle"});
+    }
+    expect(db.read("restaurantPayoutProfiles/crepe")).toMatchObject({panNumber: "ABCPK1234D"});
+    expect(db.read("restaurants/pricey")?.agreementSignedAt).toBeUndefined();
+    // Each outlet then shows the same signed agreement and the outlets it covers.
+    const crepe = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "crepe", details: {}}, db, NOW + 1000);
+    expect(crepe).toMatchObject({status: "signed", hash: view.hash});
+    expect(crepe.outlets.map((o) => o.name)).toEqual(["The Waffle Spot", "Crepe Corner", "Dosa Den"]);
+    // The outlet with its own rate still signs its own, alone.
+    const pricey = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "pricey", details: {pan: "ABCPK1234D"}}, db, NOW);
+    expect(pricey.outlets.map((o) => o.restaurantId)).toEqual(["pricey"]);
+    expect(pricey.sections.some((s) => s.heading.startsWith("Schedule"))).toBe(false);
+  });
+
+  it("a single store's agreement has no schedule and says how a rate change works", async () => {
+    const db = await liveStore();
+    const view = await onboarding.getLiveRestaurantAgreement("owner1", owner, {restaurantId: "waffle", details: {ownerName: "Ravi Kumar", pan: "ABCPK1234D"}}, db, NOW);
+    expect(view.outlets).toHaveLength(1);
+    expect(view.separate).toEqual([]);
+    const two = view.sections.find((s) => s.heading.startsWith("2."))!.body;
+    expect(two).toContain("at least 30 days' notice");
+    expect(two).toContain("this agreement ends on that date");
+    expect(two).not.toContain("Schedule 1");
   });
 });

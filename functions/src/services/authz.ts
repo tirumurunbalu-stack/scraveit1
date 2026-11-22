@@ -5,6 +5,7 @@ import {
   type RestaurantMembership,
   type RestaurantMembershipSource,
 } from "../domain/restaurantAccess";
+import {isAdminCancelReason} from "../domain/partnerCancelPay";
 import {DomainError} from "../errors";
 import {legacyStaffRef, restaurantMemberRef, riderRef} from "../firestorePaths";
 import type {ActorRole, OrderStatus, SavrivoOrder} from "../types";
@@ -66,8 +67,15 @@ export async function authorizeTransition(
   token: DecodedIdToken,
   order: SavrivoOrder,
   target: OrderStatus,
+  options: {cancelReason?: string} = {},
 ): Promise<ActorRole> {
-  if (order.customerId === uid && target === "Cancelled") return "customer";
+  if (order.customerId === uid && target === "Cancelled") {
+    // An admin cancelling an order they placed themselves (test orders) from
+    // the admin app is still the admin: its fixed reasons mark the admin app.
+    // Before 21 Nov 2026 these were saved as the customer cancelling.
+    const privileged = privilegedRole(token);
+    return privileged && isAdminCancelReason(options.cancelReason) ? privileged : "customer";
+  }
 
   if (order.riderId === uid && ["Out for delivery", "Delivered"].includes(target)) {
     const riderSnapshot = await riderRef(firestoreDb, uid).get();

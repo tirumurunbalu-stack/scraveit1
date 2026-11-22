@@ -15,12 +15,15 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: 8XH6VGP7QS
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "10"
+    MARKETING_VERSION: "1.0.2"
+    CURRENT_PROJECT_VERSION: "29"
 packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk
     from: "12.19.0"
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: "8.0.0"
 targets:
   Customer:
     type: application
@@ -47,6 +50,8 @@ targets:
         product: FirebaseAppCheck
       - package: Firebase
         product: FirebaseMessaging
+      - package: GoogleSignIn
+        product: GoogleSignIn
     postCompileScripts:
       - name: Copy web screens
         script: |
@@ -56,11 +61,188 @@ targets:
           rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/app/src/main/assets/" "$WWW/"
           rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/shared/web/" "$WWW/"
         basedOnDependencyAnalysis: false
+  Restaurant:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: Restaurant
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.scraveit.restaurant
+        PRODUCT_NAME: ScraveitRestaurant
+        INFOPLIST_FILE: Restaurant/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0.2"
+        CURRENT_PROJECT_VERSION: "18" # restaurant-build (ios/tools/upload_restaurant.sh bumps this line)
+    entitlements:
+      path: Restaurant/Restaurant.entitlements
+      properties:
+        aps-environment: production
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+      - package: Firebase
+        product: FirebaseMessaging
+      - package: GoogleSignIn
+        product: GoogleSignIn
+    postCompileScripts:
+      - name: Copy web screens
+        script: |
+          set -e
+          WWW="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/www"
+          mkdir -p "$WWW"
+          # Same files as the Android Restaurant build: main assets, shared web
+          # files, then the restaurant flavor's store-config.js.
+          rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/restaurant/src/main/assets/" "$WWW/"
+          rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/shared/web/" "$WWW/"
+          rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/restaurant/src/restaurant/assets/" "$WWW/"
+          test -f "$WWW/premium.html" && test -f "$WWW/store-config.js" && test -f "$WWW/scraveit-privacy.js"
+        basedOnDependencyAnalysis: false
+  Delivery:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: Delivery
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.scraveit.delivery
+        PRODUCT_NAME: ScraveitPartner
+        INFOPLIST_FILE: Delivery/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0.1"
+        CURRENT_PROJECT_VERSION: "14" # delivery-build (ios/tools/upload_delivery.sh bumps this line)
+    entitlements:
+      path: Delivery/Delivery.entitlements
+      properties:
+        aps-environment: production
+        com.apple.developer.applesignin: [Default]
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+      - package: Firebase
+        product: FirebaseMessaging
+      - package: GoogleSignIn
+        product: GoogleSignIn
+    postCompileScripts:
+      - name: Copy web screens
+        script: |
+          set -e
+          WWW="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/www"
+          mkdir -p "$WWW"
+          # Same files as the Android Rider build: main assets, then the shared web files.
+          rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/rider/src/main/assets/" "$WWW/"
+          rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/shared/web/" "$WWW/"
+          test -f "$WWW/premium.html" && test -f "$WWW/premium.js" && test -f "$WWW/scraveit-privacy.js"
+        basedOnDependencyAnalysis: false
+  Planner:
+    type: application
+    platform: iOS
+    sources:
+      - path: Planner
+      - path: Shared/AssetSchemeHandler.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.scraveit.planner
+        PRODUCT_NAME: PricePlanner
+        INFOPLIST_FILE: Planner/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1" # planner-build (ios/tools/upload_planner.sh bumps this line)
+    postCompileScripts:
+      - name: Copy web screens
+        script: |
+          set -e
+          WWW="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/www"
+          mkdir -p "$WWW"
+          # Same files as the Android Price Planner: its page, then the shared offer maths.
+          rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/planner/src/main/assets/" "$WWW/"
+          rsync -a --exclude ".DS_Store" "${SRCROOT}/../native_android/shared/web/" "$WWW/"
+          test -f "$WWW/index.html" && test -f "$WWW/planner.js" && test -f "$WWW/scraveit-offer-math.js"
+        basedOnDependencyAnalysis: false
+  Admin:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: Admin
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.scraveit.admin
+        PRODUCT_NAME: ScraveitAdmin
+        INFOPLIST_FILE: Admin/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "4" # admin-build (ios/tools/upload_admin.sh bumps this line)
+    entitlements:
+      path: Admin/Admin.entitlements
+      properties:
+        aps-environment: production
+    dependencies:
+      - package: Firebase
+        product: FirebaseCore
+      - package: Firebase
+        product: FirebaseAppCheck
+      - package: Firebase
+        product: FirebaseMessaging
+      - package: GoogleSignIn
+        product: GoogleSignIn
+    postCompileScripts:
+      - name: Copy web screens
+        script: |
+          set -e
+          WWW="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/www"
+          mkdir -p "$WWW"
+          # Same files as the Android Admin build (owner-only app, TestFlight internal only).
+          rsync -a --delete --exclude ".DS_Store" "${SRCROOT}/../native_android/admin/src/main/assets/" "$WWW/"
+          test -f "$WWW/premium.html" && test -f "$WWW/premium.js" && test -f "$WWW/firebase-config.js"
+        basedOnDependencyAnalysis: false
 schemes:
   Customer:
     build:
       targets:
         Customer: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Restaurant:
+    build:
+      targets:
+        Restaurant: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Delivery:
+    build:
+      targets:
+        Delivery: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Planner:
+    build:
+      targets:
+        Planner: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Admin:
+    build:
+      targets:
+        Admin: all
     run:
       config: Debug
     archive:

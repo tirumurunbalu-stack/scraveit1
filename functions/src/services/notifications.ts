@@ -11,6 +11,7 @@ import {
   buildRiderOfferMessage,
   buildRiderWakeMessage,
   buildStopRestaurantAlarmMessage,
+  buildOrderCancelledNotice,
   type CustomerBroadcastPayload,
 } from "../domain/notificationMessages";
 import type {
@@ -23,6 +24,8 @@ import {isStaleDeviceToken} from "../domain/deviceTokens";
 import {deviceTokenOwnerRef} from "./deviceTokens";
 import {restaurantRef} from "../firestorePaths";
 import {storeTypeOf} from "../domain/restaurantOnboarding";
+import {afterPickupPlan} from "../domain/foodRescue";
+import {cancelledWithFeeBeforePickup} from "../domain/customerCancel";
 import type {OrderStatus, SavrivoOrder} from "../types";
 import {
   enqueueNotification,
@@ -423,17 +426,37 @@ function statusCopy(order: SavrivoOrder): {title: string; body: string} {
   const restaurant = order.restaurant;
   const copy: Record<OrderStatus, {title: string; body: string}> = {
     "Order placed": {title: "Order placed", body: `${restaurant} received your order.`},
-    "Accepted": {title: "Order accepted", body: `${restaurant} accepted your order. We’re finding the nearest available rider now.`},
-    "Preparing": {title: "Your food is being prepared", body: order.riderId ? `${restaurant} is cooking while your rider heads to the restaurant.` : `${restaurant} is cooking while we find your rider.`},
-    "Ready for pickup": {title: "Order is ready for pickup", body: order.riderId ? "Your assigned rider can now collect it from the restaurant." : "Your food is ready while we finish assigning the nearest rider."},
-    "Assigned": {title: "Delivery partner assigned", body: "Your rider is heading to the restaurant."},
+    "Accepted": {title: "Order accepted", body: `${restaurant} accepted your order. We’re finding the nearest available delivery partner now.`},
+    "Preparing": {title: "Your food is being prepared", body: order.riderId ? `${restaurant} is cooking while your delivery partner heads to the restaurant.` : `${restaurant} is cooking while we find your delivery partner.`},
+    "Ready for pickup": {title: "Order is ready for pickup", body: order.riderId ? "Your delivery partner can now collect it from the restaurant." : "Your food is ready while we finish assigning the nearest delivery partner."},
+    "Assigned": {title: "Delivery partner assigned", body: "Your delivery partner is heading to the restaurant."},
     "Handed to rider": {title: "Order picked up", body: "Your order has left the restaurant."},
-    "Out for delivery": {title: "On the way", body: "Track your rider live in Scraveit."},
+    "Out for delivery": {title: "On the way", body: "Track your delivery partner live in Scraveit."},
     "Near you": {title: "Delivery partner is near you", body: "Please be ready to receive your order."},
     "Arrived": {title: "Delivery partner is at your doorstep", body: "Share the delivery OTP only after receiving the order."},
-    "Delivered": {title: "Order delivered", body: "Enjoy your meal. You can now rate the restaurant and rider."},
+    "Delivered": {title: "Order delivered", body: "Enjoy your meal. You can now rate the restaurant and delivery partner."},
     "Cancelled": {title: "Order cancelled", body: "Open Scraveit for the cancellation details."},
   };
+  // Cancelled while the delivery partner had the food (founder 22 Nov 2026).
+  const plan = status === "Cancelled" ? afterPickupPlan(order) : null;
+  if (plan) {
+    return {
+      title: "Order cancelled",
+      body: plan.charged ? "It was cancelled after pickup, so this order is not refunded." :
+        plan.blockCod ? "It was cancelled after pickup. Cash on delivery is now off for your account." :
+          plan.refund ? "It was cancelled because of a delivery problem. Your money will be refunded." :
+            "It was cancelled because of a delivery problem.",
+    };
+  }
+  // The customer cancelled after the restaurant accepted, before pickup: the 100% fee (domain/customerCancel.ts).
+  if (status === "Cancelled" && cancelledWithFeeBeforePickup(order)) {
+    return {
+      title: "Order cancelled",
+      body: order.paymentMethod === "cod" ?
+        "You cancelled after the restaurant accepted. Cash on delivery is now off for your account." :
+        "You cancelled after the restaurant accepted, so the 100% cancellation fee applies and it is not refunded.",
+    };
+  }
   return copy[status];
 }
 
@@ -497,6 +520,77 @@ export async function stopRestaurantAlarm(order: SavrivoOrder): Promise<void> {
     outboxEventId: result.eventId,
     outcome: result.outcome,
   });
+}
+
+/** "Order #1234 cancelled" to the store or to the assigned delivery partner. Sent once each. */
+export async function notifyOrderCancelled(
+  order: SavrivoOrder,
+  audience: "restaurant" | "partner",
+  customerCause: boolean,
+  partnerPayPaise = 0,
+  afterPickup?: {rescue: boolean},
+): Promise<void> {
+  const riderId = String(order.riderId ?? "");
+  if (audience === "partner" && !riderId) return;
+  const result = await enqueueAndAttempt({
+    eventType: audience === "restaurant" ? "RESTAURANT_ORDER_CANCELLED" : "RIDER_ORDER_CANCELLED",
+    aggregateType: "order",
+    aggregateId: order.id,
+    deduplicationKey: `${audience}-order-cancelled:${order.id}`,
+    recipient: audience === "restaurant" ?
+      {kind: "restaurant", id: order.restaurantId, app: "restaurant"} :
+      {kind: "rider", id: riderId, app: "rider"},
+    message: storedMessage(buildOrderCancelledNotice({order, audience, customerCause, partnerPayPaise, ...(afterPickup ? {afterPickup} : {})})),
+  });
+  logger.info("ORDER_CANCELLED_NOTICE", {orderId: order.id, audience, outboxEventId: result.eventId, outcome: result.outcome});
+}
+
+/**
+ * Food Rescue (services/foodRescue.ts): a customer near the delivery partner hears about food at
+ * half price. It stops showing on the phone when the offer ends.
+ */
+export async function notifyCustomerFoodRescue(input: {
+  uid: string; rescueId: string; title: string; body: string; endsAt: number;
+}): Promise<void> {
+  const ttl = Math.max(60_000, Math.round(input.endsAt - Date.now()));
+  await enqueueAndAttempt({
+    eventType: "CUSTOMER_FOOD_RESCUE",
+    aggregateType: "food_rescue",
+    aggregateId: input.rescueId,
+    deduplicationKey: `customer-food-rescue:${input.rescueId}:${input.uid}`,
+    recipient: {kind: "user", id: input.uid, app: "customer"},
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "FOOD_RESCUE", route: "home", rescueId: input.rescueId},
+      android: {priority: "high", ttl, notification: {channelId: "customer_reminders", sound: "default"}},
+      apns: {
+        headers: {"apns-priority": "10", "apns-expiration": String(Math.floor(input.endsAt / 1000))},
+        payload: {aps: {sound: "default"}},
+      },
+    }),
+  });
+}
+
+/** Food Rescue news for the delivery partner who has the food: a new drop, or the food is theirs. */
+export async function notifyPartnerFoodRescue(input: {
+  riderId: string; key: string; orderId: string; restaurantId: string; status: string; title: string; body: string;
+}): Promise<void> {
+  const result = await enqueueAndAttempt({
+    eventType: "RIDER_FOOD_RESCUE",
+    aggregateType: "order",
+    aggregateId: input.orderId,
+    deduplicationKey: `rider-food-rescue:${input.key}`,
+    recipient: {kind: "rider", id: input.riderId, app: "rider"},
+    // Type ORDER_STATUS: every Delivery Partner app build already shows it.
+    message: storedMessage({
+      notification: {title: input.title, body: input.body},
+      data: {type: "ORDER_STATUS", orderId: input.orderId, status: input.status, restaurantId: input.restaurantId,
+        title: input.title, body: input.body},
+      android: {priority: "high", notification: {channelId: "savrivo_order_status", sound: "default"}},
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {sound: "default"}}},
+    }),
+  });
+  logger.info("RIDER_FOOD_RESCUE_PUSH", {orderId: input.orderId, key: input.key, outboxEventId: result.eventId, outcome: result.outcome});
 }
 
 export async function notifyCustomerStatus(order: SavrivoOrder): Promise<void> {
@@ -696,7 +790,9 @@ export async function notifyAdminAlarm(input: {uid: string; key: string; alarmId
     message: storedMessage({
       data: {type: "ADMIN_ALARM", alarmId: input.alarmId, title: input.title, body: input.body, route: input.route, issuedAt: String(input.issuedAt)},
       android: {priority: "high", ttl: 3_600_000},
-      apns: {headers: {"apns-priority": "10"}, payload: {aps: {alert: {title: input.title, body: input.body}, sound: "default"}}},
+      // iPhone: the Admin app's own 29 s alarm sound (older builds without it fall back to the default sound),
+      // time-sensitive so it shows during Focus (founder, 21 Nov 2026).
+      apns: {headers: {"apns-priority": "10"}, payload: {aps: {alert: {title: input.title, body: input.body}, sound: "admin_alert.caf", "interruption-level": "time-sensitive"}}},
     }),
   });
 }

@@ -13,10 +13,12 @@ KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
 [[ -f "$KEY" ]] || { echo "API key file missing: $KEY" >&2; exit 2; }
 cd "$IOS"
 if [[ "${1:-}" != "--no-bump" ]]; then
-  cur=$(sed -n 's/.*CURRENT_PROJECT_VERSION: "\([0-9]*\)".*/\1/p' project.yml | head -1)
-  sed -i '' "s/CURRENT_PROJECT_VERSION: \"$cur\"/CURRENT_PROJECT_VERSION: \"$((cur+1))\"/" project.yml
+  # Only the shared 4-space line; the Restaurant target has its own number.
+  cur=$(sed -n 's/^    CURRENT_PROJECT_VERSION: "\([0-9]*\)"$/\1/p' project.yml)
+  [[ "$cur" =~ ^[0-9]+$ ]] || { echo "build number line not found in project.yml" >&2; exit 2; }
+  sed -i '' "s/^    CURRENT_PROJECT_VERSION: \"$cur\"$/    CURRENT_PROJECT_VERSION: \"$((cur+1))\"/" project.yml
 fi
-echo "Build number: $(sed -n 's/.*CURRENT_PROJECT_VERSION: "\([0-9]*\)".*/\1/p' project.yml | head -1)"
+echo "Build number: $(sed -n 's/^    CURRENT_PROJECT_VERSION: "\([0-9]*\)"$/\1/p' project.yml)"
 xcodegen >/dev/null
 ARCHIVE=build/Scraveit-Customer.xcarchive
 rm -rf "$ARCHIVE" build/upload

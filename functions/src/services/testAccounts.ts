@@ -125,6 +125,11 @@ export async function isTestCustomer(uid: string): Promise<boolean> {
   return (await uidsForEmails((await accountsOrEmpty()).customers)).has(uid);
 }
 
+/** Every test customer account (Food Rescue alerts: testers hear only about test food). */
+export async function testCustomerUids(): Promise<Set<string>> {
+  return uidsForEmails((await accountsOrEmpty()).customers);
+}
+
 export async function testDeliveryPartnerUids(): Promise<Set<string>> {
   return uidsForEmails((await accountsOrEmpty()).deliveryPartners);
 }

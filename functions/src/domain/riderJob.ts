@@ -74,6 +74,9 @@ export function buildRiderJobProjection(
   // Waiting pay settled at delivery (Scraveit-paid) stays on the job through later rebuilds.
   const waitingPaise = existingBelongsToAssignment(order, existing) ?
     Math.max(0, Math.round(Number(existing?.waitingPayPaise) || 0)) : 0;
+  // ₹15 cancellation pay (customer cancelled after the partner reached the restaurant) stays on the job.
+  const cancellationPayPaise = order.status === "Cancelled" && existingBelongsToAssignment(order, existing) ?
+    Math.max(0, Math.round(Number(existing?.cancellationPayPaise) || 0)) : 0;
   const projection: Record<string, unknown> = {
     orderId: order.id,
     ...(order.riderId ? {riderId: order.riderId} : {}),
@@ -85,8 +88,11 @@ export function buildRiderJobProjection(
     restaurantLng: order.restaurantLocation.lng,
     approximateDropZone: order.address.area || order.address.city || "Service area",
     itemCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    payout: riderOfferPayout(order, waitingPaise),
-    payoutBreakdown: riderPayoutBreakdown(order, waitingPaise),
+    payout: cancellationPayPaise > 0 ? cancellationPayPaise / 100 : riderOfferPayout(order, waitingPaise),
+    payoutBreakdown: cancellationPayPaise > 0 ? {
+      tripPay: 0, incentives: cancellationPayPaise / 100, tip: 0,
+      total: cancellationPayPaise / 100, cancellationPay: cancellationPayPaise / 100,
+    } : riderPayoutBreakdown(order, waitingPaise),
     estimatedMinutes: order.etaMax,
     assignedAt: assignedAt(order),
     createdAt: assignedAt(order),
@@ -113,6 +119,7 @@ export function buildRiderJobProjection(
     projection.arrivedRestaurantAt = Number(existing?.arrivedRestaurantAt);
   }
   if (order.status === "Delivered") projection.completedAt = order.deliveredAt ?? order.updatedAt;
+  if (cancellationPayPaise > 0) projection.cancellationPayPaise = cancellationPayPaise;
   if (waitingPaise > 0) {
     projection.waitingPayPaise = waitingPaise;
     projection.waitMinutes = Math.max(0, Math.round(Number(existing?.waitMinutes) || 0));

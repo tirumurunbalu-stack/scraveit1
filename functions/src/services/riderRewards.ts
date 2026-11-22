@@ -2414,18 +2414,18 @@ function staticOfferEligibility(
     return {visible: true, status: "unavailable", eligibilityMessage: ""};
   }
   if (campaign.riderIds.length && !campaign.riderIds.includes(riderId)) {
-    return {visible: true, status: "locked", eligibilityMessage: "This offer is not assigned to this rider."};
+    return {visible: true, status: "locked", eligibilityMessage: "This offer is not assigned to you."};
   }
   if (campaign.cityNames.length) {
     const riderCity = searchKey(riderProfile.city ?? "");
     if (!campaign.cityNames.some((name) => searchKey(name) === riderCity)) {
-      return {visible: true, status: "locked", eligibilityMessage: "This offer is not available in the rider's city."};
+      return {visible: true, status: "locked", eligibilityMessage: "This offer is not available in your city."};
     }
   }
   if (campaign.eligibleRiderTypes.length) {
     const riderType = searchKey(riderProfile.riderType ?? riderProfile.category ?? riderProfile.partnerType ?? "");
     if (!campaign.eligibleRiderTypes.some((entry) => searchKey(entry) === riderType)) {
-      return {visible: true, status: "locked", eligibilityMessage: "This offer is limited to selected rider categories."};
+      return {visible: true, status: "locked", eligibilityMessage: "This offer is limited to selected delivery partner groups."};
     }
   }
   if (campaign.vehicleTypes.length) {
@@ -2447,7 +2447,7 @@ function staticOfferEligibility(
   if (campaign.minRating !== null) {
     const rating = Number(riderProfile.rating ?? 0);
     if (!Number.isFinite(rating) || rating < campaign.minRating) {
-      return {visible: true, status: "locked", eligibilityMessage: `Minimum rider rating is ${campaign.minRating.toFixed(1)}★.`};
+      return {visible: true, status: "locked", eligibilityMessage: `Minimum delivery partner rating is ${campaign.minRating.toFixed(1)}★.`};
     }
   }
   if (campaign.minCompletedTrips !== null && completedTripsAfter < campaign.minCompletedTrips) {
@@ -3447,6 +3447,19 @@ function riderStaticEligibility(
     matchesStatic: true,
     eligibilityMessage: verdict.eligibilityMessage,
   };
+}
+
+/**
+ * Per-order bonus campaigns on the customer's bill (economics.policyScopes "rider_campaign:{id}", set at
+ * checkout). null for an order without an economics snapshot: those keep matching by delivery time.
+ */
+export function billedRiderCampaignIds(order: Pick<SavrivoOrder, "economics">): ReadonlySet<string> | null {
+  const scopes = (order.economics as {policyScopes?: unknown} | undefined)?.policyScopes;
+  if (!Array.isArray(scopes)) return null;
+  return new Set(scopes
+    .filter((scope): scope is string => typeof scope === "string" && scope.startsWith("rider_campaign:"))
+    .map((scope) => scope.slice("rider_campaign:".length))
+    .filter(Boolean));
 }
 
 function deliveryMatchesCampaign(
@@ -5712,11 +5725,20 @@ export async function evaluateRiderRewardsForDeliveredOrder(
   const settings = normalizeRewardSettings(settingsSnapshot.exists ? settingsSnapshot.data() : null);
   const riderJournals = journals.filter((journal) => relevantRiderJournal(journal, riderId));
   const completedTripsAfter = completedDeliveriesInWindow(riderJournals, riderId, 0, Number.MAX_SAFE_INTEGER);
-  const rewardCandidates: Array<{journal: LedgerJournal; amountPaise: number; stacking: RewardStacking; priority: number}> = [];
+  const rewardCandidates: Array<{journal: LedgerJournal; amountPaise: number; stacking: RewardStacking; priority: number; billed: boolean}> = [];
+  // Founder 21 Nov 2026: pay that the customer was charged for (lunch/dinner rush, late night) follows the bill,
+  // not the delivery time. The bill's campaigns were matched at checkout and saved in economics.policyScopes.
+  const billed = billedRiderCampaignIds(order);
 
   for (const campaign of campaigns) {
-    if (!campaign.active || campaign.archived) continue;
-    if (!deliveryMatchesCampaign(campaign, order, riderProfile, completedTripsAfter, deliveredAt, riderSessionKeys)) continue;
+    const customerFunded = campaign.kind === "per_order_bonus" && campaign.customerFeePaise > 0 && billed !== null;
+    if (customerFunded) {
+      // On the bill: paid even if delivered after the window or the campaign was switched off since. Not on it: never.
+      if (!billed.has(campaign.campaignId)) continue;
+    } else {
+      if (!campaign.active || campaign.archived) continue;
+      if (!deliveryMatchesCampaign(campaign, order, riderProfile, completedTripsAfter, deliveredAt, riderSessionKeys)) continue;
+    }
     if (campaign.kind === "per_order_bonus" && campaign.rewardAmountPaise) {
       rewardCandidates.push({
         journal: buildRiderRewardJournal({
@@ -5735,18 +5757,21 @@ export async function evaluateRiderRewardsForDeliveredOrder(
         amountPaise: campaign.rewardAmountPaise,
         stacking: campaign.stacking,
         priority: campaign.priority,
+        billed: customerFunded,
       });
       continue;
     }
   }
 
-  const chosen: typeof rewardCandidates = [];
-  const stack = rewardCandidates.filter((candidate) => candidate.stacking === "stack");
-  chosen.push(...stack);
-  const highestOnly = rewardCandidates
+  // Everything on the bill is paid (checkout already applied the stacking rule to it); the rest stack as before,
+  // and a "highest only" bonus is added only when the bill doesn't already carry one.
+  const chosen: typeof rewardCandidates = rewardCandidates.filter((candidate) => candidate.billed);
+  const unbilled = rewardCandidates.filter((candidate) => !candidate.billed);
+  chosen.push(...unbilled.filter((candidate) => candidate.stacking === "stack"));
+  const highestOnly = unbilled
     .filter((candidate) => candidate.stacking === "highest_only")
     .sort((left, right) => right.amountPaise - left.amountPaise || right.priority - left.priority);
-  if (highestOnly[0]) chosen.push(highestOnly[0]);
+  if (highestOnly[0] && !chosen.some((candidate) => candidate.stacking === "highest_only")) chosen.push(highestOnly[0]);
 
   const awardedJournalIds: string[] = [];
   for (const candidate of chosen) {

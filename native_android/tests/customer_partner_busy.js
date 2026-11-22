@@ -109,7 +109,8 @@ const chip = () => api.restaurantInfoMarkup(state.catalog.r1, { value: 0, label:
   await answer({ deliveryPartners: { busy: true, message: BUSY } });
   check(api.partnersBusy("r1"), "a busy answer is remembered for the store");
   check(api.partnerBusyBanner(store).includes("Delivery partners are busy") && api.partnerBusyBanner(store).includes("Highway Cross are busy right now"), "the store page shows the busy banner with the server's words");
-  check(chip().includes("Delivery partners busy") && !chip().includes("Accepting orders"), "the store chip says delivery partners busy instead of accepting orders");
+  // Founder 10 Nov 2026 ("Remove that no need"): the banner alone says busy, so the chip row just drops "Accepting orders".
+  check(!chip().includes("Accepting orders") && !chip().includes("Currently closed"), "while delivery partners are busy the store stops saying accepting orders (the banner says busy)");
   check(context.__RENDERS >= 1, "the page redraws when the answer arrives");
   check(busyTimers().length === 1, "while busy shows, one re-check is set for 20 seconds later");
 

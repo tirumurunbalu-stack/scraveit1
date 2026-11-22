@@ -9,6 +9,38 @@ protocol ScraveitApp {
     static func makeBridge() -> NativeBridge
 }
 
+/// Hands notification events to the app's bridge. A tap that launches the app
+/// can arrive before the screen exists, so those wait here until it does.
+final class NotificationRouter {
+    static let shared = NotificationRouter()
+    private weak var bridge: NativeBridge?
+    private var waitingReceived: [[AnyHashable: Any]] = []
+    private var waitingOpened: [[AnyHashable: Any]] = []
+
+    func attach(_ bridge: NativeBridge) {
+        self.bridge = bridge
+        let received = waitingReceived, opened = waitingOpened
+        waitingReceived = []
+        waitingOpened = []
+        received.forEach { bridge.notificationReceived($0) }
+        opened.forEach { bridge.notificationOpened($0) }
+    }
+
+    func presentationOptions(for notification: UNNotification) -> UNNotificationPresentationOptions {
+        bridge?.presentationOptions(for: notification) ?? [.banner, .sound]
+    }
+
+    func received(_ userInfo: [AnyHashable: Any]) {
+        if let bridge { bridge.notificationReceived(userInfo) } else { waitingReceived.append(userInfo) }
+    }
+
+    func opened(_ userInfo: [AnyHashable: Any]) {
+        if let bridge { bridge.notificationOpened(userInfo) } else { waitingOpened.append(userInfo) }
+    }
+
+    func open(url: URL) -> Bool { bridge?.open(url: url) ?? false }
+}
+
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
@@ -38,10 +70,24 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         Messaging.messaging().apnsToken = deviceToken
     }
 
+    // Pushes that reach the app itself (for example "this order was answered",
+    // which silences the order alarm), open or in the background.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        NotificationRouter.shared.received(userInfo)
+        completionHandler(.noData)
+    }
+
     // Order updates still show while the app is open.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
+        completionHandler(NotificationRouter.shared.presentationOptions(for: notification))
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        NotificationRouter.shared.opened(response.notification.request.content.userInfo)
+        completionHandler()
     }
 }
 
@@ -51,9 +97,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = WebShellViewController(bridge: AppEntry.makeBridge())
+        let bridge = AppEntry.makeBridge()
+        window.rootViewController = WebShellViewController(bridge: bridge)
         window.makeKeyAndVisible()
         self.window = window
+        // A tap that launched the app reaches the notification delegate (set
+        // before launch finished) and waits in the router until now.
+        NotificationRouter.shared.attach(bridge)
+        connectionOptions.urlContexts.forEach { _ = NotificationRouter.shared.open(url: $0.url) }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        URLContexts.forEach { _ = NotificationRouter.shared.open(url: $0.url) }
     }
 }
 

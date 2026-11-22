@@ -9,7 +9,7 @@ import {createHash} from "node:crypto";
 
 /** Shown as the "standard rate" until Scraveit and the restaurant agree one. */
 export const STANDARD_COMMISSION_BPS = 3_000;
-export const AGREEMENT_VERSION = "partner-v1-2026-10";
+export const AGREEMENT_VERSION = "partner-v4-2026-11";
 export const GST_ON_COMMISSION_PERCENT = 18;
 
 /** FSSAI numbers are 14 digits: 1xxxx = licence (state or central), 2xxxx = registration. */
@@ -113,6 +113,15 @@ export interface AgreementInput {
   gstEnrolment?: string;
   /** Day the agreement is offered, YYYY-MM-DD (IST). */
   date: string;
+  /** One owner, several outlets: every outlet this agreement covers (Schedule 1). One outlet = no schedule. */
+  outlets?: AgreementOutlet[];
+}
+
+export interface AgreementOutlet {
+  name: string;
+  address: string;
+  fssaiNumber: string;
+  drugLicenceNumber?: string;
 }
 
 export interface AgreementSection {
@@ -135,9 +144,16 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
   const goods = type !== "restaurant", pharmacy = type === "pharmacy";
   const seller = type === "dairy" ? "Dairy" : pharmacy ? "Pharmacy" : goods ? "Store" : "Restaurant";
   const items = goods ? "products" : "food";
+  const outlets = (input.outlets ?? []).length > 1 ? input.outlets ?? [] : [];
+  const group = outlets.length > 1;
   const business = input.legalName && input.legalName !== input.restaurantName ?
     `${input.legalName}, trading as ${input.restaurantName}` : input.restaurantName;
-  const gstLine = input.gstin ? ` and its GSTIN is ${input.gstin}` :
+  const fssaiKind = (n: string) => n.startsWith("1") ? "licence" : "registration";
+  const who = group ?
+    `${input.legalName || input.ownerName}, which runs the ${outlets.length} outlets listed in Schedule 1 at the end of this agreement, ` +
+      `represented by ${input.ownerName} (the "${seller}"; everything in this agreement applies to each outlet)` :
+    `${business}, ${input.address}, represented by ${input.ownerName} (the "${seller}")`;
+  const gstLine = !goods ? "" : input.gstin ? ` and its GSTIN is ${input.gstin}` :
     goods && input.gstMode === "enrolment" ? ` and it sells without GST registration under GST enrolment number ${input.gstEnrolment ?? ""}` :
       goods && input.gstMode === "exempt_only" ? " and it sells only goods that are exempt from GST, so it is not required to register" :
         " and it is not registered for GST";
@@ -153,40 +169,54 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
           input.gstMode === "exempt_only" ? `The ${seller} lists only GST-exempt goods (such as ${pharmacy ? "sanitary pads" : "fresh milk, fruits and vegetables"}) ` +
             "while it is not registered, and tells Scraveit before listing any taxable product." : "")} :
     {heading: "3. Prices and GST on food",
-      body: "The Restaurant sets its own menu prices. Menu prices on Scraveit are before GST. For food ordered through the apps, " +
-        "Scraveit collects GST from the customer at checkout and pays it to the government as the electronic commerce operator " +
-        "under section 9(5) of the CGST Act, 2017. This GST is never taken from the Restaurant's money."};
+      body: "The Restaurant sets its own menu prices and chooses in the app whether they include GST. For food ordered through " +
+        "the apps, Scraveit pays the GST to the government as the electronic commerce operator under section 9(5) of the CGST " +
+        "Act, 2017, whether or not the Restaurant is registered for GST. If the menu prices include GST, customers pay the menu " +
+        "price and the GST is taken out of the item total, so the commission and the payout are worked out on the value before " +
+        "GST. If the menu prices do not include GST, the GST is added to the customer's bill at checkout and is not taken from " +
+        "the Restaurant's money."};
   return [
     {heading: "1. Who this agreement is between",
-      body: `This agreement is between ${input.platform.name}, ${input.platform.address} ("Scraveit"), and ${business}, ` +
-        `${input.address}, represented by ${input.ownerName} (the "${seller}"). The ${seller} sells ${items} to customers through the ` +
+      body: `This agreement is between ${input.platform.name}, ${input.platform.address} ("Scraveit"), and ${who}. ` +
+        `The ${seller} sells ${items} to customers through the ` +
         `Scraveit apps. Scraveit runs the apps, takes payments and arranges delivery partners.`},
     {heading: "2. Commission",
       body: `For every delivered order the ${seller} pays Scraveit a commission of ${rate}% of the item total after the ` +
         `${seller}'s own offers. GST at ${GST_ON_COMMISSION_PERCENT}% is charged on the commission. This rate is fixed for ` +
-        `${input.termMonths} months from the date of signing. After that it continues until either side proposes a change in ` +
-        `writing with 30 days' notice, and a new rate applies only once both sides agree.`},
+        `${input.termMonths} months from the date of signing, unless both sides agree to change it. After that, either side may ` +
+        "propose a new rate in writing, including through the app, with at least 30 days' notice, and the new rate applies from " +
+        `the date in the notice once the other side accepts it. If the ${seller} has not accepted a new rate Scraveit proposes ` +
+        "before that date, this agreement ends on that date and money already earned is paid out in full. A lower rate offered by " +
+        `Scraveit applies from its date without needing acceptance.` +
+        (group ? ` The same rate applies to every outlet in Schedule 1. An outlet added later, or one with a different rate, ` +
+          "signs its own agreement." : "")},
     pricesAndGst,
     {heading: "4. Payouts",
       body: `Scraveit pays the ${seller} every week into the bank account or UPI ID it gave Scraveit, with a statement listing ` +
-        `every order. The payout is the item total, less the ${seller}'s own offers, the commission, GST on the commission and ` +
+        `every order${group ? ", separately for each outlet" : ""}. The payout is the item total, less the ${seller}'s own offers, the commission, GST on the commission and ` +
         `any tax the law requires Scraveit to deduct or collect, adjusted for refunds the ${seller} caused. Scraveit sends a GST tax ` +
         "invoice for the commission every month."},
     {heading: "5. Offers",
       body: `Offers the ${seller} creates are paid by the ${seller}, and it sees what it gets on each item before publishing. ` +
         `Offers Scraveit creates are paid by Scraveit, unless the ${seller} agrees in writing to share one.`},
     pharmacy ? {heading: "6. Drug licence and product safety",
-      body: `The Pharmacy holds a valid retail drug licence, number ${input.drugLicenceNumber ?? ""}, under the Drugs and ` +
-        "Cosmetics Act, 1940, and keeps it valid. Through Scraveit it lists only products that can be sold without a " +
+      body: (group ? "Each outlet of the Pharmacy holds a valid retail drug licence, with the number listed in Schedule 1, under " +
+        "the Drugs and Cosmetics Act, 1940, and keeps it valid." :
+        `The Pharmacy holds a valid retail drug licence, number ${input.drugLicenceNumber ?? ""}, under the Drugs and ` +
+        "Cosmetics Act, 1940, and keeps it valid.") + " Through Scraveit it lists only products that can be sold without a " +
         "prescription: never a drug in Schedule H, H1 or X of the Drugs Rules, 1945, or any other product that needs a " +
         "prescription. It sells products within their expiry date and stores them as their labels say" +
-        (input.fssaiNumber ? `, and it holds FSSAI ${input.fssaiNumber.startsWith("1") ? "licence" : "registration"} number ` +
+        (group ? ", and holds the FSSAI licence or registration listed in Schedule 1 for food products such as baby food and " +
+          "nutrition drinks" :
+          input.fssaiNumber ? `, and it holds FSSAI ${fssaiKind(input.fssaiNumber)} number ` +
           `${input.fssaiNumber} for food products such as baby food and nutrition drinks` : "") +
         ". The Pharmacy is responsible for the quality, safety and description of the products it sells, and the liability " +
         "for them rests with the Pharmacy. Scraveit shows the drug licence number to customers."} :
     {heading: "6. Food safety",
-      body: `The ${seller} holds a valid FSSAI ${input.fssaiNumber.startsWith("1") ? "licence" : "registration"} number ` +
-        `${input.fssaiNumber}, keeps it valid, and follows the Food Safety and Standards Act, 2006 and the rules and regulations ` +
+      body: (group ? `Each outlet of the ${seller} holds a valid FSSAI licence or registration, with the number listed in ` +
+        "Schedule 1, keeps it valid, and follows" :
+        `The ${seller} holds a valid FSSAI ${fssaiKind(input.fssaiNumber)} number ${input.fssaiNumber}, keeps it valid, and follows`) +
+        `  the Food Safety and Standards Act, 2006 and the rules and regulations ` +
         `made under it${goods ? ", including labelling, best-before dates and storage temperatures" : ""}. The ${seller} is ` +
         `responsible for the safety, quality, hygiene and description of the ${items} it sells, and the liability for them rests ` +
         `with the ${seller}. Scraveit shows the FSSAI number to customers.`},
@@ -206,14 +236,74 @@ export function renderAgreement(input: AgreementInput): AgreementSection[] {
       body: `Either side may end this agreement with 30 days' written notice, including through the app. Scraveit may pause the ` +
         `${seller}'s listing at once if its ${pharmacy ? "drug licence lapses, if it lists a product that needs a prescription, " +
           "if there is a serious safety risk" : "FSSAI licence lapses, if there is a serious food safety risk"}, or in case of fraud, ` +
-        "and will say why. Money already earned is paid out in full."},
+        `and will say why.${group ? " The agreement can be ended or paused for one outlet without affecting the others." : ""} ` +
+        "Money already earned is paid out in full."},
     {heading: "11. Disputes",
       body: "Both sides will first try to settle any dispute by talking. If that fails, the courts at Nellore, Andhra Pradesh " +
         "have jurisdiction. This agreement is governed by the laws of India."},
     {heading: "12. Signing",
       body: `This agreement is signed electronically and is valid under sections 3A and 10A of the Information Technology Act, ` +
-        `2000. Version ${AGREEMENT_VERSION}, offered on ${input.date}. Scraveit: ${input.platform.email}, ${input.platform.phone}.`},
+        `2000. The person who signs confirms that they are ${input.ownerName}, who represents the ${seller} in clause 1, or that ` +
+        `the ${seller} has authorised them in writing to sign for it. ` +
+        `Version ${AGREEMENT_VERSION}, offered on ${input.date}. Scraveit: ${input.platform.email}, ${input.platform.phone}.`},
+    ...(group ? [{heading: "Schedule 1: Outlets covered by this agreement",
+      body: outlets.map((o, i) => `${i + 1}. ${o.name}, ${o.address}` + (pharmacy ?
+        `, drug licence ${o.drugLicenceNumber ?? ""}${o.fssaiNumber ? `, FSSAI ${fssaiKind(o.fssaiNumber)} ${o.fssaiNumber}` : ""}` :
+        `, FSSAI ${fssaiKind(o.fssaiNumber)} ${o.fssaiNumber}`) + ".").join("\n")}] : []),
   ];
+}
+
+/** A commission change Scraveit proposes to a store (or to several outlets of one owner). */
+export interface CommissionNoticeInput {
+  platformName: string;
+  sellerName: string;
+  outlets: Array<{name: string; fromBps: number}>;
+  toBps: number;
+  /** IST date the new rate starts, YYYY-MM-DD. */
+  effectiveDate: string;
+  /** "ends": not accepting ends the agreement on that date. "keeps": still in the fixed period, the old rate stays. */
+  consequence: "ends" | "keeps";
+  note?: string;
+  sentDate: string;
+}
+
+export const COMMISSION_NOTICE_DAYS = 30;
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+/** "2026-12-30" -> "30 December 2026". */
+export function longDate(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return y && m && d ? `${d} ${MONTHS[m - 1]} ${y}` : date;
+}
+
+export function renderCommissionNotice(input: CommissionNoticeInput): AgreementSection[] {
+  const to = percent(input.toBps);
+  const when = longDate(input.effectiveDate);
+  const many = input.outlets.length > 1;
+  const lower = input.outlets.every((o) => input.toBps < o.fromBps);
+  const list = input.outlets.map((o) => `${o.name} (now ${percent(o.fromBps)}%)`).join(", ");
+  const sections: AgreementSection[] = [
+    {heading: "Change to your commission",
+      body: `${input.platformName} is changing the commission for ${many ? "your outlets" : "your store"} ${list} to ${to}% of ` +
+        `the item total, from ${when}. GST at ${GST_ON_COMMISSION_PERCENT}% is charged on the commission as before. ` +
+        "Everything else in your partner agreement stays the same."},
+    lower ?
+      {heading: "What you need to do",
+        body: `Nothing. The lower rate applies from ${when} on its own. Orders before that date use the current rate.`} :
+      {heading: "What you need to do",
+        body: `Please read this and tap Accept before ${when}. Orders before that date use the current rate. ` +
+          (input.consequence === "ends" ?
+            `If you have not accepted before ${when}, we are unable to continue: your partnership with Scraveit, and your ` +
+              "partner agreement if you have signed one, ends on that date, and all money already earned is paid out in full. " +
+              "This notice is also Scraveit's written notice of ending under your partner agreement, which takes effect only if " +
+              "you have not accepted." :
+            "Your current rate is still within its fixed period, so if you do not accept, your current rate stays until that " +
+              "period ends.")},
+  ];
+  if (input.note) sections.push({heading: "Note from Scraveit", body: input.note});
+  sections.push({heading: "Notice details",
+    body: `Sent through the Scraveit store app on ${longDate(input.sentDate)}. Thank you for understanding.`});
+  return sections;
 }
 
 export function agreementText(sections: AgreementSection[]): string {
